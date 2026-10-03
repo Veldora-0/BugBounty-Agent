@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""
+bb-api — Controlled API Analysis and Schema Prober.
+
+Analyzes REST endpoints, GraphQL endpoints, and WebSocket surfaces.
+Enforces scope validation and safe parameter introspection.
+"""
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.scope.engine import ScopeEngine, ScopeStatus
+
+
+def probe_http_methods(url: str, headers: dict) -> dict:
+    """Probes supported HTTP methods using OPTIONS and method testing."""
+    results = {}
+    for method in ["OPTIONS", "GET", "POST", "PUT", "DELETE", "PATCH"]:
+        req = urllib.request.Request(url, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                results[method] = {
+                    "status": resp.status,
+                    "allow": resp.headers.get("Allow", ""),
+                    "content_type": resp.headers.get("Content-Type", ""),
+                }
+        except urllib.error.HTTPError as e:
+            results[method] = {"status": e.code, "allow": e.headers.get("Allow", "")}
+        except Exception:
+            results[method] = {"status": None, "error": "timeout_or_refused"}
+    return results
+
+
+def probe_graphql_introspection(url: str, headers: dict) -> dict:
+    """Safe, non-destructive check for enabled GraphQL introspection query."""
+    body = json.dumps({"query": "{ __schema { types { name } } }"}).encode("utf-8")
+    graphql_headers = dict(headers)
+    graphql_headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=body, headers=graphql_headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read().decode("utf-8", errors="replace")
+            is_intro_enabled = "__schema" in data
+            return {
+                "introspection_enabled": is_intro_enabled,
+                "status": resp.status,
+                "response_sample": data[:500],
+            }
+    except Exception as e:
+        return {"introspection_enabled": False, "error": str(e)}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Analyze REST and GraphQL APIs with scope enforcement.")
+    parser.add_argument("url", help="API Endpoint URL to inspect")
+    parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
+    parser.add_argument("--graphql", action="store_true", help="Probe for GraphQL introspection")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    args = parser.parse_args()
+
+    prog_dir = get_program_dir(args.program)
+    scope_file = os.path.join(prog_dir, "scope", "scope.yaml")
+    if not os.path.isfile(scope_file):
+        print(f"[!] Error: Scope configuration not found: {scope_file}", file=sys.stderr)
+        sys.exit(2)
+
+    engine = ScopeEngine.from_file(scope_file)
+    decision = engine.check(args.url)
+    if decision.status != ScopeStatus.IN_SCOPE:
+        print(f"[!] REFUSING ANALYSIS: Endpoint '{args.url}' is OUT OF SCOPE: {decision.reason}", file=sys.stderr)
+        sys.exit(1)
+
+    headers = {"User-Agent": "BugBounty-Agent/1.0 (API Review)"}
+    print(f"[*] Analyzing API endpoint: {args.url}")
+
+    methods_res = probe_http_methods(args.url, headers)
+    graphql_res = None
+    if args.graphql or "graphql" in args.url.lower():
+        graphql_res = probe_graphql_introspection(args.url, headers)
+
+    result_data = {
+        "url": args.url,
+        "methods": methods_res,
+        "graphql": graphql_res,
+    }
+
+    # Save to program api/ directory
+    out_file = os.path.join(prog_dir, "api", f"api_probe_{os.path.basename(args.url.rstrip('/'))}.json")
+    with open(out_file, "w", encoding="utf-8") as f:
+        json.dump(result_data, f, indent=2)
+
+    if args.json:
+        print(json.dumps(result_data, indent=2))
+    else:
+        print("[*] HTTP Method Responses:")
+        for m, data in methods_res.items():
+            allow_header = data.get("allow")
+            allow_str = f" (Allow: {allow_header})" if allow_header else ""
+            print(f"    - {m:<8}: status {data.get('status')}{allow_str}")
+        if graphql_res:
+            print(f"[*] GraphQL Introspection: {'ENABLED (Informational/Attack Surface)' if graphql_res.get('introspection_enabled') else 'Disabled / Inaccessible'}")
+        print(f"[+] Results written to: {out_file}")
+
+
+if __name__ == "__main__":
+    main()

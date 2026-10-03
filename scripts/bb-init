@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""
+bb-init — Initialize a new Bug Bounty program workspace.
+
+Usage:
+    bb-init <program-name> [--workspace-dir <path>]
+"""
+
+import argparse
+import os
+import shutil
+import sys
+
+# Ensure repository root is on sys.path
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import (
+    PROGRAM_SUBDIRECTORIES,
+    get_program_dir,
+    get_workspace_root,
+    init_program_workspace,
+)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Initialize a new Bug Bounty program workspace (stored locally, never committed to Git)."
+    )
+    parser.add_argument("program", help="Name of the bug bounty program (e.g. hackerone-target)")
+    parser.add_argument(
+        "--workspace-dir",
+        default=None,
+        help="Optional override for root workspace directory (default: ~/BugBounty-Workspace)",
+    )
+    args = parser.parse_args()
+
+    prog_name = args.program.strip()
+    if not prog_name:
+        print("[!] Error: Program name cannot be empty.", file=sys.stderr)
+        sys.exit(1)
+
+    workspace_root = args.workspace_dir or get_workspace_root()
+    paths = init_program_workspace(prog_name, workspace_root=workspace_root)
+    prog_dir = paths["program_root"]
+
+    print(f"[*] Initialized BugBounty program workspace: {prog_name}")
+    print(f"[*] Location: {prog_dir}")
+    print("[*] Subdirectories created:")
+    for subdir in PROGRAM_SUBDIRECTORIES:
+        print(f"    - {subdir}/")
+
+    # Copy template scope.yaml and program.yaml into scope/ if not already present
+    templates_dir = os.path.join(REPO_ROOT, "templates")
+    scope_target = os.path.join(paths["scope"], "scope.yaml")
+    prog_target = os.path.join(paths["scope"], "program.yaml")
+
+    scope_tmpl = os.path.join(templates_dir, "scope.yaml")
+    if os.path.isfile(scope_tmpl) and not os.path.isfile(scope_target):
+        shutil.copyfile(scope_tmpl, scope_target)
+        print(f"[+] Installed scope template: {scope_target}")
+
+    prog_tmpl = os.path.join(templates_dir, "program.yaml")
+    if os.path.isfile(prog_tmpl) and not os.path.isfile(prog_target):
+        shutil.copyfile(prog_tmpl, prog_target)
+        print(f"[+] Installed program config template: {prog_target}")
+
+    print("\n[+] Workspace ready! Next steps:")
+    print(f"    1. Edit {scope_target} with authorized domains, CIDRs, and exclusions.")
+    print(f"    2. Run 'bb-scope-check --scope {scope_target} <target>' to verify authorization.")
+    print("    3. Begin controlled reconnaissance with 'bb-recon'.")
+
+
+if __name__ == "__main__":
+    main()

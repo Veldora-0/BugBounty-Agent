@@ -1,0 +1,22 @@
+# ==============================================================================
+# BugBounty-Agent Program Configuration Template
+# Metadata and local preferences for an active research program
+# ==============================================================================
+
+program:
+  name: "example-program"
+  platform: "HackerOne"
+  bounty_eligible: true
+  contact_email: "security@example.com"
+  disclosure_policy: "coordinated"
+
+preferences:
+  default_rate_limit: 5
+  evidence_logging: true
+  nuclei_enabled: true
+  nuclei_tags: "cve,misconfig,exposure"
+  subdomain_takeover_check: true
+
+notes: |
+  Program requires custom User-Agent header: "BugBounty-Agent/Researcher-01"
+  Staging environment is under dev.api.example.com.

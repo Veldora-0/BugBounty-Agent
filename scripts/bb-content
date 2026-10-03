@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""
+bb-content — Controlled content discovery and path enumeration wrapper.
+
+Wraps ffuf or native wordlist probing.
+Enforces scope validation and configured rate limits.
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.scope.engine import ScopeEngine, ScopeStatus
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Controlled content discovery with scope enforcement.")
+    parser.add_argument("url", help="Target base URL with FUZZ keyword (e.g. https://api.example.com/FUZZ)")
+    parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
+    parser.add_argument("--wordlist", "-w", required=True, help="Path to wordlist file")
+    parser.add_argument("--rate", "-r", type=int, default=5, help="Requests per second rate limit (default 5)")
+    args = parser.parse_args()
+
+    prog_dir = get_program_dir(args.program)
+    scope_file = os.path.join(prog_dir, "scope", "scope.yaml")
+    if not os.path.isfile(scope_file):
+        print(f"[!] Error: Scope file not found: {scope_file}", file=sys.stderr)
+        sys.exit(2)
+
+    engine = ScopeEngine.from_file(scope_file)
+
+    # 1. SCOPE VERIFICATION
+    # Check base URL without FUZZ
+    base_check_url = args.url.replace("FUZZ", "").rstrip("/")
+    decision = engine.check(base_check_url)
+    if decision.status != ScopeStatus.IN_SCOPE:
+        print(f"[!] REFUSING SCAN: Target URL '{base_check_url}' is OUT OF SCOPE: {decision.reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.isfile(args.wordlist):
+        print(f"[!] Error: Wordlist file '{args.wordlist}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    if not shutil.which("ffuf"):
+        print("[!] ffuf is not installed. Install via: sudo apt install ffuf", file=sys.stderr)
+        sys.exit(1)
+
+    output_file = os.path.join(prog_dir, "scans", f"ffuf_{os.path.basename(base_check_url)}.json")
+
+    cmd = [
+        "ffuf",
+        "-u", args.url,
+        "-w", args.wordlist,
+        "-rate", str(args.rate),
+        "-mc", "200,204,301,302,307,401,403",
+        "-o", output_file,
+        "-of", "json",
+        "-s",
+    ]
+
+    print(f"[*] Starting controlled content fuzzing against: {args.url}")
+    print(f"[*] Rate limit: {args.rate} req/sec | Output: {output_file}")
+
+    try:
+        subprocess.run(cmd, check=True)
+        print(f"[+] Content discovery completed. Results in {output_file}")
+    except KeyboardInterrupt:
+        print("\n[!] Aborted by user.")
+    except Exception as e:
+        print(f"[!] ffuf execution failed: {e}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

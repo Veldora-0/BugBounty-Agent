@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""
+bb-evidence — Evidence Collector and Sanitizer.
+
+Sanitizes sensitive tokens (Bearer, cookies, keys) and stores raw HTTP interactions
+with cryptographic SHA-256 hashes for reproducible vulnerability reports.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.common.evidence import EvidenceStore
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Save and sanitize security research evidence.")
+    parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
+    parser.add_argument("--request-file", help="File containing raw HTTP request")
+    parser.add_argument("--response-file", help="File containing raw HTTP response")
+    parser.add_argument("--note", help="Description of what this evidence demonstrates")
+    parser.add_argument("--json", action="store_true", help="Output evidence metadata as JSON")
+    args = parser.parse_args()
+
+    prog_dir = get_program_dir(args.program)
+    ev_dir = os.path.join(prog_dir, "evidence")
+    store = EvidenceStore(ev_dir)
+
+    req_text = ""
+    if args.request_file and os.path.isfile(args.request_file):
+        with open(args.request_file, "r", encoding="utf-8", errors="replace") as f:
+            req_text = f.read()
+
+    res_text = ""
+    if args.response_file and os.path.isfile(args.response_file):
+        with open(args.response_file, "r", encoding="utf-8", errors="replace") as f:
+            res_text = f.read()
+
+    if not req_text and not res_text:
+        print("[!] Reading interaction from standard input (separated by '--- RESPONSE ---')...")
+        stdin_content = sys.stdin.read()
+        if "--- RESPONSE ---" in stdin_content:
+            parts = stdin_content.split("--- RESPONSE ---", 1)
+            req_text = parts[0].replace("--- REQUEST ---", "").strip()
+            res_text = parts[1].strip()
+        else:
+            req_text = stdin_content
+
+    metadata = {"note": args.note or "Manual evidence capture"}
+    record = store.save_http_capture(req_text, res_text, metadata=metadata)
+
+    if args.json:
+        print(json.dumps(record, indent=2))
+    else:
+        print(f"[+] Evidence preserved successfully!")
+        print(f"    - Evidence ID: {record['evidence_id']}")
+        print(f"    - SHA-256:     {record['sha256']}")
+        print(f"    - Path:        {record['path']}")
+
+
+if __name__ == "__main__":
+    main()

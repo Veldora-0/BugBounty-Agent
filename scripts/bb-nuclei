@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""
+bb-nuclei — Controlled Nuclei Runner and Signal Ingestion.
+
+Treats Nuclei strictly as a SIGNAL SOURCE, NEVER as an automatic confirmed vulnerability.
+Pipeline: Nuclei signal -> Candidate finding -> Independent validation -> Verified Finding.
+Enforces scope before execution and records provenance in program state.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from typing import List
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.findings.lifecycle import FindingLifecycle
+from framework.findings.schema import Finding
+from framework.scope.engine import ScopeEngine, ScopeStatus
+from framework.state.manager import StateManager
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Controlled Nuclei scanner wrapper. Ingests findings as unverified CANDIDATES."
+    )
+    parser.add_argument("target", help="Target URL or host to test")
+    parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
+    parser.add_argument("--tags", "-t", default="cve,misconfig,exposure", help="Template tags to execute")
+    parser.add_argument("--severity", "-s", default="medium,high,critical", help="Severities to check")
+    parser.add_argument("--rate-limit", "-r", type=int, default=5, help="Requests per second limit")
+    args = parser.parse_args()
+
+    prog_dir = get_program_dir(args.program)
+    scope_file = os.path.join(prog_dir, "scope", "scope.yaml")
+    if not os.path.isfile(scope_file):
+        print(f"[!] Error: Scope configuration not found: {scope_file}", file=sys.stderr)
+        sys.exit(2)
+
+    engine = ScopeEngine.from_file(scope_file)
+    state = StateManager(prog_dir)
+
+    # 1. SCOPE VERIFICATION
+    decision = engine.check(args.target)
+    if decision.status != ScopeStatus.IN_SCOPE:
+        print(f"[!] REFUSING SCAN: Target '{args.target}' is OUT OF SCOPE: {decision.reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if not shutil.which("nuclei"):
+        print("[!] Nuclei is not installed. Install via: sudo apt install nuclei", file=sys.stderr)
+        sys.exit(1)
+
+    scans_dir = os.path.join(prog_dir, "scans")
+    output_json = os.path.join(scans_dir, f"nuclei_{args.target.replace('://', '_').replace('/', '_')}.json")
+
+    cmd = [
+        "nuclei",
+        "-u", args.target,
+        "-tags", args.tags,
+        "-severity", args.severity,
+        "-rate-limit", str(args.rate_limit),
+        "-json-export", output_json,
+        "-silent",
+    ]
+
+    print(f"[*] Executing controlled Nuclei scan against: {args.target}")
+    print(f"[*] Tags: {args.tags} | Severities: {args.severity} | Rate: {args.rate_limit} req/s")
+
+    try:
+        subprocess.run(cmd, check=True)
+    except Exception as e:
+        print(f"[!] Nuclei execution finished or encountered error: {e}", file=sys.stderr)
+
+    # Ingest signals as CANDIDATE findings only
+    if os.path.isfile(output_json):
+        candidates_count = 0
+        with open(output_json, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    hit = json.loads(line.strip())
+                    template_id = hit.get("template-id", "unknown-template")
+                    info = hit.get("info", {})
+                    matched_at = hit.get("matched-at", args.target)
+                    vuln_name = info.get("name", template_id)
+                    severity = info.get("severity", "medium").upper()
+                    if severity not in {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"}:
+                        severity = "INFORMATIONAL"
+
+                    # Create Candidate Finding
+                    finding = Finding(
+                        title=f"Potential {vuln_name} via {template_id}",
+                        summary=f"Automated signal from Nuclei template '{template_id}' on {matched_at}.",
+                        affected_asset=args.target,
+                        affected_endpoint=matched_at,
+                        vulnerability_type=vuln_name,
+                        severity=severity,
+                        description=info.get("description", "Identified by automated template matching."),
+                        root_cause=f"Flagged by rule {template_id}. Requires independent manual verification.",
+                        prerequisites="Standard network reachability.",
+                        reproduction_steps=[
+                            f"Run standalone curl matching template '{template_id}' against {matched_at}.",
+                            "Verify that response reproduces without false-positive caching or CDN masks.",
+                        ],
+                        expected_result="Normal application response without vulnerability signature.",
+                        observed_result=f"Matched template pattern: {hit.get('matcher-name', 'status/body match')}",
+                        security_impact=f"Potential security risk if validated. Impact level {severity}.",
+                        remediation=info.get("remediation", "Review vendor advisories and patch component."),
+                        scope_reference=f"Target {args.target} verified in scope ({decision.matched_rule})",
+                        confidence="LOW",  # Strictly unverified signal
+                        lifecycle_state=FindingLifecycle.CANDIDATE,  # NEVER VALIDATED DIRECTLY
+                        provenance={
+                            "tool": "nuclei",
+                            "template": template_id,
+                            "raw_hit": hit,
+                        },
+                    )
+
+                    state.save_finding(finding)
+                    candidates_count += 1
+                except Exception as ex:
+                    print(f"[!] Failed to parse Nuclei hit: {ex}", file=sys.stderr)
+
+        print(f"\n[+] Ingested {candidates_count} raw signals as CANDIDATE findings.")
+        print("[!] REMINDER: These findings are UNVERIFIED CANDIDATES. Delegate to 'bb-validator' for independent proof.")
+    else:
+        print("[*] No signals reported by Nuclei.")
+
+
+if __name__ == "__main__":
+    main()

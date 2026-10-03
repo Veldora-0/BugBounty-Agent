@@ -1,0 +1,85 @@
+# ==============================================================================
+# BugBounty-Agent Repository Git Ignore
+# SENSITIVE RUNTIME DATA, TARGET DATA, AND LOGS MUST REMAIN LOCAL TO KALI
+# ==============================================================================
+
+# Local Runtime Workspace & Program Data
+runtime/
+programs/
+BugBounty-Workspace/
+.workspace/
+*.local.*
+*.local
+
+# Runtime Artifacts & Scan Outputs (Root-anchored so framework/ packages are never ignored)
+/evidence/
+/scans/
+/targets/
+/reports/
+/findings/
+/state/
+/logs/
+
+# Explicitly preserve framework core packages
+!framework/findings/
+!framework/findings/**
+!framework/state/
+!framework/state/**
+*.pcap
+*.cap
+*.har
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Credentials, Secrets, and Tokens
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.pub
+*.token
+*.cookie
+*.session
+*.credentials
+secrets/
+credentials/
+auth/
+
+# Tool-Specific State & Projects
+*.burp
+*.zap
+*.sqlmap
+nuclei-output/
+amass-output/
+subfinder-output/
+ffuf-output/
+katana-output/
+*.subjack
+
+# OS and Environment
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Python Artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+.venv/
+venv/
+ENV/
+env/

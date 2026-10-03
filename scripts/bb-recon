@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""
+bb-recon — Controlled reconnaissance orchestrator.
+
+Wraps passive & active recon tools (subfinder, assetfinder, amass, httpx).
+Enforces strict scope validation before any tool is invoked.
+Updates local program state automatically.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from typing import List, Set
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.common.tools import ToolDetector
+from framework.scope.engine import ScopeEngine, ScopeStatus
+from framework.state.manager import StateManager
+
+
+def run_subfinder(domain: str, output_file: str) -> List[str]:
+    """Runs subfinder if installed."""
+    if not shutil.which("subfinder"):
+        return []
+    cmd = ["subfinder", "-d", domain, "-silent", "-o", output_file]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+        if os.path.exists(output_file):
+            with open(output_file, "r", encoding="utf-8") as f:
+                return [line.strip() for line in f if line.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def run_assetfinder(domain: str, output_file: str) -> List[str]:
+    """Runs assetfinder if installed."""
+    if not shutil.which("assetfinder"):
+        return []
+    cmd = ["assetfinder", "--subs-only", domain]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        hosts = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(hosts))
+        return hosts
+    except Exception:
+        pass
+    return []
+
+
+def run_httpx(hosts: List[str], output_file: str, rps: int = 5, timeout: int = 10) -> List[dict]:
+    """Runs httpx to probe live HTTP services."""
+    if not shutil.which("httpx"):
+        return []
+    
+    input_file = output_file + ".input.tmp"
+    with open(input_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(hosts))
+
+    cmd = [
+        "httpx",
+        "-l", input_file,
+        "-silent",
+        "-json",
+        "-rate-limit", str(rps),
+        "-timeout", str(timeout),
+        "-o", output_file,
+    ]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
+        results = []
+        if os.path.exists(output_file):
+            with open(output_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            results.append(json.loads(line.strip()))
+                        except Exception:
+                            pass
+        return results
+    except Exception:
+        return []
+    finally:
+        if os.path.exists(input_file):
+            os.remove(input_file)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Controlled reconnaissance with mandatory scope filtering.")
+    parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
+    parser.add_argument("--domain", "-d", help="Specific target domain to enumerate (must be in scope)")
+    args = parser.parse_args()
+
+    prog_dir = get_program_dir(args.program)
+    scope_file = os.path.join(prog_dir, "scope", "scope.yaml")
+    if not os.path.isfile(scope_file):
+        print(f"[!] Error: Scope definition not found at {scope_file}", file=sys.stderr)
+        print("[!] Initialize program first with 'bb-init <program>' and configure scope.yaml", file=sys.stderr)
+        sys.exit(1)
+
+    engine = ScopeEngine.from_file(scope_file)
+    state = StateManager(prog_dir)
+
+    # Determine seed domains
+    seed_domains = []
+    if args.domain:
+        decision = engine.check(args.domain)
+        if decision.status != ScopeStatus.IN_SCOPE:
+            print(f"[!] Error: Provided domain '{args.domain}' is not in scope: {decision.reason}", file=sys.stderr)
+            sys.exit(1)
+        seed_domains.append(args.domain)
+    else:
+        # Use domains configured in scope
+        for d in engine.included_domains:
+            clean = d[2:] if d.startswith("*.") else d
+            seed_domains.append(clean)
+
+    print(f"[*] Starting controlled reconnaissance for program: {args.program}")
+    print(f"[*] Seed domains: {seed_domains}")
+
+    recon_dir = os.path.join(prog_dir, "recon")
+    all_discovered: Set[str] = set()
+
+    for dom in seed_domains:
+        print(f"[*] Enumerating passive subdomains for {dom}...")
+        sub_out = os.path.join(recon_dir, f"subfinder_{dom}.txt")
+        found_sub = run_subfinder(dom, sub_out)
+        all_discovered.update(found_sub)
+
+        asset_out = os.path.join(recon_dir, f"assetfinder_{dom}.txt")
+        found_asset = run_assetfinder(dom, asset_out)
+        all_discovered.update(found_asset)
+
+        # Include root itself
+        all_discovered.add(dom)
+
+    print(f"[*] Raw discovered hostnames: {len(all_discovered)}")
+
+    # STRICT SCOPE FILTERING
+    # Never process out-of-scope or ambiguous hosts
+    in_scope_hosts: List[str] = []
+    rejected_count = 0
+
+    for host in all_discovered:
+        decision = engine.check(host)
+        if decision.status == ScopeStatus.IN_SCOPE:
+            in_scope_hosts.append(host)
+            # Record asset in state with provenance
+            state.add_asset({
+                "hostname": host,
+                "root_domain": decision.root_domain,
+                "parent": decision.parent,
+                "depth": decision.depth,
+                "scope_status": decision.status.value,
+                "matched_rule": decision.matched_rule,
+            })
+        else:
+            rejected_count += 1
+
+    print(f"[+] Verified In-Scope Assets: {len(in_scope_hosts)} (Filtered out {rejected_count} out-of-scope targets)")
+
+    # HTTP Probe on verified in-scope hosts
+    if in_scope_hosts and shutil.which("httpx"):
+        print(f"[*] Probing HTTP services on {len(in_scope_hosts)} in-scope hosts via httpx...")
+        httpx_out = os.path.join(recon_dir, "httpx_live.json")
+        live_services = run_httpx(in_scope_hosts, httpx_out)
+        print(f"[+] Discovered {len(live_services)} responsive HTTP services.")
+
+        # Update endpoints & technologies in state
+        for svc in live_services:
+            url = svc.get("url")
+            if url:
+                state.add_endpoint({
+                    "url": url,
+                    "method": "GET",
+                    "status_code": svc.get("status_code"),
+                    "title": svc.get("title", ""),
+                    "webserver": svc.get("webserver", ""),
+                    "content_length": svc.get("content_length"),
+                })
+            host = svc.get("input") or svc.get("host")
+            techs = svc.get("technologies", [])
+            if host and techs:
+                state.set_technologies(host, techs)
+
+    print(f"[+] Reconnaissance phase complete. State updated in {prog_dir}/state/")
+
+
+if __name__ == "__main__":
+    main()

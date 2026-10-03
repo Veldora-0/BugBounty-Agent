@@ -1,0 +1,91 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "bb-hunter",
+  "subagent_depth": 3,
+  "agents": {
+    "bb-hunter": {
+      "description": "Primary orchestrator for bug bounty security research workflows."
+    },
+    "bb-scope": {
+      "description": "Strict scope and authorization verification specialist (offline logic only, no target network activity)."
+    },
+    "bb-recon": {
+      "description": "Controlled reconnaissance and passive/active asset discovery specialist."
+    },
+    "bb-asset": {
+      "description": "Asset normalization, hierarchy modeling, and correlation specialist."
+    },
+    "bb-web": {
+      "description": "Web application security analysis specialist."
+    },
+    "bb-js": {
+      "description": "JavaScript analysis and route extraction specialist."
+    },
+    "bb-api": {
+      "description": "REST, GraphQL, and WebSocket API security specialist."
+    },
+    "bb-authz": {
+      "description": "Authorization vulnerability specialist (BOLA/IDOR, BFLA, multi-tenant isolation)."
+    },
+    "bb-injection": {
+      "description": "Safe, non-destructive input and injection testing specialist."
+    },
+    "bb-business-logic": {
+      "description": "Business logic and workflow security specialist."
+    },
+    "bb-cloud": {
+      "description": "Cloud configuration and storage bucket exposure specialist."
+    },
+    "bb-validator": {
+      "description": "Independent adversarial finding validator and false-positive eliminator."
+    },
+    "bb-dedup": {
+      "description": "Finding and test deduplication specialist."
+    },
+    "bb-report": {
+      "description": "Professional vulnerability disclosure report generator."
+    }
+  },
+  "permissions": [
+    {
+      "scope": "scripts/bb-scope-check",
+      "action": "allow",
+      "description": "Permit local scope verification command without prompt"
+    },
+    {
+      "scope": "scripts/bb-target-normalize",
+      "action": "allow",
+      "description": "Permit local normalization utility without prompt"
+    },
+    {
+      "scope": "scripts/bb-init",
+      "action": "allow",
+      "description": "Permit workspace initialization without prompt"
+    },
+    {
+      "scope": "scripts/bb-evidence",
+      "action": "allow",
+      "description": "Permit evidence collection without prompt"
+    },
+    {
+      "scope": "scripts/bb-recon",
+      "action": "ask",
+      "description": "Require human confirmation before launching active reconnaissance"
+    },
+    {
+      "scope": "scripts/bb-http",
+      "action": "ask",
+      "description": "Require human confirmation for HTTP testing interactions"
+    },
+    {
+      "scope": "scripts/bb-nuclei",
+      "action": "ask",
+      "description": "Require human confirmation before executing Nuclei scanning"
+    },
+    {
+      "scope": "scripts/bb-content",
+      "action": "ask",
+      "description": "Require human confirmation before launching directory fuzzing"
+    }
+  ]
+}

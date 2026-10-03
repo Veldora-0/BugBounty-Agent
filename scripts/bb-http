@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""
+bb-http — Controlled, scope-enforcing HTTP client with automatic evidence capture.
+
+Never fires a request without verifying that the target URL is IN_SCOPE.
+Sanitizes credentials and captures request/response transactions for reproducible evidence.
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+import urllib.parse
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.common.evidence import EvidenceStore
+from framework.scope.engine import ScopeEngine, ScopeStatus
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Scope-enforced HTTP client with evidence logging.")
+    parser.add_argument("url", help="Target URL to request")
+    parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
+    parser.add_argument("--method", "-m", default="GET", choices=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"])
+    parser.add_argument("--header", "-H", action="append", default=[], help="Header in 'Name: Value' format")
+    parser.add_argument("--data", "-d", help="HTTP request body data")
+    parser.add_argument("--timeout", type=int, default=15, help="Timeout in seconds (default 15)")
+    parser.add_argument("--no-evidence", action="store_true", help="Skip saving evidence capture")
+    parser.add_argument("--json", action="store_true", help="Output result as JSON")
+    args = parser.parse_args()
+
+    prog_dir = get_program_dir(args.program)
+    scope_file = os.path.join(prog_dir, "scope", "scope.yaml")
+    if not os.path.isfile(scope_file):
+        print(f"[!] Error: Scope configuration not found: {scope_file}", file=sys.stderr)
+        sys.exit(2)
+
+    engine = ScopeEngine.from_file(scope_file)
+
+    # 1. SCOPE VERIFICATION (Mandatory before network interaction)
+    decision = engine.check(args.url)
+    if decision.status != ScopeStatus.IN_SCOPE:
+        print(f"[!] REFUSING REQUEST: Target '{args.url}' is NOT in scope!", file=sys.stderr)
+        print(f"[!] Reason: {decision.reason} ({decision.status.value})", file=sys.stderr)
+        sys.exit(1)
+
+    # 2. BUILD REQUEST
+    headers = {
+        "User-Agent": "BugBounty-Agent/1.0 (Authorized Security Research)",
+    }
+    for h in args.header:
+        if ":" in h:
+            k, v = h.split(":", 1)
+            headers[k.strip()] = v.strip()
+
+    data_bytes = args.data.encode("utf-8") if args.data else None
+    req = urllib.request.Request(args.url, data=data_bytes, headers=headers, method=args.method)
+
+    raw_req_headers = "\n".join(f"{k}: {v}" for k, v in headers.items())
+    raw_req = f"{args.method} {args.url} HTTP/1.1\n{raw_req_headers}\n\n{args.data or ''}"
+
+    # 3. EXECUTE REQUEST
+    status_code = None
+    response_body = ""
+    response_headers = ""
+    error_msg = None
+    start_time = time.time()
+
+    try:
+        with urllib.request.urlopen(req, timeout=args.timeout) as resp:
+            status_code = resp.status
+            response_body = resp.read().decode("utf-8", errors="replace")
+            response_headers = str(resp.headers)
+    except urllib.error.HTTPError as e:
+        status_code = e.code
+        response_body = e.read().decode("utf-8", errors="replace")
+        response_headers = str(e.headers)
+    except Exception as e:
+        error_msg = str(e)
+
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    raw_res = f"HTTP/1.1 {status_code}\n{response_headers}\n\n{response_body}" if status_code else f"Error: {error_msg}"
+
+    # 4. CAPTURE EVIDENCE
+    evidence_id = None
+    if not args.no_evidence:
+        ev_dir = os.path.join(prog_dir, "evidence")
+        store = EvidenceStore(ev_dir)
+        ev_record = store.save_http_capture(
+            raw_req,
+            raw_res,
+            metadata={"target_url": args.url, "method": args.method, "status_code": status_code},
+        )
+        evidence_id = ev_record["evidence_id"]
+
+    # 5. OUTPUT
+    if args.json:
+        result = {
+            "url": args.url,
+            "method": args.method,
+            "status_code": status_code,
+            "elapsed_ms": elapsed_ms,
+            "error": error_msg,
+            "evidence_id": evidence_id,
+            "body": response_body[:2000],  # preview
+        }
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"[*] {args.method} {args.url} -> {status_code} ({elapsed_ms}ms)")
+        if evidence_id:
+            print(f"[+] Evidence preserved: {evidence_id}")
+        if response_body:
+            print("\n--- Response Body Preview ---")
+            print(response_body[:1000])
+
+
+if __name__ == "__main__":
+    main()

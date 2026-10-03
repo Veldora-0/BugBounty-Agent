@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""
+bb-js — JavaScript Analysis and Endpoint Extraction Tool.
+
+Parses client-side JavaScript bundles to extract API endpoints, parameters,
+GraphQL queries, and client-side routing definitions.
+Enforces scope checks when fetching remote scripts.
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.request
+from typing import Dict, List, Set
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.scope.engine import ScopeEngine, ScopeStatus
+
+
+# Regex patterns for endpoint and route discovery
+_ROUTE_PATTERNS = [
+    re.compile(r"""(?:["'])(/(?:api|v[0-9]|rest|graphql|oauth|auth|user|admin|internal)/[a-zA-Z0-9_\-\./?=&%]+)(?:["'])"""),
+    re.compile(r"""(?:path|endpoint|url|href|route)\s*[:=]\s*["'](/[a-zA-Z0-9_\-\./]+)["']"""),
+    re.compile(r"""(?:fetch|axios(?:\.get|\.post)?)\s*\(\s*["']([^"']+)["']"""),
+]
+
+# Sensitive pattern indicators (flagged for human review, never auto-classified as vuln)
+_INTERESTING_KEYWORDS = [
+    "apikey", "api_key", "secret", "token", "jwt", "authorization",
+    "bearer", "aws_", "s3_", "client_secret", "graphql", "websocket"
+]
+
+
+def extract_js_intelligence(content: str) -> Dict[str, List[str]]:
+    """Extracts endpoints, parameters, and sensitive strings from JS text."""
+    endpoints: Set[str] = set()
+    for pat in _ROUTE_PATTERNS:
+        for match in pat.findall(content):
+            if isinstance(match, tuple):
+                match = match[0]
+            endpoints.add(match)
+
+    interesting_lines: List[str] = []
+    lines = content.splitlines()
+    for line in lines[:5000]:  # limit scan lines
+        low = line.lower()
+        if any(kw in low for kw in _INTERESTING_KEYWORDS):
+            clean_line = line.strip()[:200]
+            if clean_line not in interesting_lines:
+                interesting_lines.append(clean_line)
+
+    return {
+        "endpoints": sorted(list(endpoints)),
+        "interesting_indicators": interesting_lines[:50],
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Analyze JavaScript bundles for attack surface mapping.")
+    parser.add_argument("source", help="URL or local path to JavaScript file")
+    parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON")
+    args = parser.parse_args()
+
+    prog_dir = get_program_dir(args.program)
+    scope_file = os.path.join(prog_dir, "scope", "scope.yaml")
+    if not os.path.isfile(scope_file):
+        print(f"[!] Error: Scope configuration not found: {scope_file}", file=sys.stderr)
+        sys.exit(2)
+
+    content = ""
+    # Check if remote URL or local file
+    if args.source.startswith(("http://", "https://")):
+        engine = ScopeEngine.from_file(scope_file)
+        decision = engine.check(args.source)
+        if decision.status != ScopeStatus.IN_SCOPE:
+            print(f"[!] REFUSING FETCH: JS URL '{args.source}' is OUT OF SCOPE: {decision.reason}", file=sys.stderr)
+            sys.exit(1)
+
+        req = urllib.request.Request(args.source, headers={"User-Agent": "BugBounty-Agent/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                content = resp.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            print(f"[!] Error fetching JS: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        if not os.path.isfile(args.source):
+            print(f"[!] Error: Local file '{args.source}' not found.", file=sys.stderr)
+            sys.exit(1)
+        with open(args.source, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+
+    intel = extract_js_intelligence(content)
+
+    # Save to program's js directory
+    out_filename = f"js_intel_{os.path.basename(args.source).split('?')[0]}.json"
+    out_path = os.path.join(prog_dir, "js", out_filename)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump({"source": args.source, **intel}, f, indent=2)
+
+    if args.json:
+        print(json.dumps(intel, indent=2))
+    else:
+        print(f"[*] Discovered {len(intel['endpoints'])} potential endpoints/routes:")
+        for ep in intel["endpoints"]:
+            print(f"    - {ep}")
+        print(f"\n[*] Found {len(intel['interesting_indicators'])} potential indicators for manual review.")
+        print(f"[+] Intelligence saved to: {out_path}")
+
+
+if __name__ == "__main__":
+    main()

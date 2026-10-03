@@ -1,0 +1,29 @@
+# ==============================================================================
+# BugBounty-Agent Global Configuration Example
+# Place this at ~/.config/bugbounty-agent/config.yaml or BUGBOUNTY_CONFIG
+# ==============================================================================
+
+workspace:
+  # Base directory for local-only target data, scans, evidence, and state
+  root_dir: "~/BugBounty-Workspace"
+
+defaults:
+  rate_limit_rps: 5
+  concurrency: 4
+  request_timeout_seconds: 15
+  user_agent: "BugBounty-Agent/1.0 (Authorized Security Research)"
+
+tooling:
+  subfinder_path: "subfinder"
+  assetfinder_path: "assetfinder"
+  httpx_path: "httpx"
+  ffuf_path: "ffuf"
+  nuclei_path: "nuclei"
+  nuclei_rate_limit: 5
+
+safety:
+  # Hard architectural controls: NEVER enable destructive operations
+  allow_destructive: false
+  allow_dos: false
+  allow_credential_stuffing: false
+  require_human_confirmation_for_active_scans: true

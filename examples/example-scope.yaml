@@ -1,0 +1,61 @@
+# ==============================================================================
+# Example Scope: Acme Corp Bug Bounty Program
+# Demonstrates inclusion rules, recursive subdomains, exclusions, and boundaries
+# ==============================================================================
+
+program:
+  name: "acme-corp"
+  platform: "HackerOne"
+
+authorization:
+  source: "https://hackerone.com/acme-corp"
+  verified_at: "2026-10-01T12:00:00Z"
+  policy_notes: "Safe harbor applies to in-scope testing. No automated vulnerability reports."
+
+targets:
+  domains:
+    - "acme.com"
+    - "*.acmeservices.net"
+
+  urls:
+    - "https://partner-portal.acmepartner.org/api/"
+
+  cidrs:
+    - "198.51.100.0/24"
+
+  recursive_subdomains:
+    enabled: true
+    # 0 = unlimited depth. E.g. dev.api.acme.com and v1.dev.api.acme.com are in scope
+    max_depth: 0
+
+out_of_scope:
+  domains:
+    # Explicit exclusions override all inclusions.
+    # Any host ending in .corp.acme.com or .admin.acme.com is strictly out of scope!
+    - "corp.acme.com"
+    - "admin.acme.com"
+    - "payment-gateway.acme.com"
+
+  urls:
+    - "https://acme.com/auth/logout"
+    - "https://acme.com/api/delete-user"
+
+  cidrs:
+    - "198.51.100.128/28"
+
+testing:
+  passive_recon: true
+  active_recon: true
+  authenticated_testing: false
+  destructive_testing: false
+  denial_of_service: false
+  credential_attacks: false
+
+limits:
+  requests_per_second: 5
+  concurrency: 4
+  timeout_seconds: 15
+  max_retries: 2
+
+reporting:
+  auto_submit: false

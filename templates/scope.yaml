@@ -1,0 +1,73 @@
+# ==============================================================================
+# BugBounty-Agent Scope Definition Template
+# Strict authorization boundaries, recursion controls, and safety limits
+# ==============================================================================
+
+program:
+  name: "example-program"
+  platform: "HackerOne" # Bugcrowd, Intigriti, SynAck, Direct, etc.
+
+authorization:
+  source: "https://hackerone.com/example-program"
+  verified_at: "2026-10-01T00:00:00Z"
+  researcher_handle: "sec-researcher"
+  policy_notes: "Follow standard disclosure rules. Strictly no DoS, no credential spraying."
+
+targets:
+  # Included domains. Supports exact domains ('example.com') or wildcards ('*.example.com').
+  # Note: A bare root domain 'example.com' only includes subdomains if recursive_subdomains is enabled.
+  domains:
+    - "example.com"
+    - "*.example.net"
+
+  # Explicit included URLs or URL prefixes
+  urls:
+    - "https://service.example.org/api/v1/"
+
+  # Included CIDR IP networks
+  cidrs:
+    - "192.168.100.0/24"
+
+  # Recursive subdomain exploration settings
+  recursive_subdomains:
+    # Set to true to permit discovery of arbitrarily nested subdomains under included domains
+    enabled: true
+    # max_depth defines how many DNS labels deep subdomains may be tested.
+    # 0 = unlimited depth (e.g. a.b.c.dev.api.example.com allowed)
+    # 1 = direct subdomains only (api.example.com)
+    # 2 = up to 2 levels (dev.api.example.com)
+    max_depth: 0
+
+out_of_scope:
+  # Explicit exclusions ALWAYS override inclusions.
+  # Subdomains of an excluded domain are also automatically excluded.
+  domains:
+    - "admin.example.com"
+    - "internal.example.org"
+    - "mail.example.com"
+
+  urls:
+    - "https://example.com/logout"
+    - "https://example.com/delete-account"
+
+  cidrs:
+    - "192.168.100.128/28"
+
+testing:
+  passive_recon: true
+  active_recon: true
+  authenticated_testing: false
+  # Safety boundaries: MUST NEVER BE TRUE FOR AUTOMATED TESTING
+  destructive_testing: false
+  denial_of_service: false
+  credential_attacks: false
+
+limits:
+  requests_per_second: 5
+  concurrency: 4
+  timeout_seconds: 15
+  max_retries: 2
+
+reporting:
+  # Framework never automatically submits reports. Always requires human review.
+  auto_submit: false

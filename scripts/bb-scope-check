@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""
+bb-scope-check — Strict scope and authorization validation utility.
+
+Validates targets against program scope definition.
+Returns exit code 0 if IN_SCOPE, 1 if OUT_OF_SCOPE, 2 if AMBIGUOUS.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+# Ensure repository root is on sys.path
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.scope.engine import ScopeEngine, ScopeStatus
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Verify target authorization against program scope definition."
+    )
+    parser.add_argument("target", nargs="?", help="Target domain, URL, or IP to verify")
+    parser.add_argument("--file", "-f", help="File containing list of targets (one per line)")
+    parser.add_argument("--scope", "-s", required=True, help="Path to scope.yaml definition")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.scope):
+        print(f"[!] Error: Scope file '{args.scope}' not found.", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        engine = ScopeEngine.from_file(args.scope)
+    except Exception as e:
+        print(f"[!] Error parsing scope file: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    targets = []
+    if args.target:
+        targets.append(args.target.strip())
+    elif args.file:
+        if not os.path.isfile(args.file):
+            print(f"[!] Error: Target file '{args.file}' not found.", file=sys.stderr)
+            sys.exit(2)
+        with open(args.file, "r", encoding="utf-8") as f:
+            targets = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    else:
+        # Read from stdin if piped
+        if not sys.stdin.isatty():
+            targets = [line.strip() for line in sys.stdin if line.strip()]
+        else:
+            parser.print_help()
+            sys.exit(2)
+
+    results = []
+    has_out_of_scope = False
+    has_ambiguous = False
+
+    for target in targets:
+        decision = engine.check(target)
+        results.append(decision.to_dict())
+
+        if decision.status == ScopeStatus.OUT_OF_SCOPE:
+            has_out_of_scope = True
+        elif decision.status == ScopeStatus.AMBIGUOUS:
+            has_ambiguous = True
+
+        if not args.json:
+            color = {
+                ScopeStatus.IN_SCOPE: "\033[92m[IN_SCOPE]\033[0m",
+                ScopeStatus.OUT_OF_SCOPE: "\033[91m[OUT_OF_SCOPE]\033[0m",
+                ScopeStatus.AMBIGUOUS: "\033[93m[AMBIGUOUS]\033[0m",
+            }.get(decision.status, "[UNKNOWN]")
+
+            depth_str = f" (depth: {decision.depth})" if decision.depth is not None else ""
+            rule_str = f" [rule: {decision.matched_rule}]" if decision.matched_rule else ""
+            print(f"{color} {target}{depth_str} — {decision.reason}{rule_str}")
+
+    if args.json:
+        print(json.dumps(results if len(results) > 1 else (results[0] if results else {}), indent=2))
+
+    # Exit code semantics
+    if has_ambiguous:
+        sys.exit(2)
+    elif has_out_of_scope:
+        sys.exit(1)
+    else:
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
