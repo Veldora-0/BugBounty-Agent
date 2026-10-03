@@ -1,0 +1,72 @@
+# ==============================================================================
+# BugBounty-Agent — Wordlist Registry
+# Manages wordlists for discovery, fuzzing, and parameter analysis.
+# Only downloads or requests specific wordlists when required for workflows.
+# ==============================================================================
+
+version: "1.0.0"
+
+default_locations:
+  kali_system: "/usr/share/seclists"
+  user_local: "~/.local/share/bugbounty-agent/wordlists"
+
+wordlists:
+  - id: subdomains-top5000
+    category: dns
+    name: "Subdomains Top 5000"
+    description: "Curated list of the top 5,000 most common subdomain names."
+    source_url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt"
+    relative_path: "dns/subdomains-top5000.txt"
+    kali_path: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+    lines: 5000
+    hash_sha256: null
+
+  - id: subdomains-top20000
+    category: dns
+    name: "Subdomains Top 20,000"
+    description: "Standard list of the top 20,000 subdomain names for active brute-forcing."
+    source_url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-20000.txt"
+    relative_path: "dns/subdomains-top20000.txt"
+    kali_path: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt"
+    lines: 20000
+    hash_sha256: null
+
+  - id: web-content-raft-small
+    category: content
+    name: "RAFT Web Directories Small"
+    description: "High-signal directory wordlist for content discovery (lower false positive rate)."
+    source_url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-small-directories.txt"
+    relative_path: "web/raft-small-directories.txt"
+    kali_path: "/usr/share/seclists/Discovery/Web-Content/raft-small-directories.txt"
+    lines: 17800
+    hash_sha256: null
+
+  - id: api-endpoints-common
+    category: api
+    name: "API Endpoints Common"
+    description: "Common REST and API endpoint route paths."
+    source_url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common-api-endpoints.txt"
+    relative_path: "api/common-api-endpoints.txt"
+    kali_path: "/usr/share/seclists/Discovery/Web-Content/common-api-endpoints.txt"
+    lines: 1000
+    hash_sha256: null
+
+  - id: parameters-top-burp
+    category: parameters
+    name: "Burp Parameter Names"
+    description: "Common HTTP query and body parameter names for parameter discovery."
+    source_url: "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/burp-parameter-names.txt"
+    relative_path: "parameters/burp-parameter-names.txt"
+    kali_path: "/usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt"
+    lines: 6453
+    hash_sha256: null
+
+  - id: dns-resolvers-trusted
+    category: dns
+    name: "Trusted Public DNS Resolvers"
+    description: "Curated reliable public resolvers for massdns / shuffledns operations."
+    source_url: "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers-trusted.txt"
+    relative_path: "dns/resolvers-trusted.txt"
+    kali_path: null
+    lines: 100
+    hash_sha256: null

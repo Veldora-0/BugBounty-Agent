@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""
+bb-update — Tool Version Inspection and Safe Update Utility.
+
+Checks installed tools against registry minimums and official release channels.
+Provides safe update planning without blind blanket upgrades.
+"""
+
+import argparse
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.tools.registry import ToolRegistry
+from framework.tools.updater import ToolUpdater
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Inspect and update installed security research tools.")
+    parser.add_argument("tool", nargs="?", help="Specific tool to update")
+    parser.add_argument("--check", action="store_true", help="Check for available updates without applying")
+    parser.add_argument("--all", action="store_true", help="Update all outdated tools")
+    args = parser.parse_args()
+
+    registry = ToolRegistry()
+    updater = ToolUpdater(registry)
+
+    if args.check or (not args.tool and not args.all):
+        print("[*] Checking for outdated security tools...")
+        updates = updater.check_updates()
+
+        if not updates:
+            print("[+] All installed tools are up-to-date with registry minimum requirements.")
+            return
+
+        print(f"\n[!] Outdated Tools Detected ({len(updates)}):")
+        print(f"    {'Tool':<16} {'Current':<12} {'Required':<12} {'Method'}")
+        print(f"    {'-'*16} {'-'*12} {'-'*12} {'-'*16}")
+        for u in updates:
+            print(f"    {u['tool']:<16} {u['current_version']:<12} {u['min_version']:<12} {u['install_method']}")
+
+        print("\nRun 'bb-update <tool>' or 'bb-update --all' to apply verified updates.")
+        return
+
+    targets = []
+    if args.tool:
+        targets.append(args.tool.strip().lower())
+    elif args.all:
+        updates = updater.check_updates()
+        targets = [u["tool"] for u in updates]
+
+    for tool_name in targets:
+        print(f"[*] Updating {tool_name}...")
+        res = updater.update_tool(tool_name)
+        if res.get("success"):
+            print(f"[+] Successfully updated {tool_name} to version {res.get('version')}!")
+        else:
+            print(f"[!] Update failed for {tool_name}: {res.get('error')}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""
+bb-doctor — System Health and Diagnostic Utility for BugBounty-Agent.
+
+Inspects system dependencies, security tools, API providers, and runtime integrity.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.tools.doctor import SystemDoctor
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Comprehensive BugBounty-Agent environment health check.")
+    parser.add_argument("--json", action="store_true", help="Output raw diagnostics in JSON")
+    parser.add_argument("--category", choices=[
+        "system", "dependencies", "tools", "providers", "browser", "wordlists", "configuration", "scope_engine", "opencode_integration"
+    ], help="Inspect only a specific diagnostic category")
+    args = parser.parse_args()
+
+    doctor = SystemDoctor()
+    diag = doctor.run_full_diagnosis()
+
+    if args.category:
+        diag = {args.category: diag.get(args.category, {})}
+
+    if args.json:
+        print(json.dumps(diag, indent=2))
+        return
+
+    print("==============================================================================")
+    print("                      BUGBOUNTY-AGENT SYSTEM DIAGNOSTICS                      ")
+    print("==============================================================================")
+
+    # 1. System
+    sys_info = diag.get("system", {})
+    print(f"\n[+] SYSTEM:")
+    print(f"    - OS / Arch:         {sys_info.get('os')} ({sys_info.get('architecture')})")
+    print(f"    - Python Version:    {sys_info.get('python_version')}")
+    print(f"    - Workspace Root:    {sys_info.get('workspace_root')}")
+
+    # 2. Dependencies
+    dep_info = diag.get("dependencies", {})
+    print(f"\n[+] DEPENDENCIES:")
+    for dep, ddata in dep_info.items():
+        status = "[OK]     " if ddata.get("installed") else "[MISSING]"
+        path_str = f"({ddata.get('path')})" if ddata.get('path') else ""
+        print(f"    {status} {dep:<12} {path_str}")
+
+    # 3. Security Tools
+    tools_section = diag.get("tools", {})
+    tools_info = tools_section.get("details", {})
+    print(f"\n[+] SECURITY TOOLS ({len(tools_info)} Registered):")
+    print(f"    {'Tool':<16} {'Status':<14} {'Version':<14} {'Tier':<16} {'Category'}")
+    print(f"    {'-'*16} {'-'*14} {'-'*14} {'-'*16} {'-'*20}")
+
+    for name, tdata in tools_info.items():
+        st = tdata.get("status", "UNKNOWN")
+        st_label = f"[{st}]"
+        ver = tdata.get("version", "none")
+        tier = tdata.get("tier", "")
+        cat = tdata.get("category", "")
+        print(f"    {name:<16} {st_label:<14} {ver:<14} {tier:<16} {cat}")
+
+    # 4. API Providers
+    providers = diag.get("providers", {})
+    print(f"\n[+] API PROVIDERS & CREDENTIALS:")
+    for pid, pdata in providers.items():
+        st = "[CONFIGURED]" if pdata.get("configured") else "[NOT SET]   "
+        cfg_vars = ", ".join(pdata.get("configured_vars", []))
+        miss_vars = ", ".join(pdata.get("missing_vars", []))
+        details = f"(Active: {cfg_vars})" if cfg_vars else f"(Optional: {miss_vars})"
+        print(f"    {st} {pdata.get('name'):<40} {details}")
+
+    # 5. Browser & Wordlists
+    browser = diag.get("browser", {})
+    wordlists = diag.get("wordlists", {})
+    print(f"\n[+] BROWSER & WORDLISTS:")
+    print(f"    - Playwright Environment: [{browser.get('status')}]")
+    print(f"    - Wordlists Status:       [{wordlists.get('status')}] (Kali: {wordlists.get('kali_seclists')})")
+
+    # 6. Scope Engine & OpenCode Integration
+    scope_eng = diag.get("scope_engine", {})
+    opencode = diag.get("opencode_integration", {})
+    print(f"\n[+] FRAMEWORK & OPENCODE INTEGRATION:")
+    print(f"    - Scope Engine:           [{scope_eng.get('status')}]")
+    print(f"    - OpenCode Agents:        [{opencode.get('status')}] ({opencode.get('agent_count')} Agents, {opencode.get('skill_count')} Skills)")
+
+    print("\n==============================================================================")
+    print("Run 'bb-install <tool>' to install missing tools on demand.")
+    print("Configure credentials in ~/.config/bugbounty-agent/secrets.env (never in Git).")
+    print("==============================================================================")
+
+
+if __name__ == "__main__":
+    main()

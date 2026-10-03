@@ -86,6 +86,21 @@
       "scope": "scripts/bb-content",
       "action": "ask",
       "description": "Require human confirmation before launching directory fuzzing"
+    },
+    {
+      "scope": "scripts/bb-doctor",
+      "action": "allow",
+      "description": "Permit system diagnostics and tool health check without prompt"
+    },
+    {
+      "scope": "scripts/bb-install",
+      "action": "ask",
+      "description": "Require human confirmation before running on-demand tool installation"
+    },
+    {
+      "scope": "scripts/bb-update",
+      "action": "ask",
+      "description": "Require human confirmation before upgrading security tools"
     }
   ]
 }

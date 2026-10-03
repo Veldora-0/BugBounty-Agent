@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""
+bb-install — Safe On-Demand Security Tool Installer.
+
+Installs approved tools from config/tools.yaml.
+Supports single tool installs (bb-install katana) or capability-driven installs (bb-install --required-for web-crawling).
+"""
+
+import argparse
+import os
+import sys
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.tools.capability import CapabilityGraph
+from framework.tools.installer import InstallerSecurityError, ToolInstaller
+from framework.tools.registry import ToolRegistry
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Safe, on-demand tool installer for BugBounty-Agent.")
+    parser.add_argument("tool", nargs="?", help="Name of the tool to install (e.g. katana, ffuf, subfinder)")
+    parser.add_argument("--required-for", help="Install preferred tool for a capability (e.g. crawling, xss-analysis)")
+    parser.add_argument("--dry-run", action="store_true", help="Display the installation plan without executing commands")
+    args = parser.parse_args()
+
+    registry = ToolRegistry()
+    installer = ToolInstaller(registry)
+    cap_graph = CapabilityGraph(registry)
+
+    target_tools = []
+    if args.tool:
+        target_tools.append(args.tool.strip().lower())
+    elif args.required_for:
+        cap_tools = cap_graph.get_tools_for_capability(args.required_for)
+        if not cap_tools:
+            print(f"[!] No tools registered for capability: {args.required_for}", file=sys.stderr)
+            sys.exit(1)
+        target_tools.append(cap_tools[0].name.lower())
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+    for tool_name in target_tools:
+        tool = registry.get_tool(tool_name)
+        if not tool:
+            print(f"[!] Error: '{tool_name}' is not an approved tool in the framework registry.", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"[*] Preparing on-demand installation for: {tool.name}")
+        print(f"    - Category:     {tool.category}")
+        print(f"    - Tier:         {tool.tier}")
+        print(f"    - Capabilities: {', '.join(tool.capabilities)}")
+
+        try:
+            plan = installer.plan_install(tool.name)
+            print(f"    - Method:       {plan.method}")
+            print(f"    - Command:      {' '.join(plan.command)}")
+            print(f"    - Target Path:  {plan.target_path}")
+
+            if args.dry_run:
+                print(f"[+] Dry run complete. No changes made.")
+                continue
+
+            print(f"[*] Executing installation...")
+            res = installer.execute_install(tool.name, dry_run=False)
+
+            if res.get("success"):
+                if res.get("already_installed"):
+                    print(f"[+] Tool '{tool.name}' is already installed (version: {res.get('version')}) at {res.get('path')}")
+                else:
+                    print(f"[+] Successfully installed and verified '{tool.name}' (version: {res.get('version')})!")
+                    print(f"    Binary location: {res.get('path')}")
+            else:
+                print(f"[!] Installation failed: {res.get('error')}", file=sys.stderr)
+                sys.exit(2)
+
+        except InstallerSecurityError as e:
+            print(f"[!] Security check failed: {e}", file=sys.stderr)
+            sys.exit(2)
+        except Exception as e:
+            print(f"[!] Unexpected error during installation: {e}", file=sys.stderr)
+            sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

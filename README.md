@@ -138,15 +138,161 @@ pip install pyyaml pytest
 python -m pytest -v
 ```
 
-### 3. Kali Linux Tooling Integration (Optional)
-Install standard reconnaissance utilities:
+## Supported Security Tools Catalog
+
+BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`config/tools.yaml`](config/tools.yaml). Tools are organized by operational tiers (**CORE**, **SPECIALIST**, **PROVIDER-BACKED**, **OPTIONAL**, **LEGACY**) and mapped to specific research capabilities.
+
+### Master Tools Reference Table
+
+| Tool | Category | Purpose | Tier | API Key | Auto-Install | Setup |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **subfinder** | Subdomain Enumeration | Passive subdomain discovery via 40+ datasets | CORE | Optional Providers | Yes | [subfinder.md](docs/tools/subfinder.md) |
+| **amass** | Asset Discovery | In-depth attack surface mapping & ASN correlation | CORE | Optional Providers | Yes | [subfinder.md](docs/tools/subfinder.md) |
+| **assetfinder** | Subdomain Enumeration | Fast passive subdomain scraping | CORE | None | Yes | Native CLI |
+| **chaos** | Asset Discovery | ProjectDiscovery indexed public DNS dataset client | PROVIDER-BACKED | Required | Yes | [chaos.md](docs/tools/chaos.md) |
+| **dnsx** | DNS | Multi-purpose DNS resolver & wildcard filter | CORE | None | Yes | Native CLI |
+| **shuffledns** | DNS | High-speed active subdomain bruteforce wrapper | CORE | None | Yes | Native CLI |
+| **massdns** | DNS | High-performance raw DNS stub resolver engine | CORE | None | Yes | Native CLI |
+| **alterx** | Subdomain Enumeration | Subdomain wordlist permutation generator | CORE | None | Yes | Native CLI |
+| **dnsgen** | Subdomain Enumeration | Python wordlist alteration generator | SPECIALIST | None | Yes | Native CLI |
+| **httpx** | HTTP Probing | Live service probe, tech stack & title grabber | CORE | None | Yes | Native CLI |
+| **tlsx** | TLS / Network | TLS certificate intelligence & SAN extractor | CORE | None | Yes | Native CLI |
+| **cdncheck** | Cloud Intelligence | Identifies CDN, WAF, and Cloud provider IP ranges | CORE | None | Yes | Native CLI |
+| **mapcidr** | Pipeline Utility | Subnetting, slicing, and CIDR range handling | CORE | None | Yes | Native CLI |
+| **naabu** | Port Discovery | Fast SYN/CONNECT port scanner | CORE | None | Yes | Native CLI |
+| **urlfinder** | URL Discovery | Passive URL and endpoint discovery | CORE | Optional Providers | Yes | [subfinder.md](docs/tools/subfinder.md) |
+| **katana** | Web Crawling | Next-gen crawling engine with headless JS support | CORE | None | Yes | Native CLI |
+| **gau** | URL Discovery | GetAllUrls - Historical archive URL aggregator | SPECIALIST | None | Yes | Native CLI |
+| **waybackurls** | URL Discovery | Wayback Machine URL harvester | SPECIALIST | None | Yes | Native CLI |
+| **ffuf** | Content Discovery | Fast web, vhost, and parameter fuzzer | CORE | None | Yes | Native CLI |
+| **feroxbuster** | Content Discovery | Fast recursive content scanner written in Rust | SPECIALIST | None | Yes | Native CLI |
+| **dirsearch** | Content Discovery | Python web path scanner | SPECIALIST | None | Yes | Native CLI |
+| **wfuzz** | Content Discovery | Web application fuzzer (legacy fallback) | LEGACY | None | No | Native CLI |
+| **hakrawler** | Web Crawling | Lightweight web crawler for endpoint extraction | SPECIALIST | None | Yes | Native CLI |
+| **gospider** | Web Crawling | Fast spider with automated JavaScript link parsing | SPECIALIST | None | Yes | Native CLI |
+| **arjun** | Parameter Discovery | HTTP parameter discovery suite (GET/POST/JSON) | CORE | None | Yes | Native CLI |
+| **qsreplace** | Pipeline Utility | Query string value replacement and normalization | CORE | None | Yes | Native CLI |
+| **uro** | Pipeline Utility | URL decluttering, deduplication, and cleaning | CORE | None | Yes | Native CLI |
+| **anew** | Pipeline Utility | Line-oriented stream deduplication | CORE | None | Yes | Native CLI |
+| **nuclei** | Vulnerability Scanning | Signal source based on declarative YAML templates | CORE | Optional Providers | Yes | [projectdiscovery-cloud.md](docs/tools/projectdiscovery-cloud.md) |
+| **dalfox** | XSS Analysis | Parameter analysis & XSS scanner with DOM parser | SPECIALIST | None | Yes | Native CLI |
+| **sqlmap** | Injection Analysis | Automatic SQL injection analysis (read-only mode) | SPECIALIST | None | Yes | Native CLI |
+| **interactsh** | OOB / SSRF | Out-of-band interaction gatherer (DNS, HTTP, SMTP) | SPECIALIST | Optional | Yes | [interactsh.md](docs/tools/interactsh.md) |
+| **wpscan** | CMS Security | WordPress security & plugin vulnerability scanner | SPECIALIST | Optional Providers | Yes | [wpscan.md](docs/tools/wpscan.md) |
+| **uncover** | Search Engine Intel | Aggregator for Shodan, Censys, FOFA, Hunter, etc. | PROVIDER-BACKED | Required | Yes | [uncover.md](docs/tools/uncover.md) |
+| **notify** | Notifications | Stream alerts to Discord, Slack, Telegram | OPTIONAL | Required | Yes | [notify.md](docs/tools/notify.md) |
+| **playwright** | Browser Automation | Headless browser automation for complex SPAs | SPECIALIST | None | Yes | Native CLI |
+| **proxify** | Proxy / Traffic | HTTP/HTTPS/SOCKS Swiss Army knife proxy | SPECIALIST | None | Yes | Native CLI |
+| **burpsuite** | Proxy / Traffic | Interactive proxy and web vulnerability scanner | SPECIALIST | None | No (Manual) | Native GUI/API |
+| **zap** | Proxy / Traffic | OWASP Zed Attack Proxy automated daemon & GUI | SPECIALIST | Optional | No (Manual) | Native Daemon |
+| **gitleaks** | Secret Auditing | Git repo secret and credential detector | SPECIALIST | None | Yes | Native CLI |
+| **trufflehog** | Secret Auditing | Finds credentials and secrets with verification | SPECIALIST | None | Yes | Native CLI |
+| **nmap** | Network Scanning | Network exploration and port scanner | SPECIALIST | None | Yes | Native CLI |
+| **testssl.sh** | TLS / Network | Command-line TLS/SSL cipher suite tester | SPECIALIST | None | Yes | Native CLI |
+| **jq** | Pipeline Utility | Command-line JSON processor | CORE | None | Yes | Native CLI |
+
+---
+
+## Tool Capabilities by Research Domain (23 Groups)
+
+1. **Asset Discovery**: `subfinder`, `amass`, `assetfinder`, `chaos`
+2. **DNS Resolution & Filtering**: `dnsx`, `shuffledns`, `massdns`, `alterx`, `dnsgen`
+3. **HTTP Probing & Fingerprinting**: `httpx`, `tlsx`
+4. **Port & Service Discovery**: `naabu`, `nmap`
+5. **URL Discovery & Archives**: `urlfinder`, `gau`, `waybackurls`
+6. **Web Crawling & Spidering**: `katana`, `hakrawler`, `gospider`
+7. **Content & Directory Discovery**: `ffuf`, `feroxbuster`, `dirsearch`, `wfuzz`
+8. **Parameter Discovery**: `arjun`, `ffuf`
+9. **JavaScript Analysis**: `katana` (JS mode), `playwright`, `bb-js`
+10. **API Analysis**: `arjun`, `bb-api`, `httpx`
+11. **XSS Analysis**: `dalfox`, `bb-injection`
+12. **Injection & Parser Flaws**: `sqlmap`, `nuclei`, `bb-injection`
+13. **Authorization (BOLA/IDOR)**: `bb-authz` (dual-account reasoning), `proxify`
+14. **Business Logic & Workflows**: `bb-business-logic`, `playwright`
+15. **Out-of-Band (OOB) & SSRF**: `interactsh`
+16. **Vulnerability Signals**: `nuclei` (signals ingested strictly as unverified candidates)
+17. **Cloud & External Intelligence**: `uncover`, `cdncheck`, `mapcidr`
+18. **Content Management Systems (CMS)**: `wpscan`
+19. **TLS & Network Auditing**: `tlsx`, `testssl.sh`, `nmap`
+20. **Proxy & Traffic Interception**: `proxify`, `burpsuite`, `zap`
+21. **Source & Secret Auditing**: `gitleaks`, `trufflehog`
+22. **Pipeline & Data Normalization**: `anew`, `uro`, `qsreplace`, `jq`
+23. **Milestone Notifications**: `notify`
+
+---
+
+## Tool Intelligence & Management
+
+### 1. Automatic Diagnostics (`bb-doctor`)
+Run deep diagnostics across 9 system categories:
 ```bash
-sudo apt update && sudo apt install -y subfinder amass httpx-toolkit ffuf nuclei
+./scripts/bb-doctor
 ```
-Check detected tools:
+Checks:
+* **System**: OS, architecture, Python version, workspace root
+* **Dependencies**: Go, Python3, Pipx, Git, Cargo, Docker, Jq
+* **Tools**: Status of all 44 registered tools, version compatibility, and missing tools
+* **Providers**: API keys for ProjectDiscovery Cloud, Shodan, Censys, SecurityTrails, VirusTotal, etc.
+* **Browser**: Playwright and Chromium sandbox readiness
+* **Wordlists**: SecLists presence on Kali (`/usr/share/seclists`) or user local directory
+* **Configuration**: `secrets.env` file presence and permissions
+* **Scope Engine**: Recursive subdomain validation and boundary security integrity
+* **OpenCode**: Agent prompts and modular skills readiness
+
+### 2. Safe On-Demand Installation (`bb-install`)
+Install approved tools when needed, either individually or by capability:
 ```bash
-python -c "from framework.common.tools import ToolDetector; print(ToolDetector.get_summary())"
+# Install a specific tool
+./scripts/bb-install katana
+
+# Install tools required for a capability
+./scripts/bb-install --required-for web-crawling
+
+# Inspect installation plan without executing
+./scripts/bb-install --dry-run subfinder
 ```
+**Safety Invariants**:
+* Rejects unapproved tools not listed in `config/tools.yaml`.
+* Never executes unvetted shell scripts (`curl | bash` is strictly forbidden).
+* Favors official Kali/Debian packages (`apt`) or verified official GitHub releases.
+* Installs binaries to `~/.local/bin` (non-root execution preferred).
+* Logs provenance into `~/.config/bugbounty-agent/tool_provenance.json`.
+
+### 3. Tool Version & Update Management (`bb-update`)
+Inspect installed tools and apply safe updates:
+```bash
+# Check for outdated tools against registry minimums
+./scripts/bb-update --check
+
+# Update a specific tool
+./scripts/bb-update subfinder
+```
+
+### 4. API Credentials Management (Outside Git)
+Store credentials safely in `~/.config/bugbounty-agent/secrets.env` (never in Git):
+```bash
+mkdir -p ~/.config/bugbounty-agent
+cat << 'EOF' > ~/.config/bugbounty-agent/secrets.env
+PDCP_API_KEY="your_pdcp_token"
+SHODAN_API_KEY="your_shodan_key"
+CENSYS_API_TOKEN="your_censys_token"
+CENSYS_ORGANIZATION_ID="your_censys_org_id"
+SECURITYTRAILS_API_KEY="your_securitytrails_key"
+VT_API_KEY="your_virustotal_key"
+URLSCAN_API_KEY="your_urlscan_key"
+WPSCAN_API_TOKEN="your_wpscan_token"
+GITHUB_TOKEN="your_github_token"
+EOF
+chmod 600 ~/.config/bugbounty-agent/secrets.env
+```
+Consult dedicated setup guides in [`docs/tools/`](docs/tools/) for each provider.
+
+### 5. Graceful Tool Degradation & Fallback
+If a preferred tool is unavailable:
+* `katana` falls back to `hakrawler` or `gospider`.
+* `subfinder` falls back to `amass` or `assetfinder`.
+* `ffuf` falls back to `feroxbuster` or `dirsearch`.
+* Missing optional API keys (e.g. Chaos, Shodan) cause the agent to continue in degraded mode using unauthenticated sources, rather than aborting research.
 
 ---
 
@@ -155,7 +301,7 @@ python -c "from framework.common.tools import ToolDetector; print(ToolDetector.g
 ### Step 1: Initialize a Local Program
 Initialize an isolated local workspace directory outside Git:
 ```bash
-python scripts/bb-init my-target-program
+./scripts/bb-init my-target-program
 ```
 This creates `~/BugBounty-Workspace/programs/my-target-program/` containing `scope/`, `recon/`, `state/`, `evidence/`, `findings/`, and `reports/`.
 
@@ -177,7 +323,7 @@ out_of_scope:
 
 Verify scope logic:
 ```bash
-python scripts/bb-scope-check --scope ~/BugBounty-Workspace/programs/my-target-program/scope/scope.yaml dev.api.target.com
+./scripts/bb-scope-check --scope ~/BugBounty-Workspace/programs/my-target-program/scope/scope.yaml dev.api.target.com
 ```
 
 ### Step 3: Run OpenCode
@@ -185,7 +331,7 @@ Start OpenCode in the repository:
 ```bash
 opencode .
 ```
-`bb-hunter` automatically orchestrates reconnaissance, hypothesis formulation, targeted validation, and deduplication.
+`bb-hunter` automatically orchestrates reconnaissance, hypothesis formulation, on-demand tool verification, targeted testing, and deduplication.
 
 ### Step 4: Review Markdown Reports
 Validated findings are stored in:
@@ -221,7 +367,7 @@ Each report includes all 17 standard bug bounty disclosure sections:
 | Methodology skills (`.opencode/skills/`) | Raw HTTP requests and responses (`evidence/`) |
 | Controlled CLI wrappers (`scripts/`) | Vulnerability findings (`findings/`) |
 | Scope templates (`templates/`) | Generated disclosure reports (`reports/`) |
-| Unit tests (`tests/`) | Authorization tokens, API keys, credentials |
+| Unit tests (`tests/`) | Authorization tokens, API keys, credentials (`secrets.env`) |
 | Architecture documentation (`docs/`) | Burp project files and browser sessions |
 
 ---

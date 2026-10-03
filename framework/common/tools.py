@@ -81,10 +81,30 @@ class ToolDetector:
     """Detects installed security tools on the host system."""
 
     @staticmethod
-    def check_tool(tool_name: str) -> Dict[str, Any]:
+    def _get_registry():
+        try:
+            from framework.tools.registry import ToolRegistry
+            return ToolRegistry()
+        except Exception:
+            return None
+
+    @classmethod
+    def check_tool(cls, tool_name: str) -> Dict[str, Any]:
         """Checks if an executable is found on PATH."""
         path = shutil.which(tool_name)
-        info = KNOWN_TOOLS.get(tool_name, {"category": "custom", "description": "Custom utility"})
+        info = KNOWN_TOOLS.get(tool_name)
+
+        if info is None:
+            reg = cls._get_registry()
+            if reg and tool_name in reg:
+                t = reg.get(tool_name)
+                info = {
+                    "category": t.category,
+                    "description": t.description,
+                    "install_hint": t.install.get("preferred", {}).get("command", ""),
+                }
+            else:
+                info = {"category": "custom", "description": "Custom utility"}
 
         result = {
             "name": tool_name,
@@ -92,15 +112,17 @@ class ToolDetector:
             "path": path,
             "category": info.get("category", "unknown"),
             "description": info.get("description", ""),
-            "install_hint": info.get("install_kali", ""),
+            "install_hint": info.get("install_kali", info.get("install_hint", "")),
         }
         return result
 
     @classmethod
     def detect_all(cls) -> Dict[str, Dict[str, Any]]:
-        """Scans PATH for all registered security tools."""
+        """Scans PATH for registered security tools."""
         report = {}
-        for name in KNOWN_TOOLS:
+        reg = cls._get_registry()
+        tool_names = list(reg.tools.keys()) if reg else list(KNOWN_TOOLS.keys())
+        for name in tool_names:
             report[name] = cls.check_tool(name)
         return report
 

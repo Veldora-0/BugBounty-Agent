@@ -1,0 +1,1274 @@
+# ==============================================================================
+# BugBounty-Agent — Professional Tool Registry
+# Machine-readable specification for tool discovery, capabilities, dependencies,
+# installation methods, and provider credential requirements.
+# ==============================================================================
+
+version: "1.1.0"
+
+tools:
+  # ----------------------------------------------------------------------------
+  # SUBDOMAIN & ASSET DISCOVERY (CORE)
+  # ----------------------------------------------------------------------------
+  - name: subfinder
+    category: subdomain-enumeration
+    binary: subfinder
+    tier: CORE
+    description: "Fast passive subdomain enumeration tool using multiple public APIs and datasets."
+    capabilities:
+      - passive-subdomain-discovery
+      - asset-discovery
+    fallback: amass
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      apt_package: subfinder
+      go_package: "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+      release_repo: "projectdiscovery/subfinder"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: [PDCP_API_KEY]
+      docs_path: docs/tools/subfinder.md
+    official_url: "https://github.com/projectdiscovery/subfinder"
+    documentation_url: "https://docs.projectdiscovery.io/tools/subfinder"
+    verify:
+      command: "subfinder -version"
+      min_version: "2.6.0"
+    security_notes: "Passive queries only. Does not generate target traffic unless configured."
+
+  - name: amass
+    category: asset-discovery
+    binary: amass
+    tier: CORE
+    description: "In-depth attack surface mapping and network infrastructure asset discovery."
+    capabilities:
+      - passive-subdomain-discovery
+      - active-subdomain-discovery
+      - asn-mapping
+    fallback: subfinder
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: amass
+      go_package: "github.com/owasp-amass/amass/v4/...@master"
+      release_repo: "owasp-amass/amass"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: []
+      docs_path: docs/tools/subfinder.md
+    official_url: "https://github.com/owasp-amass/amass"
+    documentation_url: "https://github.com/owasp-amass/amass/wiki"
+    verify:
+      command: "amass -version"
+      min_version: "4.0.0"
+    security_notes: "Passive mode generates zero target traffic; active mode performs DNS resolution."
+
+  - name: assetfinder
+    category: subdomain-enumeration
+    binary: assetfinder
+    tier: CORE
+    description: "Lightweight utility to discover domains and subdomains related to a target."
+    capabilities:
+      - passive-subdomain-discovery
+    fallback: subfinder
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: assetfinder
+      go_package: "github.com/tomnomnom/assetfinder@latest"
+      release_repo: "tomnomnom/assetfinder"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/tomnomnom/assetfinder"
+    documentation_url: "https://github.com/tomnomnom/assetfinder"
+    verify:
+      command: "assetfinder -h"
+      min_version: null
+    security_notes: "Purely passive scraping of public datasets."
+
+  - name: dnsx
+    category: dns
+    binary: dnsx
+    tier: CORE
+    description: "Fast and multi-purpose DNS toolkit for resolution, wildcard filtering, and DNS probing."
+    capabilities:
+      - dns-resolution
+      - wildcard-filtering
+      - cname-lookup
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      apt_package: dnsx
+      go_package: "github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
+      release_repo: "projectdiscovery/dnsx"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/projectdiscovery/dnsx"
+    documentation_url: "https://docs.projectdiscovery.io/tools/dnsx"
+    verify:
+      command: "dnsx -version"
+      min_version: "1.1.0"
+    security_notes: "Sends DNS queries. Bound by configured rate limits and resolver list."
+
+  - name: shuffledns
+    category: dns
+    binary: shuffledns
+    tier: CORE
+    description: "High-performance wrapper around massdns for active subdomain bruteforce and wildcard handling."
+    capabilities:
+      - dns-bruteforce
+      - wildcard-filtering
+      - dns-resolution
+    fallback: dnsx
+    platforms: [linux, darwin]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest"
+      release_repo: "projectdiscovery/shuffledns"
+      auto_install: true
+    dependencies:
+      - massdns
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/projectdiscovery/shuffledns"
+    documentation_url: "https://github.com/projectdiscovery/shuffledns"
+    verify:
+      command: "shuffledns -version"
+      min_version: "1.0.0"
+    security_notes: "High-speed DNS operations. Must strictly respect scope CIDR and rate limits."
+
+  - name: massdns
+    category: dns
+    binary: massdns
+    tier: CORE
+    description: "High-performance stub DNS resolver capable of resolving millions of addresses per second."
+    capabilities:
+      - high-speed-dns-resolution
+    fallback: dnsx
+    platforms: [linux, darwin]
+    install:
+      preferred: apt
+      apt_package: massdns
+      release_repo: "blechschmidt/massdns"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/blechschmidt/massdns"
+    documentation_url: "https://github.com/blechschmidt/massdns"
+    verify:
+      command: "massdns -h"
+      min_version: null
+    security_notes: "Underlying engine for shuffledns. Use curated public resolver lists."
+
+  - name: alterx
+    category: subdomain-enumeration
+    binary: alterx
+    tier: CORE
+    description: "Fast and customizable subdomain wordlist permutation and alteration generator."
+    capabilities:
+      - permutation-generation
+    fallback: dnsgen
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/alterx/cmd/alterx@latest"
+      release_repo: "projectdiscovery/alterx"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/projectdiscovery/alterx"
+    documentation_url: "https://docs.projectdiscovery.io/tools/alterx"
+    verify:
+      command: "alterx -version"
+      min_version: "0.0.3"
+    security_notes: "Pure local permutation engine; generates zero network traffic."
+
+  - name: dnsgen
+    category: subdomain-enumeration
+    binary: dnsgen
+    tier: SPECIALIST
+    description: "Python-based subdomain wordlist generator through word permutations."
+    capabilities:
+      - permutation-generation
+    fallback: alterx
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: pipx
+      pip_package: dnsgen
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/ProjectAnte/dnsgen"
+    documentation_url: "https://github.com/ProjectAnte/dnsgen"
+    verify:
+      command: "dnsgen -h"
+      min_version: null
+    security_notes: "Local wordlist generator."
+
+  - name: httpx
+    category: http-probing
+    binary: httpx
+    tier: CORE
+    description: "Multi-purpose fast HTTP toolkit for probing live services, TLS certs, and response titles."
+    capabilities:
+      - http-service-discovery
+      - tech-detection
+      - title-extraction
+      - status-probing
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      apt_package: httpx-toolkit
+      go_package: "github.com/projectdiscovery/httpx/cmd/httpx@latest"
+      release_repo: "projectdiscovery/httpx"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/projectdiscovery/httpx"
+    documentation_url: "https://docs.projectdiscovery.io/tools/httpx"
+    verify:
+      command: "httpx -version"
+      min_version: "1.3.0"
+    security_notes: "Sends HTTP GET/HEAD requests. Enforces user-agent and rate limiting."
+
+  - name: tlsx
+    category: tls-network
+    binary: tlsx
+    tier: CORE
+    description: "Fast TLS/SSL data collector and certificate relationship analyzer."
+    capabilities:
+      - tls-intelligence
+      - certificate-extraction
+      - san-discovery
+    fallback: httpx
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/tlsx/cmd/tlsx@latest"
+      release_repo: "projectdiscovery/tlsx"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/projectdiscovery/tlsx"
+    documentation_url: "https://docs.projectdiscovery.io/tools/tlsx"
+    verify:
+      command: "tlsx -version"
+      min_version: "1.1.0"
+    security_notes: "TLS handshake inspection only. No vulnerability exploitation."
+
+  - name: cdncheck
+    category: cloud-intelligence
+    binary: cdncheck
+    tier: CORE
+    description: "Identifies whether an IP or domain belongs to known CDNs, WAFs, or cloud providers."
+    capabilities:
+      - cdn-identification
+      - cloud-identification
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/cdncheck/cmd/cdncheck@latest"
+      release_repo: "projectdiscovery/cdncheck"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/projectdiscovery/cdncheck"
+    documentation_url: "https://docs.projectdiscovery.io/tools/cdncheck"
+    verify:
+      command: "cdncheck -version"
+      min_version: "1.0.0"
+    security_notes: "Local dataset mapping against IP ranges."
+
+  - name: mapcidr
+    category: pipeline-utility
+    binary: mapcidr
+    tier: CORE
+    description: "Small utility to perform sub-netting, slicing, and aggregation of CIDR ranges."
+    capabilities:
+      - cidr-handling
+      - ip-range-slicing
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/mapcidr/cmd/mapcidr@latest"
+      release_repo: "projectdiscovery/mapcidr"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/projectdiscovery/mapcidr"
+    documentation_url: "https://docs.projectdiscovery.io/tools/mapcidr"
+    verify:
+      command: "mapcidr -version"
+      min_version: "1.1.0"
+    security_notes: "Pure local IP math utility."
+
+  - name: naabu
+    category: port-service-discovery
+    binary: naabu
+    tier: CORE
+    description: "Fast port scanner written in Go with SYN/CONNECT port probing capabilities."
+    capabilities:
+      - port-scanning
+      - service-discovery
+    fallback: nmap
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      apt_package: naabu
+      go_package: "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
+      release_repo: "projectdiscovery/naabu"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/projectdiscovery/naabu"
+    documentation_url: "https://docs.projectdiscovery.io/tools/naabu"
+    verify:
+      command: "naabu -version"
+      min_version: "2.1.0"
+    security_notes: "Must only scan ports explicitly authorized in program scope. Rate limits enforced."
+
+  - name: urlfinder
+    category: url-discovery
+    binary: urlfinder
+    tier: CORE
+    description: "Passive URL and endpoint discovery tool extracting endpoints from passive online sources."
+    capabilities:
+      - passive-url-discovery
+      - endpoint-discovery
+    fallback: gau
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/urlfinder/cmd/urlfinder@latest"
+      release_repo: "projectdiscovery/urlfinder"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: [PDCP_API_KEY]
+      docs_path: docs/tools/subfinder.md
+    official_url: "https://github.com/projectdiscovery/urlfinder"
+    documentation_url: "https://github.com/projectdiscovery/urlfinder"
+    verify:
+      command: "urlfinder -version"
+      min_version: "0.0.1"
+    security_notes: "Gathers URLs passively without directly probing targets."
+
+  # ----------------------------------------------------------------------------
+  # URL & WEB DISCOVERY (CORE & SPECIALIST)
+  # ----------------------------------------------------------------------------
+  - name: katana
+    category: web-crawling
+    binary: katana
+    tier: CORE
+    description: "Next-generation crawling and spidering framework with headless browser capabilities."
+    capabilities:
+      - crawling
+      - javascript-discovery
+      - headless-browser
+      - endpoint-discovery
+    fallback: hakrawler
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/katana/cmd/katana@latest"
+      release_repo: "projectdiscovery/katana"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/projectdiscovery/katana"
+    documentation_url: "https://docs.projectdiscovery.io/tools/katana"
+    verify:
+      command: "katana -version"
+      min_version: "1.0.0"
+    security_notes: "Crawls in-scope targets. Headless mode executes client JS in sandboxed browser."
+
+  - name: gau
+    category: url-discovery
+    binary: gau
+    tier: SPECIALIST
+    description: "GetAllUrls fetches known URLs from AlienVault Open Threat Exchange, Wayback Machine, and Common Crawl."
+    capabilities:
+      - passive-url-discovery
+      - historical-url-aggregation
+    fallback: waybackurls
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/lc/gau/v2/cmd/gau@latest"
+      release_repo: "lc/gau"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/lc/gau"
+    documentation_url: "https://github.com/lc/gau"
+    verify:
+      command: "gau -version"
+      min_version: "2.1.0"
+    security_notes: "Passive queries against public web archives. Zero target network activity."
+
+  - name: waybackurls
+    category: url-discovery
+    binary: waybackurls
+    tier: SPECIALIST
+    description: "Fetch URLs that the Wayback Machine has captured for a domain."
+    capabilities:
+      - passive-url-discovery
+      - historical-url-aggregation
+    fallback: gau
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: waybackurls
+      go_package: "github.com/tomnomnom/waybackurls@latest"
+      release_repo: "tomnomnom/waybackurls"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/tomnomnom/waybackurls"
+    documentation_url: "https://github.com/tomnomnom/waybackurls"
+    verify:
+      command: "waybackurls -h"
+      min_version: null
+    security_notes: "Passive archive queries only."
+
+  - name: ffuf
+    category: content-discovery
+    binary: ffuf
+    tier: CORE
+    description: "Fast web fuzzer written in Go for content, virtual host, and parameter discovery."
+    capabilities:
+      - content-fuzzing
+      - parameter-fuzzing
+      - vhost-discovery
+    fallback: feroxbuster
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: ffuf
+      go_package: "github.com/ffuf/ffuf/v2@latest"
+      release_repo: "ffuf/ffuf"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/ffuf/ffuf"
+    documentation_url: "https://github.com/ffuf/ffuf"
+    verify:
+      command: "ffuf -V"
+      min_version: "2.0.0"
+    security_notes: "Enforces configured rate limits (`-rate 5`). Disallows destructive POST bodies."
+
+  - name: feroxbuster
+    category: content-discovery
+    binary: feroxbuster
+    tier: SPECIALIST
+    description: "Fast, simple, recursive content discovery tool written in Rust."
+    capabilities:
+      - content-fuzzing
+      - recursive-content-discovery
+    fallback: ffuf
+    platforms: [linux, darwin]
+    install:
+      preferred: apt
+      apt_package: feroxbuster
+      cargo_package: feroxbuster
+      release_repo: "epi052/feroxbuster"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/epi052/feroxbuster"
+    documentation_url: "https://epi052.github.io/feroxbuster-docs/"
+    verify:
+      command: "feroxbuster -V"
+      min_version: "2.10.0"
+    security_notes: "Respects recursion limits and rate limits."
+
+  - name: dirsearch
+    category: content-discovery
+    binary: dirsearch
+    tier: SPECIALIST
+    description: "Web path scanner written in Python with support for extensions and wordlists."
+    capabilities:
+      - content-fuzzing
+    fallback: ffuf
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: dirsearch
+      pip_package: dirsearch
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/maurosoria/dirsearch"
+    documentation_url: "https://github.com/maurosoria/dirsearch"
+    verify:
+      command: "dirsearch --version"
+      min_version: "0.4.0"
+    security_notes: "Controlled content scanner."
+
+  - name: wfuzz
+    category: content-discovery
+    binary: wfuzz
+    tier: LEGACY
+    description: "Legacy web application fuzzer. Maintained as fallback; ffuf preferred."
+    capabilities:
+      - content-fuzzing
+    fallback: ffuf
+    platforms: [linux, darwin]
+    install:
+      preferred: apt
+      apt_package: wfuzz
+      pip_package: wfuzz
+      auto_install: false
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/xmendez/wfuzz"
+    documentation_url: "https://wfuzz.readthedocs.io/"
+    verify:
+      command: "wfuzz --version"
+      min_version: null
+    security_notes: "Legacy tool. Use ffuf as default."
+
+  - name: hakrawler
+    category: web-crawling
+    binary: hakrawler
+    tier: SPECIALIST
+    description: "Fast Go web crawler for discovering endpoints and assets."
+    capabilities:
+      - crawling
+      - endpoint-discovery
+    fallback: katana
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/hakluke/hakrawler@latest"
+      release_repo: "hakluke/hakrawler"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/hakluke/hakrawler"
+    documentation_url: "https://github.com/hakluke/hakrawler"
+    verify:
+      command: "hakrawler -h"
+      min_version: null
+    security_notes: "Fast endpoint extraction crawler."
+
+  - name: gospider
+    category: web-crawling
+    binary: gospider
+    tier: SPECIALIST
+    description: "Fast web spider written in Go with site crawling and JS parsing capabilities."
+    capabilities:
+      - crawling
+      - javascript-discovery
+    fallback: katana
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/jaeles-project/gospider@latest"
+      release_repo: "jaeles-project/gospider"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/jaeles-project/gospider"
+    documentation_url: "https://github.com/jaeles-project/gospider"
+    verify:
+      command: "gospider -h"
+      min_version: null
+    security_notes: "Spider with automated JS link parsing."
+
+  - name: arjun
+    category: parameter-discovery
+    binary: arjun
+    tier: CORE
+    description: "HTTP parameter discovery suite detecting hidden GET/POST/JSON parameters."
+    capabilities:
+      - parameter-discovery
+      - api-analysis
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: arjun
+      pip_package: arjun
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/s0md3v/Arjun"
+    documentation_url: "https://github.com/s0md3v/Arjun"
+    verify:
+      command: "arjun --version"
+      min_version: "2.2.0"
+    security_notes: "Heuristic parameter probing. Rate limits respected."
+
+  - name: qsreplace
+    category: pipeline-utility
+    binary: qsreplace
+    tier: CORE
+    description: "Accepts URLs on stdin, replaces all query string parameter values with user value."
+    capabilities:
+      - query-replacement
+      - pipeline-utility
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/tomnomnom/qsreplace@latest"
+      release_repo: "tomnomnom/qsreplace"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/tomnomnom/qsreplace"
+    documentation_url: "https://github.com/tomnomnom/qsreplace"
+    verify:
+      command: "qsreplace -h"
+      min_version: null
+    security_notes: "Local URL transformation utility; zero network traffic."
+
+  - name: uro
+    category: pipeline-utility
+    binary: uro
+    tier: CORE
+    description: "Declutters URL lists by removing duplicates, normalizing parameters, and filtering noise."
+    capabilities:
+      - url-normalization
+      - pipeline-utility
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: pipx
+      pip_package: uro
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/s0md3v/uro"
+    documentation_url: "https://github.com/s0md3v/uro"
+    verify:
+      command: "uro -h"
+      min_version: null
+    security_notes: "Local URL decluttering utility."
+
+  - name: anew
+    category: pipeline-utility
+    binary: anew
+    tier: CORE
+    description: "Append lines from stdin to a file, only adding lines that do not already exist."
+    capabilities:
+      - deduplication
+      - pipeline-utility
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: anew
+      go_package: "github.com/tomnomnom/anew@latest"
+      release_repo: "tomnomnom/anew"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/tomnomnom/anew"
+    documentation_url: "https://github.com/tomnomnom/anew"
+    verify:
+      command: "anew -h"
+      min_version: null
+    security_notes: "Pure local line deduplication utility."
+
+  # ----------------------------------------------------------------------------
+  # VULNERABILITY TESTING, XSS & INJECTION (CORE & SPECIALIST)
+  # ----------------------------------------------------------------------------
+  - name: nuclei
+    category: vulnerability-scanning
+    binary: nuclei
+    tier: CORE
+    description: "Fast, community-driven vulnerability scanner based on declarative YAML templates."
+    capabilities:
+      - vulnerability-signals
+      - misconfiguration-scanning
+      - template-matching
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      apt_package: nuclei
+      go_package: "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
+      release_repo: "projectdiscovery/nuclei"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: [PDCP_API_KEY]
+      docs_path: docs/tools/projectdiscovery-cloud.md
+    official_url: "https://github.com/projectdiscovery/nuclei"
+    documentation_url: "https://docs.projectdiscovery.io/tools/nuclei"
+    verify:
+      command: "nuclei -version"
+      min_version: "3.2.0"
+    security_notes: "CRITICAL: Signals are strictly unverified CANDIDATES. Never confirmed without independent validation."
+
+  - name: dalfox
+    category: xss-analysis
+    binary: dalfox
+    tier: SPECIALIST
+    description: "Parameter analysis and XSS scanning tool with DOM verification parser."
+    capabilities:
+      - xss-analysis
+      - parameter-analysis
+    fallback: nuclei
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      apt_package: dalfox
+      go_package: "github.com/hahwul/dalfox/v2@latest"
+      release_repo: "hahwul/dalfox"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/hahwul/dalfox"
+    documentation_url: "https://dalfox.hahwul.com/"
+    verify:
+      command: "dalfox version"
+      min_version: "2.9.0"
+    security_notes: "Targeted input testing. Non-destructive payload markers only."
+
+  - name: sqlmap
+    category: injection-analysis
+    binary: sqlmap
+    tier: SPECIALIST
+    description: "Automatic SQL injection and database takeover tool."
+    capabilities:
+      - sqli-analysis
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: sqlmap
+      pip_package: sqlmap
+      release_repo: "sqlmapproject/sqlmap"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://sqlmap.org/"
+    documentation_url: "https://github.com/sqlmapproject/sqlmap/wiki"
+    verify:
+      command: "sqlmap --version"
+      min_version: "1.7.0"
+    security_notes: "Read-only non-destructive detection mode only. Never execute --os-shell or data extraction without approval."
+
+  - name: interactsh
+    category: oob-testing
+    binary: interactsh-client
+    tier: SPECIALIST
+    description: "Out-of-band (OOB) interaction gatherer for blind SSRF, blind XSS, and DNS interaction testing."
+    capabilities:
+      - oob-interaction
+      - ssrf-testing
+      - blind-callback
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest"
+      release_repo: "projectdiscovery/interactsh"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: [INTERACTSH_TOKEN, PDCP_API_KEY]
+      docs_path: docs/tools/interactsh.md
+    official_url: "https://github.com/projectdiscovery/interactsh"
+    documentation_url: "https://docs.projectdiscovery.io/tools/interactsh"
+    verify:
+      command: "interactsh-client -version"
+      min_version: "1.1.0"
+    security_notes: "Generates custom interaction payloads. Distinguishes DNS, HTTP, SMTP, and LDAP callbacks."
+
+  - name: wpscan
+    category: cms-security
+    binary: wpscan
+    tier: SPECIALIST
+    description: "WordPress security scanner for identifying vulnerable plugins, themes, and users."
+    capabilities:
+      - cms-scanning
+      - wordpress-analysis
+    fallback: nuclei
+    platforms: [linux, darwin]
+    install:
+      preferred: apt
+      apt_package: wpscan
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: [WPSCAN_API_TOKEN]
+      docs_path: docs/tools/wpscan.md
+    official_url: "https://wpscan.com/"
+    documentation_url: "https://github.com/wpscanteam/wpscan"
+    verify:
+      command: "wpscan --version"
+      min_version: "3.8.0"
+    security_notes: "Only run against confirmed WordPress targets. Without API token, runs in non-database fallback mode."
+
+  # ----------------------------------------------------------------------------
+  # SEARCH ENGINES & PROVIDER-BACKED INTELLIGENCE (OPTIONAL)
+  # ----------------------------------------------------------------------------
+  - name: chaos
+    category: asset-discovery
+    binary: chaos
+    tier: PROVIDER-BACKED
+    description: "Client for ProjectDiscovery Chaos datasets for passive asset discovery."
+    capabilities:
+      - passive-subdomain-discovery
+      - provider-backed-intel
+    fallback: subfinder
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/chaos-client/cmd/chaos@latest"
+      release_repo: "projectdiscovery/chaos-client"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: true
+      optional_providers: false
+      env_vars: [PDCP_API_KEY]
+      docs_path: docs/tools/chaos.md
+    official_url: "https://chaos.projectdiscovery.io"
+    documentation_url: "https://github.com/projectdiscovery/chaos-client"
+    verify:
+      command: "chaos -version"
+      min_version: "0.5.0"
+    security_notes: "Requires PDCP_API_KEY. Passive dataset queries only."
+
+  - name: uncover
+    category: search-engine-intel
+    binary: uncover
+    tier: PROVIDER-BACKED
+    description: "API wrapper discovering exposed hosts across Shodan, Censys, FOFA, ZoomEye, Hunter, etc."
+    capabilities:
+      - search-engine-discovery
+      - internet-wide-scanning-intel
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/uncover/cmd/uncover@latest"
+      release_repo: "projectdiscovery/uncover"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: true
+      optional_providers: true
+      env_vars: [SHODAN_API_KEY, CENSYS_API_TOKEN, CENSYS_ORGANIZATION_ID, FOFA_EMAIL, FOFA_KEY]
+      docs_path: docs/tools/uncover.md
+    official_url: "https://github.com/projectdiscovery/uncover"
+    documentation_url: "https://docs.projectdiscovery.io/tools/uncover"
+    verify:
+      command: "uncover -version"
+      min_version: "1.0.0"
+    security_notes: "Aggregator for search engine APIs. Gracefully handles partial provider credentials."
+
+  - name: notify
+    category: notifications
+    binary: notify
+    tier: OPTIONAL
+    description: "Streamlined command-line tool to send notifications to Discord, Slack, Telegram, webhooks."
+    capabilities:
+      - notifications
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/notify/cmd/notify@latest"
+      release_repo: "projectdiscovery/notify"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: true
+      optional_providers: true
+      env_vars: [DISCORD_WEBHOOK_URL, SLACK_WEBHOOK_URL, TELEGRAM_API_KEY]
+      docs_path: docs/tools/notify.md
+    official_url: "https://github.com/projectdiscovery/notify"
+    documentation_url: "https://docs.projectdiscovery.io/tools/notify"
+    verify:
+      command: "notify -version"
+      min_version: "1.0.0"
+    security_notes: "Never send secrets, tokens, or private customer data over notification webhooks."
+
+  # ----------------------------------------------------------------------------
+  # BROWSER AUTOMATION & ADVANCED PROXIES
+  # ----------------------------------------------------------------------------
+  - name: playwright
+    category: browser-automation
+    binary: playwright
+    tier: SPECIALIST
+    description: "Headless browser framework for automated DOM exploration, JavaScript interception, and single-page apps."
+    capabilities:
+      - browser-automation
+      - dom-exploration
+      - client-side-routing
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: pipx
+      pip_package: playwright
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://playwright.dev/python/"
+    documentation_url: "https://playwright.dev/python/docs/intro"
+    verify:
+      command: "playwright --version"
+      min_version: "1.40.0"
+    security_notes: "Requires local browser binaries (`playwright install chromium`). Operates in sandbox."
+
+  - name: proxify
+    category: proxy-traffic
+    binary: proxify
+    tier: SPECIALIST
+    description: "Swiss Army knife proxy tool for HTTP/HTTPS/SOCKS traffic capture, manipulation, and replay."
+    capabilities:
+      - traffic-analysis
+      - request-replay
+      - proxy
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/projectdiscovery/proxify/cmd/proxify@latest"
+      release_repo: "projectdiscovery/proxify"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/projectdiscovery/proxify"
+    documentation_url: "https://docs.projectdiscovery.io/tools/proxify"
+    verify:
+      command: "proxify -version"
+      min_version: "0.0.8"
+    security_notes: "Local traffic proxy. TLS interception requires local CA installation."
+
+  - name: burpsuite
+    category: proxy-traffic
+    binary: burpsuite
+    tier: SPECIALIST
+    description: "Industry-standard web vulnerability scanner and interactive proxy (Community or Professional)."
+    capabilities:
+      - interactive-proxy
+      - traffic-analysis
+      - request-replay
+    fallback: zap
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: manual
+      apt_package: burpsuite
+      auto_install: false
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: [BURP_API_KEY]
+      docs_path: null
+    official_url: "https://portswigger.net/burp"
+    documentation_url: "https://portswigger.net/burp/documentation"
+    verify:
+      command: "burpsuite --version"
+      min_version: null
+    security_notes: "Desktop/daemon proxy. API integration available in Professional edition."
+
+  - name: zap
+    category: proxy-traffic
+    binary: zaproxy
+    tier: SPECIALIST
+    description: "OWASP Zed Attack Proxy (ZAP) for automated and interactive web application testing."
+    capabilities:
+      - interactive-proxy
+      - traffic-analysis
+      - automated-proxy-daemon
+    fallback: burpsuite
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: zaproxy
+      auto_install: false
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: [ZAP_API_KEY]
+      docs_path: null
+    official_url: "https://www.zaproxy.org/"
+    documentation_url: "https://www.zaproxy.org/docs/"
+    verify:
+      command: "zaproxy -version"
+      min_version: null
+    security_notes: "Runs as daemon or GUI. Provides local REST API."
+
+  # ----------------------------------------------------------------------------
+  # SOURCE & SECRET AUDITING
+  # ----------------------------------------------------------------------------
+  - name: gitleaks
+    category: secret-auditing
+    binary: gitleaks
+    tier: SPECIALIST
+    description: "Fast, regex-based scanner for detecting hardcoded secrets and credentials in git repos."
+    capabilities:
+      - secret-detection
+      - source-auditing
+    fallback: trufflehog
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      go_package: "github.com/gitleaks/gitleaks/v8@latest"
+      release_repo: "gitleaks/gitleaks"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/gitleaks/gitleaks"
+    documentation_url: "https://github.com/gitleaks/gitleaks"
+    verify:
+      command: "gitleaks version"
+      min_version: "8.18.0"
+    security_notes: "Never scan private repos without authorization. Tokens found require verification before reporting."
+
+  - name: trufflehog
+    category: secret-auditing
+    binary: trufflehog
+    tier: SPECIALIST
+    description: "Finds exposed credentials, secrets, and sensitive keys with live verification capabilities."
+    capabilities:
+      - secret-detection
+      - credential-verification
+    fallback: gitleaks
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: official-release
+      release_repo: "trufflesecurity/trufflehog"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://github.com/trufflesecurity/trufflehog"
+    documentation_url: "https://trufflesecurity.com/docs"
+    verify:
+      command: "trufflehog --version"
+      min_version: "3.60.0"
+    security_notes: "Live verification checks public provider endpoints. Do not leak target tokens."
+
+  # ----------------------------------------------------------------------------
+  # NETWORK & TLS SPECIALISTS
+  # ----------------------------------------------------------------------------
+  - name: nmap
+    category: network-scanning
+    binary: nmap
+    tier: SPECIALIST
+    description: "Network exploration tool and security / port scanner."
+    capabilities:
+      - port-scanning
+      - service-versioning
+      - network-mapping
+    fallback: naabu
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: nmap
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://nmap.org/"
+    documentation_url: "https://nmap.org/book/man.html"
+    verify:
+      command: "nmap --version"
+      min_version: "7.90"
+    security_notes: "Only run on authorized network targets. Strictly observe scope CIDRs."
+
+  - name: testssl.sh
+    category: tls-network
+    binary: testssl.sh
+    tier: SPECIALIST
+    description: "Command-line tool which checks a server's service on any port for SSL/TLS ciphers, protocols, and cryptographic flaws."
+    capabilities:
+      - tls-intelligence
+      - ssl-vulnerability-testing
+    fallback: tlsx
+    platforms: [linux, darwin]
+    install:
+      preferred: apt
+      apt_package: testssl.sh
+      release_repo: "drwetter/testssl.sh"
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://testssl.sh/"
+    documentation_url: "https://github.com/drwetter/testssl.sh"
+    verify:
+      command: "testssl.sh --version"
+      min_version: "3.0"
+    security_notes: "Non-destructive TLS handshake analysis."
+
+  - name: jq
+    category: pipeline-utility
+    binary: jq
+    tier: CORE
+    description: "Lightweight and flexible command-line JSON processor."
+    capabilities:
+      - json-processing
+      - pipeline-utility
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: apt
+      apt_package: jq
+      auto_install: true
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: null
+    official_url: "https://jqlang.github.io/jq/"
+    documentation_url: "https://jqlang.github.io/jq/manual/"
+    verify:
+      command: "jq --version"
+      min_version: "1.6"
+    security_notes: "Standard command-line JSON parser."
