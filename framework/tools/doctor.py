@@ -149,10 +149,33 @@ class SystemDoctor:
         agent_files = [f for f in os.listdir(agents_dir) if f.endswith(".md")] if os.path.isdir(agents_dir) else []
         skill_dirs = [d for d in os.listdir(skills_dir) if os.path.isdir(os.path.join(skills_dir, d))] if os.path.isdir(skills_dir) else []
 
+        default_agent = None
+        subagent_depth = None
+        permission_count = 0
+
+        if has_config:
+            try:
+                import json
+                with open(opencode_jsonc, "r", encoding="utf-8") as f:
+                    lines = [l for l in f if not l.strip().startswith("//")]
+                    cfg = json.loads("\n".join(lines))
+                    default_agent = cfg.get("default_agent")
+                    subagent_depth = cfg.get("subagent_depth")
+                    permission_count = len(cfg.get("permissions", []))
+            except Exception:
+                pass
+
+        has_opencode_bin = shutil.which("opencode") is not None
+
         return {
             "opencode_jsonc": has_config,
             "agent_count": len(agent_files),
             "skill_count": len(skill_dirs),
+            "default_agent": default_agent,
+            "subagent_depth": subagent_depth,
+            "permission_rules": permission_count,
+            "opencode_binary": has_opencode_bin,
+            "runtime_status": "INSTALLED" if has_opencode_bin else "PENDING - requires Kali",
             "status": "READY" if (has_config and len(agent_files) >= 14 and len(skill_dirs) >= 14) else "INCOMPLETE",
         }
 

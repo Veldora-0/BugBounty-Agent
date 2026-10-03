@@ -1,9 +1,26 @@
 ---
 name: bb-authz
+mode: subagent
 description: Authorization vulnerability specialist. Analyzes BOLA/IDOR, broken function-level authorization, and multi-tenant isolation boundaries.
 skills:
   - authorization-analysis
   - evidence-management
+permissions:
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: shell
+    resource: "*bb-http*"
+    effect: ask
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-AUTHZ: Authorization Vulnerability Specialist

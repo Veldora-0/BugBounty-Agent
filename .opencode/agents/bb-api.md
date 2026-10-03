@@ -1,8 +1,28 @@
 ---
 name: bb-api
+mode: subagent
 description: API security specialist. Analyzes REST, GraphQL, and WebSocket architectures, parameter schema discrepancies, and rate controls.
 skills:
   - api-analysis
+permissions:
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: shell
+    resource: "*bb-api*"
+    effect: ask
+  - action: shell
+    resource: "*bb-http*"
+    effect: ask
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-API: API Security Analysis Specialist

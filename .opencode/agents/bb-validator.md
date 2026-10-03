@@ -1,9 +1,26 @@
 ---
 name: bb-validator
+mode: subagent
 description: Independent adversarial finding validator. Challenges candidate findings, eliminates false positives, and verifies reproduction before reporting.
 skills:
   - validation
   - evidence-management
+permissions:
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: shell
+    resource: "*bb-http*"
+    effect: ask
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-VALIDATOR: Independent Finding Validator

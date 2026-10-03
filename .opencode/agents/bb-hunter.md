@@ -1,5 +1,6 @@
 ---
 name: bb-hunter
+mode: primary
 description: Primary Bug Bounty Orchestrator. Coordinates scope verification, reconnaissance, hypothesis generation, specialist delegation, validation, deduplication, and reporting.
 skills:
   - scope-management
@@ -10,6 +11,34 @@ skills:
   - validation
   - deduplication
   - reporting
+permissions:
+  - action: subagent
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-doctor*"
+    effect: allow
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: shell
+    resource: "git status *"
+    effect: allow
+  - action: shell
+    resource: "git diff *"
+    effect: allow
+  - action: shell
+    resource: "git log *"
+    effect: allow
+  - action: shell
+    resource: "git push *"
+    effect: ask
+  - action: shell
+    resource: "*submit*report*"
+    effect: deny
 ---
 
 # BB-HUNTER: Primary Bug Bounty Orchestrator

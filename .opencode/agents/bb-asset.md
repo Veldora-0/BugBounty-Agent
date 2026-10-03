@@ -1,8 +1,22 @@
 ---
 name: bb-asset
+mode: subagent
 description: Asset normalization and correlation specialist. Merges duplicate hostnames, establishes domain parent-child hierarchies, and correlates shared infrastructure.
 skills:
   - asset-correlation
+permissions:
+  - action: shell
+    resource: "*bb-target-normalize*"
+    effect: allow
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-ASSET: Asset Normalization and Correlation Specialist

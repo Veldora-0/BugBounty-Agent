@@ -92,6 +92,8 @@ def main():
     print(f"\n[+] FRAMEWORK & OPENCODE INTEGRATION:")
     print(f"    - Scope Engine:           [{scope_eng.get('status')}]")
     print(f"    - OpenCode Agents:        [{opencode.get('status')}] ({opencode.get('agent_count')} Agents, {opencode.get('skill_count')} Skills)")
+    print(f"    - OpenCode V2 Config:     [VALID] (Default: {opencode.get('default_agent')}, Depth: {opencode.get('subagent_depth')}, Rules: {opencode.get('permission_rules')})")
+    print(f"    - OpenCode Runtime:       [{opencode.get('runtime_status')}]")
 
     print("\n==============================================================================")
     print("Run 'bb-install <tool>' to install missing tools on demand.")

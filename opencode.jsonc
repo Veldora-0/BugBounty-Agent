@@ -2,105 +2,304 @@
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "bb-hunter",
   "subagent_depth": 3,
-  "agents": {
+  "agent": {
     "bb-hunter": {
+      "mode": "primary",
       "description": "Primary orchestrator for bug bounty security research workflows."
     },
     "bb-scope": {
-      "description": "Strict scope and authorization verification specialist (offline logic only, no target network activity)."
+      "mode": "subagent",
+      "description": "Strict scope and authorization verification specialist (offline logic only, zero target network activity)."
     },
     "bb-recon": {
+      "mode": "subagent",
       "description": "Controlled reconnaissance and passive/active asset discovery specialist."
     },
     "bb-asset": {
+      "mode": "subagent",
       "description": "Asset normalization, hierarchy modeling, and correlation specialist."
     },
     "bb-web": {
+      "mode": "subagent",
       "description": "Web application security analysis specialist."
     },
     "bb-js": {
+      "mode": "subagent",
       "description": "JavaScript analysis and route extraction specialist."
     },
     "bb-api": {
+      "mode": "subagent",
       "description": "REST, GraphQL, and WebSocket API security specialist."
     },
     "bb-authz": {
+      "mode": "subagent",
       "description": "Authorization vulnerability specialist (BOLA/IDOR, BFLA, multi-tenant isolation)."
     },
     "bb-injection": {
+      "mode": "subagent",
       "description": "Safe, non-destructive input and injection testing specialist."
     },
     "bb-business-logic": {
+      "mode": "subagent",
       "description": "Business logic and workflow security specialist."
     },
     "bb-cloud": {
+      "mode": "subagent",
       "description": "Cloud configuration and storage bucket exposure specialist."
     },
     "bb-validator": {
+      "mode": "subagent",
       "description": "Independent adversarial finding validator and false-positive eliminator."
     },
     "bb-dedup": {
+      "mode": "subagent",
       "description": "Finding and test deduplication specialist."
     },
     "bb-report": {
+      "mode": "subagent",
       "description": "Professional vulnerability disclosure report generator."
     }
   },
   "permissions": [
     {
-      "scope": "scripts/bb-scope-check",
-      "action": "allow",
-      "description": "Permit local scope verification command without prompt"
+      "action": "shell",
+      "resource": "*",
+      "effect": "ask",
+      "description": "Default baseline: require human confirmation for any unspecified shell command"
     },
     {
-      "scope": "scripts/bb-target-normalize",
-      "action": "allow",
-      "description": "Permit local normalization utility without prompt"
+      "action": "subagent",
+      "resource": "*",
+      "effect": "allow",
+      "description": "Permit delegation to configured specialist subagents"
     },
     {
-      "scope": "scripts/bb-init",
-      "action": "allow",
-      "description": "Permit workspace initialization without prompt"
+      "action": "read",
+      "resource": "*",
+      "effect": "allow",
+      "description": "Permit local file reading across workspace and project files"
     },
     {
-      "scope": "scripts/bb-evidence",
-      "action": "allow",
-      "description": "Permit evidence collection without prompt"
+      "action": "glob",
+      "resource": "*",
+      "effect": "allow",
+      "description": "Permit local filesystem globbing and directory listing"
     },
     {
-      "scope": "scripts/bb-recon",
-      "action": "ask",
-      "description": "Require human confirmation before launching active reconnaissance"
+      "action": "grep",
+      "resource": "*",
+      "effect": "allow",
+      "description": "Permit local code and state searching"
     },
     {
-      "scope": "scripts/bb-http",
-      "action": "ask",
-      "description": "Require human confirmation for HTTP testing interactions"
+      "action": "edit",
+      "resource": "*",
+      "effect": "allow",
+      "description": "Permit editing project configuration, state, and reports"
     },
     {
-      "scope": "scripts/bb-nuclei",
-      "action": "ask",
-      "description": "Require human confirmation before executing Nuclei scanning"
+      "action": "shell",
+      "resource": "*bb-recon*",
+      "effect": "ask",
+      "description": "Require human confirmation before launching active asset reconnaissance"
     },
     {
-      "scope": "scripts/bb-content",
-      "action": "ask",
-      "description": "Require human confirmation before launching directory fuzzing"
+      "action": "shell",
+      "resource": "*bb-http*",
+      "effect": "ask",
+      "description": "Require human confirmation before sending active HTTP probing requests"
     },
     {
-      "scope": "scripts/bb-doctor",
-      "action": "allow",
-      "description": "Permit system diagnostics and tool health check without prompt"
+      "action": "shell",
+      "resource": "*bb-nuclei*",
+      "effect": "ask",
+      "description": "Require human confirmation before running Nuclei vulnerability scans"
     },
     {
-      "scope": "scripts/bb-install",
-      "action": "ask",
-      "description": "Require human confirmation before running on-demand tool installation"
+      "action": "shell",
+      "resource": "*bb-content*",
+      "effect": "ask",
+      "description": "Require human confirmation before launching content or path fuzzing"
     },
     {
-      "scope": "scripts/bb-update",
-      "action": "ask",
-      "description": "Require human confirmation before upgrading security tools"
+      "action": "shell",
+      "resource": "*bb-js*",
+      "effect": "ask",
+      "description": "Require human confirmation before running active JavaScript endpoint extraction"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-api*",
+      "effect": "ask",
+      "description": "Require human confirmation before executing active API security tests"
+    },
+    {
+      "action": "shell",
+      "resource": "subfinder *",
+      "effect": "ask",
+      "description": "Require human confirmation before executing subfinder directly"
+    },
+    {
+      "action": "shell",
+      "resource": "httpx *",
+      "effect": "ask",
+      "description": "Require human confirmation before executing httpx directly"
+    },
+    {
+      "action": "shell",
+      "resource": "nuclei *",
+      "effect": "ask",
+      "description": "Require human confirmation before executing nuclei directly"
+    },
+    {
+      "action": "shell",
+      "resource": "ffuf *",
+      "effect": "ask",
+      "description": "Require human confirmation before executing ffuf directly"
+    },
+    {
+      "action": "shell",
+      "resource": "amass *",
+      "effect": "ask",
+      "description": "Require human confirmation before executing amass directly"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-install*",
+      "effect": "ask",
+      "description": "Require human confirmation before installing tools that modify the host"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-update*",
+      "effect": "ask",
+      "description": "Require human confirmation before updating tools on the host"
+    },
+    {
+      "action": "shell",
+      "resource": "git status *",
+      "effect": "allow",
+      "description": "Permit local repository status inspection without prompt"
+    },
+    {
+      "action": "shell",
+      "resource": "git diff *",
+      "effect": "allow",
+      "description": "Permit local repository diff inspection without prompt"
+    },
+    {
+      "action": "shell",
+      "resource": "git log *",
+      "effect": "allow",
+      "description": "Permit local git commit log inspection without prompt"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-scope-check*",
+      "effect": "allow",
+      "description": "Permit offline scope verification checks without prompt"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-target-normalize*",
+      "effect": "allow",
+      "description": "Permit local target normalization utility without prompt"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-init*",
+      "effect": "allow",
+      "description": "Permit local workspace initialization without prompt"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-doctor*",
+      "effect": "allow",
+      "description": "Permit local system diagnostics and health checks without prompt"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-evidence*",
+      "effect": "allow",
+      "description": "Permit local evidence sanitization and storage without prompt"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-install --dry-run*",
+      "effect": "allow",
+      "description": "Permit inspecting tool installation plans without host changes"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-update --check*",
+      "effect": "allow",
+      "description": "Permit inspecting tool updates without host changes"
+    },
+    {
+      "action": "shell",
+      "resource": "git push *",
+      "effect": "ask",
+      "description": "Require explicit confirmation before pushing changes to remote repository"
+    },
+    {
+      "action": "shell",
+      "resource": "*submit*report*",
+      "effect": "deny",
+      "description": "Strictly deny automated vulnerability report submission to external platforms"
+    },
+    {
+      "action": "shell",
+      "resource": "*submit*finding*",
+      "effect": "deny",
+      "description": "Strictly deny automated finding submission to external platforms"
+    },
+    {
+      "action": "shell",
+      "resource": "*hackerone*submit*",
+      "effect": "deny",
+      "description": "Strictly deny automated HackerOne report submission"
+    },
+    {
+      "action": "shell",
+      "resource": "*api.hackerone.com*",
+      "effect": "deny",
+      "description": "Strictly deny automated calls to HackerOne API endpoints"
+    },
+    {
+      "action": "shell",
+      "resource": "*bugcrowd*submit*",
+      "effect": "deny",
+      "description": "Strictly deny automated Bugcrowd report submission"
+    },
+    {
+      "action": "shell",
+      "resource": "*api.bugcrowd.com*",
+      "effect": "deny",
+      "description": "Strictly deny automated calls to Bugcrowd API endpoints"
+    },
+    {
+      "action": "shell",
+      "resource": "*intigriti*submit*",
+      "effect": "deny",
+      "description": "Strictly deny automated Intigriti report submission"
+    },
+    {
+      "action": "shell",
+      "resource": "*api.intigriti.com*",
+      "effect": "deny",
+      "description": "Strictly deny automated calls to Intigriti API endpoints"
+    },
+    {
+      "action": "shell",
+      "resource": "curl * | *sh*",
+      "effect": "deny",
+      "description": "Strictly deny piping unverified remote scripts directly to shell"
+    },
+    {
+      "action": "shell",
+      "resource": "wget * | *sh*",
+      "effect": "deny",
+      "description": "Strictly deny piping unverified remote scripts directly to shell"
     }
   ]
 }

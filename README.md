@@ -296,6 +296,46 @@ If a preferred tool is unavailable:
 
 ---
 
+## OpenCode V2 Runtime & Security Architecture
+
+BugBounty-Agent is architected natively for **OpenCode V2** on Kali/Linux research workstations.
+
+### 1. Permission Model & Precedence
+The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluation: **the last matching rule wins**. This guarantees safe defaults with surgical overrides:
+
+| Operation Category | Action | Resource Pattern | Effect | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **Default Baseline** | `shell` | `*` | `ask` | Unspecified shell commands default to human approval |
+| **Subagent Delegation** | `subagent` | `*` | `allow` | Permits delegating tasks to registered specialist agents |
+| **Code & File Read** | `read`, `glob`, `grep` | `*` | `allow` | Permits reading codebase, config, and local state |
+| **Safe Local Utilities** | `shell` | `*bb-scope-check*` | `allow` | Offline scope verification runs without prompt |
+| **Target Normalization** | `shell` | `*bb-target-normalize*` | `allow` | URL/hostname normalization runs without prompt |
+| **Workspace Setup** | `shell` | `*bb-init*` | `allow` | Workspace folder creation runs without prompt |
+| **System Diagnostics** | `shell` | `*bb-doctor*` | `allow` | Health checks and tool audit run without prompt |
+| **Evidence Logging** | `shell` | `*bb-evidence*` | `allow` | Evidence capture and redaction run without prompt |
+| **Plan Inspections** | `shell` | `*--dry-run*`, `*--check*` | `allow` | Install dry-runs and update checks run without prompt |
+| **Git Local Inspection** | `shell` | `git status *`, `git diff *` | `allow` | Read-only repository state inspection without prompt |
+| **Active Reconnaissance**| `shell` | `*bb-recon*`, `subfinder *` | `ask` | Human confirmation required before probing assets |
+| **Active HTTP Probing** | `shell` | `*bb-http*`, `httpx *` | `ask` | Human confirmation required before sending web traffic |
+| **Nuclei Scanning** | `shell` | `*bb-nuclei*`, `nuclei *` | `ask` | Human confirmation required before vulnerability scanning |
+| **Content Fuzzing** | `shell` | `*bb-content*`, `ffuf *` | `ask` | Human confirmation required before fuzzing endpoints |
+| **Tool Installation** | `shell` | `*bb-install*` | `ask` | Human confirmation required before modifying system tools |
+| **Tool Updates** | `shell` | `*bb-update*` | `ask` | Human confirmation required before updating system tools |
+| **Remote Git Push** | `shell` | `git push *` | `ask` | Confirmation required before modifying remote repository |
+| **External Submission** | `shell` | `*submit*report*`, `*hackerone*submit*`, `*bugcrowd*submit*` | `deny` | **Strictly denied**: Automated platform submissions prohibited |
+| **Remote Script Pipes** | `shell` | `curl * \| *sh*`, `wget * \| *sh*` | `deny` | **Strictly denied**: Arbitrary remote shell piping prohibited |
+
+### 2. Multi-Agent Hierarchy & Delegation Limits
+* **Primary Agent (`bb-hunter`)**: Configured with `mode: primary`. Selected automatically via `default_agent: "bb-hunter"`.
+* **13 Specialist Subagents**: Configured with `mode: subagent`. Each subagent carries tailored frontmatter permissions (e.g. `bb-scope` enforces zero target network traffic; `bb-report` strictly denies external submissions).
+* **Nesting Depth (`subagent_depth: 3`)**: Allows controlled 3-tier delegation (`bb-hunter` -> Specialist -> Validator/Evidence) while preventing runaway agent loops.
+
+### 3. Environment & Runtime Status
+* **Development Machine**: Windows 10/11 x86_64 running Google Antigravity. Static configuration, schema compliance, and permission rule matching are validated locally via Python test suites.
+* **Target Runtime**: Kali/Debian Linux with OpenCode installed. Actual interactive terminal execution on a live Kali workstation is recorded as **PENDING — requires Kali**.
+
+---
+
 ## Research Workflow in 4 Steps
 
 ### Step 1: Initialize a Local Program

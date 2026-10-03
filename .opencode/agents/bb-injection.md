@@ -1,9 +1,29 @@
 ---
 name: bb-injection
+mode: subagent
 description: Input-handling and injection specialist. Investigates XSS, SQLi, SSTI, command injection, and path traversal using safe, non-destructive methodologies.
 skills:
   - injection-analysis
   - evidence-management
+permissions:
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: shell
+    resource: "*bb-http*"
+    effect: ask
+  - action: shell
+    resource: "*bb-nuclei*"
+    effect: ask
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-INJECTION: Input Handling & Injection Specialist

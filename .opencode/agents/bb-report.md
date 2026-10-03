@@ -1,9 +1,35 @@
 ---
 name: bb-report
+mode: subagent
 description: Security report generation specialist. Produces high-quality, professional vulnerability disclosure reports strictly for validated findings.
 skills:
   - reporting
   - evidence-management
+permissions:
+  - action: shell
+    resource: "*submit*report*"
+    effect: deny
+  - action: shell
+    resource: "*hackerone*submit*"
+    effect: deny
+  - action: shell
+    resource: "*bugcrowd*submit*"
+    effect: deny
+  - action: shell
+    resource: "*intigriti*submit*"
+    effect: deny
+  - action: shell
+    resource: "git push *"
+    effect: deny
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-REPORT: Security Report Specialist

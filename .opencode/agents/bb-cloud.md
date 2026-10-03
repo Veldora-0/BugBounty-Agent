@@ -1,8 +1,25 @@
 ---
 name: bb-cloud
+mode: subagent
 description: Cloud security and infrastructure review specialist. Evaluates cloud storage permissions, metadata exposures, and DNS-to-cloud relationships.
 skills:
   - cloud-review
+permissions:
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: shell
+    resource: "*bb-http*"
+    effect: ask
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-CLOUD: Cloud Security Review Specialist

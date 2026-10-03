@@ -1,9 +1,26 @@
 ---
 name: bb-business-logic
+mode: subagent
 description: Business logic specialist. Analyzes workflow integrity, state transition flaws, race conditions, and trust boundary assumptions without real-world harm.
 skills:
   - business-logic-analysis
   - evidence-management
+permissions:
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: shell
+    resource: "*bb-http*"
+    effect: ask
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-BUSINESS-LOGIC: Business Logic Specialist

@@ -1,8 +1,19 @@
 ---
 name: bb-dedup
+mode: subagent
 description: Deduplication specialist. Groups candidate findings by root cause, endpoint, and vulnerability class to prevent duplicate report submissions.
 skills:
   - deduplication
+permissions:
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-DEDUP: Deduplication Specialist

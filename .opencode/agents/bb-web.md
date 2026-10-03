@@ -1,9 +1,29 @@
 ---
 name: bb-web
+mode: subagent
 description: Web application security analysis specialist. Investigates authentication mechanisms, session management, CORS, input vectors, and application workflows.
 skills:
   - web-mapping
   - evidence-management
+permissions:
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: shell
+    resource: "*bb-http*"
+    effect: ask
+  - action: shell
+    resource: "*bb-content*"
+    effect: ask
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-WEB: Web Application Analysis Specialist

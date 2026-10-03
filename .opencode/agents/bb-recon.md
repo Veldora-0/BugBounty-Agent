@@ -1,9 +1,29 @@
 ---
 name: bb-recon
+mode: subagent
 description: Controlled reconnaissance specialist. Discovers passive assets, DNS relationships, TLS certificate data, and active HTTP services within scope limits.
 skills:
   - scope-management
   - asset-discovery
+permissions:
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-recon*"
+    effect: ask
+  - action: shell
+    resource: "subfinder *"
+    effect: ask
+  - action: shell
+    resource: "assetfinder *"
+    effect: ask
+  - action: shell
+    resource: "httpx *"
+    effect: ask
+  - action: read
+    resource: "*"
+    effect: allow
 ---
 
 # BB-RECON: Controlled Reconnaissance Specialist

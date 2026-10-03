@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1] - 2026-10-04
+
+### OpenCode V2 Runtime Compatibility & Permission Alignment
+
+#### Changed
+* **OpenCode V2 Permission Model (`opencode.jsonc`)**:
+  * Migrated from legacy syntax to official OpenCode V2 ordered rules array (`action`, `resource`, `effect`, `description`).
+  * Enforced OpenCode V2 "last matching rule wins" precedence logic.
+  * Baseline safety: broad shell commands default to human approval (`ask`).
+  * Safe local operations (`bb-scope-check`, `bb-target-normalize`, `bb-init`, `bb-doctor`, `bb-evidence`, `git status/diff/log`, `--dry-run`, `--check`) granted automatic execution (`allow`).
+  * Active security reconnaissance, HTTP interactions, Nuclei, fuzzing, and host-modifying tool installations (`bb-install`, `bb-update`) strictly approval-gated (`ask`).
+  * External report submission (`*submit*report*`, platform APIs for HackerOne, Bugcrowd, Intigriti) and unverified remote curl pipes strictly denied (`deny`).
+  * Remote repository modifications (`git push`) strictly approval-gated (`ask`).
+* **Agent Frontmatters (`.opencode/agents/`)**:
+  * Configured `bb-hunter` with `mode: primary`.
+  * Configured all 13 specialist agents with `mode: subagent`.
+  * Restricted `bb-scope` to offline-only execution (`*` denied, only scope validation allowed).
+  * Restricted `bb-report` to local report generation only (denied external submission and git push).
+* **System Diagnostics (`framework/tools/doctor.py`, `scripts/bb-doctor`)**:
+  * Added validation of OpenCode V2 configuration, agent modes, subagent depth, and permission rules count.
+  * Explicitly reports OpenCode runtime status (`PENDING - requires Kali` when tested on development host).
+
+#### Added
+* **Automated OpenCode V2 Test Suite (`tests/test_opencode_runtime.py`)**:
+  * 14 tests validating V2 configuration structure, last-matching-rule-wins permission evaluation, safe vs active operation categorization, dangerous command rejection, agent frontmatter compliance, skill discovery, and shell injection prevention (67 tests total, 100% passing).
+
+---
+
 ## [1.1.0] - 2026-10-03
 
 ### Tool Intelligence, Auto-Install & API Provider Expansion — V1.1

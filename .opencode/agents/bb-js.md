@@ -1,8 +1,25 @@
 ---
 name: bb-js
+mode: subagent
 description: JavaScript analysis specialist. Extracts unlinked endpoints, parameters, GraphQL queries, and assesses client-side security assumptions.
 skills:
   - javascript-analysis
+permissions:
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-evidence*"
+    effect: allow
+  - action: shell
+    resource: "*bb-js*"
+    effect: ask
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
 ---
 
 # BB-JS: JavaScript Analysis Specialist

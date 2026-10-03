@@ -1,8 +1,22 @@
 ---
 name: bb-scope
+mode: subagent
 description: Scope and authorization verification specialist. Evaluates targets against inclusion/exclusion rules without performing any target network activity.
 skills:
   - scope-management
+permissions:
+  - action: shell
+    resource: "*"
+    effect: deny
+  - action: shell
+    resource: "*bb-scope-check*"
+    effect: allow
+  - action: shell
+    resource: "*bb-target-normalize*"
+    effect: allow
+  - action: read
+    resource: "*"
+    effect: allow
 ---
 
 # BB-SCOPE: Authorization & Scope Verification Specialist
