@@ -49,6 +49,7 @@ class StateManager:
         self.tests_file = os.path.join(self.state_dir, "tests.json")
         self.findings_file = os.path.join(self.state_dir, "findings.json")
         self.coverage_file = os.path.join(self.state_dir, "coverage.json")
+        self.recon_file = os.path.join(self.state_dir, "recon.json")
 
         self._init_files()
 
@@ -62,6 +63,7 @@ class StateManager:
             (self.tests_file, {}),
             (self.findings_file, {}),
             (self.coverage_file, DEFAULT_COVERAGE),
+            (self.recon_file, {}),
         ]:
             if not os.path.exists(filepath):
                 self._atomic_write_json(filepath, default_content)
@@ -354,3 +356,10 @@ class StateManager:
         if not isinstance(cov, dict):
             return dict(DEFAULT_COVERAGE)
         return cov
+
+    # ---------------- Reconnaissance State ----------------
+
+    def get_recon_state(self) -> Any:
+        """Returns a ReconStateManager instance for this program."""
+        from framework.recon.state import ReconStateManager
+        return ReconStateManager(self.program_dir)

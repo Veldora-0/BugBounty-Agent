@@ -89,10 +89,12 @@ def main():
     # 6. Scope Engine & OpenCode Integration
     scope_eng = diag.get("scope_engine", {})
     asset_eng = diag.get("asset_engine", {})
+    recon_eng = diag.get("recon_engine", {})
     opencode = diag.get("opencode_integration", {})
     print(f"\n[+] FRAMEWORK & OPENCODE INTEGRATION:")
     print(f"    - Scope Engine:           [{scope_eng.get('status')}]")
     print(f"    - Asset Engine:           [{asset_eng.get('status')}]")
+    print(f"    - Recon Engine:           [{recon_eng.get('status')}]")
     print(f"    - Canonical Agent Source: [{opencode.get('status')}] ({opencode.get('agent_count')} Agent [{opencode.get('default_agent')}], {opencode.get('skill_count')} Skills in repo)")
     print(f"    - Global Deployment:      [{opencode.get('global_status')}] ({opencode.get('global_dir')})")
     print(f"    - Duplicate Agent Risk:   [{opencode.get('duplicate_risk')}] (Project-local agents prevented)")

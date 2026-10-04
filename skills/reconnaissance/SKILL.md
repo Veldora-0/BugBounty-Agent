@@ -3,43 +3,89 @@ name: reconnaissance
 description: Controlled passive and active surface reconnaissance, DNS resolution, HTTP probing, technology detection, and content discovery.
 ---
 
-# Reconnaissance Methodology
+# Reconnaissance Methodology & Intelligence Engine
 
 ## Core Objective
-Systematically map an organization's authorized external attack surface using passive intelligence feeds, controlled DNS resolution, HTTP service probing, and content discovery without exceeding rate limits or generating disruptive traffic.
+Systematically map and enrich an organization's authorized external attack surface using passive intelligence feeds, controlled DNS resolution, HTTP service probing, TLS certificate metadata, technology fingerprinting, and endpoint discovery without exceeding safety budgets or generating disruptive traffic.
 
-## 1. Passive Reconnaissance (Zero Target Traffic)
-* **Certificate Transparency (CT)**: Interrogate public CT logs using `subfinder` and `assetfinder`.
-* **Passive DNS Feeds**: Aggregate historical records from VirusTotal, SecurityTrails, Censys, and ProjectDiscovery Chaos where API keys are configured.
-* **Search Engine Intelligence**: Query Google, Bing, Shodan, and Uncover for public indexing anomalies.
-* **Repository & Code Dorks**: Review public GitHub commits and developer documentation for referenced staging endpoints.
+Reconnaissance consumes confirmed attack surface assets from the `AssetGraph` (Phase 1) and generates structured, normalized observations stored atomically in `state/recon.json` (Phase 2).
 
-## 2. Controlled Active Reconnaissance
-* **DNS Resolution & Permutations**:
-  * Resolve candidate hostnames with `dnsx` using trusted resolvers.
-  * Generate algorithmic permutations using `alterx` or `dnsgen` for high-value targets.
-  * Employ `shuffledns` with `massdns` for large-scale wordlist brute-forcing only when explicitly authorized.
-* **HTTP Service Probing**:
-  * Probe live HTTP and HTTPS endpoints using `httpx`.
-  * Capture HTTP response status codes, redirects, web server headers, TLS certificate details, and JARM/favicon hashes.
-  * Enforce strict concurrency and rate limits (`--rate-limit 5`).
-* **Service & Port Discovery**:
-  * Execute lightweight port scanning using `naabu` across top standard web and administrative ports.
-  * For specialized network audits, invoke `nmap` with controlled flags.
-* **Technology & Stack Fingerprinting**:
-  * Identify CMS platforms (WordPress, Drupal), frameworks (React, Vue, Next.js, Django, Spring), and servers (Nginx, Apache, IIS, Caddy).
-  * Check for exposed management interfaces (`/swagger`, `/actuator`, `/debug`, `/_health`).
-* **Directory & Content Discovery**:
-  * Perform controlled fuzzing using `ffuf`, `feroxbuster`, or `dirsearch` with calibrated wordlists from `config/wordlists.yaml`.
-  * Filter out wildcard 404 responses and soft-redirect pages.
+---
 
-## 3. Tool Orchestration & Graceful Fallbacks
-Orchestrate tools dynamically via the Tool Registry rather than hardcoding executions:
-* Subdomain Discovery: `subfinder` → fallback `amass` → fallback `assetfinder`.
-* Crawling & URL Extraction: `katana` → fallback `hakrawler` → fallback `gospider`.
-* Web Fuzzing: `ffuf` → fallback `feroxbuster` → fallback `dirsearch`.
+## 1. Reconnaissance Intelligence Architecture
 
-## 4. Normalization & Deduplication
-* Filter all discovered hostnames through `bb-scope-check` before network probing.
-* Pipe raw outputs through `anew` and `uro` to ensure only unique, normalized records are passed to analysis modules.
-* Record discovery provenance (timestamp, tool, raw banner) for all active services.
+```mermaid
+flowchart TD
+    AssetGraph["AssetGraph (Phase 1 Assets)"] --> ScopeFilter["ScopeEngine Verification"]
+    ScopeFilter --> ReconEngine["ReconnaissanceEngine (Phase 2 Orchestrator)"]
+
+    subgraph "Capability-Driven Enrichment"
+        ReconEngine --> DNS["DNS Resolution (A, AAAA, CNAME)"]
+        ReconEngine --> TLS["TLS Certificate & SAN Inspection"]
+        ReconEngine --> HTTP["HTTP Service Probing (Status, Title, Headers)"]
+        ReconEngine --> Ports["Port & Service Discovery"]
+        ReconEngine --> Tech["Technology Fingerprinting"]
+        ReconEngine --> Endpoints["Endpoint Discovery"]
+    end
+
+    TLS -- New in-scope SANs --> AssetGraph
+    DNS -- Resolved IPs --> AssetGraph
+    HTTP -- Service Attributes --> ReconState["ReconStateManager (state/recon.json)"]
+    Ports --> ReconState
+    Tech --> ReconState
+    Endpoints --> ReconState
+```
+
+---
+
+## 2. Capability Orchestration & CLI Usage
+
+The reconnaissance workflow is managed via `bb-recon`:
+
+```bash
+# Enrich all in-scope assets discovered in program workspace
+bb-recon --program <program-name> --tree
+
+# Run passive-only reconnaissance without active network probing
+bb-recon --program <program-name> --passive-only
+
+# Target specific capabilities on a specific asset
+bb-recon --program <program-name> --asset api.example.com --capabilities "http,tls,tech"
+
+# Resume previous reconnaissance run, skipping already-probed assets
+bb-recon --program <program-name> --resume --tree
+
+# Export structured JSON reconnaissance observations
+bb-recon --program <program-name> --json
+```
+
+---
+
+## 3. Supported Reconnaissance Capabilities
+
+| Capability | Probing Method & Data Captured | Safety & Policy Rule |
+| :--- | :--- | :--- |
+| **`dns`** | A, AAAA, CNAME, MX, NS records; IPs enriched into `AssetGraph`. | Validated via `ScopeEngine`; passive DNS fallback available. |
+| **`tls`** | SAN names, issuer, validity period, TLS version, cipher. Discovered in-scope SANs become new graph nodes. | Port 443 handshake; strict scope filtering on all SAN names before graph insertion. |
+| **`http`** | URL, status code, title, server header, security headers, content length/type, redirect chain. | Rate-limited and bounded request ceilings (`--max-requests`). Default ports (80, 443). |
+| **`ports`** | Port number, protocol (TCP), identified service, reachability status. | Explicitly bounded port list; aggressive port sweeps strictly prohibited by default. |
+| **`tech`** | Server headers, framework signatures, CMS fingerprints, calibrated confidence (`OBSERVED`, `PROBABLE`, `CONFIRMED`). | Regex signatures across response headers; no disruptive or intrusive fuzzing. |
+| **`endpoints`** | Discovered API paths and web routes (`METHOD URL`), status codes, content types. | Strictly opt-in; bound by `--budget` and endpoint ceilings. |
+
+---
+
+## 4. Multi-Source Provenance & Deduplication
+
+* **Deterministic Normalization**: All URLs, endpoints, hostnames, and ports are normalized to canonical keys.
+* **Observation Provenance**: Every observation attaches an `ObservationProvenance` record documenting originating tool/source, method, timestamp, and confidence rating.
+* **Persistent Local State**: Observations are stored in `~/BugBounty-Workspace/programs/<name>/state/recon.json` using atomic replace writes (`_atomic_write_json`) to guarantee zero file corruption.
+* **Resumability**: Assets flagged in `probed_assets` are skipped on subsequent runs with `--resume`.
+
+---
+
+## 5. Safety & Operational Rules
+
+1. **Mandatory Scope Gate**: `ScopeEngine` verifies all targets before executing any network probes. Out-of-scope targets are skipped immediately.
+2. **Deterministic Offline Testing**: All test suites utilize offline mock hooks (`http_probe_hook`, `dns_probe_hook`, `tls_probe_hook`, `port_scan_hook`, `endpoint_probe_hook`).
+3. **Zero Shell Execution**: No `shell=True` or `os.system()` invocations.
+4. **Git Isolation**: Target evidence, scan outputs, and `recon.json` remain local to Kali workspaces and are never committed to Git.

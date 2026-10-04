@@ -227,6 +227,27 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_recon_engine(self) -> Dict[str, Any]:
+        """Category 11: Reconnaissance Intelligence Engine verification."""
+        try:
+            from framework.recon.engine import ReconnaissanceEngine
+            from framework.recon.model import HttpObservation
+            from framework.recon.state import ReconStateManager
+
+            obs = HttpObservation(
+                url="https://example.com",
+                scheme="https",
+                host="example.com",
+                port=443,
+                status_code=200,
+            )
+            key_ok = obs.key.startswith("https://example.com")
+            engine = ReconnaissanceEngine(passive_only=True)
+            healthy = key_ok and engine.passive_only is True
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -239,5 +260,6 @@ class SystemDoctor:
             "configuration": self.check_configuration(),
             "scope_engine": self.check_scope_engine(),
             "asset_engine": self.check_asset_engine(),
+            "recon_engine": self.check_recon_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }

@@ -326,6 +326,34 @@ The **Asset Intelligence Engine** (`framework/assets/` & `scripts/bb-assets`) co
 
 ---
 
+## Phase 2: Reconnaissance Intelligence & Enrichment Engine
+
+The **Reconnaissance Intelligence Engine** (`framework/recon/` & `scripts/bb-recon`) consumes confirmed assets from the `AssetGraph` and enriches them with structured, normalized observations:
+
+* **Capability-Driven Orchestration**: Dynamically orchestrates recon capabilities (`dns`, `tls`, `http`, `ports`, `tech`, `endpoints`) instead of blindly chaining static security tools.
+* **HTTP Service Intelligence**: Captures URLs, status codes, page titles, server banners, security headers, content lengths, response times, and redirect chains.
+* **Port & Network Service Discovery**: Identifies open TCP ports and protocols with bounded safety budgets, preventing disruptive port flooding.
+* **DNS & TLS Certificate Enrichment**: Maps A, AAAA, CNAME, MX, and NS records, enriching IPs directly into the `AssetGraph`. Extracted in-scope TLS SAN names are dynamically promoted to graph nodes connected via `PRESENT_IN_CERT` edges.
+* **Technology Fingerprinting**: Identifies servers (Nginx, Apache, IIS, Caddy), frameworks (Next.js, Express, ASP.NET, PHP), and CMS platforms (WordPress, Drupal) with calibrated confidence (`OBSERVED`, `PROBABLE`, `CONFIRMED`).
+* **Endpoint & Route Discovery**: Structured mapping of web routes and API paths (`METHOD URL`), status codes, and content types with strict deduplication.
+* **Atomic State Persistence**: Persists observations atomically to `~/BugBounty-Workspace/programs/<name>/state/recon.json`, ensuring zero file corruption. Supports resumable execution (`--resume`) to skip already-probed assets.
+* **CLI Utility**:
+  ```bash
+  # Enrich attack surface for an initialized program workspace
+  ./scripts/bb-recon --program acme-corp --tree
+
+  # Passive analysis only without active network probes
+  ./scripts/bb-recon --program acme-corp --passive-only
+
+  # Target specific capabilities on a single asset
+  ./scripts/bb-recon --program acme-corp --asset api.example.com --capabilities "http,tls,tech"
+
+  # Resume previous scan and output JSON observations
+  ./scripts/bb-recon --program acme-corp --resume --json
+  ```
+
+---
+
 ## OpenCode V2 Runtime & Security Architecture
 
 BugBounty-Agent is architected natively for **OpenCode V2** on Kali/Linux research workstations.
