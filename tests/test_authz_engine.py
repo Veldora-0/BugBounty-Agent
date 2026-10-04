@@ -18,9 +18,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 from typing import Any, Dict
 import pytest
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from framework.authz.approval import HumanApprovalGate
 from framework.authz.comparator import AccessControlComparator
