@@ -114,3 +114,4 @@ bb-api --program myprogram --resume
 2. **Safe HTTP Methods**: Active specification discovery requests are strictly restricted to safe read methods (`GET`, `HEAD`, `OPTIONS`). State-changing verbs (`POST`, `PUT`, `DELETE`, `PATCH`) are never automatically executed.
 3. **Scope Verification**: Every discovered host and specification URL must pass `ScopeEngine` checks before any network request is issued.
 4. **Data Isolation**: All state is persisted in `~/BugBounty-Workspace/programs/<name>/state/api.json` outside the Git repository.
+5. **Downstream Pipeline**: API schemas and parameters feed Phase 8 (`authorization` / BOLA) and Phase 9 (`oob` / `ssrf` URL and webhook parameters).

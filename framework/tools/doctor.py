@@ -405,6 +405,42 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_ssrf_engine(self) -> Dict[str, Any]:
+        """Category 18: SSRF Intelligence & Out-of-Band Engine verification."""
+        try:
+            from framework.ssrf.canary import CanaryManager
+            from framework.ssrf.comparator import SsrfComparator
+            from framework.ssrf.intelligence import SsrfIntelligenceAnalyzer
+            from framework.ssrf.model import SsrfCandidate, SsrfCategory, SsrfConfidence
+            from framework.ssrf.provider import MockOobProvider
+            from framework.validation.request import ControlledResponse
+
+            analyzer = SsrfIntelligenceAnalyzer()
+            is_cand = analyzer.is_candidate_parameter_name("webhook_url")
+            provider = MockOobProvider()
+            canary_mgr = CanaryManager(provider=provider, program_id="doctor")
+            tok, url = canary_mgr.issue_canary("test-01")
+            provider.simulate_interaction(tok, protocol="HTTP", source_ip="203.0.113.88")
+            ints = canary_mgr.correlate_interactions(tok)
+
+            cand = SsrfCandidate(
+                application="example.com",
+                endpoint="https://example.com/fetch",
+                parameter="url",
+            )
+            test_resp = ControlledResponse(status_code=200, headers={}, body="OK", size_bytes=2)
+            comp = SsrfComparator.evaluate(cand, tok, test_resp, interactions=ints)
+
+            healthy = (
+                is_cand is True
+                and len(ints) == 1
+                and comp.is_confirmed is True
+                and comp.confidence == SsrfConfidence.VALIDATED
+            )
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -424,5 +460,6 @@ class SystemDoctor:
             "validation_engine": self.check_validation_engine(),
             "xss_engine": self.check_xss_engine(),
             "authz_engine": self.check_authz_engine(),
+            "ssrf_engine": self.check_ssrf_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }

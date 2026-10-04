@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""
+bb-ssrf — BugBounty-Agent SSRF & Out-of-Band Interaction Intelligence Engine.
+
+Provides hypothesis-driven validation for Server-Side Request Forgery,
+blind SSRF, DNS-only server-side interaction, redirect-mediated SSRF,
+webhook callbacks, and remote resource fetchers using researcher-controlled canaries
+and strict human approval gating.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.scope.engine import ScopeEngine
+from framework.ssrf.approval import HumanApprovalGate
+from framework.ssrf.engine import SsrfIntelligenceEngine
+from framework.ssrf.intelligence import SsrfIntelligenceAnalyzer
+from framework.ssrf.lab import LocalSsrfLab
+from framework.ssrf.model import SsrfCandidate, SsrfCategory, SsrfConfidence
+from framework.ssrf.provider import OobProviderFactory
+from framework.ssrf.state import SsrfStateManager
+from framework.validation.policy import SecurityTestPolicy
+import yaml
+
+
+def render_ssrf_tree(summary_data: Dict[str, Any], candidates: List[SsrfCandidate], program_name: str) -> None:
+    """Renders visual ASCII tree of SSRF candidates, OOB interactions, and findings."""
+    print("\n==============================================================================")
+    print("                     SSRF & OUT-OF-BAND INTELLIGENCE TREE                     ")
+    print("==============================================================================")
+
+    state = summary_data.get("summary", {})
+    by_cat = state.get("by_category", {})
+    by_life = state.get("by_lifecycle", {})
+
+    print(f"\n[*] Program:              {program_name}")
+    print(f"[*] Provider:             {summary_data.get('provider', 'mock')} (Status: {summary_data.get('provider_status', 'AVAILABLE')})")
+    print(f"[*] Total Candidates:     {state.get('total_candidates', len(candidates))}")
+    print(f"[*] Approved Tests:       {state.get('approved_tests', 0)}")
+    print(f"[*] OOB Callbacks:        {state.get('interactions_received', 0)}")
+    print(f"[*] Verified Findings:    {state.get('findings_recorded', 0)}")
+    print(f"[*] Categories:           Direct: {by_cat.get('direct', 0)} | Blind: {by_cat.get('blind', 0)} | Webhook: {by_cat.get('webhook', 0)} | Importer: {by_cat.get('importer', 0)}")
+    print(f"[*] Lifecycles:           Candidate: {by_life.get('CANDIDATE', 0)} | Approved: {by_life.get('APPROVED', 0)} | Observed: {by_life.get('OBSERVED', 0)} | Validated: {by_life.get('VALIDATED', 0)}")
+
+    if not candidates:
+        print("\n[*] No SSRF candidates recorded in current state.")
+        print("==============================================================================\n")
+        return
+
+    grouped: Dict[str, List[SsrfCandidate]] = defaultdict(list)
+    for c in candidates:
+        cat_val = c.category.value if hasattr(c.category, "value") else str(c.category)
+        grouped[cat_val].append(c)
+
+    for cat_name, cat_list in sorted(grouped.items()):
+        print(f"\n[+] CATEGORY: {cat_name.upper()} ({len(cat_list)} candidates)")
+        for c in cat_list[:25]:
+            status = c.lifecycle_state
+            appr = c.approval_status
+            conf = c.confidence.value if hasattr(c.confidence, "value") else str(c.confidence)
+            sink = c.sink_intel.sink_type if c.sink_intel else "URL_FETCHER"
+
+            print(f"    - [{status}] [{appr}] [{conf}] {c.method} {c.endpoint} (param: {c.parameter} in {c.param_location})")
+            print(f"        Sink: {sink} | URL Type: {c.url_type}")
+            if c.callback_token:
+                print(f"        Canary: {c.callback_token}")
+            if c.notes:
+                print(f"        Notes: {c.notes[:100]}")
+
+    print("\n==============================================================================")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="bb-ssrf",
+        description="BugBounty-Agent SSRF & Out-of-Band Interaction Intelligence Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bb-ssrf --program acme-corp --tree
+  bb-ssrf --program acme-corp --passive-only
+  bb-ssrf --program acme-corp --dry-run
+  bb-ssrf --program acme-corp --dossier
+  bb-ssrf --program acme-corp --endpoint "https://app.example.com/fetch?url=" --param url --dry-run
+  bb-ssrf --program acme-corp --endpoint "https://app.example.com/fetch?url=" --param url --approve
+  bb-ssrf --lab --tree
+        """,
+    )
+
+    parser.add_argument("-p", "--program", help="Program name in local workspace")
+    parser.add_argument("-s", "--scope", help="Path to scope.yaml definition")
+    parser.add_argument("-d", "--domain", help="Target apex root domain")
+    parser.add_argument("-a", "--asset", help="Specific host or application URL to filter")
+    parser.add_argument("-e", "--endpoint", help="Specific endpoint URL to validate")
+    parser.add_argument("--param", help="Specific parameter name to evaluate")
+    parser.add_argument(
+        "--category",
+        choices=["direct", "blind", "redirect_mediated", "dns_only", "webhook", "importer", "url_fetch", "all"],
+        default="all",
+        help="SSRF category filter (default: all)",
+    )
+    parser.add_argument("--provider", choices=["auto", "mock", "interactsh", "collaborator"], default="auto", help="OOB provider to utilize")
+    parser.add_argument("--canary", help="Specific canary token to check")
+    parser.add_argument("--approve", action="store_true", help="Grant explicit human approval to execute active SSRF canary tests")
+    parser.add_argument("--approve-id", help="Approve a specific candidate ID for execution")
+    parser.add_argument("--dossier", action="store_true", help="Display human approval dossiers for pending test cases")
+    parser.add_argument("--passive-only", action="store_true", help="Perform zero network requests; discover and model candidate parameters only")
+    parser.add_argument("--dry-run", action="store_true", help="Plan test cases and show expected canary probes without dispatching requests")
+    parser.add_argument("--resume", action="store_true", help="Resume prior evaluation and skip already processed tests")
+    parser.add_argument("--lab", action="store_true", help="Run against deterministic local security lab fixtures")
+    parser.add_argument("--max-tests", type=int, default=30, help="Maximum tests to evaluate (default: 30)")
+    parser.add_argument("--max-requests", type=int, default=100, help="Ceiling on total requests (default: 100)")
+    parser.add_argument("--max-wait", type=float, default=3.0, help="Polling timeout for OOB interactions in seconds (default: 3.0)")
+    parser.add_argument("--max-bytes", type=int, default=500000, help="Maximum response byte limit")
+    parser.add_argument("--timeout", type=float, default=5.0, help="HTTP request timeout in seconds (default: 5.0)")
+    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    parser.add_argument("--tree", action="store_true", help="Render visual ASCII candidate tree")
+
+    args = parser.parse_args()
+
+    prog_name = args.program or ("local-lab" if args.lab else "default")
+    prog_dir = get_program_dir(prog_name)
+    os.makedirs(prog_dir, exist_ok=True)
+
+    # Scope resolution
+    scope_engine: Optional[ScopeEngine] = None
+    scope_path = args.scope or os.path.join(prog_dir, "scope.yaml")
+    if os.path.exists(scope_path):
+        try:
+            with open(scope_path, "r", encoding="utf-8") as f:
+                scope_def = yaml.safe_load(f)
+            scope_engine = ScopeEngine(scope_def)
+        except Exception as e:
+            print(f"[-] Warning: Failed to parse scope definition from {scope_path}: {e}", file=sys.stderr)
+
+    # Policy
+    policy = SecurityTestPolicy(
+        allowed_methods={"GET", "HEAD", "OPTIONS"},
+        max_requests_per_program=args.max_requests,
+        max_response_bytes=args.max_bytes,
+        timeout=args.timeout,
+    )
+
+    # OOB Provider
+    provider = OobProviderFactory.get_provider(provider_name=args.provider)
+
+    # Local Lab setup if requested
+    send_hook = None
+    if args.lab:
+        lab_fixture = LocalSsrfLab(oob_provider=provider if isinstance(provider, type(LocalSsrfLab().oob_provider)) else None)
+        send_hook = lab_fixture.dispatch
+        provider = lab_fixture.oob_provider
+
+    # Initialize Engine
+    engine = SsrfIntelligenceEngine(
+        program_dir=prog_dir,
+        scope_engine=scope_engine,
+        policy=policy,
+        send_request_hook=send_hook,
+        oob_provider=provider,
+    )
+
+    # Handle approve-id if provided
+    if args.approve_id:
+        success = engine.approval_gate.approve(args.approve_id, approver="security-researcher-cli")
+        if success:
+            print(f"[+] Successfully approved candidate: {args.approve_id}")
+        else:
+            print(f"[-] Error: Candidate ID not found: {args.approve_id}", file=sys.stderr)
+            sys.exit(1)
+
+    # Single endpoint input handling
+    if args.endpoint:
+        extracted = SsrfIntelligenceAnalyzer.extract_from_url(args.endpoint)
+        if not extracted and args.param:
+            # Construct candidate from explicit parameter flag
+            from framework.ssrf.model import SsrfSink, SsrfSource
+            cand = SsrfCandidate(
+                application=urlparse(args.endpoint).netloc or "target.local",
+                endpoint=args.endpoint,
+                parameter=args.param,
+                param_location="QUERY",
+                method="GET",
+                category=SsrfCategory.DIRECT,
+                source_intel=SsrfSource(source_type="QUERY", parameter_name=args.param),
+                sink_intel=SsrfSink(sink_type="URL_FETCHER"),
+            )
+            engine.state_mgr.save_candidate(cand)
+        else:
+            for c in extracted:
+                engine.state_mgr.save_candidate(c)
+
+    # Execute workflow
+    results = engine.run_evaluation(
+        asset=args.asset or args.domain,
+        endpoint=args.endpoint,
+        parameter=args.param,
+        category=args.category if args.category != "all" else None,
+        approve_all=args.approve,
+        passive_only=args.passive_only,
+        dry_run=args.dry_run,
+        resume=args.resume,
+        max_tests=args.max_tests,
+        poll_wait_seconds=args.max_wait,
+    )
+
+    all_candidates = engine.state_mgr.list_candidates()
+
+    # Display dossiers if requested
+    if args.dossier:
+        print("\n==============================================================================")
+        print("                      HUMAN APPROVAL DOSSIER REVIEW                           ")
+        print("==============================================================================")
+        pending = [c for c in all_candidates if c.approval_status != "APPROVED"]
+        if not pending:
+            print("[*] No pending SSRF candidates requiring approval.")
+        for c in pending[:args.max_tests]:
+            print(engine.approval_gate.request_approval(c, provider_name=provider.name()))
+            print("-" * 60)
+        print("==============================================================================\n")
+        return
+
+    if args.json:
+        output_payload = {
+            "program": prog_name,
+            "results": results,
+            "candidates": [c.to_dict() for c in all_candidates],
+        }
+        print(json.dumps(output_payload, indent=2))
+        return
+
+    if args.tree or not args.json:
+        render_ssrf_tree(results, all_candidates, prog_name)
+
+
+if __name__ == "__main__":
+    main()
