@@ -7,7 +7,7 @@ This document details the architectural model of **BugBounty-Agent**, defining t
 ## Architectural Model: Single Global Agent with Modular Skills
 
 > [!IMPORTANT]
-> **Single-Agent Decision**: This repository is designed around **ONE OpenCode agent named exactly `Bug-Bounty`** (canonical source in `agents/bug-bounty.md`, deployed globally to `~/.config/opencode/agents/bug-bounty.md`). All specialized bug bounty research capabilities are implemented as **17 modular skills** (`skills/`, deployed globally to `~/.config/opencode/skills/`), rather than separate subagents.
+> **Single-Agent Decision**: This repository is designed around **ONE OpenCode agent named exactly `Bug-Bounty`** (canonical source in `agents/Bug-Bounty.md`, deployed globally to `~/.config/opencode/agents/Bug-Bounty.md`). All specialized bug bounty research capabilities are implemented as **17 modular skills** (`skills/`, deployed globally to `~/.config/opencode/skills/`), rather than separate subagents.
 >
 > *The previous 14-agent multi-agent architecture will be explored in a separate, dedicated repository in the future. It is intentionally NOT merged into this repository.*
 
@@ -52,8 +52,8 @@ flowchart TD
 | Property | Value |
 | :--- | :--- |
 | **Agent Name** | `Bug-Bounty` |
-| **Repository Source** | `agents/bug-bounty.md` (Canonical source of truth) |
-| **Global Deployment** | `~/.config/opencode/agents/bug-bounty.md` |
+| **Repository Source** | `agents/Bug-Bounty.md` (Canonical source of truth) |
+| **Global Deployment** | `~/.config/opencode/agents/Bug-Bounty.md` |
 | **Mode** | `primary` |
 | **Subagent Depth** | `1` (Direct orchestration; subagents disabled) |
 | **Core Role** | Senior Security Research Orchestrator |

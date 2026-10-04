@@ -174,7 +174,7 @@ class SystemDoctor:
 
         # Check global deployment
         global_config_dir = os.environ.get("OPENCODE_CONFIG_DIR", os.path.expanduser("~/.config/opencode"))
-        global_agent_file = os.path.join(global_config_dir, "agents", "bug-bounty.md")
+        global_agent_file = os.path.join(global_config_dir, "agents", "Bug-Bounty.md")
         global_skills_dir = os.path.join(global_config_dir, "skills")
         global_skills_count = len([d for d in os.listdir(global_skills_dir) if os.path.isdir(os.path.join(global_skills_dir, d))]) if os.path.isdir(global_skills_dir) else 0
         is_globally_deployed = os.path.exists(global_agent_file) and global_skills_count >= 17

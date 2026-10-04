@@ -82,11 +82,23 @@ class OpenCodeDeployer:
 
     def deploy_agent(self, prefer_symlink: bool = True) -> Dict[str, Any]:
         """Deploys the canonical Bug-Bounty agent to global OpenCode agents directory."""
-        agent_file = os.path.join(self.agents_src, "bug-bounty.md")
+        agent_file = os.path.join(self.agents_src, "Bug-Bounty.md")
         if not os.path.isfile(agent_file):
             return {"status": "error", "message": f"Canonical agent not found: {agent_file}"}
 
-        dst = os.path.join(self.target_agents, "bug-bounty.md")
+        os.makedirs(self.target_agents, exist_ok=True)
+
+        # Remove legacy lowercase deployment if present
+        for fname in os.listdir(self.target_agents):
+            if fname == "bug-bounty.md":
+                legacy_file = os.path.join(self.target_agents, fname)
+                try:
+                    if os.path.islink(legacy_file) or os.path.isfile(legacy_file):
+                        os.remove(legacy_file)
+                except OSError:
+                    pass
+
+        dst = os.path.join(self.target_agents, "Bug-Bounty.md")
         mode = self._link_or_copy(agent_file, dst, prefer_symlink=prefer_symlink)
         return {"status": "ok", "agent": "Bug-Bounty", "mode": mode, "destination": dst}
 
@@ -275,23 +287,36 @@ class OpenCodeDeployer:
         return {"status": "ok", "config_file": self.target_config_file, "default_agent": "Bug-Bounty"}
 
     def check_duplicate_prevention(self) -> Dict[str, Any]:
-        """Verifies that no project-local .opencode/agents/ exists to avoid duplicate discovery."""
+        """Verifies that no project-local .opencode/agents/ or legacy lowercase agent exists."""
         legacy_agents = os.path.join(self.repo_root, ".opencode", "agents")
         has_local_agents = os.path.isdir(legacy_agents) and any(
             f.endswith(".md") for f in os.listdir(legacy_agents)
         )
+        has_lowercase_global = False
+        if os.path.isdir(self.target_agents):
+            for f in os.listdir(self.target_agents):
+                if f == "bug-bounty.md":
+                    has_lowercase_global = True
+                    break
+
+        duplicate_risk = has_local_agents or has_lowercase_global
+        if has_local_agents:
+            msg = "Project-local .opencode/agents/ contains agent files which cause duplicate discovery!"
+        elif has_lowercase_global:
+            msg = "Legacy lowercase ~/.config/opencode/agents/bug-bounty.md detected alongside canonical Bug-Bounty.md!"
+        else:
+            msg = "Clean: No project-local agents; Bug-Bounty discovered exclusively from global configuration."
+
         return {
-            "duplicate_risk": has_local_agents,
-            "status": "DUPLICATE_DETECTED" if has_local_agents else "CLEAN",
-            "message": "Project-local .opencode/agents/ contains agent files which cause duplicate discovery!"
-            if has_local_agents
-            else "Clean: No project-local agents; Bug-Bounty discovered exclusively from global configuration.",
+            "duplicate_risk": duplicate_risk,
+            "status": "DUPLICATE_DETECTED" if duplicate_risk else "CLEAN",
+            "message": msg,
         }
 
     def deploy(self, mode: str = "auto") -> Dict[str, Any]:
         """
         Executes full deployment:
-        1. Deploys agent to ~/.config/opencode/agents/bug-bounty.md
+        1. Deploys agent to ~/.config/opencode/agents/Bug-Bounty.md
         2. Deploys 17 skills to ~/.config/opencode/skills/
         3. Configures default_agent and permissions in ~/.config/opencode/opencode.jsonc
         4. Links CLI utilities to ~/.local/bin/
@@ -323,9 +348,14 @@ class OpenCodeDeployer:
 
     def uninstall(self) -> Dict[str, Any]:
         """Removes global Bug-Bounty agent, skills, and binary links."""
-        agent_dst = os.path.join(self.target_agents, "bug-bounty.md")
-        if os.path.islink(agent_dst) or os.path.isfile(agent_dst):
-            os.remove(agent_dst)
+        agent_dst = os.path.join(self.target_agents, "Bug-Bounty.md")
+        legacy_dst = os.path.join(self.target_agents, "bug-bounty.md")
+        for target in [agent_dst, legacy_dst]:
+            if os.path.islink(target) or os.path.isfile(target):
+                try:
+                    os.remove(target)
+                except OSError:
+                    pass
 
         skills_removed = 0
         if os.path.isdir(self.skills_src) and os.path.isdir(self.target_skills):
@@ -357,7 +387,7 @@ class OpenCodeDeployer:
 
     def check_status(self) -> Dict[str, Any]:
         """Audits current global deployment status."""
-        agent_dst = os.path.join(self.target_agents, "bug-bounty.md")
+        agent_dst = os.path.join(self.target_agents, "Bug-Bounty.md")
         agent_deployed = os.path.exists(agent_dst)
         agent_is_symlink = os.path.islink(agent_dst)
 

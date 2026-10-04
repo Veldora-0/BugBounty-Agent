@@ -45,8 +45,8 @@ def test_deployer_copy_mode(temp_env):
     assert res["scripts"]["status"] == "ok"
     assert res["scripts"]["scripts_linked"] >= 13
 
-    # Verify agent file exists in destination
-    agent_path = os.path.join(temp_env["config_dir"], "agents", "bug-bounty.md")
+    # Verify agent file exists in destination with exact canonical name Bug-Bounty.md
+    agent_path = os.path.join(temp_env["config_dir"], "agents", "Bug-Bounty.md")
     assert os.path.isfile(agent_path)
     with open(agent_path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -134,3 +134,28 @@ def test_duplicate_prevention_check():
     dup = deployer.check_duplicate_prevention()
     assert dup["duplicate_risk"] is False
     assert dup["status"] == "CLEAN"
+
+
+def test_deployer_removes_old_lowercase_agent(temp_env):
+    """Verifies that deploying removes any legacy lowercase bug-bounty.md agent file."""
+    # Pre-create legacy lowercase file in target agents dir
+    target_agents = os.path.join(temp_env["config_dir"], "agents")
+    os.makedirs(target_agents, exist_ok=True)
+    legacy_file = os.path.join(target_agents, "bug-bounty.md")
+    with open(legacy_file, "w", encoding="utf-8") as f:
+        f.write("# Legacy lowercase agent\n")
+
+    deployer = OpenCodeDeployer(
+        repo_root=REPO_ROOT,
+        config_dir=temp_env["config_dir"],
+        bin_dir=temp_env["bin_dir"],
+    )
+
+    res = deployer.deploy(mode="copy")
+    assert res["status"] == "SUCCESS"
+
+    canonical_file = os.path.join(target_agents, "Bug-Bounty.md")
+    assert os.path.isfile(canonical_file)
+    with open(canonical_file, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "name: Bug-Bounty" in content

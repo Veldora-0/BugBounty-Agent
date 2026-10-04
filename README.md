@@ -37,7 +37,7 @@ BugBounty-Agent/
 ├── opencode.jsonc             # OpenCode native project configuration & permissions
 │
 ├── agents/                    # Canonical Bug-Bounty agent definition
-│   └── bug-bounty.md          # Primary orchestrator (deployed globally to ~/.config/opencode/agents/)
+│   └── Bug-Bounty.md          # Primary orchestrator (deployed globally to ~/.config/opencode/agents/)
 │
 ├── skills/                    # 17 modular OpenCode methodology skills (deployed globally)
 │   ├── scope-management/
@@ -357,8 +357,8 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | **Remote Script Pipes** | `shell` | `curl * \| *sh*`, `wget * \| *sh*` | `deny` | **Strictly denied**: Arbitrary remote shell piping prohibited |
 
 ### 2. Global Agent & Modular Skills Deployment
-* **Global Availability**: `Bug-Bounty` is deployed globally into `~/.config/opencode/agents/bug-bounty.md` and `~/.config/opencode/skills/` using `./scripts/bb-deploy`. It is selectable as the default primary agent from **any working directory** (`cd ~ && opencode`, `cd /tmp && opencode`, `cd ~/Desktop/BugBounty-Agent && opencode`).
-* **Canonical Source of Truth**: The Git repository remains the source-controlled source of truth (`agents/bug-bounty.md` and `skills/`). Updates in the repo are synchronized globally with `./scripts/bb-deploy` (or `bb-sync`).
+* **Global Availability**: `Bug-Bounty` is deployed globally into `~/.config/opencode/agents/Bug-Bounty.md` and `~/.config/opencode/skills/` using `./scripts/bb-deploy`. It is selectable as the default primary agent from **any working directory** (`cd ~ && opencode`, `cd /tmp && opencode`, `cd ~/Desktop/BugBounty-Agent && opencode`).
+* **Canonical Source of Truth**: The Git repository remains the source-controlled source of truth (`agents/Bug-Bounty.md` and `skills/`). Updates in the repo are synchronized globally with `./scripts/bb-deploy` (or `bb-sync`).
 * **Duplicate Prevention**: No project-local `.opencode/agents/` exists in the repository root, ensuring OpenCode discovers exactly one custom agent without duplicates.
 * **Direct Orchestration (`subagent_depth: 1`)**: Separate subagent spawning is disabled in favor of focused, reproducible skill execution by `Bug-Bounty`.
 * **Multi-Agent Distinction**: The previous 14-agent multi-agent architecture will be explored in a separate, dedicated repository in the future. It is intentionally not merged into this repository.

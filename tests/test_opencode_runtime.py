@@ -124,16 +124,16 @@ def test_opencode_jsonc_structure():
     assert config.get("$schema") == "https://opencode.ai/config.json"
     assert config.get("default_agent") == "Bug-Bounty"
     assert config.get("subagent_depth") == 1
-    # Verify no redundant inline agent definitions in JSONC; .opencode/agents/bug-bounty.md is the canonical source
+    # Verify no redundant inline agent definitions in JSONC; agents/Bug-Bounty.md is the canonical source
     assert "agent" not in config, "Redundant 'agent' key in opencode.jsonc creates duplicate custom agent registration in OpenCode V2"
     assert "agents" not in config, "Redundant 'agents' key in opencode.jsonc creates duplicate custom agent registration in OpenCode V2"
 
 
 def test_no_duplicate_agent_registration():
-    """Verifies that .opencode/agents/bug-bounty.md is the canonical project agent and opencode.jsonc avoids duplicate registration."""
+    """Verifies that agents/Bug-Bounty.md is the canonical project agent and opencode.jsonc avoids duplicate registration."""
     agent_files = glob.glob(os.path.join(AGENTS_DIR, "*.md"))
     assert len(agent_files) == 1
-    assert os.path.basename(agent_files[0]).lower() == "bug-bounty.md"
+    assert os.path.basename(agent_files[0]) == "Bug-Bounty.md"
 
     config = load_jsonc(OPENCODE_CONFIG_PATH)
     assert config.get("default_agent") == "Bug-Bounty"
@@ -274,11 +274,11 @@ def test_subagent_and_read_permissions():
 # ==============================================================================
 
 def test_single_agent_discovered():
-    """Verifies that exactly one canonical agent (agents/bug-bounty.md) exists in repository."""
+    """Verifies that exactly one canonical agent (agents/Bug-Bounty.md) exists in repository."""
     agent_files = glob.glob(os.path.join(AGENTS_DIR, "*.md"))
     assert len(agent_files) == 1, f"Expected exactly 1 agent file, found: {agent_files}"
-    basename = os.path.basename(agent_files[0]).lower()
-    assert basename == "bug-bounty.md"
+    basename = os.path.basename(agent_files[0])
+    assert basename == "Bug-Bounty.md"
 
 
 def test_no_project_local_agent_duplicates():
@@ -330,7 +330,7 @@ def test_agent_frontmatter_validity():
 
 def test_bug_bounty_agent_policy():
     """Verifies that Bug-Bounty frontmatter permissions allow safe local tools and enforce safety."""
-    agent_path = os.path.join(AGENTS_DIR, "bug-bounty.md")
+    agent_path = os.path.join(AGENTS_DIR, "Bug-Bounty.md")
     with open(agent_path, "r", encoding="utf-8") as f:
         fm = yaml.safe_load(f.read().split("---")[1])
 
