@@ -16,9 +16,12 @@ class FindingLifecycle(str, Enum):
     OBSERVATION = "OBSERVATION"
     HYPOTHESIS = "HYPOTHESIS"
     CANDIDATE = "CANDIDATE"
+    TESTING = "TESTING"
+    OBSERVED = "OBSERVED"
     VALIDATED = "VALIDATED"
     REJECTED = "REJECTED"
     DUPLICATE = "DUPLICATE"
+    NEEDS_MANUAL_REVIEW = "NEEDS_MANUAL_REVIEW"
     INFORMATIONAL = "INFORMATIONAL"
 
 
@@ -36,22 +39,44 @@ VALID_TRANSITIONS: dict[FindingLifecycle, Set[FindingLifecycle]] = {
         FindingLifecycle.INFORMATIONAL,
     },
     FindingLifecycle.CANDIDATE: {
+        FindingLifecycle.TESTING,
+        FindingLifecycle.OBSERVED,
         FindingLifecycle.VALIDATED,
         FindingLifecycle.REJECTED,
         FindingLifecycle.DUPLICATE,
+        FindingLifecycle.NEEDS_MANUAL_REVIEW,
         FindingLifecycle.INFORMATIONAL,
+    },
+    FindingLifecycle.TESTING: {
+        FindingLifecycle.OBSERVED,
+        FindingLifecycle.REJECTED,
+        FindingLifecycle.DUPLICATE,
+        FindingLifecycle.NEEDS_MANUAL_REVIEW,
+    },
+    FindingLifecycle.OBSERVED: {
+        FindingLifecycle.VALIDATED,
+        FindingLifecycle.REJECTED,
+        FindingLifecycle.DUPLICATE,
+        FindingLifecycle.NEEDS_MANUAL_REVIEW,
     },
     FindingLifecycle.VALIDATED: {
         FindingLifecycle.DUPLICATE,
         FindingLifecycle.REJECTED,
+        FindingLifecycle.NEEDS_MANUAL_REVIEW,
         FindingLifecycle.INFORMATIONAL,
     },
     FindingLifecycle.REJECTED: {
         FindingLifecycle.HYPOTHESIS,
         FindingLifecycle.CANDIDATE,
+        FindingLifecycle.TESTING,
     },
     FindingLifecycle.DUPLICATE: {
         FindingLifecycle.VALIDATED,
+    },
+    FindingLifecycle.NEEDS_MANUAL_REVIEW: {
+        FindingLifecycle.VALIDATED,
+        FindingLifecycle.REJECTED,
+        FindingLifecycle.DUPLICATE,
     },
     FindingLifecycle.INFORMATIONAL: {
         FindingLifecycle.CANDIDATE,

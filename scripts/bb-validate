@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""
+bb-validate — BugBounty-Agent Security Validation Foundation Engine.
+
+Performs controlled, hypothesis-driven security test case evaluation,
+empirical baseline comparison, and structured finding generation:
+- Safe, non-destructive proof-of-concept validators (Reflected XSS, Open Redirect)
+- Centralized SecurityTestPolicy (budget, methods, response limits, anti-SSRF)
+- Strict scope enforcement before all network dispatches
+- Dual-principal authorization modeling foundation
+- Cryptographic SHA-256 evidence captures with credential masking
+- Atomic persistence in ~/BugBounty-Workspace/programs/<name>/state/security.json
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.findings.lifecycle import FindingLifecycle
+from framework.scope.engine import ScopeEngine
+from framework.validation.engine import SecurityValidationEngine
+from framework.validation.model import VulnerabilityFamily
+from framework.validation.policy import SecurityTestPolicy
+import yaml
+
+
+def render_validation_tree(summary_data: Dict[str, Any], program_name: str) -> None:
+    """Renders visual ASCII tree of security test cases, observations, and findings."""
+    print("\n==============================================================================")
+    print("                     SECURITY VALIDATION ATTACK TREE                          ")
+    print("==============================================================================")
+
+    state = summary_data.get("state_summary", {})
+    mode = summary_data.get("mode", "active_validation")
+
+    print(f"\n[*] Program: {program_name} (Mode: {mode.upper()})")
+    print(f"[*] Considered Tests: {summary_data.get('tests_considered', 0)}")
+    print(f"[*] Executed Tests:   {summary_data.get('tests_executed', 0)}")
+    print(f"[*] Skipped (Resume): {summary_data.get('tests_skipped_resume', 0)}")
+    print(f"[*] Findings Created: {summary_data.get('findings_recorded', 0)}")
+    print(f"[*] Requests Sent:    {summary_data.get('active_requests_sent', 0)}")
+
+    findings = summary_data.get("findings", [])
+    if findings:
+        print("\n[+] FINDINGS SUMMARY:")
+        for f in findings:
+            status = f.get("lifecycle_state", "UNKNOWN")
+            conf = f.get("confidence", "LOW")
+            sev = f.get("severity", "INFORMATIONAL")
+            ep = f.get("affected_endpoint", "/")
+            param = f.get("parameter") or "none"
+            title = f.get("title", "")
+            print(f"    - [{status}] [{sev}/{conf}] {title}")
+            print(f"        Endpoint: {ep} (param: {param})")
+    else:
+        print("\n[*] No candidate or observed findings reported for this run.")
+
+    print("\n==============================================================================")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="bb-validate",
+        description="BugBounty-Agent Security Validation Foundation Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bb-validate --program acme-corp --tree
+  bb-validate --program acme-corp --category xss
+  bb-validate --program acme-corp --endpoint "https://app.example.com/search" --parameter q --validator reflected-xss
+  bb-validate --program acme-corp --passive-only --json
+  bb-validate --program acme-corp --dry-run
+        """,
+    )
+
+    parser.add_argument("-p", "--program", help="Program name in local workspace")
+    parser.add_argument("-s", "--scope", help="Path to scope.yaml definition")
+    parser.add_argument("-d", "--domain", help="Target apex root domain")
+    parser.add_argument("-a", "--asset", help="Specific host or application URL to validate")
+    parser.add_argument("-e", "--endpoint", help="Specific endpoint path or URL to validate")
+    parser.add_argument("--param", "--parameter", dest="parameter", help="Specific parameter to mutate")
+    parser.add_argument("--finding", help="Specific finding ID to inspect or re-verify")
+    parser.add_argument("--category", help="Vulnerability category filter (e.g. xss, open_redirect)")
+    parser.add_argument("--validator", help="Specific validator name (e.g. reflected-xss, open-redirect)")
+    parser.add_argument("--max-tests", type=int, default=50, help="Maximum test cases to evaluate (default: 50)")
+    parser.add_argument("--max-requests", type=int, default=200, help="Ceiling on total requests (default: 200)")
+    parser.add_argument("--max-bytes", type=int, default=100000, help="Maximum response bytes (default: 100KB)")
+    parser.add_argument("--timeout", type=float, default=5.0, help="HTTP request timeout in seconds (default: 5.0)")
+    parser.add_argument("--passive-only", action="store_true", help="Perform zero network requests; evaluate existing state only")
+    parser.add_argument("--dry-run", action="store_true", help="Construct test cases and plan without network or state persistence")
+    parser.add_argument("--resume", action="store_true", help="Skip test cases previously executed")
+    parser.add_argument("--json", action="store_true", help="Output execution results in JSON format")
+    parser.add_argument("--tree", action="store_true", help="Render visual ASCII validation attack tree")
+
+    args = parser.parse_args()
+
+    program_name = args.program or os.environ.get("BB_PROGRAM", "default")
+    program_dir = get_program_dir(program_name)
+
+    # Resolve scope definition
+    scope_file = args.scope or os.path.join(program_dir, "scope.yaml")
+    scope_engine = None
+    if os.path.isfile(scope_file):
+        try:
+            scope_engine = ScopeEngine.from_file(scope_file)
+        except Exception as e:
+            print(f"[!] Warning: Failed to load scope definition: {e}", file=sys.stderr)
+
+    # Configure safety policy
+    policy = SecurityTestPolicy(
+        max_requests_per_program=args.max_requests,
+        max_response_bytes=args.max_bytes,
+        timeout=args.timeout,
+    )
+
+    # Initialize Validation Engine
+    engine = SecurityValidationEngine(
+        program_dir=program_dir,
+        scope_engine=scope_engine,
+        policy=policy,
+    )
+
+    # Execute validation pipeline
+    results = engine.run_validation(
+        domain=args.domain,
+        asset=args.asset,
+        endpoint=args.endpoint,
+        parameter=args.parameter,
+        category=args.category,
+        validator_name=args.validator,
+        max_tests=args.max_tests,
+        passive_only=args.passive_only,
+        dry_run=args.dry_run,
+        resume=args.resume,
+    )
+
+    if args.json:
+        print(json.dumps(results, indent=2))
+        return
+
+    # Default output format
+    render_validation_tree(results, program_name)
+
+
+if __name__ == "__main__":
+    main()

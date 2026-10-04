@@ -57,12 +57,20 @@ class Finding:
         updated_at: Optional[str] = None,
         validation_notes: Optional[str] = None,
         duplicate_of: Optional[str] = None,
+        parameter: Optional[str] = None,
+        test_case_id: Optional[str] = None,
+        detection_method: Optional[str] = None,
+        references: Optional[List[str]] = None,
     ):
         self.finding_id = finding_id or f"BB-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
         self.title = title
         self.summary = summary
         self.affected_asset = affected_asset
         self.affected_endpoint = affected_endpoint
+        self.parameter = parameter
+        self.test_case_id = test_case_id
+        self.detection_method = detection_method
+        self.references = references or []
         self.vulnerability_type = vulnerability_type
         self.severity = severity.upper()
         self.description = description
@@ -158,6 +166,10 @@ class Finding:
             "updated_at": self.updated_at,
             "validation_notes": self.validation_notes,
             "duplicate_of": self.duplicate_of,
+            "parameter": self.parameter,
+            "test_case_id": self.test_case_id,
+            "detection_method": self.detection_method,
+            "references": self.references,
         }
 
     @classmethod
@@ -188,6 +200,10 @@ class Finding:
             updated_at=data.get("updated_at"),
             validation_notes=data.get("validation_notes"),
             duplicate_of=data.get("duplicate_of"),
+            parameter=data.get("parameter"),
+            test_case_id=data.get("test_case_id"),
+            detection_method=data.get("detection_method"),
+            references=data.get("references", []),
         )
 
     def to_json(self, indent: int = 2) -> str:

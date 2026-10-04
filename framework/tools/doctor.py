@@ -311,6 +311,32 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_validation_engine(self) -> Dict[str, Any]:
+        """Category 15: Security Validation Foundation Engine verification."""
+        try:
+            from framework.validation.engine import SecurityValidationEngine
+            from framework.validation.model import SecurityTestCase, VulnerabilityFamily
+            from framework.validation.policy import SecurityTestPolicy
+            from framework.validation.payload import PayloadRegistry
+
+            policy = SecurityTestPolicy()
+            payload = PayloadRegistry.get_payload("PL-XSS-REFL-01")
+            tc = SecurityTestCase(
+                vulnerability_family=VulnerabilityFamily.XSS,
+                target="https://example.com",
+                endpoint="/search",
+                parameter="q",
+                payload_identifier="PL-XSS-REFL-01",
+            )
+            healthy = (
+                policy.max_requests_per_test > 0
+                and payload is not None
+                and tc.compute_fingerprint() is not None
+            )
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -327,5 +353,6 @@ class SystemDoctor:
             "webapp_engine": self.check_webapp_engine(),
             "javascript_engine": self.check_javascript_engine(),
             "api_engine": self.check_api_engine(),
+            "validation_engine": self.check_validation_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }

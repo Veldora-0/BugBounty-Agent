@@ -79,6 +79,7 @@ BugBounty-Agent/
 │   ├── bb-content             # Controlled content fuzzer wrapper (ffuf)
 │   ├── bb-js                  # JavaScript endpoint & secret analyzer
 │   ├── bb-api                 # REST/GraphQL API method and schema prober
+│   ├── bb-validate            # Controlled security validation & baseline comparison engine
 │   ├── bb-nuclei              # Signal-only Nuclei scanner wrapper
 │   └── bb-evidence            # Evidence collector with automatic token redaction
 │
@@ -443,6 +444,38 @@ The **API Security & Parameter Intelligence Engine** (`framework/api/` & `script
 
   # Passive analysis only using existing observations
   ./scripts/bb-api --program acme-corp --passive-only
+  ```
+
+---
+
+## Phase 6: Security Validation & Vulnerability Analysis Foundation
+
+The **Security Validation Foundation Engine** (`framework/validation/` & `scripts/bb-validate`) transforms reconnaissance, webapp, JS, and API intelligence into controlled, hypothesis-driven security validation attempts and structured security findings:
+
+* **Formal Finding Lifecycle**: Enforces immutable state transitions (`CANDIDATE` $\longrightarrow$ `TESTING` $\longrightarrow$ `OBSERVED` $\longrightarrow$ `VALIDATED` / `REJECTED` / `DUPLICATE` / `NEEDS_MANUAL_REVIEW`). A finding is never confirmed solely because a payload was dispatched.
+* **Controlled Request Mutation**: `RequestBuilder` performs deterministic, single-parameter mutations across query strings, path variables, headers, cookies, JSON bodies, and form data without collateral alterations.
+* **Safe Testing Policy (`SecurityTestPolicy`)**: Centralized policy engine enforcing method restrictions (defaults to safe methods `GET`, `HEAD`, `OPTIONS`), blocking destructive actions, screening state-changing GET endpoints, and capping request counts, timeouts, payload sizes, and response bytes.
+* **Strict Anti-SSRF & Scope Enforcement**: Every validation request is verified by `ScopeEngine`. Private IP ranges (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`) and `localhost` are strictly rejected.
+* **Empirical Baseline Comparison**: Takes an untouched baseline snapshot of target behavior before mutation, evaluating differential signals (status changes, size deltas, content type variations, body similarity, marker reflections, and error signatures).
+* **Proof-of-Concept Validators**:
+  * **`ReflectedXSSValidator`**: Detects harmless marker (`XSHIELD_TEST_<token>`) reflection in HTML/JSON responses without executing JavaScript or launching a browser.
+  * **`OpenRedirectValidator`**: Detects unvalidated external redirection to a controlled canary URL (`https://canary.bugbounty-agent.local/redirect_<token>`) via 3xx status codes and `Location` headers without navigating victim browsers.
+* **Dual-Principal Authorization Foundation**: Formal data models (`Principal`, `SessionContext`, `ResourceIdentifier`, `ExpectedAccessPolicy`) for comparing resource access divergence without destructive testing or credential harvesting.
+* **Sanitized Cryptographic Evidence**: Integrates `EvidenceStore` with automatic token and cookie redaction (`Authorization: [REDACTED]`, `Cookie: [REDACTED]`), assigning SHA-256 digests.
+* **State Persistence & Deduplication**: Atomic storage in `~/BugBounty-Workspace/programs/<name>/state/security.json` with signature-based finding deduplication (`FindingDeduplicator`).
+* **CLI Utility**:
+  ```bash
+  # Render visual ASCII validation attack tree
+  ./scripts/bb-validate --program acme-corp --tree
+
+  # Targeted validator execution on specific parameter
+  ./scripts/bb-validate --program acme-corp --endpoint "https://app.example.com/search" --parameter q --validator reflected-xss
+
+  # Offline candidate prioritization from existing state
+  ./scripts/bb-validate --program acme-corp --passive-only --json
+
+  # Dry-run plan without issuing network requests
+  ./scripts/bb-validate --program acme-corp --dry-run
   ```
 
 ---

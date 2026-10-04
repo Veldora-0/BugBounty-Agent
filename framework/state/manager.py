@@ -53,6 +53,7 @@ class StateManager:
         self.webapps_file = os.path.join(self.state_dir, "webapps.json")
         self.javascript_file = os.path.join(self.state_dir, "javascript.json")
         self.api_file = os.path.join(self.state_dir, "api.json")
+        self.security_file = os.path.join(self.state_dir, "security.json")
 
         self._init_files()
 
@@ -70,6 +71,7 @@ class StateManager:
             (self.webapps_file, {}),
             (self.javascript_file, {}),
             (self.api_file, {}),
+            (self.security_file, {}),
         ]:
             if not os.path.exists(filepath):
                 self._atomic_write_json(filepath, default_content)
@@ -390,4 +392,11 @@ class StateManager:
         """Returns an ApiStateManager instance for this program."""
         from framework.api.state import ApiStateManager
         return ApiStateManager(self.program_dir)
+
+    # ---------------- Security Validation State ----------------
+
+    def get_security_state(self) -> Any:
+        """Returns a SecurityStateManager instance for this program."""
+        from framework.validation.state import SecurityStateManager
+        return SecurityStateManager(self.program_dir)
 
