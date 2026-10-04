@@ -16,13 +16,13 @@ BugBounty-Agent is built on four core architectural tenets:
 
 ```text
 ┌────────────────────────────────────────────────────────┐
-│               OpenCode Multi-Agent Layer               │
-│  (bb-hunter orchestrator + 13 focused specialist agents)│
+│               OpenCode Single-Agent Layer              │
+│       (Bug-Bounty unified orchestrator agent)          │
 └──────────────────────────┬─────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────┐
 │                 Modular Skills Catalog                 │
-│      (14 methodology SKILL.md guides and rules)        │
+│      (17 methodology SKILL.md guides and rules)        │
 └──────────────────────────┬─────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────┐

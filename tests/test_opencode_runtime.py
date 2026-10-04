@@ -9,12 +9,12 @@ Validates:
    - Automatic approval for safe local operations
    - Human-approval gating (ask) for active recon/probing/installation
    - Strict rejection (deny) for remote script piping and external report submission
-3. Agent discovery and frontmatter validation across all 14 agents:
-   - bb-hunter configured as mode: primary
-   - 13 specialist agents configured as mode: subagent
-   - Strict offline-only policy for bb-scope
-   - Local-only report artifact generation for bb-report
-4. Project-local skills discovery and frontmatter validation across all 14 skills.
+   - Denied subagent invocation to enforce single-agent architecture
+3. Agent discovery and frontmatter validation for single agent Bug-Bounty:
+   - Bug-Bounty configured as mode: primary
+   - References all 17 specialized skills
+   - Previous 14 multi-agent definitions are removed/inactive
+4. Project-local skills discovery and frontmatter validation across all 17 skills.
 5. Absence of shell injection vectors (no shell=True) in framework and scripts.
 """
 
@@ -35,38 +35,45 @@ AGENTS_DIR = os.path.join(REPO_ROOT, ".opencode", "agents")
 SKILLS_DIR = os.path.join(REPO_ROOT, ".opencode", "skills")
 
 EXPECTED_AGENTS = {
-    "bb-hunter": "primary",
-    "bb-scope": "subagent",
-    "bb-recon": "subagent",
-    "bb-asset": "subagent",
-    "bb-web": "subagent",
-    "bb-js": "subagent",
-    "bb-api": "subagent",
-    "bb-authz": "subagent",
-    "bb-injection": "subagent",
-    "bb-business-logic": "subagent",
-    "bb-cloud": "subagent",
-    "bb-validator": "subagent",
-    "bb-dedup": "subagent",
-    "bb-report": "subagent",
+    "Bug-Bounty": "primary",
 }
 
 EXPECTED_SKILLS = {
-    "api-analysis",
-    "asset-correlation",
-    "asset-discovery",
-    "authorization-analysis",
-    "business-logic-analysis",
-    "cloud-review",
-    "deduplication",
-    "evidence-management",
-    "injection-analysis",
-    "javascript-analysis",
-    "reporting",
     "scope-management",
+    "asset-intelligence",
+    "reconnaissance",
+    "web-security",
+    "javascript",
+    "api-security",
+    "authorization",
+    "injection",
+    "business-logic",
+    "cloud-security",
+    "browser",
+    "oob",
     "validation",
-    "web-mapping",
+    "deduplication",
+    "evidence",
+    "reporting",
+    "knowledge-research",
 }
+
+OLD_AGENTS = [
+    "bb-hunter",
+    "bb-scope",
+    "bb-recon",
+    "bb-asset",
+    "bb-web",
+    "bb-js",
+    "bb-api",
+    "bb-authz",
+    "bb-injection",
+    "bb-business-logic",
+    "bb-cloud",
+    "bb-validator",
+    "bb-dedup",
+    "bb-report",
+]
 
 
 def load_jsonc(filepath: str) -> Dict[str, Any]:
@@ -114,11 +121,11 @@ def test_opencode_jsonc_structure():
     config = load_jsonc(OPENCODE_CONFIG_PATH)
 
     assert config.get("$schema") == "https://opencode.ai/config.json"
-    assert config.get("default_agent") == "bb-hunter"
-    assert config.get("subagent_depth") == 3
+    assert config.get("default_agent") == "Bug-Bounty"
+    assert config.get("subagent_depth") == 1
     assert "agent" in config
     assert isinstance(config["agent"], dict)
-    assert len(config["agent"]) == 14
+    assert len(config["agent"]) == 1
 
     for name, expected_mode in EXPECTED_AGENTS.items():
         assert name in config["agent"], f"Missing agent {name} in config.agent"
@@ -241,12 +248,14 @@ def test_dangerous_operations_are_blocked_or_gated():
 
 
 def test_subagent_and_read_permissions():
-    """Verifies that subagent invocation and local inspection operations are permitted."""
+    """Verifies that subagent invocation is denied and local inspection operations are permitted."""
     config = load_jsonc(OPENCODE_CONFIG_PATH)
     rules = config["permissions"]
 
-    assert evaluate_permission(rules, "subagent", "bb-scope") == "allow"
-    assert evaluate_permission(rules, "subagent", "bb-recon") == "allow"
+    # Subagents are disabled in single-agent architecture
+    assert evaluate_permission(rules, "subagent", "bb-scope") == "deny"
+    assert evaluate_permission(rules, "subagent", "bb-recon") == "deny"
+    assert evaluate_permission(rules, "subagent", "any-subagent") == "deny"
     assert evaluate_permission(rules, "read", "config/tools.yaml") == "allow"
     assert evaluate_permission(rules, "glob", "framework/**/*.py") == "allow"
     assert evaluate_permission(rules, "grep", "ScopeEngine") == "allow"
@@ -257,84 +266,75 @@ def test_subagent_and_read_permissions():
 # 3. Agent Discovery & Frontmatter Verification
 # ==============================================================================
 
-def test_all_14_agents_discovered():
-    """Verifies that all 14 project-local agents exist in .opencode/agents/."""
+def test_single_agent_discovered():
+    """Verifies that exactly one agent (bug-bounty.md) exists in .opencode/agents/."""
     agent_files = glob.glob(os.path.join(AGENTS_DIR, "*.md"))
-    found_names = {os.path.splitext(os.path.basename(f))[0] for f in agent_files}
-    assert found_names == set(EXPECTED_AGENTS.keys())
+    assert len(agent_files) == 1, f"Expected exactly 1 agent file, found: {agent_files}"
+    basename = os.path.basename(agent_files[0]).lower()
+    assert basename == "bug-bounty.md"
+
+
+def test_old_agents_not_active():
+    """Verifies that the old 14 multi-agent definitions are removed and not active in .opencode/agents/."""
+    for old_agent in OLD_AGENTS:
+        old_agent_path = os.path.join(AGENTS_DIR, f"{old_agent}.md")
+        assert not os.path.exists(old_agent_path), f"Old agent file still exists: {old_agent_path}"
 
 
 def test_agent_frontmatter_validity():
-    """Validates frontmatter structure, modes, descriptions, and skills for all agents."""
+    """Validates frontmatter structure, mode, description, and skills for Bug-Bounty agent."""
     agent_files = glob.glob(os.path.join(AGENTS_DIR, "*.md"))
+    assert len(agent_files) == 1
 
-    for filepath in agent_files:
-        filename = os.path.basename(filepath)
-        name = os.path.splitext(filename)[0]
+    filepath = agent_files[0]
+    filename = os.path.basename(filepath)
 
-        with open(filepath, "r", encoding="utf-8") as f:
-            content = f.read()
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
 
-        parts = content.split("---")
-        assert len(parts) >= 3, f"Agent {filename} missing YAML frontmatter delimiters"
+    parts = content.split("---")
+    assert len(parts) >= 3, f"Agent {filename} missing YAML frontmatter delimiters"
 
-        fm = yaml.safe_load(parts[1])
-        assert fm["name"] == name, f"Agent name {fm.get('name')} does not match filename {name}"
-        assert fm["mode"] == EXPECTED_AGENTS[name], f"Agent {name} has incorrect mode: {fm.get('mode')}"
-        assert isinstance(fm.get("description"), str) and len(fm["description"]) > 10
-        assert isinstance(fm.get("skills"), list) and len(fm["skills"]) > 0
+    fm = yaml.safe_load(parts[1])
+    assert fm["name"] == "Bug-Bounty"
+    assert fm["mode"] == "primary"
+    assert isinstance(fm.get("description"), str) and len(fm["description"]) > 10
+    assert isinstance(fm.get("skills"), list) and len(fm["skills"]) == 17
 
-        # Validate that all referenced skills exist on disk
-        for skill in fm["skills"]:
-            skill_md = os.path.join(SKILLS_DIR, skill, "SKILL.md")
-            assert os.path.isfile(skill_md), f"Agent {name} references non-existent skill '{skill}'"
+    # Validate that all referenced skills exist on disk
+    for skill in fm["skills"]:
+        skill_md = os.path.join(SKILLS_DIR, skill, "SKILL.md")
+        assert os.path.isfile(skill_md), f"Agent Bug-Bounty references non-existent skill '{skill}'"
 
-        # Validate agent-specific permissions if defined
-        if "permissions" in fm:
-            assert isinstance(fm["permissions"], list)
-            for p in fm["permissions"]:
-                assert "action" in p and "resource" in p and "effect" in p
-                assert p["effect"] in ("allow", "ask", "deny")
+    # Validate agent-specific permissions if defined
+    if "permissions" in fm:
+        assert isinstance(fm["permissions"], list)
+        for p in fm["permissions"]:
+            assert "action" in p and "resource" in p and "effect" in p
+            assert p["effect"] in ("allow", "ask", "deny")
 
 
-def test_bb_scope_is_offline_only():
-    """Verifies that bb-scope's frontmatter permissions strictly enforce zero target network access."""
-    scope_path = os.path.join(AGENTS_DIR, "bb-scope.md")
-    with open(scope_path, "r", encoding="utf-8") as f:
+def test_bug_bounty_agent_policy():
+    """Verifies that Bug-Bounty frontmatter permissions allow safe local tools and enforce safety."""
+    agent_path = os.path.join(AGENTS_DIR, "bug-bounty.md")
+    with open(agent_path, "r", encoding="utf-8") as f:
         fm = yaml.safe_load(f.read().split("---")[1])
 
     rules = fm.get("permissions", [])
     assert len(rules) > 0
 
-    # Test bb-scope rules: generic shell must be denied, only bb-scope-check/target-normalize allowed
-    assert evaluate_permission(rules, "shell", "curl https://example.com") == "deny"
-    assert evaluate_permission(rules, "shell", "subfinder -d example.com") == "deny"
     assert evaluate_permission(rules, "shell", "scripts/bb-scope-check example.com") == "allow"
     assert evaluate_permission(rules, "shell", "scripts/bb-target-normalize target.com") == "allow"
-
-
-def test_bb_report_prohibits_external_submission():
-    """Verifies that bb-report cannot push or submit findings externally."""
-    report_path = os.path.join(AGENTS_DIR, "bb-report.md")
-    with open(report_path, "r", encoding="utf-8") as f:
-        fm = yaml.safe_load(f.read().split("---")[1])
-
-    rules = fm.get("permissions", [])
-    assert len(rules) > 0
-
-    assert evaluate_permission(rules, "shell", "git push origin main") == "deny"
-    assert evaluate_permission(rules, "shell", "scripts/bb-submit-report") == "deny"
-    assert evaluate_permission(rules, "shell", "hackerone submit") == "deny"
-    assert evaluate_permission(rules, "shell", "bugcrowd submit") == "deny"
-    assert evaluate_permission(rules, "read", "state/findings.json") == "allow"
+    assert evaluate_permission(rules, "shell", "scripts/bb-init hackerone") == "allow"
+    assert evaluate_permission(rules, "shell", "scripts/bb-doctor") == "allow"
 
 
 # ==============================================================================
 # 4. Project-Local Skills Discovery Tests
 # ==============================================================================
 
-def test_all_14_skills_discovered():
-    """Verifies that all 14 project-local skills exist in .opencode/skills/."""
+def test_all_17_skills_discovered():
+    """Verifies that all 17 project-local skills exist in .opencode/skills/."""
     skill_dirs = [d for d in os.listdir(SKILLS_DIR) if os.path.isdir(os.path.join(SKILLS_DIR, d))]
     assert set(skill_dirs) == EXPECTED_SKILLS
 

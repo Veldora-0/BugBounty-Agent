@@ -1,23 +1,49 @@
 ---
 name: validation
-description: Rigorous, adversarial validation and false-positive elimination for candidate security findings.
+description: Rigorous adversarial verification, reproducible proof assessment, false-positive elimination, and severity calibration.
 ---
 
-# Validation Methodology
+# Finding Validation Methodology
 
 ## Core Objective
-Act as an adversarial internal reviewer. Treat every candidate finding as untrusted until independent, repeatable evidence confirms that a real security boundary has been violated.
+Act as an adversarial quality gate before any candidate finding is recorded as a confirmed vulnerability. Treat all alerts, tool outputs, and hypotheses as untrusted and unproven until concrete, reproducible evidence demonstrates a genuine security boundary breach.
 
-## Decision States
-* **`VALIDATED`**: The vulnerability is consistently reproducible, clearly violates an authorization or trust boundary, and exhibits demonstrated security impact within program scope.
-* **`REJECTED`**: The candidate is an artifact of false-positive scanner heuristics, caching, normal application design, or out-of-scope infrastructure.
-* **`NEEDS_MORE_EVIDENCE`**: Potential issue observed, but reproduction is erratic or impact is purely theoretical.
+## 1. Adversarial Quality Checklist
+Every candidate finding must satisfy six rigorous verification gates:
 
-## Critical Validation Checklist
-1. **Scope Check**: Is the affected asset definitively IN_SCOPE according to program rules?
-2. **False-Positive Analysis**:
-   * Could this be a generic 404/custom error page returning 200 OK?
-   * Is a WAF or CDN returning a canned block page that mimics a hit?
-   * Was response cached from a prior unrelated request?
-3. **Attacker Prerequisites**: What role is required? Does this require improbable victim interaction?
-4. **Demonstrated Impact**: Does this leak private data or alter server state, or is it merely informational telemetry?
+1. **Reproduction Gate**:
+   * Can the finding be reliably reproduced using exact step-by-step instructions from a clean state?
+   * If an issue occurred once intermittently (e.g. temporary network glitch or load balancer anomaly), it is NOT validated.
+2. **Scope Gate**:
+   * Is the affected asset definitively confirmed as `IN_SCOPE` via `bb-scope-check`?
+   * Does it belong to an authorized domain and environment?
+3. **Security Boundary Gate**:
+   * Does this represent a violation of an actual security boundary (e.g. cross-user, cross-tenant, unauthorized administrative elevation)?
+   * Is this merely expected business functionality or a public API by design?
+4. **Attacker Prerequisite Gate**:
+   * Are the attack preconditions realistic?
+   * Does it require impossible prerequisites (e.g. root access on victim device, physical machine possession, extreme user interaction)?
+5. **Demonstrated Impact Gate**:
+   * What concrete harm does an attacker achieve?
+   * Is unauthorized data exfiltrated? Is application state modified? Is execution achieved?
+6. **False-Positive Elimination**:
+   * Is a 200 OK response simply a custom 404 page in disguise?
+   * Is a WAF returning a block page whose response body echoes the payload?
+   * Was the response served from an intermediate cache rather than the origin server?
+
+## 2. Severity & Confidence Calibration
+* **Confidence Rating**:
+  * `CONFIRMED`: Verified with reproducible multi-step execution.
+  * `HIGH`: Strongly evidenced with deterministic differential responses.
+  * `MEDIUM`: Partial indication requiring further manual review.
+  * `LOW`: Speculative or unverified scanner alert.
+* **Severity Calibration (CVSS v3.1 / v4.0 aligned)**:
+  * `CRITICAL`: Remote code execution, unauthenticated administrative takeover, mass data exfiltration.
+  * `HIGH`: Stored XSS in privileged context, high-impact BOLA/IDOR affecting sensitive data, blind SSRF to internal cloud metadata.
+  * `MEDIUM`: Reflected XSS, CSRF on state-changing actions, rate limit absence on sensitive forms.
+  * `LOW`: Informational header omissions, open redirects without token leakage.
+
+## 3. Disqualification Rules
+* Disqualify findings based purely on missing best-practice headers (e.g. missing `X-Content-Type-Options`) unless exploitable impact is demonstrated.
+* Disqualify public token exposures that lack unauthorized write/read capabilities.
+* Disqualify scanner alert outputs that lack an explicit validation trace.

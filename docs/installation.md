@@ -90,8 +90,8 @@ python3 -m pytest -v
 
 BugBounty-Agent comes preconfigured for OpenCode:
 
-* `.opencode/agents/`: Specialist agent prompts.
-* `.opencode/skills/`: Methodology skills.
+* `.opencode/agents/`: Unified `Bug-Bounty` agent definition.
+* `.opencode/skills/`: 17 modular methodology skills.
 * `opencode.jsonc`: Default agent and permissions configuration.
 
 Launch OpenCode within the repository:
@@ -100,4 +100,4 @@ Launch OpenCode within the repository:
 opencode .
 ```
 
-By default, OpenCode will load `bb-hunter` as the primary orchestrator.
+By default, OpenCode will load `Bug-Bounty` as the primary orchestrator.

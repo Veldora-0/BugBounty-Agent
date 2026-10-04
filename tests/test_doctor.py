@@ -37,6 +37,7 @@ def test_doctor_opencode_integration_check():
     doctor = SystemDoctor()
     opencode_diag = doctor.check_opencode_integration()
     assert opencode_diag["opencode_jsonc"] is True
-    assert opencode_diag["agent_count"] >= 14
-    assert opencode_diag["skill_count"] >= 14
+    assert opencode_diag["agent_count"] == 1
+    assert opencode_diag["default_agent"] == "Bug-Bounty"
+    assert opencode_diag["skill_count"] >= 17
     assert opencode_diag["status"] == "READY"

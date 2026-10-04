@@ -176,7 +176,7 @@ class SystemDoctor:
             "permission_rules": permission_count,
             "opencode_binary": has_opencode_bin,
             "runtime_status": "INSTALLED" if has_opencode_bin else "PENDING - requires Kali",
-            "status": "READY" if (has_config and len(agent_files) >= 14 and len(skill_dirs) >= 14) else "INCOMPLETE",
+            "status": "READY" if (has_config and len(agent_files) == 1 and default_agent == "Bug-Bounty" and len(skill_dirs) >= 17) else "INCOMPLETE",
         }
 
     def run_full_diagnosis(self) -> Dict[str, Any]:

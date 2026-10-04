@@ -37,37 +37,27 @@ BugBounty-Agent/
 ├── opencode.jsonc             # OpenCode native project configuration & permissions
 │
 ├── .opencode/
-│   ├── agents/                # 14 specialized OpenCode agent definitions
-│   │   ├── bb-hunter.md       # Primary orchestrator
-│   │   ├── bb-scope.md        # Offline scope & authorization verification
-│   │   ├── bb-recon.md        # Controlled reconnaissance
-│   │   ├── bb-asset.md        # Asset normalization and correlation
-│   │   ├── bb-web.md          # Web application mapping and surface analysis
-│   │   ├── bb-js.md           # JavaScript analysis and route extraction
-│   │   ├── bb-api.md          # REST/GraphQL/WebSocket API testing
-│   │   ├── bb-authz.md        # Authorization (BOLA/IDOR, BFLA, Multi-tenant)
-│   │   ├── bb-injection.md    # Safe, non-destructive input testing
-│   │   ├── bb-business-logic.md # Workflow and state machine analysis
-│   │   ├── bb-cloud.md        # Cloud bucket and metadata review
-│   │   ├── bb-validator.md    # Adversarial candidate finding validator
-│   │   ├── bb-dedup.md        # Test & finding deduplication
-│   │   └── bb-report.md       # 17-section disclosure report generator
+│   ├── agents/                # Unified OpenCode agent definition
+│   │   └── bug-bounty.md      # Bug-Bounty primary orchestrator
 │   │
-│   └── skills/                # 14 modular OpenCode methodology skills
+│   └── skills/                # 17 modular OpenCode methodology skills
 │       ├── scope-management/
-│       ├── asset-discovery/
-│       ├── asset-correlation/
-│       ├── web-mapping/
-│       ├── javascript-analysis/
-│       ├── api-analysis/
-│       ├── authorization-analysis/
-│       ├── injection-analysis/
-│       ├── business-logic-analysis/
-│       ├── cloud-review/
-│       ├── evidence-management/
+│       ├── asset-intelligence/
+│       ├── reconnaissance/
+│       ├── web-security/
+│       ├── javascript/
+│       ├── api-security/
+│       ├── authorization/
+│       ├── injection/
+│       ├── business-logic/
+│       ├── cloud-security/
+│       ├── browser/
+│       ├── oob/
 │       ├── validation/
 │       ├── deduplication/
-│       └── reporting/
+│       ├── evidence/
+│       ├── reporting/
+│       └── knowledge-research/
 │
 ├── framework/                 # Reusable Python 3 core engine
 │   ├── scope/                 # Scope engine, DNS boundary verification, normalizer
@@ -306,7 +296,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | Operation Category | Action | Resource Pattern | Effect | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **Default Baseline** | `shell` | `*` | `ask` | Unspecified shell commands default to human approval |
-| **Subagent Delegation** | `subagent` | `*` | `allow` | Permits delegating tasks to registered specialist agents |
+| **Subagent Delegation** | `subagent` | `*` | `deny` | Disabled: single-agent architecture uses modular skills |
 | **Code & File Read** | `read`, `glob`, `grep` | `*` | `allow` | Permits reading codebase, config, and local state |
 | **Safe Local Utilities** | `shell` | `*bb-scope-check*` | `allow` | Offline scope verification runs without prompt |
 | **Target Normalization** | `shell` | `*bb-target-normalize*` | `allow` | URL/hostname normalization runs without prompt |
@@ -325,10 +315,11 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | **External Submission** | `shell` | `*submit*report*`, `*hackerone*submit*`, `*bugcrowd*submit*` | `deny` | **Strictly denied**: Automated platform submissions prohibited |
 | **Remote Script Pipes** | `shell` | `curl * \| *sh*`, `wget * \| *sh*` | `deny` | **Strictly denied**: Arbitrary remote shell piping prohibited |
 
-### 2. Multi-Agent Hierarchy & Delegation Limits
-* **Primary Agent (`bb-hunter`)**: Configured with `mode: primary`. Selected automatically via `default_agent: "bb-hunter"`.
-* **13 Specialist Subagents**: Configured with `mode: subagent`. Each subagent carries tailored frontmatter permissions (e.g. `bb-scope` enforces zero target network traffic; `bb-report` strictly denies external submissions).
-* **Nesting Depth (`subagent_depth: 3`)**: Allows controlled 3-tier delegation (`bb-hunter` -> Specialist -> Validator/Evidence) while preventing runaway agent loops.
+### 2. Single-Agent Orchestration & Modular Skills Architecture
+* **Primary Agent (`Bug-Bounty`)**: Configured with `mode: primary`. Selected automatically via `default_agent: "Bug-Bounty"`.
+* **17 Modular Skills**: Loaded dynamically from `.opencode/skills/` to provide specialized methodology, criteria, and safety constraints across the research lifecycle.
+* **Direct Orchestration (`subagent_depth: 1`)**: Separate subagent spawning is disabled in favor of focused, reproducible skill execution by `Bug-Bounty`.
+* **Multi-Agent Distinction**: The previous 14-agent multi-agent architecture will be explored in a separate, dedicated repository in the future. It is intentionally not merged into this repository.
 
 ### 3. Environment & Runtime Status
 * **Development Machine**: Windows 10/11 x86_64 running Google Antigravity. Static configuration, schema compliance, and permission rule matching are validated locally via Python test suites.
@@ -371,7 +362,7 @@ Start OpenCode in the repository:
 ```bash
 opencode .
 ```
-`bb-hunter` automatically orchestrates reconnaissance, hypothesis formulation, on-demand tool verification, targeted testing, and deduplication.
+`Bug-Bounty` automatically orchestrates reconnaissance, hypothesis formulation, on-demand tool verification, targeted testing, and deduplication.
 
 ### Step 4: Review Markdown Reports
 Validated findings are stored in:

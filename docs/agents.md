@@ -1,97 +1,95 @@
-# BugBounty-Agent — Agents Reference
+# BugBounty-Agent — Agent Reference
 
-This reference details the role, inputs, outputs, and behavioral boundaries of each agent in the BugBounty-Agent framework.
-
----
-
-## 1. Primary Orchestrator
-
-### `bb-hunter`
-* **Role**: Primary Security Research Orchestrator.
-* **Responsibilities**:
-  1. Loads `scope.yaml` and initializes program state.
-  2. Directs `bb-recon` to map attack surfaces.
-  3. Coordinates with `bb-asset` to maintain a normalized asset inventory.
-  4. Formulates testable security hypotheses.
-  5. Dispatches specialist subagents (`bb-authz`, `bb-injection`, `bb-business-logic`, `bb-cloud`).
-  6. Submits all candidates to `bb-validator` for verification.
-  7. Ensures issues are deduplicated by `bb-dedup`.
-  8. Triggers `bb-report` to generate disclosure-ready markdown reports.
-  9. Tracks coverage across categories: Authentication, Authorization, API, JavaScript, Uploads, Business Logic, and Cloud.
+This document details the configuration, operational responsibilities, and behavioral constraints of the primary OpenCode agent in the BugBounty-Agent framework.
 
 ---
 
-## 2. Authorization & Reconnaissance Specialists
+## Architecture Overview
 
-### `bb-scope`
-* **Role**: Scope and authorization verification.
-* **Network Access**: **None**. Offline verification against `scope.yaml`.
-* **Outputs**: `IN_SCOPE`, `OUT_OF_SCOPE`, or `AMBIGUOUS` with provenance, depth, and matched rule.
+BugBounty-Agent employs a **single unified OpenCode agent** named `Bug-Bounty`. All specialized security research domains are implemented as **17 modular skills** (`.opencode/skills/`).
 
-### `bb-recon`
-* **Role**: Controlled reconnaissance.
-* **Tools**: `subfinder`, `assetfinder`, `amass`, `httpx`.
-* **Outputs**: Discovered subdomains, DNS records, responsive HTTP ports, server banners, and tech stacks.
-
-### `bb-asset`
-* **Role**: Asset normalization and correlation.
-* **Outputs**: Correlated asset records in `state/assets.json` with parent-child hierarchy, depth, and discovery provenance.
+> [!NOTE]
+> *Single-Agent Invariant*: In this repository, subagent spawning is disabled in favor of modular skills orchestration within `Bug-Bounty`. The multi-agent architecture will be developed in a future, separate repository.
 
 ---
 
-## 3. Application & Surface Specialists
+## Agent Specification: `Bug-Bounty`
 
-### `bb-web`
-* **Role**: Web application mapping and surface analysis.
-* **Investigates**: Login workflows, session cookie security flags, CORS policies, CSRF protections, open redirects, and debug exposures.
-
-### `bb-js`
-* **Role**: JavaScript analysis.
-* **Investigates**: Client route tables, hidden API endpoints, unminified source maps, and client-side authorization assumptions.
-* **Caveat**: Distinguishes between public frontend API keys and privileged credentials.
-
-### `bb-api`
-* **Role**: REST, GraphQL, and WebSocket API analysis.
-* **Investigates**: HTTP method handling (`OPTIONS`, `PUT`, `DELETE`), API versioning differences (`/v1/` vs `/v2/`), GraphQL introspection, and hidden parameter schemas.
-
----
-
-## 4. Vulnerability Specialists
-
-### `bb-authz`
-* **Role**: Authorization vulnerability specialist.
-* **Investigates**: Broken Object Level Authorization (BOLA/IDOR), Broken Function Level Authorization (BFLA), and tenant boundary isolation.
-* **Requirement**: Requires controlled dual-account proof of access.
-
-### `bb-injection`
-* **Role**: Safe input-handling and injection specialist.
-* **Investigates**: XSS, SQLi, SSTI, command injection, and path traversal.
-* **Requirement**: Strictly non-destructive probes (time delay, arithmetic evaluations, safe read-only markers).
-
-### `bb-business-logic`
-* **Role**: Business logic and workflow specialist.
-* **Investigates**: Sequence skipping, race conditions, decimal rounding, and quantity manipulation.
-* **Boundary**: Zero real-world financial transactions or destructive side-effects.
-
-### `bb-cloud`
-* **Role**: Cloud configuration and storage review.
-* **Investigates**: Public bucket permissions, cloud metadata exposure (SSRF), and dangling CNAME records.
-* **Boundary**: Never attacks unrelated third-party cloud infrastructure.
+* **Configuration**: `.opencode/agents/bug-bounty.md`
+* **Agent Name**: `Bug-Bounty`
+* **Mode**: `primary`
+* **Subagent Depth**: `1` (Direct skill orchestration; no subagent delegation)
+* **Skills Active**: All 17 framework skills:
+  1. `scope-management`
+  2. `asset-intelligence`
+  3. `reconnaissance`
+  4. `web-security`
+  5. `javascript`
+  6. `api-security`
+  7. `authorization`
+  8. `injection`
+  9. `business-logic`
+  10. `cloud-security`
+  11. `browser`
+  12. `oob`
+  13. `validation`
+  14. `deduplication`
+  15. `evidence`
+  16. `reporting`
+  17. `knowledge-research`
 
 ---
 
-## 5. Quality Control & Delivery Specialists
+## Operational Workflow
 
-### `bb-validator`
-* **Role**: Adversarial finding validator.
-* **Responsibilities**: Challenges candidate findings, tests reproducibility, checks scope, and eliminates scanner illusions.
-* **Outputs**: `VALIDATED`, `REJECTED`, or `NEEDS_MORE_EVIDENCE`.
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Security Researcher
+    participant Agent as Bug-Bounty Agent
+    participant Scope as Scope Engine (Offline)
+    participant Recon as Recon & Asset Skills
+    participant Test as Testing Skills
+    participant QC as Validation & QC Skills
+    participant Disk as Local State & Reports
 
-### `bb-dedup`
-* **Role**: Finding and test deduplication.
-* **Responsibilities**: Identifies duplicate reports sharing the same root cause, endpoint, or affected component. Prevents redundant testing via fingerprint hashes.
+    User->>Agent: bb-init target & provide scope.yaml
+    Agent->>Scope: Validate target boundaries (scope-management)
+    Scope-->>Agent: Scope Verdict (IN_SCOPE / OUT_OF_SCOPE)
+    Agent->>Recon: Recursive Subdomains & Port Discovery (asset-intelligence, reconnaissance)
+    Recon-->>Disk: Store asset tree in state/assets.json
+    Agent->>Agent: Formulate Hypothesis (HYP-001)
+    Agent->>Test: Execute minimal, safe probe (e.g. authorization, injection)
+    Test-->>Disk: Sign & redact evidence in evidence/
+    Agent->>QC: 6-gate verification & deduplication (validation, deduplication)
+    QC-->>Disk: Persist finding in state/findings.json
+    Agent->>Disk: Generate 17-section report (reporting)
+    Agent-->>User: Present report markdown for review (No auto-submission)
+```
 
-### `bb-report`
-* **Role**: Professional vulnerability report generation.
-* **Responsibilities**: Converts validated findings into 17-section markdown disclosure reports.
-* **Boundary**: Realistic CVSS severity; strictly no automated external submissions.
+---
+
+## Core Responsibilities
+
+1. **Deterministic Scope Binding**:
+   - Enforces offline verification before any network packet is dispatched.
+   - Respects depth constraints, wildcards, CIDR boundaries, and explicit exclusion rules.
+
+2. **Asset Intelligence & Arbitrary-Depth Discovery**:
+   - Executes recursive subdomain enumeration without artificial depth limits (`example.com` $\to$ `sub` $\to$ `dev` $\to$ `api` $\to$ `internal`).
+   - Normalizes DNS records, IP addresses, ASNs, TLS SAN certificates, and CDN/cloud edges.
+
+3. **Hypothesis-Driven Testing**:
+   - Strictly prohibits blind automated scanners.
+   - Formulates structured hypotheses:
+     $$\text{Observation} \longrightarrow \text{Hypothesis} \longrightarrow \text{Targeted Safe Test} \longrightarrow \text{Evidence} \longrightarrow \text{Validation}$$
+
+4. **Cryptographic Evidence Preservation**:
+   - Calculates SHA-256 hashes for all HTTP interactions.
+   - Automatically sanitizes session cookies, passwords, and API authorization tokens.
+   - Stores runtime data locally in `~/BugBounty-Workspace/` outside the Git repository.
+
+5. **Adversarial Quality Control**:
+   - Challenges candidate findings against a 6-gate verification checklist.
+   - Eliminates false positives, caching illusions, and generic WAF block pages.
+   - Generates 17-section disclosure reports for human review with strictly zero automated external submissions.
