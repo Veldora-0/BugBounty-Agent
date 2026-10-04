@@ -36,5 +36,5 @@ Systematically analyze programmatic interfaces (REST, GraphQL, WebSockets, gRPC-
 * Note header indicators: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `Retry-After`.
 
 ## 5. Tool Integration
-* Run `scripts/bb-api <endpoint> --program <program> [--graphql]` to map parameters and verbs safely.
-* Capture evidence of disparate status codes and unexpected data exposure via `scripts/bb-evidence`.
+* Run `bb-api <endpoint> --program <program> [--graphql]` to map parameters and verbs safely.
+* Capture evidence of disparate status codes and unexpected data exposure via `bb-evidence`.

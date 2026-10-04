@@ -86,18 +86,30 @@ python3 -m pytest -v
 
 ---
 
-## 6. OpenCode Setup
+## 6. OpenCode Global Deployment
 
-BugBounty-Agent comes preconfigured for OpenCode:
+BugBounty-Agent deploys globally into your OpenCode environment:
 
-* `.opencode/agents/`: Unified `Bug-Bounty` agent definition.
-* `.opencode/skills/`: 17 modular methodology skills.
-* `opencode.jsonc`: Default agent and permissions configuration.
+* `agents/bug-bounty.md`: Canonical `Bug-Bounty` orchestrator agent definition.
+* `skills/`: 17 modular methodology skills.
+* `scripts/bb-deploy`: Automated synchronization utility that links `~/.config/opencode/` and `~/.local/bin/`.
 
-Launch OpenCode within the repository:
+Deploy globally on Kali/Linux:
 
 ```bash
-opencode .
+./scripts/bb-deploy
 ```
 
-By default, OpenCode will load `Bug-Bounty` as the primary orchestrator.
+Verify deployment status:
+
+```bash
+./scripts/bb-deploy --status
+```
+
+Once deployed, `Bug-Bounty` is available globally in OpenCode from **any working directory**:
+
+```bash
+cd ~ && opencode
+cd /tmp && opencode
+cd ~/Desktop/BugBounty-Agent && opencode
+```

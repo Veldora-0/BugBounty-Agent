@@ -44,4 +44,4 @@ To prevent false positives, authorization testing **MUST** be performed using co
 
 ## 4. Evidence Standards
 * Every candidate authorization finding must include dual-account HTTP captures showing both the owner response and the unauthorized actor's access.
-* Redact all sensitive personal data, authorization tokens, and credentials via `scripts/bb-evidence`.
+* Redact all sensitive personal data, authorization tokens, and credentials via `bb-evidence`.

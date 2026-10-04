@@ -139,21 +139,24 @@ class SystemDoctor:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
     def check_opencode_integration(self) -> Dict[str, Any]:
-        """Category 9: OpenCode project configuration."""
+        """Category 9: OpenCode project configuration & global deployment."""
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         opencode_jsonc = os.path.join(repo_root, "opencode.jsonc")
-        agents_dir = os.path.join(repo_root, ".opencode", "agents")
-        skills_dir = os.path.join(repo_root, ".opencode", "skills")
+        agents_dir = os.path.join(repo_root, "agents")
+        skills_dir = os.path.join(repo_root, "skills")
+        legacy_agents_dir = os.path.join(repo_root, ".opencode", "agents")
 
         has_config = os.path.isfile(opencode_jsonc)
         agent_files = [f for f in os.listdir(agents_dir) if f.endswith(".md")] if os.path.isdir(agents_dir) else []
         skill_dirs = [d for d in os.listdir(skills_dir) if os.path.isdir(os.path.join(skills_dir, d))] if os.path.isdir(skills_dir) else []
 
+        has_legacy_agents = os.path.isdir(legacy_agents_dir) and any(f.endswith(".md") for f in os.listdir(legacy_agents_dir))
+
         default_agent = None
         subagent_depth = None
         permission_count = 0
-
         has_redundant_jsonc_agents = False
+
         if has_config:
             try:
                 import json
@@ -169,6 +172,22 @@ class SystemDoctor:
 
         has_opencode_bin = shutil.which("opencode") is not None
 
+        # Check global deployment
+        global_config_dir = os.environ.get("OPENCODE_CONFIG_DIR", os.path.expanduser("~/.config/opencode"))
+        global_agent_file = os.path.join(global_config_dir, "agents", "bug-bounty.md")
+        global_skills_dir = os.path.join(global_config_dir, "skills")
+        global_skills_count = len([d for d in os.listdir(global_skills_dir) if os.path.isdir(os.path.join(global_skills_dir, d))]) if os.path.isdir(global_skills_dir) else 0
+        is_globally_deployed = os.path.exists(global_agent_file) and global_skills_count >= 17
+
+        source_ready = (
+            has_config
+            and len(agent_files) == 1
+            and default_agent == "Bug-Bounty"
+            and len(skill_dirs) >= 17
+            and not has_redundant_jsonc_agents
+            and not has_legacy_agents
+        )
+
         return {
             "opencode_jsonc": has_config,
             "agent_count": len(agent_files),
@@ -178,7 +197,11 @@ class SystemDoctor:
             "permission_rules": permission_count,
             "opencode_binary": has_opencode_bin,
             "runtime_status": "INSTALLED" if has_opencode_bin else "PENDING - requires Kali",
-            "status": "READY" if (has_config and len(agent_files) == 1 and default_agent == "Bug-Bounty" and len(skill_dirs) >= 17 and not has_redundant_jsonc_agents) else "INCOMPLETE",
+            "global_dir": global_config_dir,
+            "global_deployed": is_globally_deployed,
+            "global_status": "DEPLOYED" if is_globally_deployed else "PENDING - run bb-deploy",
+            "duplicate_risk": "DETECTED" if has_legacy_agents else "CLEAN",
+            "status": "READY" if source_ready else "INCOMPLETE",
         }
 
     def run_full_diagnosis(self) -> Dict[str, Any]:

@@ -8,7 +8,7 @@ BugBounty-Agent is built on four core architectural tenets:
 2. **Deterministic Scope Boundaries**: Every network interaction is pre-validated through the Scope Engine before execution. Silently assuming authorization is architecturally impossible.
 3. **Hypothesis-Driven Security Research**: The framework prioritizes structured reasoning:
    $$\text{Observation} \longrightarrow \text{Hypothesis} \longrightarrow \text{Targeted Test} \longrightarrow \text{Evidence} \longrightarrow \text{Validation} \longrightarrow \text{Report}$$
-4. **OpenCode Native Integration**: Configured with project-local agents (`.opencode/agents/`), modular skills (`.opencode/skills/`), and explicit permission hierarchies in `opencode.jsonc`.
+4. **OpenCode Global Integration**: Canonical agent (`agents/bug-bounty.md`) and skills (`skills/`) deployed globally to `~/.config/opencode/` via `bb-deploy`, accessible from any working directory with zero duplicate registrations.
 
 ---
 

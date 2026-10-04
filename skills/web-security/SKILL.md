@@ -38,6 +38,6 @@ Systematically analyze web applications for security weaknesses across authentic
 
 ## 4. Controlled Execution Workflow
 1. Enforce scope check via `bb-scope-check` prior to contacting endpoints.
-2. Dispatch requests via `scripts/bb-http` to capture sanitized request and response evidence.
+2. Dispatch requests via `bb-http` to capture sanitized request and response evidence.
 3. Record discovered endpoints into `~/BugBounty-Workspace/programs/<name>/state/endpoints.json`.
 4. Avoid destructive actions: never modify administrative configuration or submit malicious payloads that disrupt system integrity.

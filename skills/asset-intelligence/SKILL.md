@@ -60,6 +60,6 @@ Every asset record must preserve historical observation context:
 ```
 
 ## 5. Usage Guidelines
-* Use `scripts/bb-target-normalize` for canonical target parsing.
+* Use `bb-target-normalize` for canonical target parsing.
 * Store correlated records in local state: `~/BugBounty-Workspace/programs/<name>/state/assets.json`.
 * Regularly reconcile asset updates to eliminate duplicate hostnames arising from case variances or protocol permutations.

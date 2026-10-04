@@ -1,6 +1,6 @@
 # BugBounty-Agent — Skills Catalog
 
-BugBounty-Agent equips the unified `Bug-Bounty` agent with 17 modular OpenCode skills located in `.opencode/skills/`. Each skill provides specialized methodology, decision trees, criteria, and safety constraints.
+BugBounty-Agent equips the unified `Bug-Bounty` agent with 17 modular OpenCode skills maintained in the repository under `skills/` and deployed globally to `~/.config/opencode/skills/`. Each skill provides specialized methodology, decision trees, criteria, and safety constraints.
 
 ---
 

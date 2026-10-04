@@ -32,5 +32,5 @@ Extract hidden application routes, parameter definitions, and architectural logi
 * **PostMessage Handlers**: Analyze `window.addEventListener('message', ...)` listeners for missing origin checks (`event.origin`).
 
 ## 5. Standard Tool Integration
-* Run `scripts/bb-js --program <program> <url_or_bundle>` to extract endpoints and parameters.
+* Run `bb-js --program <program> <url_or_bundle>` to extract endpoints and parameters.
 * Use `katana -jc` in JavaScript crawling mode for automated script discovery.

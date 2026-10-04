@@ -43,6 +43,6 @@ Never match hostnames by simple string suffix. The boundary must be anchored at 
 
 ## Usage Guidelines
 1. Before invoking any network-facing tool or HTTP request, execute:
-   `python scripts/bb-scope-check --scope <path_to_scope.yaml> <target>`
+   `bb-scope-check --scope <path_to_scope.yaml> <target>`
 2. If `bb-scope-check` returns a non-zero exit code, halt execution immediately on that target.
 3. Record the scope provenance (matched rule and depth) for every asset entered into the inventory.

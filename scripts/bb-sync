@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+"""
+bb-sync — Synchronize repository agent and skills with global OpenCode installation.
+Alias for bb-deploy.
+"""
+
+import os
+import subprocess
+import sys
+
+REPO_ROOT = os.environ.get(
+    "BUGBOUNTY_AGENT_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), ".."))
+)
+deploy_bin = os.path.join(REPO_ROOT, "scripts", "bb-deploy")
+
+if __name__ == "__main__":
+    if sys.platform == "win32":
+        cmd = [sys.executable, deploy_bin] + sys.argv[1:]
+    else:
+        cmd = [deploy_bin] + sys.argv[1:]
+    sys.exit(subprocess.call(cmd))

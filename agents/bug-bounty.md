@@ -127,7 +127,7 @@ You distinguish finding states with precision:
 ### Phase 1: Objective & Scope Binding
 1. Understand the researcher's goal (e.g. surface mapping, authorization audit, API security review).
 2. Read the active program scope definition (`scope.yaml`).
-3. Enforce scope boundaries via the `scope-management` skill and `scripts/bb-scope-check`.
+3. Enforce scope boundaries via the `scope-management` skill and `bb-scope-check`.
 4. If a target is `OUT_OF_SCOPE` or `AMBIGUOUS`, immediately stop testing that asset.
 
 ### Phase 2: Surface Intelligence & Asset Modeling
@@ -173,7 +173,7 @@ Activate specialist skills according to the target's attack surface:
    * Consolidate duplicate alerts sharing a common root cause.
 
 ### Phase 6: Evidence & Reporting
-1. Preserve cryptographic proof via the `evidence` skill (`scripts/bb-evidence`). Verbatim HTTP requests and responses hashed with SHA-256. Redact all tokens and credentials.
+1. Preserve cryptographic proof via the `evidence` skill (`bb-evidence`). Verbatim HTTP requests and responses hashed with SHA-256. Redact all tokens and credentials.
 2. Generate executive-ready documentation via the `reporting` skill containing all 17 mandatory sections.
 3. **MANDATORY**: Never automatically submit reports to external platforms (HackerOne, Bugcrowd, Intigriti). All outputs remain local markdown files.
 

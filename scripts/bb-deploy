@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""
+bb-deploy — Deploy and synchronize Bug-Bounty agent and skills to global OpenCode environment.
+
+Usage:
+  bb-deploy                # Deploy using symlinks (recommended)
+  bb-deploy --copy         # Deploy using file copies instead of symlinks
+  bb-deploy --status       # Check current global deployment status
+  bb-deploy --uninstall    # Remove global Bug-Bounty agent and skills
+"""
+
+import argparse
+import os
+import sys
+
+REPO_ROOT = os.environ.get(
+    "BUGBOUNTY_AGENT_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), ".."))
+)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.tools.deployer import OpenCodeDeployer
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Deploy and synchronize Bug-Bounty agent and skills to global OpenCode (~/.config/opencode/)."
+    )
+    parser.add_argument(
+        "--copy",
+        action="store_true",
+        help="Copy files instead of creating symlinks",
+    )
+    parser.add_argument(
+        "--symlink",
+        action="store_true",
+        help="Create symlinks from repository to global OpenCode directory (default)",
+    )
+    parser.add_argument(
+        "--status",
+        "--check",
+        action="store_true",
+        help="Check global deployment status without making changes",
+    )
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Remove global Bug-Bounty agent and skills",
+    )
+    args = parser.parse_args()
+
+    deployer = OpenCodeDeployer(repo_root=REPO_ROOT)
+
+    if args.status:
+        st = deployer.check_status()
+        print("=" * 70)
+        print("       BUGBOUNTY-AGENT GLOBAL OPENCODE DEPLOYMENT STATUS")
+        print("=" * 70)
+        print(f"Overall Status:        {'[READY / VALID]' if st['is_valid'] else '[INCOMPLETE / NOT DEPLOYED]'}")
+        print(f"Global Config Dir:     {deployer.config_dir}")
+        print(f"Bug-Bounty Agent:      {'Deployed' if st['agent_deployed'] else 'Missing'} ({st['agent_path']})")
+        print(f"Agent Symlink:         {st['agent_symlink']}")
+        print(f"Deployed Skills:       {st['skills_count']} / 17 in {st['skills_dir']}")
+        print(f"Global Default Agent:  {st['default_agent']}")
+        print(f"Duplicate Risk:        {st['duplicate_prevention']['status']}")
+        print(f"  Note: {st['duplicate_prevention']['message']}")
+        print("=" * 70)
+        sys.exit(0 if st["is_valid"] else 1)
+
+    if args.uninstall:
+        print("[*] Uninstalling global Bug-Bounty agent and skills...")
+        res = deployer.uninstall()
+        print(f"[+] Agent removed:  {res['agent_removed']}")
+        print(f"[+] Skills removed: {res['skills_removed']}")
+        print(f"[+] Scripts unlinked: {res['scripts_removed']}")
+        print("[+] Uninstallation complete.")
+        sys.exit(0)
+
+    mode = "copy" if args.copy else "symlink"
+    print(f"[*] Deploying Bug-Bounty agent and 17 skills to global OpenCode ({deployer.config_dir})...")
+    print(f"[*] Deployment mode: {mode}")
+
+    res = deployer.deploy(mode=mode)
+
+    print(f"\n[+] Agent:     {res['agent'].get('agent')} -> {res['agent'].get('mode')} to {res['agent'].get('destination')}")
+    print(f"[+] Skills:    {res['skills'].get('skills_deployed')} skills deployed ({mode})")
+    print(f"[+] Scripts:   {res['scripts'].get('scripts_linked')} utilities linked to {deployer.bin_dir}")
+    print(f"[+] Config:    default_agent = {res['config'].get('default_agent')} in {res['config'].get('config_file')}")
+    print(f"[+] Duplicate: {res['duplicate_prevention'].get('status')}")
+
+    if res["status"] == "SUCCESS":
+        print("\n[+] SUCCESS: Bug-Bounty is now available globally across all directories in OpenCode!")
+        print("    Try running 'opencode' from any directory (e.g. cd ~ && opencode).")
+        sys.exit(0)
+    else:
+        print("\n[!] WARNING: Deployment completed with warnings.")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

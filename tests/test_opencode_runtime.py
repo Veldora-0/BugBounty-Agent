@@ -31,8 +31,9 @@ import yaml
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OPENCODE_CONFIG_PATH = os.path.join(REPO_ROOT, "opencode.jsonc")
-AGENTS_DIR = os.path.join(REPO_ROOT, ".opencode", "agents")
-SKILLS_DIR = os.path.join(REPO_ROOT, ".opencode", "skills")
+AGENTS_DIR = os.path.join(REPO_ROOT, "agents")
+SKILLS_DIR = os.path.join(REPO_ROOT, "skills")
+LEGACY_AGENTS_DIR = os.path.join(REPO_ROOT, ".opencode", "agents")
 
 EXPECTED_AGENTS = {
     "Bug-Bounty": "primary",
@@ -273,15 +274,22 @@ def test_subagent_and_read_permissions():
 # ==============================================================================
 
 def test_single_agent_discovered():
-    """Verifies that exactly one agent (bug-bounty.md) exists in .opencode/agents/."""
+    """Verifies that exactly one canonical agent (agents/bug-bounty.md) exists in repository."""
     agent_files = glob.glob(os.path.join(AGENTS_DIR, "*.md"))
     assert len(agent_files) == 1, f"Expected exactly 1 agent file, found: {agent_files}"
     basename = os.path.basename(agent_files[0]).lower()
     assert basename == "bug-bounty.md"
 
 
+def test_no_project_local_agent_duplicates():
+    """Verifies that no project-local .opencode/agents/ exists, preventing duplicate agent discovery."""
+    if os.path.isdir(LEGACY_AGENTS_DIR):
+        agent_files = glob.glob(os.path.join(LEGACY_AGENTS_DIR, "*.md"))
+        assert len(agent_files) == 0, f"Project-local .opencode/agents/ must be empty to avoid duplicate registration, found: {agent_files}"
+
+
 def test_old_agents_not_active():
-    """Verifies that the old 14 multi-agent definitions are removed and not active in .opencode/agents/."""
+    """Verifies that the old 14 multi-agent definitions are removed from repository agents."""
     for old_agent in OLD_AGENTS:
         old_agent_path = os.path.join(AGENTS_DIR, f"{old_agent}.md")
         assert not os.path.exists(old_agent_path), f"Old agent file still exists: {old_agent_path}"
@@ -336,11 +344,11 @@ def test_bug_bounty_agent_policy():
 
 
 # ==============================================================================
-# 4. Project-Local Skills Discovery Tests
+# 4. Canonical Skills Discovery Tests
 # ==============================================================================
 
 def test_all_17_skills_discovered():
-    """Verifies that all 17 project-local skills exist in .opencode/skills/."""
+    """Verifies that all 17 canonical skills exist in repository skills/."""
     skill_dirs = [d for d in os.listdir(SKILLS_DIR) if os.path.isdir(os.path.join(SKILLS_DIR, d))]
     assert set(skill_dirs) == EXPECTED_SKILLS
 

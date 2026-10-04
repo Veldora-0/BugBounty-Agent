@@ -36,37 +36,40 @@ BugBounty-Agent/
 ├── .gitignore                 # Enforces exclusion of runtime, target, and secret data
 ├── opencode.jsonc             # OpenCode native project configuration & permissions
 │
-├── .opencode/
-│   ├── agents/                # Unified OpenCode agent definition
-│   │   └── bug-bounty.md      # Bug-Bounty primary orchestrator
-│   │
-│   └── skills/                # 17 modular OpenCode methodology skills
-│       ├── scope-management/
-│       ├── asset-intelligence/
-│       ├── reconnaissance/
-│       ├── web-security/
-│       ├── javascript/
-│       ├── api-security/
-│       ├── authorization/
-│       ├── injection/
-│       ├── business-logic/
-│       ├── cloud-security/
-│       ├── browser/
-│       ├── oob/
-│       ├── validation/
-│       ├── deduplication/
-│       ├── evidence/
-│       ├── reporting/
-│       └── knowledge-research/
+├── agents/                    # Canonical Bug-Bounty agent definition
+│   └── bug-bounty.md          # Primary orchestrator (deployed globally to ~/.config/opencode/agents/)
+│
+├── skills/                    # 17 modular OpenCode methodology skills (deployed globally)
+│   ├── scope-management/
+│   ├── asset-intelligence/
+│   ├── reconnaissance/
+│   ├── web-security/
+│   ├── javascript/
+│   ├── api-security/
+│   ├── authorization/
+│   ├── injection/
+│   ├── business-logic/
+│   ├── cloud-security/
+│   ├── browser/
+│   ├── oob/
+│   ├── validation/
+│   ├── deduplication/
+│   ├── evidence/
+│   ├── reporting/
+│   └── knowledge-research/
 │
 ├── framework/                 # Reusable Python 3 core engine
 │   ├── scope/                 # Scope engine, DNS boundary verification, normalizer
 │   ├── state/                 # Persistent state manager, test fingerprinting, dedup
 │   ├── findings/              # Finding schema, lifecycle state machine, reports
+│   ├── tools/                 # Tool registry, installer, doctor, deployer
 │   └── common/                # Evidence store, sanitization, tool detection, config
 │
 ├── scripts/                   # Controlled CLI wrappers with mandatory scope checks
+│   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
+│   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
+│   ├── bb-doctor              # Diagnostics utility across 9 system categories
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
 │   ├── bb-recon               # Controlled recon (subfinder, assetfinder, httpx)
@@ -315,9 +318,10 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | **External Submission** | `shell` | `*submit*report*`, `*hackerone*submit*`, `*bugcrowd*submit*` | `deny` | **Strictly denied**: Automated platform submissions prohibited |
 | **Remote Script Pipes** | `shell` | `curl * \| *sh*`, `wget * \| *sh*` | `deny` | **Strictly denied**: Arbitrary remote shell piping prohibited |
 
-### 2. Single-Agent Orchestration & Modular Skills Architecture
-* **Primary Agent (`Bug-Bounty`)**: Configured with `mode: primary`. Selected automatically via `default_agent: "Bug-Bounty"`.
-* **17 Modular Skills**: Loaded dynamically from `.opencode/skills/` to provide specialized methodology, criteria, and safety constraints across the research lifecycle.
+### 2. Global Agent & Modular Skills Deployment
+* **Global Availability**: `Bug-Bounty` is deployed globally into `~/.config/opencode/agents/bug-bounty.md` and `~/.config/opencode/skills/` using `./scripts/bb-deploy`. It is selectable as the default primary agent from **any working directory** (`cd ~ && opencode`, `cd /tmp && opencode`, `cd ~/Desktop/BugBounty-Agent && opencode`).
+* **Canonical Source of Truth**: The Git repository remains the source-controlled source of truth (`agents/bug-bounty.md` and `skills/`). Updates in the repo are synchronized globally with `./scripts/bb-deploy` (or `bb-sync`).
+* **Duplicate Prevention**: No project-local `.opencode/agents/` exists in the repository root, ensuring OpenCode discovers exactly one custom agent without duplicates.
 * **Direct Orchestration (`subagent_depth: 1`)**: Separate subagent spawning is disabled in favor of focused, reproducible skill execution by `Bug-Bounty`.
 * **Multi-Agent Distinction**: The previous 14-agent multi-agent architecture will be explored in a separate, dedicated repository in the future. It is intentionally not merged into this repository.
 

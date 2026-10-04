@@ -4,10 +4,10 @@ This document details the architectural model of **BugBounty-Agent**, defining t
 
 ---
 
-## Architectural Model: Single Agent with Modular Skills
+## Architectural Model: Single Global Agent with Modular Skills
 
 > [!IMPORTANT]
-> **Single-Agent Decision**: This repository is designed around **ONE OpenCode agent named exactly `Bug-Bounty`** (`.opencode/agents/bug-bounty.md`). All specialized bug bounty research capabilities are implemented as **17 modular skills** (`.opencode/skills/`), rather than separate subagents.
+> **Single-Agent Decision**: This repository is designed around **ONE OpenCode agent named exactly `Bug-Bounty`** (canonical source in `agents/bug-bounty.md`, deployed globally to `~/.config/opencode/agents/bug-bounty.md`). All specialized bug bounty research capabilities are implemented as **17 modular skills** (`skills/`, deployed globally to `~/.config/opencode/skills/`), rather than separate subagents.
 >
 > *The previous 14-agent multi-agent architecture will be explored in a separate, dedicated repository in the future. It is intentionally NOT merged into this repository.*
 
@@ -52,21 +52,19 @@ flowchart TD
 | Property | Value |
 | :--- | :--- |
 | **Agent Name** | `Bug-Bounty` |
-| **File Location** | `.opencode/agents/bug-bounty.md` |
+| **Repository Source** | `agents/bug-bounty.md` (Canonical source of truth) |
+| **Global Deployment** | `~/.config/opencode/agents/bug-bounty.md` |
 | **Mode** | `primary` |
 | **Subagent Depth** | `1` (Direct orchestration; subagents disabled) |
 | **Core Role** | Senior Security Research Orchestrator |
 | **Operating Boundary** | Strict hypothesis-driven methodology. Never runs unvetted scans or destructive actions. Offline scope validation before all network activity. |
 
-### Operational Responsibilities
+### Global Availability & Deployment
 
-1. **Intake & Scope Binding**: Loads target definition, evaluates against `scope.yaml` using `scope-management`.
-2. **Asset Intelligence**: Builds recursive subdomain hierarchy to arbitrary depth using `asset-intelligence`.
-3. **Reconnaissance**: Dispatches passive and active reconnaissance through `reconnaissance` and CLI wrappers.
-4. **Surface Analysis**: Discovers endpoints, routes, tokens, and schemas using `web-security`, `javascript`, and `api-security`.
-5. **Targeted Hypothesis Testing**: Tests specific vulnerabilities using `authorization`, `injection`, `business-logic`, `cloud-security`, `browser`, and `oob`.
-6. **Validation & Quality Control**: Eliminates false positives via `validation`, prevents repeated tests via `deduplication`, and stores signed evidence with `evidence`.
-7. **Professional Disclosure**: Generates publication-ready 17-section reports using `reporting`.
+* **Any Directory Availability**: OpenCode can be launched from anywhere (`cd ~ && opencode`, `cd /tmp && opencode`, `cd ~/Desktop/BugBounty-Agent && opencode`). `Bug-Bounty` is always available as the global primary default agent.
+* **Source of Truth**: The Git repository remains the canonical version-controlled source of truth.
+* **Sync & Deployment Command**: Running `./scripts/bb-deploy` (or `bb-sync`) synchronizes `agents/` and `skills/` to `~/.config/opencode/` via symlinks or copies.
+* **Duplicate Prevention**: No `.opencode/agents/` directory exists in the repository root, ensuring OpenCode discovers exactly one custom agent without duplicates.
 
 ---
 
