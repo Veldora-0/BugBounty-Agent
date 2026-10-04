@@ -12,8 +12,9 @@ BugBounty-Agent equips the unified `Bug-Bounty` agent with 17 modular OpenCode s
 * **Methodology**: Evaluates precedence (Exclusions > Specific targets > Wildcards > Ambiguous entries). Computes recursive subdomain depth and DNS label boundaries.
 
 ### 2. `asset-intelligence`
-* **Purpose**: Asset graph construction, arbitrary-depth recursive subdomain enumeration, and normalization.
-* **Methodology**: Supports infinite/arbitrary subdomain recursion (`example.com` $\to$ `sub` $\to$ `dev` $\to$ `api` $\to$ `internal`). Maps DNS records (A, AAAA, CNAME, TXT, MX), IP addresses, ASNs, TLS SAN certificates, and CDN/cloud edge attribution.
+* **Purpose**: Production-grade recursive asset graph construction, arbitrary-depth subdomain enumeration, infrastructure attribution, and multi-source provenance calibration.
+* **CLI Utility**: `bb-assets` (`--domain`, `--program`, `--scope`, `--tree`, `--json`, `--depth`, `--budget`, `--passive-only`).
+* **Methodology**: Supports arbitrary subdomain recursion without artificial ceilings (`example.com` $\to$ `api` $\to$ `dev` $\to$ `internal` $\to$ `service`). Maps directional semantic graph relationships (`HAS_SUBDOMAIN`, `RESOLVES_TO`, `CNAME_TO`, `PRESENT_IN_CERT`, `HOSTED_BY`, `BELONGS_TO_ASN`). Implements wildcard DNS mitigation, X.509 TLS certificate SAN extraction with recursive re-queueing, CDN/cloud edge attribution (Cloudflare, Akamai, CloudFront, Fastly, Azure, GCP), and multi-source provenance tracking with calibrated confidence ratings (`LOW`, `MEDIUM`, `HIGH`, `CONFIRMED`).
 
 ### 3. `reconnaissance`
 * **Purpose**: Controlled passive and active reconnaissance.

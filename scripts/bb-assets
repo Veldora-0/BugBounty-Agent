@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""
+bb-assets — Asset Intelligence CLI for BugBounty-Agent.
+
+Executes arbitrary-depth recursive subdomain discovery, DNS/ASN correlation,
+TLS SAN extraction, CDN attribution, and strict scope boundary enforcement.
+Maintains persistent asset graph in local program state.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import List, Optional
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+REPO_ROOT = os.environ.get(
+    "BUGBOUNTY_AGENT_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")),
+)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.assets.engine import AssetIntelligenceEngine
+from framework.assets.graph import AssetGraph
+from framework.common.config import get_program_dir
+from framework.scope.engine import ScopeEngine, ScopeStatus
+from framework.state.manager import StateManager
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="BugBounty-Agent Recursive Asset Intelligence & Graph Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bb-assets --domain example.com --scope scope.yaml --tree
+  bb-assets --program acme-corp --tree
+  bb-assets --program acme-corp --domain api.example.com --depth 0 --json
+  bb-assets --program acme-corp --seeds "api.example.com,dev.api.example.com" --tree
+        """,
+    )
+    parser.add_argument(
+        "-p", "--program",
+        help="Program name in local workspace (resolves ~/BugBounty-Workspace/programs/<name>)",
+    )
+    parser.add_argument(
+        "-d", "--domain",
+        help="Target apex root domain to discover (e.g. example.com)",
+    )
+    parser.add_argument(
+        "-s", "--scope",
+        help="Path to scope.yaml definition (defaults to program's scope/scope.yaml)",
+    )
+    parser.add_argument(
+        "--seeds",
+        help="Comma-separated or space-separated list of known seed subdomains",
+    )
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=0,
+        help="Maximum recursion depth ceiling (default: 0 = arbitrary unlimited depth)",
+    )
+    parser.add_argument(
+        "--budget",
+        type=int,
+        default=2000,
+        help="Safety asset count budget (default: 2000)",
+    )
+    parser.add_argument(
+        "--passive-only",
+        action="store_true",
+        help="Run passive analysis only (disables active DNS and TLS SAN probes)",
+    )
+    parser.add_argument(
+        "--no-wildcards",
+        action="store_true",
+        help="Skip active wildcard DNS probing",
+    )
+    parser.add_argument(
+        "--tree",
+        action="store_true",
+        help="Render visual ASCII asset hierarchy tree",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output full asset graph structure in JSON",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Perform evaluation without persisting results to program state",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    prog_dir: Optional[str] = None
+    state: Optional[StateManager] = None
+    scope_path: Optional[str] = args.scope
+
+    if args.program:
+        try:
+            prog_dir = get_program_dir(args.program)
+            state = StateManager(prog_dir)
+            if not scope_path:
+                candidate_scope = os.path.join(prog_dir, "scope", "scope.yaml")
+                if os.path.isfile(candidate_scope):
+                    scope_path = candidate_scope
+        except Exception as e:
+            print(f"[!] Error initializing program directory: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Initialize Scope Engine if scope file provided
+    scope_engine: Optional[ScopeEngine] = None
+    if scope_path and os.path.isfile(scope_path):
+        try:
+            scope_engine = ScopeEngine.from_file(scope_path)
+        except Exception as e:
+            print(f"[!] Error loading scope configuration from '{scope_path}': {e}", file=sys.stderr)
+            sys.exit(1)
+    elif scope_path and not os.path.isfile(scope_path):
+        print(f"[!] Scope file not found: {scope_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Determine root domains
+    root_domains: List[str] = []
+    if args.domain:
+        root_domains.append(args.domain.strip())
+    elif scope_engine:
+        for d in scope_engine.included_domains:
+            clean = d[2:] if d.startswith("*.") else d
+            if clean not in root_domains:
+                root_domains.append(clean)
+
+    if not root_domains:
+        print("[!] Error: No root domains provided. Use --domain <dom> or configure --scope / --program.", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse seed subdomains if any
+    seed_subdomains: List[str] = []
+    if args.seeds:
+        for item in args.seeds.replace(",", " ").split():
+            clean = item.strip()
+            if clean:
+                seed_subdomains.append(clean)
+
+    # Initialize existing graph from program state if available
+    graph = AssetGraph()
+    if state:
+        try:
+            graph = state.get_asset_graph()
+        except Exception:
+            pass
+
+    # Instantiate Asset Intelligence Engine
+    engine = AssetIntelligenceEngine(
+        scope_engine=scope_engine,
+        graph=graph,
+        max_depth=args.depth,
+        max_assets=args.budget,
+        passive_only=args.passive_only,
+        detect_wildcards=not args.no_wildcards,
+    )
+
+    print(f"[*] Starting Asset Intelligence Engine...")
+    print(f"[*] Target root domains: {', '.join(root_domains)}")
+    print(f"[*] Max recursion depth: {'Unlimited (Arbitrary Depth)' if args.depth == 0 else args.depth}")
+    print(f"[*] Asset budget: {args.budget}")
+    print(f"[*] Mode: {'Passive Only' if args.passive_only else 'Full Active/Passive'}")
+
+    # Run discovery pipeline
+    result_graph = engine.run_discovery(
+        root_domains=root_domains,
+        seed_subdomains=seed_subdomains,
+    )
+
+    all_assets = result_graph.get_all_assets()
+    in_scope = result_graph.get_assets_by_scope(ScopeStatus.IN_SCOPE)
+    out_of_scope = result_graph.get_assets_by_scope(ScopeStatus.OUT_OF_SCOPE)
+    relationships = result_graph.get_relationships()
+
+    print(f"[+] Discovery complete:")
+    print(f"    - Total assets in graph: {len(all_assets)}")
+    print(f"    - In-scope assets: {len(in_scope)}")
+    print(f"    - Out-of-scope assets: {len(out_of_scope)}")
+    print(f"    - Max depth achieved: {result_graph.get_max_depth()}")
+    print(f"    - Graph edges / relationships: {len(relationships)}")
+
+    # Persist state
+    if state and not args.dry_run:
+        state.save_asset_graph(result_graph)
+        print(f"[+] Persisted updated asset graph to: {state.assets_file}")
+
+    # Output representation
+    if args.tree:
+        print("\n" + "=" * 60)
+        print("ASSET HIERARCHY TREE")
+        print("=" * 60)
+        print(result_graph.render_tree_ascii())
+        print("=" * 60 + "\n")
+
+    if args.json:
+        print(json.dumps(result_graph.to_dict(), indent=2))
+
+
+if __name__ == "__main__":
+    main()

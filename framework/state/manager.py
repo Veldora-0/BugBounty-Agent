@@ -89,37 +89,80 @@ class StateManager:
         """
         Adds or updates an asset in local state.
         Preserves first_seen and updates last_seen.
+        Supports both legacy dictionary format and graph format.
         """
-        hostname = asset.get("hostname")
+        hostname = asset.get("hostname") or asset.get("normalized") or asset.get("value")
         if not hostname:
             raise ValueError("Asset must include a 'hostname'.")
 
-        assets = self._read_json(self.assets_file)
+        data = self._read_json(self.assets_file)
         now_str = datetime.now(timezone.utc).isoformat()
 
-        if hostname in assets:
-            existing = assets[hostname]
-            existing.update(asset)
-            existing["last_seen"] = now_str
-            assets[hostname] = existing
+        if isinstance(data, dict) and "assets" in data and isinstance(data["assets"], dict):
+            # Graph format
+            assets = data["assets"]
+            asset_id = asset.get("id") or f"asset:hostname:{hostname}"
+            if asset_id in assets:
+                existing = assets[asset_id]
+                existing.update(asset)
+                existing["last_seen"] = now_str
+                assets[asset_id] = existing
+            else:
+                asset_record = dict(asset)
+                asset_record["first_seen"] = now_str
+                asset_record["last_seen"] = now_str
+                assets[asset_id] = asset_record
+            data["total_assets"] = len(assets)
+            self._atomic_write_json(self.assets_file, data)
+            return assets[asset_id]
         else:
-            asset_record = dict(asset)
-            asset_record["first_seen"] = now_str
-            asset_record["last_seen"] = now_str
-            assets[hostname] = asset_record
+            # Legacy dictionary format
+            assets = data if isinstance(data, dict) else {}
+            if hostname in assets:
+                existing = assets[hostname]
+                existing.update(asset)
+                existing["last_seen"] = now_str
+                assets[hostname] = existing
+            else:
+                asset_record = dict(asset)
+                asset_record["first_seen"] = now_str
+                asset_record["last_seen"] = now_str
+                assets[hostname] = asset_record
 
-        self._atomic_write_json(self.assets_file, assets)
-        return assets[hostname]
+            self._atomic_write_json(self.assets_file, assets)
+            return assets[hostname]
 
     def get_assets(self) -> List[Dict[str, Any]]:
-        """Returns all discovered assets."""
-        assets = self._read_json(self.assets_file)
-        return list(assets.values())
+        """Returns all discovered assets, whether stored in graph format or legacy format."""
+        data = self._read_json(self.assets_file)
+        if isinstance(data, dict) and "assets" in data and isinstance(data["assets"], dict):
+            return list(data["assets"].values())
+        return list(data.values()) if isinstance(data, dict) else []
 
     def get_asset(self, hostname: str) -> Optional[Dict[str, Any]]:
         """Retrieves single asset by hostname."""
-        assets = self._read_json(self.assets_file)
-        return assets.get(hostname)
+        data = self._read_json(self.assets_file)
+        if isinstance(data, dict) and "assets" in data and isinstance(data["assets"], dict):
+            target = hostname.strip().lower()
+            for a in data["assets"].values():
+                if (
+                    a.get("hostname") == target
+                    or a.get("normalized") == target
+                    or a.get("id") == target
+                    or a.get("value") == target
+                ):
+                    return a
+            return None
+        return data.get(hostname) if isinstance(data, dict) else None
+
+    def get_asset_graph(self) -> Any:
+        """Loads and returns an AssetGraph instance from local state."""
+        from framework.assets.graph import AssetGraph
+        return AssetGraph.load_from_file(self.assets_file)
+
+    def save_asset_graph(self, graph: Any) -> None:
+        """Saves an AssetGraph instance into local state atomically."""
+        graph.save_to_file(self.assets_file)
 
     # ---------------- Endpoint Management ----------------
 

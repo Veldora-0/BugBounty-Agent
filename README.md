@@ -59,6 +59,7 @@ BugBounty-Agent/
 │   └── knowledge-research/
 │
 ├── framework/                 # Reusable Python 3 core engine
+│   ├── assets/                # Recursive asset graph engine, DNS/IP/ASN/TLS/CDN models
 │   ├── scope/                 # Scope engine, DNS boundary verification, normalizer
 │   ├── state/                 # Persistent state manager, test fingerprinting, dedup
 │   ├── findings/              # Finding schema, lifecycle state machine, reports
@@ -69,7 +70,8 @@ BugBounty-Agent/
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
-│   ├── bb-doctor              # Diagnostics utility across 9 system categories
+│   ├── bb-doctor              # Diagnostics utility across 10 system categories
+│   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
 │   ├── bb-recon               # Controlled recon (subfinder, assetfinder, httpx)
@@ -88,6 +90,9 @@ BugBounty-Agent/
 │   └── config.example.yaml    # Global framework configuration template
 │
 ├── tests/                     # 100% automated test suite
+│   ├── test_asset_model.py
+│   ├── test_asset_graph.py
+│   ├── test_asset_engine.py
 │   ├── test_scope.py
 │   ├── test_recursive_subdomains.py
 │   ├── test_target_normalization.py
@@ -217,7 +222,7 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 ## Tool Intelligence & Management
 
 ### 1. Automatic Diagnostics (`bb-doctor`)
-Run deep diagnostics across 9 system categories:
+Run deep diagnostics across 10 system categories:
 ```bash
 ./scripts/bb-doctor
 ```
@@ -230,6 +235,7 @@ Checks:
 * **Wordlists**: SecLists presence on Kali (`/usr/share/seclists`) or user local directory
 * **Configuration**: `secrets.env` file presence and permissions
 * **Scope Engine**: Recursive subdomain validation and boundary security integrity
+* **Asset Intelligence**: Arbitrary-depth recursive graph engine and relationship models
 * **OpenCode**: Agent prompts and modular skills readiness
 
 ### 2. Safe On-Demand Installation (`bb-install`)
@@ -289,6 +295,37 @@ If a preferred tool is unavailable:
 
 ---
 
+## Phase 1: Recursive Asset Intelligence Engine
+
+The **Asset Intelligence Engine** (`framework/assets/` & `scripts/bb-assets`) constructs and maintains an authoritative, recursive asset graph for authorized security research targets:
+
+* **Arbitrary-Depth Recursion**: Dynamically traverses subdomains down to arbitrary depths (depth 1, 2, 3, 4, 5, ...), preventing artificial discovery caps.
+* **Network & Infrastructure Graph**: Tracks directional semantic relationships:
+  * `HAS_SUBDOMAIN`: Apex domain or parent subdomain $\longrightarrow$ child subdomain
+  * `RESOLVES_TO`: Hostname $\longrightarrow$ IPv4/IPv6 address
+  * `CNAME_TO`: Hostname $\longrightarrow$ canonical name target
+  * `PRESENT_IN_CERT`: TLS certificate $\longrightarrow$ Subject Alternative Name (SAN)
+  * `HOSTED_BY`: Hostname or IP $\longrightarrow$ CDN edge or Cloud provider
+  * `BELONGS_TO_ASN`: IP address $\longrightarrow$ Autonomous System Number (ASN)
+* **DNS & Wildcard Mitigation**: Automatic active probing of randomized non-existent subdomains (`_bb_probe_<uuid>.<domain>`) to detect wildcard DNS and prevent synthetic wildcard subdomain explosion.
+* **TLS Certificate SAN Extraction**: Analyzes X.509 Subject Alternative Names and re-queues newly discovered in-scope hostnames into recursive traversal.
+* **CDN & Cloud Edge Attribution**: Classifies CDN reverse proxies (Cloudflare, CloudFront, Akamai, Fastly, Azure, Google Cloud) via CNAME fingerprints and BGP ASN mapping with confidence ratings (`CONFIRMED`, `PROBABLE`, `UNKNOWN`).
+* **Multi-Source Provenance & Confidence Scoring**: Calibrates confidence from `LOW` (unverified third-party passive feed) to `HIGH` ($\ge 2$ independent sources) and `CONFIRMED` (active DNS verification or verified network probe).
+* **Deterministic Scope Integration**: Offline validation through `ScopeEngine` gates every node before active resolution or recursion; out-of-scope nodes are recorded and skipped without further descent.
+* **CLI Utility**:
+  ```bash
+  # Discover recursive subdomains with ASCII tree visualization
+  ./scripts/bb-assets --domain example.com --scope scope.yaml --tree
+
+  # Execute for an initialized program workspace
+  ./scripts/bb-assets --program acme-corp --tree
+
+  # Passive analysis only (disables active DNS and TLS SAN probes)
+  ./scripts/bb-assets --program acme-corp --passive-only --json
+  ```
+
+---
+
 ## OpenCode V2 Runtime & Security Architecture
 
 BugBounty-Agent is architected natively for **OpenCode V2** on Kali/Linux research workstations.
@@ -308,6 +345,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | **Evidence Logging** | `shell` | `*bb-evidence*` | `allow` | Evidence capture and redaction run without prompt |
 | **Plan Inspections** | `shell` | `*--dry-run*`, `*--check*` | `allow` | Install dry-runs and update checks run without prompt |
 | **Git Local Inspection** | `shell` | `git status *`, `git diff *` | `allow` | Read-only repository state inspection without prompt |
+| **Asset Intelligence**   | `shell` | `*bb-assets*` | `ask` | Human confirmation required before running recursive discovery |
 | **Active Reconnaissance**| `shell` | `*bb-recon*`, `subfinder *` | `ask` | Human confirmation required before probing assets |
 | **Active HTTP Probing** | `shell` | `*bb-http*`, `httpx *` | `ask` | Human confirmation required before sending web traffic |
 | **Nuclei Scanning** | `shell` | `*bb-nuclei*`, `nuclei *` | `ask` | Human confirmation required before vulnerability scanning |

@@ -204,8 +204,31 @@ class SystemDoctor:
             "status": "READY" if source_ready else "INCOMPLETE",
         }
 
+    def check_asset_engine(self) -> Dict[str, Any]:
+        """Category 10: Asset Intelligence Engine verification."""
+        try:
+            from framework.assets.engine import AssetIntelligenceEngine
+            from framework.assets.graph import AssetGraph
+            from framework.assets.model import Asset, AssetType
+
+            graph = AssetGraph()
+            root = Asset.create(AssetType.ROOT_DOMAIN, "example.com")
+            child = Asset.create(
+                AssetType.SUBDOMAIN,
+                "api.example.com",
+                root_domain="example.com",
+                discovery_depth=1,
+            )
+            graph.add_asset(root)
+            graph.add_asset(child)
+            tree = graph.get_subdomain_tree()
+            healthy = len(graph.get_all_assets()) == 2 and tree["max_depth"] == 1
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
-        """Runs complete diagnostics across all 9 categories."""
+        """Runs complete diagnostics across all categories."""
         return {
             "system": self.check_system(),
             "dependencies": self.check_dependencies(),
@@ -215,5 +238,6 @@ class SystemDoctor:
             "wordlists": self.check_wordlists(),
             "configuration": self.check_configuration(),
             "scope_engine": self.check_scope_engine(),
+            "asset_engine": self.check_asset_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }

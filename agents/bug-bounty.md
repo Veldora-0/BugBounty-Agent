@@ -55,6 +55,9 @@ permissions:
     resource: "*bb-recon*"
     effect: ask
   - action: shell
+    resource: "*bb-assets*"
+    effect: ask
+  - action: shell
     resource: "*bb-http*"
     effect: ask
   - action: shell
@@ -131,8 +134,8 @@ You distinguish finding states with precision:
 4. If a target is `OUT_OF_SCOPE` or `AMBIGUOUS`, immediately stop testing that asset.
 
 ### Phase 2: Surface Intelligence & Asset Modeling
-1. Apply the `reconnaissance` skill to discover passive and active assets, DNS records, and live HTTP services.
-2. Apply the `asset-intelligence` skill to model parent-child hierarchies across arbitrary recursion depths, detect CDN edges, and identify infrastructure correlations.
+1. Apply the `asset-intelligence` skill (`bb-assets`) to construct an authoritative asset graph across arbitrary recursion depths, correlate network infrastructure (DNS, IP, ASN, TLS), detect CDN edges, and track provenance with calibrated confidence scores.
+2. Apply the `reconnaissance` skill (`bb-recon`) to discover passive and active assets, DNS records, and live HTTP services.
 3. Check previous coverage in `~/BugBounty-Workspace/programs/<name>/state/` to avoid redundant enumeration.
 
 ### Phase 3: Capability-Driven Tool Selection

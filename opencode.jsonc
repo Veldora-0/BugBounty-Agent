@@ -41,6 +41,12 @@
     },
     {
       "action": "shell",
+      "resource": "*bb-assets*",
+      "effect": "ask",
+      "description": "Require human confirmation before launching recursive asset intelligence discovery"
+    },
+    {
+      "action": "shell",
       "resource": "*bb-recon*",
       "effect": "ask",
       "description": "Require human confirmation before launching active asset reconnaissance"
