@@ -50,6 +50,7 @@ class StateManager:
         self.findings_file = os.path.join(self.state_dir, "findings.json")
         self.coverage_file = os.path.join(self.state_dir, "coverage.json")
         self.recon_file = os.path.join(self.state_dir, "recon.json")
+        self.webapps_file = os.path.join(self.state_dir, "webapps.json")
 
         self._init_files()
 
@@ -64,6 +65,7 @@ class StateManager:
             (self.findings_file, {}),
             (self.coverage_file, DEFAULT_COVERAGE),
             (self.recon_file, {}),
+            (self.webapps_file, {}),
         ]:
             if not os.path.exists(filepath):
                 self._atomic_write_json(filepath, default_content)
@@ -363,3 +365,10 @@ class StateManager:
         """Returns a ReconStateManager instance for this program."""
         from framework.recon.state import ReconStateManager
         return ReconStateManager(self.program_dir)
+
+    # ---------------- Web Application State ----------------
+
+    def get_webapp_state(self) -> Any:
+        """Returns a WebAppStateManager instance for this program."""
+        from framework.webapp.state import WebAppStateManager
+        return WebAppStateManager(self.program_dir)

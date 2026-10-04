@@ -354,6 +354,35 @@ The **Reconnaissance Intelligence Engine** (`framework/recon/` & `scripts/bb-rec
 
 ---
 
+## Phase 3: Web Application Intelligence & Attack Surface Mapping
+
+The **Web Application Intelligence Engine** (`framework/webapp/` & `scripts/bb-webapp`) converts Phase 2 web service observations into an authoritative, structured attack surface relationship model:
+
+* **Application Attack Surface Topology**: Models relationships between `WebApplication`, `WebPage`, `WebEndpoint`, `ParameterObservation`, `FormObservation`, `CookieObservation`, `ResourceObservation`, and `LinkObservation` via `WebAppGraph`.
+* **Bounded Crawl Policies**: Centralized safety ceilings (`CrawlPolicy`) enforcing conservative bounds: maximum 500 pages, maximum crawl depth 3, maximum 2000 requests, 2 MB response limits, and strict same-origin filtering by default.
+* **Deterministic URL Normalization**: Canonicalizes URLs via `canonicalize_url()` (resolves path traversal, strips default ports and fragments, sorts query parameters deterministically).
+* **HTML Element & Form Extraction**: Parses HTML deterministically to capture links, forms (action, method, field types, password and file upload indicators), buttons, and query/body parameters without automatic form submission or payload execution.
+* **Robots.txt & Sitemap Intelligence**: Discovers valid in-scope endpoint routes from `/robots.txt` and XML sitemaps without recursive expansion loops.
+* **Cookie & Security Header Metadata**: Extracts and documents Set-Cookie flags (`Secure`, `HttpOnly`, `SameSite`) and security response headers.
+* **Static & Dynamic Resource Inventory**: Inventories scripts, stylesheets, fonts, and images, creating a clean dataset for Phase 4 JavaScript analysis.
+* **Atomic State Persistence**: Writes observations atomically to `~/BugBounty-Workspace/programs/<name>/state/webapps.json`. Supports resumable execution (`--resume`).
+* **CLI Utility**:
+  ```bash
+  # Map web applications in a program workspace with ASCII attack surface tree
+  ./scripts/bb-webapp --program acme-corp --tree
+
+  # Map a specific application with customized crawl depth
+  ./scripts/bb-webapp --program acme-corp --asset app.example.com --max-pages 100 --max-depth 2
+
+  # Passive analysis only using existing reconnaissance observations
+  ./scripts/bb-webapp --program acme-corp --passive-only
+
+  # Resume previous crawl and output JSON state
+  ./scripts/bb-webapp --program acme-corp --resume --json
+  ```
+
+---
+
 ## OpenCode V2 Runtime & Security Architecture
 
 BugBounty-Agent is architected natively for **OpenCode V2** on Kali/Linux research workstations.

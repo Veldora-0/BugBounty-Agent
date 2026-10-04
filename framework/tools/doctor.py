@@ -248,6 +248,27 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_webapp_engine(self) -> Dict[str, Any]:
+        """Category 12: Web Application Intelligence Engine verification."""
+        try:
+            from framework.webapp.engine import WebApplicationIntelligenceEngine
+            from framework.webapp.model import WebApplication, canonicalize_url
+            from framework.webapp.parser import parse_page_html
+            from framework.webapp.policy import CrawlPolicy
+
+            canon = canonicalize_url("https://example.com:443/test/../app/")
+            parsed = parse_page_html("<a href='/login'>Login</a>", "https://example.com/")
+            policy = CrawlPolicy()
+            engine = WebApplicationIntelligenceEngine(policy=policy)
+            healthy = (
+                canon == "https://example.com/app"
+                and len(parsed["links"]) == 1
+                and engine.policy.max_pages > 0
+            )
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -261,5 +282,6 @@ class SystemDoctor:
             "scope_engine": self.check_scope_engine(),
             "asset_engine": self.check_asset_engine(),
             "recon_engine": self.check_recon_engine(),
+            "webapp_engine": self.check_webapp_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }

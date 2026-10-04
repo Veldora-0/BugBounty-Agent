@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""
+bb-webapp — Web Application Intelligence CLI for BugBounty-Agent.
+
+Maps external web application attack surface (pages, forms, routes, parameters,
+cookies, resources, links) starting from Phase 1/2 assets without vulnerability exploitation.
+Maintains persistent, atomic state in ~/BugBounty-Workspace/programs/<name>/state/webapps.json.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+REPO_ROOT = os.environ.get(
+    "BUGBOUNTY_AGENT_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")),
+)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.assets.graph import AssetGraph
+from framework.assets.model import Asset, AssetType
+from framework.common.config import get_program_dir
+from framework.recon.state import ReconStateManager
+from framework.scope.engine import ScopeEngine, ScopeStatus
+from framework.state.manager import StateManager
+from framework.webapp.engine import WebApplicationIntelligenceEngine
+from framework.webapp.model import WebApplication, canonicalize_url
+from framework.webapp.policy import CrawlPolicy
+from framework.webapp.state import WebAppStateManager
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="BugBounty-Agent Web Application Intelligence & Surface Mapping Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bb-webapp --program acme-corp --tree
+  bb-webapp --domain example.com --scope scope.yaml --tree
+  bb-webapp --program acme-corp --asset api.example.com --json
+  bb-webapp --program acme-corp --max-pages 50 --max-depth 2
+  bb-webapp --program acme-corp --passive-only --dry-run
+        """,
+    )
+    parser.add_argument(
+        "-p", "--program",
+        help="Program name in local workspace (resolves ~/BugBounty-Workspace/programs/<name>)",
+    )
+    parser.add_argument(
+        "-s", "--scope",
+        help="Path to scope.yaml definition (defaults to program's scope/scope.yaml)",
+    )
+    parser.add_argument(
+        "-d", "--domain",
+        help="Target apex root domain to evaluate",
+    )
+    parser.add_argument(
+        "-a", "--asset",
+        help="Specific asset hostname or application URL to map",
+    )
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=500,
+        help="Maximum pages to crawl per application (default: 500)",
+    )
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=3,
+        help="Maximum crawl recursion depth (default: 3)",
+    )
+    parser.add_argument(
+        "--max-requests",
+        type=int,
+        default=2000,
+        help="Safety ceiling on active HTTP requests (default: 2000)",
+    )
+    parser.add_argument(
+        "--same-origin",
+        action="store_true",
+        default=True,
+        help="Restrict crawl strictly to identical scheme, host, and port (default: True)",
+    )
+    parser.add_argument(
+        "--passive-only",
+        action="store_true",
+        help="Analyze existing recon state without issuing active HTTP requests",
+    )
+    parser.add_argument(
+        "--no-robots",
+        action="store_true",
+        help="Skip automatic /robots.txt discovery",
+    )
+    parser.add_argument(
+        "--no-sitemap",
+        action="store_true",
+        help="Skip XML sitemap parsing",
+    )
+    parser.add_argument(
+        "--no-js-resources",
+        action="store_true",
+        help="Skip recording JavaScript resource references",
+    )
+    parser.add_argument(
+        "--tree",
+        action="store_true",
+        help="Render visual ASCII web application attack surface hierarchy tree",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output full web application intelligence state in JSON",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Perform evaluation without persisting results to program state",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip URLs that have already been visited in previous crawl runs",
+    )
+    return parser.parse_args()
+
+
+def render_webapp_tree(webapp_state: WebAppStateManager) -> None:
+    """Renders structured visual ASCII tree of web applications, pages, forms, and routes."""
+    print("Web Application Attack Surface Hierarchy:")
+    apps = sorted(webapp_state.applications.values(), key=lambda x: x.base_url)
+    if not apps:
+        print("  (No web applications mapped yet)")
+        return
+
+    for i, app in enumerate(apps):
+        is_last_app = (i == len(apps) - 1)
+        app_prefix = "└── " if is_last_app else "├── "
+        child_indent = "    " if is_last_app else "│   "
+
+        tech_str = f" [Tech: {', '.join(app.technologies[:4])}]" if app.technologies else ""
+        title_str = f' ("{app.title[:30]}..")' if app.title else ""
+        print(f"{app_prefix}{app.base_url}{tech_str}{title_str}")
+
+        # Show pages/endpoints
+        pages = [p for p in webapp_state.pages.values() if p.url.startswith(app.base_url)]
+        forms = webapp_state.get_forms_for_app(app.base_url)
+        resources = webapp_state.get_resources_for_app(app.base_url)
+
+        # Print pages
+        for p in sorted(pages, key=lambda x: x.path)[:15]:
+            p_forms = [f for f in forms if f.page_url == p.url]
+            f_annot = f" [Forms: {len(p_forms)}]" if p_forms else ""
+            print(f"{child_indent}├── {p.path}{f_annot}")
+            for f in p_forms:
+                fields = ", ".join(f.input_names[:5])
+                print(f"{child_indent}│   └── form({f.method}): [{fields}]")
+
+        # Summaries
+        js_res = [r for r in resources if r.resource_type == "js"]
+        css_res = [r for r in resources if r.resource_type == "css"]
+        print(f"{child_indent}└── Resources: {len(js_res)} scripts, {len(css_res)} stylesheets")
+
+
+def main() -> None:
+    args = parse_args()
+
+    prog_dir: Optional[str] = None
+    state: Optional[StateManager] = None
+    recon_state: Optional[ReconStateManager] = None
+    webapp_state: Optional[WebAppStateManager] = None
+    scope_path: Optional[str] = args.scope
+
+    if args.program:
+        try:
+            prog_dir = get_program_dir(args.program)
+            state = StateManager(prog_dir)
+            recon_state = state.get_recon_state()
+            webapp_state = state.get_webapp_state()
+            if not scope_path:
+                candidate_scope = os.path.join(prog_dir, "scope", "scope.yaml")
+                if os.path.isfile(candidate_scope):
+                    scope_path = candidate_scope
+        except Exception as e:
+            print(f"[!] Error initializing program workspace: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Initialize Scope Engine if available
+    scope_engine: Optional[ScopeEngine] = None
+    if scope_path and os.path.isfile(scope_path):
+        try:
+            scope_engine = ScopeEngine.from_file(scope_path)
+        except Exception as e:
+            print(f"[!] Error loading scope configuration from '{scope_path}': {e}", file=sys.stderr)
+            sys.exit(1)
+    elif scope_path and not os.path.isfile(scope_path):
+        print(f"[!] Scope file not found: {scope_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Load existing AssetGraph
+    asset_graph = AssetGraph()
+    if state:
+        try:
+            asset_graph = state.get_asset_graph()
+        except Exception:
+            pass
+
+    if args.domain:
+        d_clean = args.domain.strip().lower()
+        if not asset_graph.has_asset(d_clean):
+            asset_graph.add_asset(Asset.create(AssetType.ROOT_DOMAIN, d_clean))
+
+    if args.asset:
+        a_clean = args.asset.strip().lower()
+        if not asset_graph.has_asset(a_clean):
+            asset_graph.add_asset(Asset.create(AssetType.SUBDOMAIN, a_clean))
+
+    policy = CrawlPolicy(
+        max_pages=args.max_pages,
+        max_depth=args.max_depth,
+        max_requests=args.max_requests,
+        same_origin_only=args.same_origin,
+        passive_only=args.passive_only,
+        include_robots=not args.no_robots,
+        include_sitemaps=not args.no_sitemap,
+        include_js_resources=not args.no_js_resources,
+    )
+
+    print(f"[*] Starting Web Application Intelligence Engine...")
+    print(f"[*] Mode: {'Passive Analysis Only' if args.passive_only else 'Full Active Crawl'}")
+    print(f"[*] Max pages: {args.max_pages} | Max depth: {args.max_depth} | Max requests: {args.max_requests}")
+
+    engine = WebApplicationIntelligenceEngine(
+        scope_engine=scope_engine,
+        asset_graph=asset_graph,
+        recon_state=recon_state,
+        webapp_state=webapp_state,
+        policy=policy,
+        dry_run=args.dry_run,
+    )
+
+    # Filter target application if --asset specified
+    target_apps = None
+    if args.asset:
+        target_val = args.asset.strip()
+        base_url = target_val if target_val.startswith(("http://", "https://")) else f"https://{target_val}/"
+        target_apps = [
+            WebApplication(
+                base_url=canonicalize_url(base_url),
+                host=urlsplit(base_url).hostname or target_val,
+                scheme=urlsplit(base_url).scheme or "https",
+                port=urlsplit(base_url).port or (443 if base_url.startswith("https") else 80),
+            )
+        ]
+
+    stats = engine.run_discovery(target_applications=target_apps, resume=args.resume)
+
+    print(f"[+] Web Application Intelligence complete:")
+    print(f"    - Applications mapped: {stats['applications_mapped']}")
+    print(f"    - Pages crawled: {stats['pages_crawled']}")
+    print(f"    - Endpoints / routes: {stats['endpoints_found']}")
+    print(f"    - Parameters observed: {stats['parameters_found']}")
+    print(f"    - Forms analyzed: {stats['forms_found']}")
+    print(f"    - Cookies documented: {stats['cookies_found']}")
+    print(f"    - Static / Dynamic resources: {stats['resources_found']}")
+    print(f"    - Navigation links: {stats['links_found']}")
+
+    if args.tree and webapp_state:
+        print()
+        render_webapp_tree(webapp_state)
+
+    if args.json:
+        if webapp_state and os.path.isfile(webapp_state.webapps_file):
+            with open(webapp_state.webapps_file, "r", encoding="utf-8") as f:
+                print(f.read())
+        else:
+            print(json.dumps(stats, indent=2))
+
+
+if __name__ == "__main__":
+    main()

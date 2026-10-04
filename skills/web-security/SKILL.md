@@ -3,41 +3,96 @@ name: web-security
 description: Web application attack surface analysis, authentication flows, session handling, upload vectors, CORS/CSRF, and web vulnerability assessment.
 ---
 
-# Web Security Methodology
+# Web Application Intelligence & Security Methodology
 
 ## Core Objective
-Systematically analyze web applications for security weaknesses across authentication mechanisms, session management, input handling, parameter tampering, and browser-facing configurations.
+Systematically map, model, and analyze web applications across their observable attack surface: applications, pages, routes, endpoints, query/body parameters, forms, cookies, and linked static/dynamic resources without executing intrusive vulnerability payloads.
 
-## 1. Attack Surface & Endpoint Mapping
-* **Route Discovery**: Map public, authenticated, and administrative routes using crawling (`katana`) and parameter enumeration (`arjun`).
-* **Input Vectors**: Identify all URL query parameters, POST body fields, multipart form inputs, and custom HTTP request headers.
-* **Form & Action Review**: Extract HTML forms, method types, enctype attributes, and hidden state variables.
+Web Application Intelligence consumes confirmed web services from Phase 2 reconnaissance and constructs an authoritative attack surface relationship model stored atomically in `state/webapps.json` (Phase 3).
 
-## 2. Authentication & Session Security
-* **Authentication Flows**:
-  * Multi-step login, password reset, registration, and MFA implementations.
-  * Credential stuffing resilience, account lockout policies, and username enumeration indicators.
-* **Session Lifecycle**:
-  * Verify cookie security attributes: `Secure`, `HttpOnly`, `SameSite=Strict|Lax`.
-  * Session fixation: verify whether session identifiers rotate across privilege elevation and authentication.
-  * Token expiration and invalidation upon logout.
+---
 
-## 3. Web Architecture & Policy Analysis
-* **CORS (Cross-Origin Resource Sharing)**:
-  * Check for permissive origin reflection: `Access-Control-Allow-Origin: <arbitrary_origin>` with `Access-Control-Allow-Credentials: true`.
-  * Check for null origin trust: `Access-Control-Allow-Origin: null`.
-* **CSRF (Cross-Site Request Forgery)**:
-  * Check state-changing requests (email update, password change, financial transfer) for missing or predictable anti-CSRF tokens.
-  * Validate SameSite cookie behavior in modern browsers.
-* **Open Redirects**:
-  * Test redirection parameters (`next=`, `redirect_uri=`, `return_to=`, `url=`) for bypasses allowing off-domain redirects.
-* **File Upload Mechanisms**:
-  * Analyze upload handlers for extension validation, MIME type verification, file renaming, and direct execution permissions in upload directories.
-* **Security Headers**:
-  * Inspect `Content-Security-Policy` (CSP), `X-Frame-Options`, `X-Content-Type-Options`, and `Strict-Transport-Security` (HSTS).
+## 1. Web Application Intelligence Architecture
 
-## 4. Controlled Execution Workflow
-1. Enforce scope check via `bb-scope-check` prior to contacting endpoints.
-2. Dispatch requests via `bb-http` to capture sanitized request and response evidence.
-3. Record discovered endpoints into `~/BugBounty-Workspace/programs/<name>/state/endpoints.json`.
-4. Avoid destructive actions: never modify administrative configuration or submit malicious payloads that disrupt system integrity.
+```mermaid
+flowchart TD
+    ReconServices["Reconnaissance Services (Phase 2 HTTP Observations)"] --> AppRoots["Application Root Identification"]
+    AppRoots --> ScopeCheck["ScopeEngine Boundary Gate"]
+    ScopeCheck --> Engine["WebApplicationIntelligenceEngine (Phase 3 Orchestrator)"]
+
+    subgraph "Bounded Surface Mapping"
+        Engine --> Fetch["Bounded HTTP Fetcher (Policy & Budget Gated)"]
+        Fetch --> Parser["Bounded HTML Parser"]
+        Parser --> Pages["WebPage Observations"]
+        Parser --> Forms["Form & Input Observations"]
+        Parser --> Endpoints["WebEndpoints & Routes"]
+        Parser --> Params["Parameter Observations (Query/Body)"]
+        Parser --> Cookies["Set-Cookie Observations"]
+        Parser --> Resources["Resource Observations (JS/CSS/Media)"]
+        Parser --> Links["Link Observations & Crawl Queue"]
+    end
+
+    Engine --> Robots["Robots.txt & Sitemap Parser"]
+    Robots --> Links
+
+    Pages --> AppGraph["WebAppGraph & WebAppStateManager"]
+    Forms --> AppGraph
+    Endpoints --> AppGraph
+    Params --> AppGraph
+    Cookies --> AppGraph
+    Resources --> AppGraph
+    AppGraph --> StateFile["state/webapps.json"]
+```
+
+---
+
+## 2. CLI Tool & Orchestration (`bb-webapp`)
+
+The web application mapping workflow is invoked via `bb-webapp`:
+
+```bash
+# Map attack surface for all web applications in a program workspace
+bb-webapp --program <program-name> --tree
+
+# Restrict crawl to a specific application or asset with bounded budgets
+bb-webapp --program <program-name> --asset app.example.com --max-pages 50 --max-depth 2
+
+# Run passive analysis using existing Phase 2 observations without active requests
+bb-webapp --program <program-name> --passive-only
+
+# Resume previous crawl, skipping already-visited URLs
+bb-webapp --program <program-name> --resume --tree
+
+# Output complete JSON web application intelligence observations
+bb-webapp --program <program-name> --json
+```
+
+---
+
+## 3. Discovered Attack Surface Entities
+
+| Entity | Model & Attributes Captured | Purpose in Lifecycle |
+| :--- | :--- | :--- |
+| **`WebApplication`** | Canonical base URL, host, scheme, port, page title, detected technologies, server banner. | Central anchor for application-level attack surface. |
+| **`WebPage`** | Canonical URL, path, status code, content type, title, parent URL, depth, link/form counts. | Document nodes in navigation graph. |
+| **`WebEndpoint`** | Method, canonical route, parameter names, parameter locations, response content type. | Identifies callable API routes and web endpoints. |
+| **`ParameterObservation`** | Parameter name, location (`query`, `path`, `body`, `cookie`, `header`), method, datatype. | Input targets for subsequent targeted testing. |
+| **`FormObservation`** | Form action URL, method (`POST`/`GET`), enctype, field names, input types, password/file flags. | Form submission vectors and authentication surfaces. |
+| **`CookieObservation`** | Cookie name, domain, path, `Secure`, `HttpOnly`, `SameSite` attribute flags. | Session token tracking and security architecture review. |
+| **`ResourceObservation`** | Resource URL, type (`js`, `css`, `image`, `json`, `wasm`), parent page, size. | Static asset inventory; feeds JavaScript Intelligence (Phase 4). |
+| **`LinkObservation`** | Source URL, destination URL, same-origin flag, in-scope flag. | Navigation topology connecting pages and external systems. |
+
+---
+
+## 4. Crawl Policy & Safety Invariants
+
+1. **Strict Scope Precedence**: Every candidate URL, form action, script URL, and redirected destination is verified against `ScopeEngine` before any HTTP request is issued. Out-of-scope targets are immediately rejected and recorded in `rejected_urls`.
+2. **Conservative Defaults**:
+   - `max_pages`: 500
+   - `max_depth`: 3
+   - `max_requests`: 2000
+   - `max_response_bytes`: 2 MB (bounded read prevents memory exhaustion)
+   - `same_origin_only`: True by default (prevents unintentional cross-domain crawls).
+3. **No Vulnerability Exploitation**: Phase 3 is strictly mapping and intelligence gathering. Forms are **never automatically submitted**, inputs are never fuzzed, and application state is never mutated.
+4. **Deterministic Normalization**: All URLs are canonicalized via `canonicalize_url()` (default ports stripped, path traversal resolved, fragments removed, query parameters sorted deterministically).
+5. **Atomic State Persistence**: Stored in `~/BugBounty-Workspace/programs/<name>/state/webapps.json` using atomic temporary file swaps (`_atomic_write_json`).
