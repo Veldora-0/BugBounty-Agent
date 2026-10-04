@@ -43,6 +43,11 @@ class ControlledRequest:
         self.mutated_target = mutated_target
         self.mutated_value = mutated_value
 
+    @property
+    def url(self) -> str:
+        """Returns the fully resolved effective URL."""
+        return self.build_effective_url()
+
     def build_effective_url(self) -> str:
         """Constructs the final URL with path parameters substituted and query string encoded."""
         parsed = urlparse(self.base_url)
@@ -123,20 +128,27 @@ class ControlledResponse:
     def __init__(
         self,
         status_code: int,
-        headers: Dict[str, str],
-        body: str,
-        size_bytes: int,
+        headers: Optional[Dict[str, str]] = None,
+        body: str | bytes = "",
+        size_bytes: int = 0,
         elapsed_seconds: float = 0.0,
         final_url: str = "",
         redirect_history: Optional[List[str]] = None,
+        **kwargs: Any,
     ):
         self.status_code = int(status_code)
-        self.headers = {k.lower(): v for k, v in headers.items()}
-        self.body = body
-        self.size_bytes = int(size_bytes)
+        self.headers = {k.lower(): str(v) for k, v in (headers or {}).items()}
+        self.body = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body or "")
+        self.size_bytes = int(size_bytes) if size_bytes else len(self.body.encode("utf-8"))
         self.elapsed_seconds = float(elapsed_seconds)
         self.final_url = final_url
         self.redirect_history = list(redirect_history or [])
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    @property
+    def body_text(self) -> str:
+        return self.body
 
     @property
     def content_type(self) -> str:

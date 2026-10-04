@@ -441,6 +441,44 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_injection_engine(self) -> Dict[str, Any]:
+        """Category 19: Injection Intelligence & Controlled Validation Engine verification."""
+        try:
+            from framework.injection.comparator import InjectionComparator
+            from framework.injection.model import InjectionCandidate, InjectionConfidence, InjectionType
+            from framework.injection.payloads import InjectionPayloadRegistry
+            from framework.injection.prioritization import InjectionPrioritizer
+            from framework.injection.signatures import ErrorSignatureMatcher
+
+            score, reasons, fam, ctx = InjectionPrioritizer.evaluate(
+                "id",
+                "https://example.com/api/items?id=1",
+                "QUERY",
+                inferred_input_type="INTEGER",
+            )
+            sig = ErrorSignatureMatcher.match("You have an error in your SQL syntax near ''")
+            payloads = InjectionPayloadRegistry.get_payloads_for_type(InjectionType.SQL)
+
+            cand = InjectionCandidate(
+                candidate_id="doc-inj-01",
+                family=InjectionType.SQL,
+                application="example.com",
+                endpoint="https://example.com/api/items?id=1",
+                parameter="id",
+                priority_score=score,
+            )
+
+            healthy = (
+                score >= 60
+                and sig is not None
+                and sig.get("family") == "MySQL"
+                and len(payloads) >= 4
+                and cand.compute_fingerprint() is not None
+            )
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -461,5 +499,7 @@ class SystemDoctor:
             "xss_engine": self.check_xss_engine(),
             "authz_engine": self.check_authz_engine(),
             "ssrf_engine": self.check_ssrf_engine(),
+            "injection_engine": self.check_injection_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }
+

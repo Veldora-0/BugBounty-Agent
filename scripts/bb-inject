@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""
+bb-inject — BugBounty-Agent Injection Intelligence & Controlled Validation Engine.
+
+Provides hypothesis-driven validation for SQLi, NoSQLi, SSTI, and Command Injection foundation.
+Prioritizes test cases (0-100), performs non-destructive differential testing,
+filters false positives, and records reproducible findings.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.injection.approval import HumanApprovalGate
+from framework.injection.engine import InjectionIntelligenceEngine
+from framework.injection.lab import LocalInjectionLab
+from framework.injection.model import (
+    InjectionCandidate,
+    InjectionConfidence,
+    InjectionContext,
+    InjectionType,
+)
+from framework.injection.prioritization import InjectionPrioritizer
+from framework.injection.state import InjectionStateManager
+from framework.scope.engine import ScopeEngine
+from framework.validation.policy import SecurityTestPolicy
+import yaml
+
+
+def render_injection_tree(summary_data: Dict[str, Any], candidates: List[InjectionCandidate], program_name: str) -> None:
+    """Renders visual ASCII tree of ranked injection candidates, planned tests, and findings."""
+    print("\n==============================================================================")
+    print("                     INJECTION INTELLIGENCE & VALIDATION TREE                 ")
+    print("==============================================================================")
+
+    state = summary_data.get("summary", {})
+    by_fam = state.get("by_family", {})
+    by_life = state.get("by_lifecycle", {})
+
+    print(f"\n[*] Program:              {program_name}")
+    print(f"[*] Total Candidates:     {state.get('total_candidates', len(candidates))}")
+    print(f"[*] Tested Candidates:    {state.get('tested_candidates', 0)}")
+    print(f"[*] Verified Findings:    {state.get('findings_recorded', 0)}")
+    print(f"[*] Families:             SQL: {by_fam.get('sql', 0)} | NoSQL: {by_fam.get('nosql', 0)} | SSTI: {by_fam.get('ssti', 0)} | Command: {by_fam.get('command', 0)}")
+    print(f"[*] Lifecycles:           Candidate: {by_life.get('CANDIDATE', 0)} | Testing: {by_life.get('TESTING', 0)} | Observed: {by_life.get('OBSERVED', 0)} | Validated: {by_life.get('VALIDATED', 0)}")
+
+    if not candidates:
+        print("\n[*] No injection candidates recorded in current state.")
+        print("==============================================================================\n")
+        return
+
+    # Group by family
+    grouped: Dict[str, List[InjectionCandidate]] = defaultdict(list)
+    for c in candidates:
+        grouped[c.family.value].append(c)
+
+    for fam_name, fam_list in sorted(grouped.items()):
+        print(f"\n[+] FAMILY: {fam_name.upper()} ({len(fam_list)} candidates)")
+        sorted_list = sorted(fam_list, key=lambda x: -x.priority_score)
+        for c in sorted_list[:20]:
+            print(f"    - [Priority {c.priority_score:2d}] [{c.lifecycle.value}] [{c.confidence.value}] {c.method} {c.endpoint} (param: '{c.parameter}' in {c.parameter_location})")
+            print(f"        Context: {c.backend_context.value} | Inferred Type: {c.inferred_input_type}")
+            if c.priority_reasons:
+                print(f"        Reasons: {'; '.join(c.priority_reasons[:2])}")
+            if c.evidence_refs:
+                print(f"        Evidence: {', '.join(c.evidence_refs)}")
+
+    print("\n==============================================================================")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="bb-inject",
+        description="BugBounty-Agent Injection Intelligence & Controlled Validation Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Passive parameter discovery and priority ranking
+  bb-inject --program acme-corp --passive-only --tree
+
+  # Dry-run injection validation plan for an endpoint
+  bb-inject --program acme-corp -e "https://app.example.com/search?q=test" --param q --dry-run
+
+  # Run local offline security lab simulation
+  bb-inject --lab --tree
+  bb-inject --lab -e "http://lab.local/api/items?id=1" --param id --approve
+        """,
+    )
+
+    parser.add_argument("-p", "--program", default="default", help="Target program name in workspace")
+    parser.add_argument("-s", "--scope", default="scope.yaml", help="Path to scope.yaml file")
+    parser.add_argument("-d", "--domain", help="Filter target domain")
+    parser.add_argument("-a", "--asset", help="Filter target asset hostname")
+    parser.add_argument("-e", "--endpoint", help="Target endpoint URL to analyze or test")
+    parser.add_argument("--param", help="Specific parameter name to test")
+    parser.add_argument("--category", choices=["sql", "nosql", "ssti", "command", "all"], default="all", help="Vulnerability category filter")
+    parser.add_argument("--validator", choices=["sql", "nosql", "ssti", "command"], help="Explicit validator override")
+    parser.add_argument("--priority", type=int, help="Override priority score (0-100)")
+    parser.add_argument("--min-priority", type=int, default=0, help="Minimum priority score threshold (0-100)")
+    parser.add_argument("--max-tests", type=int, default=50, help="Maximum number of test cases to execute")
+    parser.add_argument("--max-requests", type=int, default=100, help="Maximum HTTP requests budget")
+    parser.add_argument("--max-bytes", type=int, default=1048576, help="Maximum response byte limit")
+    parser.add_argument("--timeout", type=float, default=10.0, help="HTTP request timeout in seconds")
+    parser.add_argument("--passive-only", action="store_true", help="Rank parameters passively without sending network probes")
+    parser.add_argument("--dry-run", action="store_true", help="Plan test cases without sending network probes or modifying state")
+    parser.add_argument("--resume", action="store_true", default=True, help="Skip previously tested fingerprints")
+    parser.add_argument("--approve", action="store_true", help="Authorize execution of planned non-destructive probes")
+    parser.add_argument("--dossier", action="store_true", help="Render human review audit dossier for target candidate")
+    parser.add_argument("--timing", action="store_true", help="Enable bounded timing differential analysis (disabled by default)")
+    parser.add_argument("--lab", action="store_true", help="Run against deterministic local security lab scenarios")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    parser.add_argument("--tree", action="store_true", help="Render ASCII tree view of candidates and findings")
+
+    args = parser.parse_args()
+
+    # Program directory setup
+    if args.lab:
+        program_dir = get_program_dir("local-lab")
+        program_name = "local-lab"
+        scope_engine = ScopeEngine({
+            "program": {"name": "local-lab"},
+            "targets": {
+                "domains": ["lab.local", "*.local", "localhost", "127.0.0.1"],
+                "urls": ["http://lab.local/", "https://lab.local/"],
+            },
+        })
+    else:
+        program_dir = get_program_dir(args.program)
+        program_name = args.program
+        scope_path = os.path.join(program_dir, args.scope)
+        scope_engine = ScopeEngine.from_file(scope_path) if os.path.isfile(scope_path) else ScopeEngine({"targets": {"domains": ["*"], "urls": ["*"]}})
+
+    # Initialize Local Lab hook if requested
+    send_hook = None
+    if args.lab:
+        lab = LocalInjectionLab()
+        send_hook = lab.handle_request
+
+    # Security Test Policy
+    policy = SecurityTestPolicy(
+        max_requests_per_test=args.max_requests,
+        max_response_bytes=args.max_bytes,
+        timeout=args.timeout,
+    )
+
+    # Initialize Engine
+    engine = InjectionIntelligenceEngine(
+        program_dir=program_dir,
+        scope_engine=scope_engine,
+        policy=policy,
+        send_request_hook=send_hook,
+        enable_timing=args.timing,
+        auto_approve=args.approve,
+    )
+
+    # Dossier mode
+    if args.dossier:
+        if not args.endpoint or not args.param:
+            print("[-] Error: --dossier requires --endpoint and --param", file=sys.stderr)
+            sys.exit(1)
+        cands = engine.discover_candidates_from_url(args.endpoint)
+        matched = [c for c in cands if c.parameter == args.param]
+        if not matched:
+            print(f"[-] No candidate found for parameter '{args.param}' at '{args.endpoint}'", file=sys.stderr)
+            sys.exit(1)
+        gate = HumanApprovalGate()
+        print(gate.generate_dossier(matched[0]))
+        sys.exit(0)
+
+    # Pipeline Execution
+    result = engine.run_pipeline(
+        endpoint=args.endpoint,
+        parameter=args.param,
+        category=args.validator or args.category,
+        min_priority=args.min_priority,
+        passive_only=args.passive_only,
+        dry_run=args.dry_run,
+        resume=args.resume,
+        max_tests=args.max_tests,
+    )
+
+    # Output Rendering
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    all_cands = engine.state_mgr.list_candidates()
+    state = engine.state_mgr.load_state()
+
+    if args.tree or not args.endpoint:
+        render_injection_tree(state, all_cands, program_name)
+    else:
+        print(f"\n[+] Executed {result.get('tested', 0)} injection test cases (Findings: {result.get('findings', 0)})")
+        for r in result.get("results", []):
+            print(f"    - [{r.get('lifecycle')}] [{r.get('confidence')}] {r.get('endpoint')} (param: '{r.get('parameter')}')")
+            print(f"        Priority: {r.get('priority_score')} | Signals: {', '.join(r.get('signals', []))}")
+            for reason in r.get("reasons", []):
+                print(f"        -> {reason}")
+        print()
+
+
+if __name__ == "__main__":
+    main()

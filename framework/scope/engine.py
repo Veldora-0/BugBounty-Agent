@@ -174,6 +174,11 @@ class ScopeEngine:
             except Exception:
                 pass
 
+    def is_in_scope(self, target: str) -> bool:
+        """Returns True if the target evaluates strictly to IN_SCOPE."""
+        decision = self.check(target)
+        return decision.status == ScopeStatus.IN_SCOPE
+
     def check(self, target: str) -> ScopeDecision:
         """
         Main scope evaluation entrypoint.
