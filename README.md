@@ -64,6 +64,7 @@ BugBounty-Agent/
 │   ├── state/                 # Persistent state manager, test fingerprinting, dedup
 │   ├── validation/            # Security validation foundation & baseline comparison
 │   ├── xss/                   # Context-aware XSS intelligence, DOM sources/sinks, stored correlation
+│   ├── authz/                 # Authorization intelligence, BOLA/IDOR baseline validation, human approval gate
 │   ├── tools/                 # Tool registry, installer, doctor, deployer
 │   └── common/                # Evidence store, sanitization, tool detection, config
 │
@@ -71,7 +72,7 @@ BugBounty-Agent/
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
-│   ├── bb-doctor              # Diagnostics utility across 16 system categories
+│   ├── bb-doctor              # Diagnostics utility across 17 system categories
 │   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
@@ -82,6 +83,7 @@ BugBounty-Agent/
 │   ├── bb-api                 # REST/GraphQL API method and schema prober
 │   ├── bb-validate            # Controlled security validation & baseline comparison engine
 │   ├── bb-xss                 # XSS intelligence, context analysis & validation engine
+│   ├── bb-authz               # Authorization & Access-Control Intelligence Engine (BOLA/IDOR)
 │   ├── bb-nuclei              # Signal-only Nuclei scanner wrapper
 │   └── bb-evidence            # Evidence collector with automatic token redaction
 │

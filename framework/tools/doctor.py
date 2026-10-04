@@ -363,6 +363,48 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_authz_engine(self) -> Dict[str, Any]:
+        """Category 17: Authorization Intelligence & Access Control Engine verification."""
+        try:
+            from framework.authz.comparator import AccessControlComparator
+            from framework.authz.identifiers import ObjectIdentifierAnalyzer
+            from framework.authz.model import (
+                ExpectedAccessDecision,
+                ExpectedAccessPolicy,
+                PrincipalProfile,
+                ResourceAccessTarget,
+            )
+            from framework.validation.request import ControlledResponse
+
+            analyzer = ObjectIdentifierAnalyzer()
+            id_type = analyzer.classify_identifier_type("12345")
+            p = PrincipalProfile(principal_id="user_a", role="USER", tenant_id="tenant_a")
+            r = ResourceAccessTarget(
+                resource_id="101",
+                resource_type="document",
+                endpoint="https://example.com/api/v1/documents/101",
+                owner_principal_id="user_b",
+            )
+            pol = ExpectedAccessPolicy.infer_default(p, r, "READ")
+            resp = ControlledResponse(
+                status_code=403,
+                headers={},
+                body="Forbidden",
+                size_bytes=9,
+                final_url="https://example.com",
+            )
+            comp = AccessControlComparator.compare(resp, pol, r)
+
+            healthy = (
+                id_type == "NUMERIC"
+                and pol.expected_decision == ExpectedAccessDecision.DENY
+                and comp.is_vulnerable is False
+                and comp.decision_inferred.value == "DENY"
+            )
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -381,5 +423,6 @@ class SystemDoctor:
             "api_engine": self.check_api_engine(),
             "validation_engine": self.check_validation_engine(),
             "xss_engine": self.check_xss_engine(),
+            "authz_engine": self.check_authz_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }

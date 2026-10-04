@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""
+bb-authz — BugBounty-Agent Authorization & Access-Control Intelligence Engine.
+
+Performs hypothesis-driven validation for BOLA/IDOR, horizontal/vertical privilege
+escalation, tenant boundary isolation, and unauthenticated protected resource access
+using rigorous 3-point comparative baseline analysis and human approval gating.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.authz.approval import HumanApprovalGate
+from framework.authz.engine import AuthorizationIntelligenceEngine
+from framework.authz.model import AuthorizationCategory, AuthorizationTestCase, ResourceAccessTarget
+from framework.authz.state import AuthorizationStateManager
+from framework.common.config import get_program_dir
+from framework.scope.engine import ScopeEngine
+from framework.validation.policy import SecurityTestPolicy
+import yaml
+
+
+def render_authz_tree(summary_data: Dict[str, Any], test_cases: List[AuthorizationTestCase], program_name: str) -> None:
+    """Renders visual ASCII tree of authorization candidates, approvals, and verified findings."""
+    print("\n==============================================================================")
+    print("                AUTHORIZATION & ACCESS CONTROL INTELLIGENCE TREE              ")
+    print("==============================================================================")
+
+    state = summary_data.get("summary", {})
+    by_cat = state.get("by_category", {})
+    by_life = state.get("by_lifecycle", {})
+
+    print(f"\n[*] Program:            {program_name}")
+    print(f"[*] Total Resources:    {state.get('total_resources', 0)}")
+    print(f"[*] Total Test Cases:   {state.get('total_test_cases', len(test_cases))}")
+    print(f"[*] Approved Tests:     {state.get('approved_test_cases', 0)}")
+    print(f"[*] Verified Findings:  {state.get('findings_recorded', 0)}")
+    print(f"[*] Categories:         Horizontal: {by_cat.get('horizontal', 0)} | Vertical: {by_cat.get('vertical', 0)} | Tenant: {by_cat.get('tenant', 0)} | Unauthenticated: {by_cat.get('unauthenticated', 0)}")
+    print(f"[*] Lifecycles:         Candidate: {by_life.get('CANDIDATE', 0)} | Approved: {by_life.get('APPROVED', 0)} | Tested: {by_life.get('TESTED', 0)} | Verified: {by_life.get('VERIFIED', 0)}")
+
+    if not test_cases:
+        print("\n[*] No authorization test cases recorded in current state.")
+        print("==============================================================================\n")
+        return
+
+    grouped: Dict[str, List[AuthorizationTestCase]] = defaultdict(list)
+    for tc in test_cases:
+        cat_val = tc.category.value if hasattr(tc.category, "value") else str(tc.category)
+        grouped[cat_val].append(tc)
+
+    for cat_name, cat_list in sorted(grouped.items()):
+        print(f"\n[+] CATEGORY: {cat_name.upper()} ({len(cat_list)} test cases)")
+        for tc in cat_list[:25]:
+            status = tc.lifecycle_state
+            appr = tc.approval_status
+            testing_p = tc.testing_principal.principal_id if tc.testing_principal else "anonymous"
+            owner_p = tc.source_principal.principal_id if tc.source_principal else "unassigned"
+            res_id = tc.resource.resource_id if tc.resource else "n/a"
+
+            print(f"    - [{status}] [{appr}] {tc.method} {tc.endpoint}")
+            print(f"        Resource: {res_id} (Type: {tc.resource.resource_type if tc.resource else 'unknown'}) | Owner: {owner_p} | Testing: {testing_p}")
+            if tc.comparison_result:
+                dec = tc.comparison_result.decision_inferred.value if hasattr(tc.comparison_result.decision_inferred, "value") else str(tc.comparison_result.decision_inferred)
+                vuln = "[VULNERABLE BOLA/IDOR]" if tc.comparison_result.is_vulnerable else "[DEFENDED]"
+                print(f"        Result: {vuln} Decision: {dec} (HTTP {tc.comparison_result.status_code}, Similarity: {round(tc.comparison_result.body_similarity, 2)})")
+            if tc.notes:
+                print(f"        Notes: {tc.notes[:100]}")
+
+    print("\n==============================================================================")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="bb-authz",
+        description="BugBounty-Agent Authorization & Access-Control Intelligence Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bb-authz --program acme-corp --tree
+  bb-authz --program acme-corp --category horizontal --passive-only
+  bb-authz --program acme-corp --dry-run
+  bb-authz --program acme-corp --dossier
+  bb-authz --program acme-corp --approve --category horizontal
+  bb-authz --program acme-corp --endpoint "https://api.example.com/documents/101" --approve
+        """,
+    )
+
+    parser.add_argument("-p", "--program", help="Program name in local workspace")
+    parser.add_argument("-s", "--scope", help="Path to scope.yaml definition")
+    parser.add_argument("-d", "--domain", help="Target apex root domain")
+    parser.add_argument("-a", "--asset", help="Specific host or application URL to filter")
+    parser.add_argument("-e", "--endpoint", help="Specific endpoint URL to validate")
+    parser.add_argument("-r", "--resource", help="Specific resource ID to target")
+    parser.add_argument("--principal", help="Specific testing principal ID")
+    parser.add_argument(
+        "--category",
+        choices=["horizontal", "vertical", "tenant", "unauthenticated", "function_level", "all"],
+        default="all",
+        help="Authorization category filter (default: all)",
+    )
+    parser.add_argument("--approve", action="store_true", help="Grant explicit human approval to execute active authorization tests")
+    parser.add_argument("--approve-id", help="Approve a specific test case ID for execution")
+    parser.add_argument("--dossier", action="store_true", help="Display human approval dossiers for pending test cases")
+    parser.add_argument("--passive-only", action="store_true", help="Perform zero network requests; discover and model candidate resources only")
+    parser.add_argument("--dry-run", action="store_true", help="Plan test cases and show expected probes without dispatching requests")
+    parser.add_argument("--resume", action="store_true", help="Resume prior evaluation and skip already verified/tested cases")
+    parser.add_argument("--max-tests", type=int, default=30, help="Maximum test cases to evaluate (default: 30)")
+    parser.add_argument("--max-requests", type=int, default=100, help="Ceiling on total requests (default: 100)")
+    parser.add_argument("--timeout", type=float, default=5.0, help="HTTP request timeout in seconds (default: 5.0)")
+    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    parser.add_argument("--tree", action="store_true", help="Render visual ASCII candidate tree")
+
+    args = parser.parse_args()
+
+    prog_name = args.program or "default"
+    prog_dir = get_program_dir(prog_name)
+    os.makedirs(prog_dir, exist_ok=True)
+
+    # Scope resolution
+    scope_engine: Optional[ScopeEngine] = None
+    scope_path = args.scope or os.path.join(prog_dir, "scope.yaml")
+    if os.path.exists(scope_path):
+        try:
+            with open(scope_path, "r", encoding="utf-8") as f:
+                scope_def = yaml.safe_load(f)
+            scope_engine = ScopeEngine(scope_def)
+        except Exception as e:
+            print(f"[-] Warning: Failed to parse scope definition from {scope_path}: {e}", file=sys.stderr)
+
+    # Policy
+    policy = SecurityTestPolicy(
+        allowed_methods={"GET", "HEAD", "OPTIONS"},
+        max_requests_per_program=args.max_requests,
+        timeout=args.timeout,
+    )
+
+    # Initialize Engine
+    engine = AuthorizationIntelligenceEngine(
+        program_dir=prog_dir,
+        scope_engine=scope_engine,
+        policy=policy,
+    )
+
+    # Handle approve-id if provided
+    if args.approve_id:
+        success = engine.approval_gate.approve(args.approve_id, approver="security-researcher-cli")
+        if success:
+            print(f"[+] Successfully approved test case: {args.approve_id}")
+        else:
+            print(f"[-] Error: Test case ID not found: {args.approve_id}", file=sys.stderr)
+            sys.exit(1)
+
+    # If single endpoint passed directly
+    if args.endpoint:
+        from framework.authz.identifiers import ObjectIdentifierAnalyzer
+        targets = ObjectIdentifierAnalyzer.extract_from_endpoint(endpoint_url=args.endpoint, method="GET")
+        for t in targets:
+            engine.state_mgr.save_resource(t)
+
+    # Execute workflow
+    results = engine.run_evaluation(
+        asset=args.asset or args.domain,
+        endpoint=args.endpoint,
+        resource=args.resource,
+        category=args.category if args.category != "all" else None,
+        approve_all=args.approve,
+        passive_only=args.passive_only,
+        dry_run=args.dry_run,
+        resume=args.resume,
+        max_tests=args.max_tests,
+    )
+
+    all_cases = engine.state_mgr.list_test_cases()
+
+    # Display dossiers if requested
+    if args.dossier:
+        print("\n==============================================================================")
+        print("                      HUMAN APPROVAL DOSSIER REVIEW                           ")
+        print("==============================================================================")
+        pending = [tc for tc in all_cases if tc.approval_status != "APPROVED"]
+        if not pending:
+            print("[*] No pending test cases requiring approval.")
+        for tc in pending[:args.max_tests]:
+            print(engine.approval_gate.request_approval(tc))
+            print("-" * 60)
+        print("==============================================================================\n")
+        return
+
+    if args.json:
+        output_payload = {
+            "program": prog_name,
+            "results": results,
+            "test_cases": [tc.to_dict() for tc in all_cases],
+        }
+        print(json.dumps(output_payload, indent=2))
+        return
+
+    if args.tree or not args.json:
+        render_authz_tree(results, all_cases, prog_name)
+
+
+if __name__ == "__main__":
+    main()
