@@ -116,3 +116,21 @@ Provides data models (`Principal`, `SessionContext`, `ResourceIdentifier`, `Expe
   # Dry-run plan without network or disk writes
   bb-validate --program acme-corp --dry-run
   ```
+
+---
+
+## 9. Phase 7: XSS Intelligence & Validation Engine (`bb-xss`)
+Specialized subsystem for comprehensive, non-destructive Cross-Site Scripting analysis:
+* **Context Analyzer (`HtmlContextAnalyzer`)**: Distinguishes HTML body, attribute values, script blocks, event handlers, URL attributes, and JSON strings. Detects HTML entity, URL, and JS escaping; automatically discards defended reflections as `REJECTED` to eliminate false positives.
+* **DOM XSS Intelligence (`DomXssEngine`)**: Static source-to-sink tracking across `location.search`, `location.hash`, `document.referrer`, `window.name`, and dangerous framework sinks (`dangerouslySetInnerHTML`, `v-html`, `bypassSecurityTrustHtml`, jQuery `html()`/`append()`). Detects client sanitizers (`DOMPurify`).
+* **Stored XSS Foundation (`StoredXssEngine`)**: Correlates candidate input endpoints with retrieval endpoints; models human verification plans with zero automated form mutation.
+* **Browser-Assisted Confirmation (`BrowserXssAssistant`)**: Optional headless Playwright layer strictly disabled by default. Enforces same-origin and anti-SSRF pre-checks.
+* **State File**: `~/BugBounty-Workspace/programs/<program>/state/xss.json`
+* **CLI Tool**: `bb-xss`
+  ```bash
+  bb-xss --program acme-corp --tree
+  bb-xss --program acme-corp --category dom
+  bb-xss --program acme-corp --category reflected --endpoint "https://app.example.com/search" --parameter q
+  bb-xss --program acme-corp --passive-only --json
+  bb-xss --program acme-corp --dry-run
+  ```

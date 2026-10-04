@@ -133,6 +133,7 @@ class BaselineComparison:
         error_pattern_detected: bool = False,
         matched_error: Optional[str] = None,
         signals: Optional[List[str]] = None,
+        injected_token: Optional[str] = None,
     ):
         self.status_changed = status_changed
         self.size_delta = size_delta
@@ -145,6 +146,7 @@ class BaselineComparison:
         self.error_pattern_detected = error_pattern_detected
         self.matched_error = matched_error
         self.signals = list(signals or [])
+        self.injected_token = injected_token
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes comparison to dictionary."""
@@ -256,4 +258,5 @@ def compare_with_baseline(
         error_pattern_detected=error_detected,
         matched_error=matched_err,
         signals=signals,
+        injected_token=test_marker,
     )

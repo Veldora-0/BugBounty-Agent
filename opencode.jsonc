@@ -89,6 +89,12 @@
     },
     {
       "action": "shell",
+      "resource": "*bb-xss*",
+      "effect": "ask",
+      "description": "Require human confirmation before launching active XSS testing or validation"
+    },
+    {
+      "action": "shell",
       "resource": "subfinder *",
       "effect": "ask",
       "description": "Require human confirmation before executing subfinder directly"

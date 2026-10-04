@@ -40,20 +40,90 @@ from framework.validation.validator import (
 )
 
 
-# Private IP ranges for SSRF prevention
+import socket
+import urllib.request
+import urllib.error
+
+
+# Comprehensive IP ranges for SSRF prevention
 PRIVATE_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local / Cloud metadata
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),  # Link-local / Cloud metadata
-    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("100.64.0.0/10"),  # Carrier-grade NAT
+    ipaddress.ip_network("192.0.0.0/24"),
+    ipaddress.ip_network("192.0.2.0/24"),   # TEST-NET-1
+    ipaddress.ip_network("198.51.100.0/24"), # TEST-NET-2
+    ipaddress.ip_network("203.0.113.0/24"), # TEST-NET-3
+    ipaddress.ip_network("224.0.0.0/4"),    # Multicast
+    ipaddress.ip_network("240.0.0.0/4"),    # Reserved
+    ipaddress.ip_network("::1/128"),        # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),       # IPv6 unique-local
+    ipaddress.ip_network("fe80::/10"),      # IPv6 link-local
 ]
+
+
+def is_ssrf_prohibited_ip(ip_input: str | ipaddress.IPv4Address | ipaddress.IPv6Address) -> Tuple[bool, str]:
+    """
+    Evaluates whether an IP address belongs to private, loopback, link-local,
+    reserved, or IPv4-mapped private address space.
+    """
+    try:
+        ip_obj = ipaddress.ip_address(ip_input) if isinstance(ip_input, str) else ip_input
+    except ValueError:
+        return False, ""
+
+    # Check IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:169.254.169.254)
+    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
+        mapped = ip_obj.ipv4_mapped
+        is_bad, reason = is_ssrf_prohibited_ip(mapped)
+        if is_bad:
+            return True, f"IPv4-mapped {mapped} is prohibited ({reason})"
+
+    if ip_obj.is_loopback:
+        return True, "Loopback address range"
+    if ip_obj.is_private:
+        return True, "Private address range"
+    if ip_obj.is_link_local:
+        return True, "Link-local address range"
+    if ip_obj.is_reserved:
+        return True, "Reserved address range"
+    if ip_obj.is_multicast:
+        return True, "Multicast address range"
+
+    for net in PRIVATE_NETWORKS:
+        if ip_obj in net:
+            return True, f"Matched forbidden network {net}"
+
+    return False, ""
 
 
 class ScopeViolationError(ValueError):
     """Raised when a request target falls outside authorized scope."""
     pass
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """
+    HTTP redirect handler that enforces scope and anti-SSRF policies on each redirection hop.
+    """
+
+    def __init__(self, check_scope_fn: Callable[[str], None], max_redirects: int = 5):
+        super().__init__()
+        self.check_scope_fn = check_scope_fn
+        self.max_redirects = max_redirects
+        self.redirect_count = 0
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self.redirect_count += 1
+        if self.redirect_count > self.max_redirects:
+            raise ScopeViolationError(f"Too many redirects (exceeded maximum of {self.max_redirects})")
+        # Validate target URL against scope and anti-SSRF rules before following
+        self.check_scope_fn(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 class SecurityValidationEngine:
@@ -112,15 +182,37 @@ class SecurityValidationEngine:
         # SSRF boundary check: prevent localhost / private IP targets unless explicitly allowed
         try:
             ip_obj = ipaddress.ip_address(host)
-            for net in PRIVATE_NETWORKS:
-                if ip_obj in net:
-                    raise ScopeViolationError(
-                        f"Target host '{host}' is in private/link-local address space ({net}). Blocked by safe policy."
-                    )
+            is_ip = True
         except ValueError:
+            ip_obj = None
+            is_ip = False
+
+        if is_ip and ip_obj is not None:
+            prohibited, reason = is_ssrf_prohibited_ip(ip_obj)
+            if prohibited:
+                raise ScopeViolationError(
+                    f"Target host '{host}' is in prohibited address space ({reason}). Blocked by safe policy."
+                )
+        else:
             # host is a domain name
-            if host in ("localhost", "127.0.0.1", "0.0.0.0"):
+            if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
                 raise ScopeViolationError(f"Target host '{host}' is forbidden.")
+            # DNS resolution check for private IP rebinding
+            try:
+                addr_info = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                for _, _, _, _, sockaddr in addr_info:
+                    ip_str = sockaddr[0]
+                    try:
+                        resolved_ip = ipaddress.ip_address(ip_str)
+                        prohibited, reason = is_ssrf_prohibited_ip(resolved_ip)
+                        if prohibited:
+                            raise ScopeViolationError(
+                                f"Target host '{host}' resolves to prohibited address {ip_str} ({reason}). Blocked by safe policy."
+                            )
+                    except ValueError:
+                        pass
+            except socket.gaierror:
+                pass
 
         # Evaluate against ScopeEngine if provided
         if self.scope_engine:
@@ -171,8 +263,6 @@ class SecurityValidationEngine:
             return self.send_request_hook(request)
 
         # 5. Live standard library urllib execution
-        import urllib.request
-
         headers = request.build_effective_headers()
         req_obj = urllib.request.Request(
             eff_url,
@@ -187,6 +277,13 @@ class SecurityValidationEngine:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
+        # Safe redirect handler enforcing scope on each hop
+        redirect_handler = SafeRedirectHandler(self.check_request_scope)
+        handlers: list[Any] = [redirect_handler]
+        if ctx:
+            handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        opener = urllib.request.build_opener(*handlers)
+
         # Optional delay
         if self.policy.delay_seconds > 0:
             time.sleep(self.policy.delay_seconds)
@@ -196,7 +293,7 @@ class SecurityValidationEngine:
         self.endpoint_request_counts[ep_key] = ep_count + 1
 
         try:
-            with urllib.request.urlopen(req_obj, timeout=self.policy.timeout, context=ctx) as resp:
+            with opener.open(req_obj, timeout=self.policy.timeout) as resp:
                 elapsed = time.time() - start_time
                 status = resp.status
                 resp_headers = dict(resp.headers)

@@ -62,7 +62,8 @@ BugBounty-Agent/
 │   ├── assets/                # Recursive asset graph engine, DNS/IP/ASN/TLS/CDN models
 │   ├── scope/                 # Scope engine, DNS boundary verification, normalizer
 │   ├── state/                 # Persistent state manager, test fingerprinting, dedup
-│   ├── findings/              # Finding schema, lifecycle state machine, reports
+│   ├── validation/            # Security validation foundation & baseline comparison
+│   ├── xss/                   # Context-aware XSS intelligence, DOM sources/sinks, stored correlation
 │   ├── tools/                 # Tool registry, installer, doctor, deployer
 │   └── common/                # Evidence store, sanitization, tool detection, config
 │
@@ -70,7 +71,7 @@ BugBounty-Agent/
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
-│   ├── bb-doctor              # Diagnostics utility across 10 system categories
+│   ├── bb-doctor              # Diagnostics utility across 16 system categories
 │   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
@@ -80,6 +81,7 @@ BugBounty-Agent/
 │   ├── bb-js                  # JavaScript endpoint & secret analyzer
 │   ├── bb-api                 # REST/GraphQL API method and schema prober
 │   ├── bb-validate            # Controlled security validation & baseline comparison engine
+│   ├── bb-xss                 # XSS intelligence, context analysis & validation engine
 │   ├── bb-nuclei              # Signal-only Nuclei scanner wrapper
 │   └── bb-evidence            # Evidence collector with automatic token redaction
 │

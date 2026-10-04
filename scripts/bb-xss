@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""
+bb-xss — BugBounty-Agent XSS Intelligence & Validation Engine.
+
+Provides context-aware Reflected XSS validation with false-positive elimination,
+DOM source-to-sink intelligence and framework API analysis, stored candidate
+retrieval correlation, and optional headless browser confirmation.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.scope.engine import ScopeEngine
+from framework.validation.policy import SecurityTestPolicy
+from framework.xss.engine import XssIntelligenceEngine
+from framework.xss.model import (
+    XssCandidate,
+    XssCategory,
+    XssConfidence,
+    XssContextType,
+)
+from framework.xss.state import XssStateManager
+import yaml
+
+
+def render_xss_tree(summary_data: Dict[str, Any], candidates: List[XssCandidate], program_name: str) -> None:
+    """Renders visual ASCII tree of XSS intelligence candidates and contexts."""
+    print("\n==============================================================================")
+    print("                      XSS INTELLIGENCE & VALIDATION TREE                      ")
+    print("==============================================================================")
+
+    state = summary_data.get("state_summary", {})
+    by_cat = state.get("by_category", {})
+    by_conf = state.get("by_confidence", {})
+
+    print(f"\n[*] Program: {program_name}")
+    print(f"[*] Total Candidates: {state.get('total_candidates', len(candidates))}")
+    print(f"[*] By Category: Reflected: {by_cat.get('reflected', 0)} | DOM: {by_cat.get('dom', 0)} | Stored: {by_cat.get('stored', 0)}")
+    print(f"[*] By Confidence: Observed: {by_conf.get('OBSERVED', 0)} | Suspected: {by_conf.get('SUSPECTED', 0)} | Validated: {by_conf.get('VALIDATED', 0)} | Rejected: {by_conf.get('REJECTED', 0)}")
+
+    if not candidates:
+        print("\n[*] No XSS candidates recorded in current state.")
+        print("==============================================================================\n")
+        return
+
+    # Group by category
+    grouped: Dict[str, List[XssCandidate]] = defaultdict(list)
+    for c in candidates:
+        grouped[c.category.value].append(c)
+
+    for cat_name, cat_list in sorted(grouped.items()):
+        print(f"\n[+] CATEGORY: {cat_name.upper()} ({len(cat_list)} candidates)")
+        for c in cat_list[:25]:  # bound output
+            status = c.confidence.value
+            ctx = c.context_type.value if c.context_type else "UNKNOWN"
+            param = c.parameter or "n/a"
+            print(f"    - [{status}] [{c.severity}] {c.endpoint} (param: {param})")
+            print(f"        Context: {ctx} | State: {c.reflection_state.value}")
+            if c.source and c.sink:
+                print(f"        DOM Flow: {c.source.name} -> {c.sink.name} ({c.sink.framework or 'native'})")
+            if c.retrieval_endpoint:
+                print(f"        Retrieval: {c.retrieval_method} {c.retrieval_endpoint}")
+
+    print("\n==============================================================================")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="bb-xss",
+        description="BugBounty-Agent XSS Intelligence & Validation Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bb-xss --program acme-corp --tree
+  bb-xss --program acme-corp --category dom
+  bb-xss --program acme-corp --category reflected --endpoint "https://app.example.com/search" --parameter q
+  bb-xss --program acme-corp --passive-only --json
+  bb-xss --program acme-corp --dry-run
+        """,
+    )
+
+    parser.add_argument("-p", "--program", help="Program name in local workspace")
+    parser.add_argument("-s", "--scope", help="Path to scope.yaml definition")
+    parser.add_argument("-d", "--domain", help="Target apex root domain")
+    parser.add_argument("-a", "--asset", help="Specific host or application URL to validate")
+    parser.add_argument("-e", "--endpoint", help="Specific endpoint URL to validate")
+    parser.add_argument("--param", "--parameter", dest="parameter", help="Specific parameter to mutate")
+    parser.add_argument("--category", choices=["reflected", "dom", "stored", "all"], default="all", help="Category filter")
+    parser.add_argument("--browser", action="store_true", help="Enable optional headless browser confirmation layer")
+    parser.add_argument("--passive-only", action="store_true", help="Perform zero network requests; evaluate static intelligence only")
+    parser.add_argument("--dry-run", action="store_true", help="Plan test cases without dispatching HTTP requests")
+    parser.add_argument("--resume", action="store_true", help="Resume prior evaluation and skip already processed tests")
+    parser.add_argument("--max-tests", type=int, default=30, help="Maximum tests to evaluate (default: 30)")
+    parser.add_argument("--max-requests", type=int, default=100, help="Ceiling on total requests (default: 100)")
+    parser.add_argument("--timeout", type=float, default=5.0, help="HTTP request timeout in seconds (default: 5.0)")
+    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    parser.add_argument("--tree", action="store_true", help="Render visual ASCII candidate tree")
+
+    args = parser.parse_args()
+
+    # Determine program directory
+    prog_name = args.program or "default"
+    prog_dir = get_program_dir(prog_name)
+    os.makedirs(prog_dir, exist_ok=True)
+
+    # Scope resolution
+    scope_engine: Optional[ScopeEngine] = None
+    scope_path = args.scope or os.path.join(prog_dir, "scope.yaml")
+    if os.path.exists(scope_path):
+        try:
+            with open(scope_path, "r", encoding="utf-8") as f:
+                scope_def = yaml.safe_load(f)
+            scope_engine = ScopeEngine(scope_def)
+        except Exception as e:
+            print(f"[-] Warning: Failed to parse scope definition from {scope_path}: {e}", file=sys.stderr)
+
+    # Policy
+    policy = SecurityTestPolicy(
+        allowed_methods={"GET", "HEAD", "OPTIONS"},
+        max_requests_per_program=args.max_requests,
+        timeout=args.timeout,
+    )
+
+    # Initialize Engine
+    engine = XssIntelligenceEngine(
+        program_dir=prog_dir,
+        scope_engine=scope_engine,
+        policy=policy,
+        browser_enabled=args.browser,
+    )
+
+    target_asset = args.asset or args.domain or (f"https://{args.domain}" if args.domain else "https://target.local")
+
+    # Construct endpoint candidate if supplied
+    endpoints_to_test: List[Dict[str, Any]] = []
+    if args.endpoint:
+        params = [args.parameter] if args.parameter else []
+        endpoints_to_test.append({"endpoint": args.endpoint, "params": params})
+
+    # Execute workflow based on category
+    results: Dict[str, Any] = {}
+    if args.category == "all":
+        results = engine.run_full_pipeline(
+            target_asset=target_asset,
+            endpoints_to_test=endpoints_to_test,
+            passive_only=args.passive_only,
+            dry_run=args.dry_run,
+            max_tests=args.max_tests,
+        )
+    elif args.category == "dom":
+        cands = engine.run_dom_intelligence(target_asset=target_asset)
+        results = {"target_asset": target_asset, "dom_candidates": len(cands), "state_summary": engine.state_mgr.get_summary()}
+    elif args.category == "stored":
+        cands = engine.run_stored_correlation(target_asset=target_asset)
+        results = {"target_asset": target_asset, "stored_candidates": len(cands), "state_summary": engine.state_mgr.get_summary()}
+    elif args.category == "reflected":
+        refl_cands = []
+        if args.endpoint and args.parameter:
+            cand, _ = engine.evaluate_reflected_candidate(
+                target_asset=target_asset,
+                endpoint=args.endpoint,
+                parameter=args.parameter,
+                dry_run=args.dry_run,
+            )
+            if cand:
+                refl_cands.append(cand)
+        results = {"target_asset": target_asset, "reflected_candidates": len(refl_cands), "state_summary": engine.state_mgr.get_summary()}
+
+    # Fetch candidates for presentation
+    all_candidates = engine.state_mgr.list_candidates()
+
+    if args.json:
+        output_payload = {
+            "program": prog_name,
+            "results": results,
+            "candidates": [c.to_dict() for c in all_candidates],
+        }
+        print(json.dumps(output_payload, indent=2))
+        return
+
+    if args.tree or not args.json:
+        render_xss_tree(results, all_candidates, prog_name)
+
+
+if __name__ == "__main__":
+    main()

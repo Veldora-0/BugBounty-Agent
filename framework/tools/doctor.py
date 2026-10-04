@@ -170,7 +170,15 @@ class SystemDoctor:
             except Exception:
                 pass
 
-        has_opencode_bin = shutil.which("opencode") is not None
+        opencode_paths = [
+            os.path.expanduser("~/.opencode/bin/opencode"),
+            os.path.expanduser("~/.local/bin/opencode"),
+            "/usr/local/bin/opencode",
+            "/usr/bin/opencode",
+        ]
+        has_opencode_bin = (shutil.which("opencode") is not None) or any(
+            os.path.isfile(p) and os.access(p, os.X_OK) for p in opencode_paths
+        )
 
         # Check global deployment
         global_config_dir = os.environ.get("OPENCODE_CONFIG_DIR", os.path.expanduser("~/.config/opencode"))
@@ -337,6 +345,24 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_xss_engine(self) -> Dict[str, Any]:
+        """Category 16: XSS Intelligence & Validation Engine verification."""
+        try:
+            from framework.xss.context import HtmlContextAnalyzer
+            from framework.xss.dom import DomXssEngine
+            from framework.xss.model import XssCandidate, XssCategory
+
+            res = HtmlContextAnalyzer.analyze("<script>var x = 'bbxss123';</script>", "bbxss123")
+            dom_cands = DomXssEngine.analyze_script_text("element.innerHTML = location.hash;")
+            healthy = (
+                res.canary_reflected is True
+                and res.context_type.value == "SCRIPT_BLOCK"
+                and len(dom_cands) >= 1
+            )
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -354,5 +380,6 @@ class SystemDoctor:
             "javascript_engine": self.check_javascript_engine(),
             "api_engine": self.check_api_engine(),
             "validation_engine": self.check_validation_engine(),
+            "xss_engine": self.check_xss_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }
