@@ -153,6 +153,7 @@ class SystemDoctor:
         subagent_depth = None
         permission_count = 0
 
+        has_redundant_jsonc_agents = False
         if has_config:
             try:
                 import json
@@ -162,6 +163,7 @@ class SystemDoctor:
                     default_agent = cfg.get("default_agent")
                     subagent_depth = cfg.get("subagent_depth")
                     permission_count = len(cfg.get("permissions", []))
+                    has_redundant_jsonc_agents = "agent" in cfg or "agents" in cfg
             except Exception:
                 pass
 
@@ -176,7 +178,7 @@ class SystemDoctor:
             "permission_rules": permission_count,
             "opencode_binary": has_opencode_bin,
             "runtime_status": "INSTALLED" if has_opencode_bin else "PENDING - requires Kali",
-            "status": "READY" if (has_config and len(agent_files) == 1 and default_agent == "Bug-Bounty" and len(skill_dirs) >= 17) else "INCOMPLETE",
+            "status": "READY" if (has_config and len(agent_files) == 1 and default_agent == "Bug-Bounty" and len(skill_dirs) >= 17 and not has_redundant_jsonc_agents) else "INCOMPLETE",
         }
 
     def run_full_diagnosis(self) -> Dict[str, Any]:

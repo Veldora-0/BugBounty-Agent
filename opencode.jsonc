@@ -2,12 +2,6 @@
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "Bug-Bounty",
   "subagent_depth": 1,
-  "agent": {
-    "Bug-Bounty": {
-      "mode": "primary",
-      "description": "Unified Bug Bounty Security Research Orchestrator. Coordinates scope verification, asset intelligence, reconnaissance, web/API security analysis, hypothesis testing, validation, and professional reporting."
-    }
-  },
   "permissions": [
     {
       "action": "shell",

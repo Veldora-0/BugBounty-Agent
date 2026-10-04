@@ -123,15 +123,21 @@ def test_opencode_jsonc_structure():
     assert config.get("$schema") == "https://opencode.ai/config.json"
     assert config.get("default_agent") == "Bug-Bounty"
     assert config.get("subagent_depth") == 1
-    assert "agent" in config
-    assert isinstance(config["agent"], dict)
-    assert len(config["agent"]) == 1
+    # Verify no redundant inline agent definitions in JSONC; .opencode/agents/bug-bounty.md is the canonical source
+    assert "agent" not in config, "Redundant 'agent' key in opencode.jsonc creates duplicate custom agent registration in OpenCode V2"
+    assert "agents" not in config, "Redundant 'agents' key in opencode.jsonc creates duplicate custom agent registration in OpenCode V2"
 
-    for name, expected_mode in EXPECTED_AGENTS.items():
-        assert name in config["agent"], f"Missing agent {name} in config.agent"
-        agent_def = config["agent"][name]
-        assert agent_def.get("mode") == expected_mode
-        assert "description" in agent_def and len(agent_def["description"]) > 0
+
+def test_no_duplicate_agent_registration():
+    """Verifies that .opencode/agents/bug-bounty.md is the canonical project agent and opencode.jsonc avoids duplicate registration."""
+    agent_files = glob.glob(os.path.join(AGENTS_DIR, "*.md"))
+    assert len(agent_files) == 1
+    assert os.path.basename(agent_files[0]).lower() == "bug-bounty.md"
+
+    config = load_jsonc(OPENCODE_CONFIG_PATH)
+    assert config.get("default_agent") == "Bug-Bounty"
+    assert "agent" not in config
+    assert "agents" not in config
 
 
 def test_permission_rules_schema():
