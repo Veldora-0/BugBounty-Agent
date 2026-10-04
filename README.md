@@ -383,6 +383,38 @@ The **Web Application Intelligence Engine** (`framework/webapp/` & `scripts/bb-w
 
 ---
 
+## Phase 4: JavaScript Intelligence & Client Analysis Engine
+
+The **JavaScript Intelligence Engine** (`framework/javascript/` & `scripts/bb-js`) analyzes client-side JavaScript resources collected during web crawling and attack surface discovery:
+
+* **Pure Static Analysis**: Analyzes script source code via deterministic regex matching and parsing without arbitrary code execution (`eval`, `exec`, or browser runtime execution of target scripts are forbidden).
+* **API & Endpoint Extraction**: Discovers relative and absolute HTTP endpoints, API paths, and realtime communication channels from standard client libraries (`fetch`, `axios`, `$.ajax`, `XMLHttpRequest`, `WebSocket`, and REST route patterns).
+* **Client-Side SPA Routing**: Maps frontend single-page application routes across modern frameworks (React Router `<Route path="...">`, Vue Router `path: '...'`, and client links), uncovering hidden views and admin paths.
+* **Parameter Discovery**: Extracts query and payload parameter names referenced in `URLSearchParams`, query string templates, and request object builders, feeding downstream testing.
+* **Client Dependency Identification**: Detects frontend libraries and utility frameworks (React, Vue.js, Angular, jQuery, Axios, Lodash, Next.js, Webpack, Vite) with extracted version numbers when embedded.
+* **Source Map Detection**: Identifies source map directives (`//# sourceMappingURL=...`) and resolves source map targets deterministically against base script URLs.
+* **Sensitive String Classification & Automatic Masking**: Classifies sensitive configuration strings, tokens, and endpoints into calibrated risk tiers (`HIGH_CONFIDENCE_SECRET`, `SENSITIVE_LOOKING`, `INTERESTING`, `INFORMATIONAL`). High-confidence credentials (AWS keys, JWTs, private keys, bearer tokens) are **automatically masked** before persistence or display to prevent secret exposure.
+* **Atomic State Persistence**: Persists observations atomically to `~/BugBounty-Workspace/programs/<name>/state/javascript.json`. Supports incremental and resumable execution (`--resume`).
+* **CLI Utility**:
+  ```bash
+  # Analyze JavaScript resources for a program workspace with ASCII tree visualization
+  ./scripts/bb-js --program acme-corp --tree
+
+  # Target a specific domain or host
+  ./scripts/bb-js --program acme-corp --domain app.example.com
+
+  # Analyze a specific JavaScript resource URL directly
+  ./scripts/bb-js --program acme-corp --resource https://app.example.com/static/js/main.js
+
+  # Preview actions without fetching new resources
+  ./scripts/bb-js --program acme-corp --dry-run
+
+  # Resume previous analysis and output structured JSON
+  ./scripts/bb-js --program acme-corp --resume --json
+  ```
+
+---
+
 ## OpenCode V2 Runtime & Security Architecture
 
 BugBounty-Agent is architected natively for **OpenCode V2** on Kali/Linux research workstations.
@@ -406,7 +438,8 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | **Active Reconnaissance**| `shell` | `*bb-recon*`, `subfinder *` | `ask` | Human confirmation required before probing assets |
 | **Active HTTP Probing** | `shell` | `*bb-http*`, `httpx *` | `ask` | Human confirmation required before sending web traffic |
 | **Nuclei Scanning** | `shell` | `*bb-nuclei*`, `nuclei *` | `ask` | Human confirmation required before vulnerability scanning |
-| **Content Fuzzing** | `shell` | `*bb-content*`, `ffuf *` | `ask` | Human confirmation required before fuzzing endpoints |
+| **Web App Crawling** | `shell` | `*bb-webapp*`, `katana *` | `ask` | Human confirmation required before crawling web applications |
+| **JavaScript Analysis** | `shell` | `*bb-js*` | `ask` | Human confirmation required before running JavaScript endpoint extraction |
 | **Tool Installation** | `shell` | `*bb-install*` | `ask` | Human confirmation required before modifying system tools |
 | **Tool Updates** | `shell` | `*bb-update*` | `ask` | Human confirmation required before updating system tools |
 | **Remote Git Push** | `shell` | `git push *` | `ask` | Confirmation required before modifying remote repository |

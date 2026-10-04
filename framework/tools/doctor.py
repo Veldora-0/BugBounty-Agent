@@ -269,6 +269,28 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_javascript_engine(self) -> Dict[str, Any]:
+        """Category 13: JavaScript Intelligence Engine verification."""
+        try:
+            from framework.javascript.analyzer import JavaScriptAnalyzer
+            from framework.javascript.engine import JavaScriptIntelligenceEngine
+
+            test_js = "fetch('/api/v1/user'); const apiKey = '" + "AKIA" + "IOSFODNN7EXAMPLE';"
+            analyzer = JavaScriptAnalyzer(
+                source_url="https://example.com/app.js",
+                js_content=test_js,
+            )
+            analysis = analyzer.analyze_all()
+            engine = JavaScriptIntelligenceEngine()
+            healthy = (
+                len(analysis["endpoints"]) == 1
+                and len(analysis["interesting_strings"]) >= 1
+                and engine.policy.max_files > 0
+            )
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -283,5 +305,6 @@ class SystemDoctor:
             "asset_engine": self.check_asset_engine(),
             "recon_engine": self.check_recon_engine(),
             "webapp_engine": self.check_webapp_engine(),
+            "javascript_engine": self.check_javascript_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }

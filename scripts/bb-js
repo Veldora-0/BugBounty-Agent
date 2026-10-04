@@ -1,118 +1,288 @@
 #!/usr/bin/env python3
 """
-bb-js — JavaScript Analysis and Endpoint Extraction Tool.
+bb-js — JavaScript Intelligence CLI for BugBounty-Agent.
 
-Parses client-side JavaScript bundles to extract API endpoints, parameters,
-GraphQL queries, and client-side routing definitions.
-Enforces scope checks when fetching remote scripts.
+Consumes Phase 3 JavaScript ResourceObservations, performs bounded static analysis
+(endpoints, routes, parameters, interesting strings, dependencies, and source maps)
+without executing target code or launching intrusive attacks.
+Maintains persistent, atomic state in ~/BugBounty-Workspace/programs/<name>/state/javascript.json.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import os
-import re
 import sys
-import urllib.request
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Optional
 
-REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+REPO_ROOT = os.environ.get(
+    "BUGBOUNTY_AGENT_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")),
+)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from framework.common.config import get_program_dir
-from framework.scope.engine import ScopeEngine, ScopeStatus
+from framework.javascript.engine import JavaScriptIntelligenceEngine, JavaScriptPolicy
+from framework.javascript.model import JavaScriptResource
+from framework.javascript.state import JavaScriptStateManager
+from framework.scope.engine import ScopeEngine
+from framework.state.manager import StateManager
+from framework.webapp.model import ResourceObservation, canonicalize_url
+from framework.webapp.state import WebAppStateManager
 
 
-# Regex patterns for endpoint and route discovery
-_ROUTE_PATTERNS = [
-    re.compile(r"""(?:["'])(/(?:api|v[0-9]|rest|graphql|oauth|auth|user|admin|internal)/[a-zA-Z0-9_\-\./?=&%]+)(?:["'])"""),
-    re.compile(r"""(?:path|endpoint|url|href|route)\s*[:=]\s*["'](/[a-zA-Z0-9_\-\./]+)["']"""),
-    re.compile(r"""(?:fetch|axios(?:\.get|\.post)?)\s*\(\s*["']([^"']+)["']"""),
-]
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="BugBounty-Agent JavaScript Intelligence & Static Analysis Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bb-js --program acme-corp --tree
+  bb-js --program acme-corp --asset app.example.com --tree
+  bb-js --program acme-corp --resource https://app.example.com/static/app.js --json
+  bb-js --program acme-corp --max-files 50 --source-maps
+  bb-js --program acme-corp --passive-only --dry-run
+        """,
+    )
+    parser.add_argument(
+        "-p", "--program",
+        help="Program name in local workspace (resolves ~/BugBounty-Workspace/programs/<name>)",
+    )
+    parser.add_argument(
+        "-s", "--scope",
+        help="Path to scope.yaml definition (defaults to program's scope/scope.yaml)",
+    )
+    parser.add_argument(
+        "-d", "--domain",
+        help="Target apex root domain to filter JS resources",
+    )
+    parser.add_argument(
+        "-a", "--asset",
+        help="Specific host or application URL to filter JS resources",
+    )
+    parser.add_argument(
+        "-r", "--resource",
+        help="Specific JavaScript URL to analyze directly",
+    )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=200,
+        help="Maximum JavaScript files to acquire and analyze (default: 200)",
+    )
+    parser.add_argument(
+        "--max-requests",
+        type=int,
+        default=500,
+        help="Safety ceiling on active HTTP requests (default: 500)",
+    )
+    parser.add_argument(
+        "--max-bytes-per-file",
+        type=int,
+        default=5 * 1024 * 1024,
+        help="Max size in bytes per script file (default: 5MB)",
+    )
+    parser.add_argument(
+        "--total-byte-budget",
+        type=int,
+        default=50 * 1024 * 1024,
+        help="Total acquisition byte ceiling (default: 50MB)",
+    )
+    parser.add_argument(
+        "--passive-only",
+        action="store_true",
+        help="Analyze existing state without issuing active HTTP requests",
+    )
+    parser.add_argument(
+        "--source-maps",
+        action="store_true",
+        default=True,
+        help="Extract source map references (default: True)",
+    )
+    parser.add_argument(
+        "--no-source-maps",
+        action="store_false",
+        dest="source_maps",
+        help="Disable source map reference extraction",
+    )
+    parser.add_argument(
+        "--tree",
+        action="store_true",
+        help="Render visual ASCII JavaScript attack surface tree",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output full JavaScript intelligence state in JSON",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Perform evaluation without persisting results to program state",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip resources and content hashes already analyzed in previous runs",
+    )
+    return parser.parse_args()
 
-# Sensitive pattern indicators (flagged for human review, never auto-classified as vuln)
-_INTERESTING_KEYWORDS = [
-    "apikey", "api_key", "secret", "token", "jwt", "authorization",
-    "bearer", "aws_", "s3_", "client_secret", "graphql", "websocket"
-]
+
+def render_js_tree(js_state: JavaScriptStateManager) -> None:
+    """Renders visual ASCII tree of analyzed JavaScript resources and discovered intelligence."""
+    print("JavaScript Intelligence Hierarchy:")
+    resources = sorted(js_state.resources.values(), key=lambda x: x.url)
+    if not resources:
+        print("  (No JavaScript resources analyzed yet)")
+        return
+
+    # Group resources by host
+    from collections import defaultdict
+    by_host = defaultdict(list)
+    for r in resources:
+        by_host[r.host or "unknown"].append(r)
+
+    for host, host_res in sorted(by_host.items()):
+        print(f"└── {host} (JavaScript Bundles: {len(host_res)})")
+        for res in host_res[:15]:
+            min_tag = "[minified]" if res.is_minified else "[unminified]"
+            sm_tag = f" [sourcemap: {res.source_map_url.split('/')[-1]}]" if res.has_source_map and res.source_map_url else ""
+            print(f"    ├── {res.path} {min_tag}{sm_tag}")
+
+            # Endpoints
+            eps = [e for e in js_state.endpoints.values() if e.source_resource_url == res.url]
+            if eps:
+                ep_strs = ", ".join(e.normalized_endpoint for e in eps[:4])
+                print(f"    │   ├── endpoints: {ep_strs}")
+
+            # Routes
+            routes = [ro for ro in js_state.routes.values() if ro.source_resource_url == res.url]
+            if routes:
+                route_strs = ", ".join(ro.route_pattern for ro in routes[:4])
+                print(f"    │   ├── routes: {route_strs}")
+
+            # Parameters
+            params = [p for p in js_state.parameters.values() if p.source_resource_url == res.url]
+            if params:
+                param_strs = ", ".join(p.name for p in params[:5])
+                print(f"    │   ├── params: {param_strs}")
+
+            # Dependencies
+            deps = [d for d in js_state.dependencies.values() if d.source_resource_url == res.url]
+            if deps:
+                dep_strs = ", ".join(f"{d.name} {d.version or ''}".strip() for d in deps[:4])
+                print(f"    │   ├── dependencies: {dep_strs}")
+
+            # Interesting Strings
+            strings = [s for s in js_state.interesting_strings.values() if s.source_resource_url == res.url]
+            if strings:
+                str_types = ", ".join(f"{s.category}:{s.masked_value}" for s in strings[:3])
+                print(f"    │   └── interesting: {str_types}")
 
 
-def extract_js_intelligence(content: str) -> Dict[str, List[str]]:
-    """Extracts endpoints, parameters, and sensitive strings from JS text."""
-    endpoints: Set[str] = set()
-    for pat in _ROUTE_PATTERNS:
-        for match in pat.findall(content):
-            if isinstance(match, tuple):
-                match = match[0]
-            endpoints.add(match)
+def main() -> None:
+    args = parse_args()
 
-    interesting_lines: List[str] = []
-    lines = content.splitlines()
-    for line in lines[:5000]:  # limit scan lines
-        low = line.lower()
-        if any(kw in low for kw in _INTERESTING_KEYWORDS):
-            clean_line = line.strip()[:200]
-            if clean_line not in interesting_lines:
-                interesting_lines.append(clean_line)
+    prog_dir: Optional[str] = None
+    state: Optional[StateManager] = None
+    webapp_state: Optional[WebAppStateManager] = None
+    js_state: Optional[JavaScriptStateManager] = None
+    scope_path: Optional[str] = args.scope
 
-    return {
-        "endpoints": sorted(list(endpoints)),
-        "interesting_indicators": interesting_lines[:50],
-    }
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Analyze JavaScript bundles for attack surface mapping.")
-    parser.add_argument("source", help="URL or local path to JavaScript file")
-    parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
-    parser.add_argument("--json", action="store_true", help="Output results in JSON")
-    args = parser.parse_args()
-
-    prog_dir = get_program_dir(args.program)
-    scope_file = os.path.join(prog_dir, "scope", "scope.yaml")
-    if not os.path.isfile(scope_file):
-        print(f"[!] Error: Scope configuration not found: {scope_file}", file=sys.stderr)
-        sys.exit(2)
-
-    content = ""
-    # Check if remote URL or local file
-    if args.source.startswith(("http://", "https://")):
-        engine = ScopeEngine.from_file(scope_file)
-        decision = engine.check(args.source)
-        if decision.status != ScopeStatus.IN_SCOPE:
-            print(f"[!] REFUSING FETCH: JS URL '{args.source}' is OUT OF SCOPE: {decision.reason}", file=sys.stderr)
-            sys.exit(1)
-
-        req = urllib.request.Request(args.source, headers={"User-Agent": "BugBounty-Agent/1.0"})
+    if args.program:
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                content = resp.read().decode("utf-8", errors="replace")
+            prog_dir = get_program_dir(args.program)
+            state = StateManager(prog_dir)
+            webapp_state = state.get_webapp_state()
+            js_state = state.get_javascript_state()
+            if not scope_path:
+                candidate_scope = os.path.join(prog_dir, "scope", "scope.yaml")
+                if os.path.isfile(candidate_scope):
+                    scope_path = candidate_scope
         except Exception as e:
-            print(f"[!] Error fetching JS: {e}", file=sys.stderr)
+            print(f"[!] Error initializing program workspace: {e}", file=sys.stderr)
             sys.exit(1)
-    else:
-        if not os.path.isfile(args.source):
-            print(f"[!] Error: Local file '{args.source}' not found.", file=sys.stderr)
+
+    # Initialize Scope Engine if available
+    scope_engine: Optional[ScopeEngine] = None
+    if scope_path and os.path.isfile(scope_path):
+        try:
+            scope_engine = ScopeEngine.from_file(scope_path)
+        except Exception as e:
+            print(f"[!] Error loading scope configuration from '{scope_path}': {e}", file=sys.stderr)
             sys.exit(1)
-        with open(args.source, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
+    elif scope_path and not os.path.isfile(scope_path):
+        print(f"[!] Scope file not found: {scope_path}", file=sys.stderr)
+        sys.exit(1)
 
-    intel = extract_js_intelligence(content)
+    policy = JavaScriptPolicy(
+        max_files=args.max_files,
+        max_requests=args.max_requests,
+        max_bytes_per_file=args.max_bytes_per_file,
+        total_byte_budget=args.total_byte_budget,
+        passive_only=args.passive_only,
+        fetch_source_maps=args.source_maps,
+    )
 
-    # Save to program's js directory
-    out_filename = f"js_intel_{os.path.basename(args.source).split('?')[0]}.json"
-    out_path = os.path.join(prog_dir, "js", out_filename)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump({"source": args.source, **intel}, f, indent=2)
+    engine = JavaScriptIntelligenceEngine(
+        scope_engine=scope_engine,
+        webapp_state=webapp_state,
+        js_state=js_state,
+        policy=policy,
+        dry_run=args.dry_run,
+    )
+
+    # Filter target resources if --resource or --asset or --domain
+    targets: Optional[List[ResourceObservation]] = None
+    if args.resource:
+        canon_r = canonicalize_url(args.resource)
+        targets = [
+            ResourceObservation(
+                url=canon_r,
+                resource_type="js",
+                source_page=canon_r,
+            )
+        ]
+    elif args.asset or args.domain:
+        filter_val = (args.asset or args.domain).strip().lower()
+        candidates = engine.get_candidate_js_resources()
+        targets = [c for c in candidates if filter_val in c.url.lower()]
+
+    print(f"[*] Starting JavaScript Intelligence Engine...")
+    print(f"[*] Mode: {'Passive Analysis Only' if args.passive_only else 'Full Script Acquisition & Static Analysis'}")
+    print(f"[*] Max files: {args.max_files} | Max requests: {args.max_requests}")
+
+    stats = engine.run_analysis(target_resources=targets, resume=args.resume)
+
+    print(f"[+] JavaScript Intelligence pass complete:")
+    print(f"    - Resources evaluated: {stats['resources_evaluated']}")
+    print(f"    - Resources acquired: {stats['resources_acquired']}")
+    print(f"    - Endpoints extracted: {stats['endpoints_extracted']}")
+    print(f"    - Routes discovered: {stats['routes_extracted']}")
+    print(f"    - Parameters identified: {stats['parameters_extracted']}")
+    print(f"    - Dependencies detected: {stats['dependencies_detected']}")
+    print(f"    - Interesting strings: {stats['interesting_strings_found']}")
+    print(f"    - Source maps mapped: {stats['source_maps_discovered']}")
+
+    if args.tree and js_state:
+        print()
+        render_js_tree(js_state)
 
     if args.json:
-        print(json.dumps(intel, indent=2))
-    else:
-        print(f"[*] Discovered {len(intel['endpoints'])} potential endpoints/routes:")
-        for ep in intel["endpoints"]:
-            print(f"    - {ep}")
-        print(f"\n[*] Found {len(intel['interesting_indicators'])} potential indicators for manual review.")
-        print(f"[+] Intelligence saved to: {out_path}")
+        if js_state and os.path.isfile(js_state.js_file):
+            with open(js_state.js_file, "r", encoding="utf-8") as f:
+                print(f.read())
+        else:
+            print(json.dumps(stats, indent=2))
 
 
 if __name__ == "__main__":

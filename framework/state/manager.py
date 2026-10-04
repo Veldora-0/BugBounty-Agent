@@ -51,6 +51,7 @@ class StateManager:
         self.coverage_file = os.path.join(self.state_dir, "coverage.json")
         self.recon_file = os.path.join(self.state_dir, "recon.json")
         self.webapps_file = os.path.join(self.state_dir, "webapps.json")
+        self.javascript_file = os.path.join(self.state_dir, "javascript.json")
 
         self._init_files()
 
@@ -66,6 +67,7 @@ class StateManager:
             (self.coverage_file, DEFAULT_COVERAGE),
             (self.recon_file, {}),
             (self.webapps_file, {}),
+            (self.javascript_file, {}),
         ]:
             if not os.path.exists(filepath):
                 self._atomic_write_json(filepath, default_content)
@@ -372,3 +374,11 @@ class StateManager:
         """Returns a WebAppStateManager instance for this program."""
         from framework.webapp.state import WebAppStateManager
         return WebAppStateManager(self.program_dir)
+
+    # ---------------- JavaScript Intelligence State ----------------
+
+    def get_javascript_state(self) -> Any:
+        """Returns a JavaScriptStateManager instance for this program."""
+        from framework.javascript.state import JavaScriptStateManager
+        return JavaScriptStateManager(self.program_dir)
+
