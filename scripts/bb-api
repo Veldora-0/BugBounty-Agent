@@ -1,115 +1,220 @@
 #!/usr/bin/env python3
 """
-bb-api — Controlled API Analysis and Schema Prober.
+bb-api — BugBounty-Agent API Security & Parameter Intelligence Engine.
 
-Analyzes REST endpoints, GraphQL endpoints, and WebSocket surfaces.
-Enforces scope validation and safe parameter introspection.
+Discovers, normalizes, correlates, and catalogs API attack surfaces:
+- Multi-source correlation: Recon HTTP, WebApp endpoints, JavaScript endpoints
+- OpenAPI 2.0 (Swagger) and OpenAPI 3.x specification parsing
+- GraphQL endpoint identification and safe metadata observation
+- REST path parameter inference and parameter semantic role classification
+- Bounded request/response payload schemas
+- Atomic state persistence in ~/BugBounty-Workspace/programs/<name>/state/api.json
 """
 
+from __future__ import annotations
+
 import argparse
+from collections import defaultdict
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from framework.api.engine import ApiIntelligenceEngine, ApiPolicy
+from framework.api.graph import ApiRelationType
+from framework.api.model import ApiEndpoint, ApiParameter, ApiSpecification, ApiStyle
+from framework.api.state import ApiStateManager
 from framework.common.config import get_program_dir
-from framework.scope.engine import ScopeEngine, ScopeStatus
+from framework.javascript.state import JavaScriptStateManager
+from framework.recon.state import ReconStateManager
+from framework.scope.engine import ScopeEngine
+from framework.webapp.model import canonicalize_url
+from framework.webapp.state import WebAppStateManager
+import yaml
 
 
-def probe_http_methods(url: str, headers: dict) -> dict:
-    """Probes supported HTTP methods using OPTIONS and method testing."""
-    results = {}
-    for method in ["OPTIONS", "GET", "POST", "PUT", "DELETE", "PATCH"]:
-        req = urllib.request.Request(url, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                results[method] = {
-                    "status": resp.status,
-                    "allow": resp.headers.get("Allow", ""),
-                    "content_type": resp.headers.get("Content-Type", ""),
-                }
-        except urllib.error.HTTPError as e:
-            results[method] = {"status": e.code, "allow": e.headers.get("Allow", "")}
-        except Exception:
-            results[method] = {"status": None, "error": "timeout_or_refused"}
-    return results
+def render_api_tree(api_state: ApiStateManager, target_host: Optional[str] = None) -> None:
+    """Renders visual ASCII tree of API applications, endpoints, and parameters."""
+    print("\n==============================================================================")
+    print("                    API ATTACK SURFACE & PARAMETER TREE                       ")
+    print("==============================================================================")
+
+    # Group endpoints by host
+    hosts: Dict[str, Dict[str, List[ApiEndpoint]]] = defaultdict(lambda: defaultdict(list))
+    for ep in api_state.endpoints.values():
+        h = urlsplit(ep.canonical_url).hostname or "unknown-host"
+        if target_host and h != target_host and not h.endswith(f".{target_host}"):
+            continue
+        hosts[h][ep.api_style].append(ep)
+
+    if not hosts and not api_state.specifications:
+        print("[!] No API surfaces found matching criteria.")
+        return
+
+    # Collect specifications by host
+    specs_by_host: Dict[str, List[ApiSpecification]] = defaultdict(list)
+    for sp in api_state.specifications.values():
+        h = urlsplit(sp.url_or_path).hostname or "unknown-host"
+        specs_by_host[h].append(sp)
+
+    all_hosts = sorted(set(list(hosts.keys()) + list(specs_by_host.keys())))
+
+    for host in all_hosts:
+        print(f"\n{host}")
+        print("└── API")
+        styles = hosts.get(host, {})
+
+        # 1. REST Endpoints
+        rest_eps = sorted(styles.get(ApiStyle.REST.value, []), key=lambda x: x.path_template)
+        has_graphql = ApiStyle.GRAPHQL.value in styles
+        has_specs = host in specs_by_host
+
+        if rest_eps:
+            branch = "├──" if (has_graphql or has_specs) else "└──"
+            print(f"    {branch} REST ({len(rest_eps)} endpoints)")
+            for i, ep in enumerate(rest_eps):
+                is_last_ep = (i == len(rest_eps) - 1)
+                ep_branch = "└──" if is_last_ep else "├──"
+                pipe = "    " if (not has_graphql and not has_specs) else "│   "
+                print(f"    {pipe} {ep_branch} {ep.path_template}")
+
+                # Endpoint details
+                details_pipe = "    " if is_last_ep else "│   "
+                print(f"    {pipe} {details_pipe} ├── {ep.method}")
+
+                # Parameters
+                params = api_state.get_parameters_for_endpoint(ep.key)
+                if params:
+                    p_str = ", ".join([f"{p.name}:{p.location}" for p in params[:8]])
+                    if len(params) > 8:
+                        p_str += f" (+{len(params) - 8} more)"
+                    print(f"    {pipe} {details_pipe} ├── parameters: {p_str}")
+
+                # Auth requirement
+                auth_str = ep.auth_scheme or ("required" if ep.auth_required else "none")
+                print(f"    {pipe} {details_pipe} └── auth: {auth_str}")
+
+        # 2. GraphQL Endpoints
+        gql_eps = sorted(styles.get(ApiStyle.GRAPHQL.value, []), key=lambda x: x.canonical_url)
+        if gql_eps:
+            branch = "├──" if has_specs else "└──"
+            print(f"    {branch} GraphQL ({len(gql_eps)} services)")
+            for j, gep in enumerate(gql_eps):
+                is_last_g = (j == len(gql_eps) - 1)
+                g_branch = "└──" if is_last_g else "├──"
+                pipe = "    " if not has_specs else "│   "
+                print(f"    {pipe} {g_branch} {gep.path_template} [{gep.method}]")
+
+        # 3. Specifications
+        host_specs = specs_by_host.get(host, [])
+        if host_specs:
+            print("    └── specifications")
+            for k, sp in enumerate(host_specs):
+                is_last_sp = (k == len(host_specs) - 1)
+                sp_branch = "└──" if is_last_sp else "├──"
+                print(f"        {sp_branch} {sp.url_or_path} ({sp.format} v{sp.version or '?'}, {sp.endpoint_count} operations)")
+
+    print("\n==============================================================================")
+    print(f"Total: {len(api_state.applications)} Applications | {len(api_state.endpoints)} Endpoints | {len(api_state.parameters)} Parameters | {len(api_state.specifications)} Specs")
+    print("==============================================================================\n")
 
 
-def probe_graphql_introspection(url: str, headers: dict) -> dict:
-    """Safe, non-destructive check for enabled GraphQL introspection query."""
-    body = json.dumps({"query": "{ __schema { types { name } } }"}).encode("utf-8")
-    graphql_headers = dict(headers)
-    graphql_headers["Content-Type"] = "application/json"
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="bb-api",
+        description="BugBounty-Agent API Security & Parameter Intelligence Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bb-api --program acme-corp --tree
+  bb-api --program acme-corp --domain api.example.com --tree
+  bb-api --program acme-corp --spec https://api.example.com/openapi.json
+  bb-api --program acme-corp --graphql --json
+  bb-api --program acme-corp --passive-only --dry-run
+        """,
+    )
 
-    req = urllib.request.Request(url, data=body, headers=graphql_headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = resp.read().decode("utf-8", errors="replace")
-            is_intro_enabled = "__schema" in data
-            return {
-                "introspection_enabled": is_intro_enabled,
-                "status": resp.status,
-                "response_sample": data[:500],
-            }
-    except Exception as e:
-        return {"introspection_enabled": False, "error": str(e)}
+    parser.add_argument("-p", "--program", help="Program name in local workspace")
+    parser.add_argument("-s", "--scope", help="Path to scope.yaml definition")
+    parser.add_argument("-d", "--domain", help="Target apex root domain to filter API resources")
+    parser.add_argument("-a", "--asset", help="Specific host or application URL to filter API resources")
+    parser.add_argument("-e", "--endpoint", help="Specific API endpoint URL to analyze directly")
+    parser.add_argument("--spec", help="Path or URL to an OpenAPI/Swagger specification to ingest")
+    parser.add_argument("--graphql", action="store_true", help="Filter and highlight GraphQL surfaces")
+    parser.add_argument("--max-endpoints", type=int, default=500, help="Maximum endpoints to catalog (default: 500)")
+    parser.add_argument("--max-requests", type=int, default=200, help="Safety ceiling on active HTTP requests (default: 200)")
+    parser.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024, help="Total acquisition byte ceiling (default: 10MB)")
+    parser.add_argument("--passive-only", action="store_true", help="Analyze existing state without issuing active HTTP requests")
+    parser.add_argument("--correlate-js", dest="correlate_js", action="store_true", default=True, help="Correlate Phase 4 JavaScript endpoints (default: True)")
+    parser.add_argument("--no-correlate-js", dest="correlate_js", action="store_false", help="Disable Phase 4 JavaScript correlation")
+    parser.add_argument("--tree", action="store_true", help="Render visual ASCII API attack surface tree")
+    parser.add_argument("--json", action="store_true", help="Output full API intelligence state in JSON")
+    parser.add_argument("--dry-run", action="store_true", help="Perform evaluation without persisting results to program state")
+    parser.add_argument("--resume", action="store_true", help="Skip endpoints already analyzed in previous runs")
 
-
-def main():
-    parser = argparse.ArgumentParser(description="Analyze REST and GraphQL APIs with scope enforcement.")
-    parser.add_argument("url", help="API Endpoint URL to inspect")
-    parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
-    parser.add_argument("--graphql", action="store_true", help="Probe for GraphQL introspection")
-    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
     args = parser.parse_args()
 
-    prog_dir = get_program_dir(args.program)
-    scope_file = os.path.join(prog_dir, "scope", "scope.yaml")
-    if not os.path.isfile(scope_file):
-        print(f"[!] Error: Scope configuration not found: {scope_file}", file=sys.stderr)
-        sys.exit(2)
+    # Determine program workspace directory
+    program_dir = get_program_dir(args.program) if args.program else os.getcwd()
+    scope_path = args.scope or os.path.join(program_dir, "scope", "scope.yaml")
 
-    engine = ScopeEngine.from_file(scope_file)
-    decision = engine.check(args.url)
-    if decision.status != ScopeStatus.IN_SCOPE:
-        print(f"[!] REFUSING ANALYSIS: Endpoint '{args.url}' is OUT OF SCOPE: {decision.reason}", file=sys.stderr)
-        sys.exit(1)
+    scope_engine = None
+    if os.path.exists(scope_path):
+        try:
+            with open(scope_path, "r", encoding="utf-8") as f:
+                scope_data = yaml.safe_load(f) or {}
+            scope_engine = ScopeEngine(scope_data)
+        except Exception:
+            pass
 
-    headers = {"User-Agent": "BugBounty-Agent/1.0 (API Review)"}
-    print(f"[*] Analyzing API endpoint: {args.url}")
+    # Initialize State Managers
+    api_state = ApiStateManager(program_dir=program_dir)
+    webapp_state = WebAppStateManager(program_dir=program_dir) if os.path.exists(os.path.join(program_dir, "state", "webapps.json")) else None
+    recon_state = ReconStateManager(program_dir=program_dir) if os.path.exists(os.path.join(program_dir, "state", "recon.json")) else None
+    js_state = JavaScriptStateManager(program_dir=program_dir) if os.path.exists(os.path.join(program_dir, "state", "javascript.json")) else None
 
-    methods_res = probe_http_methods(args.url, headers)
-    graphql_res = None
-    if args.graphql or "graphql" in args.url.lower():
-        graphql_res = probe_graphql_introspection(args.url, headers)
+    policy = ApiPolicy(
+        max_endpoints=args.max_endpoints,
+        max_requests=args.max_requests,
+        max_bytes=args.max_bytes,
+        passive_only=args.passive_only,
+        correlate_js=args.correlate_js,
+    )
 
-    result_data = {
-        "url": args.url,
-        "methods": methods_res,
-        "graphql": graphql_res,
-    }
+    engine = ApiIntelligenceEngine(
+        scope_engine=scope_engine,
+        api_state=api_state,
+        webapp_state=webapp_state,
+        recon_state=recon_state,
+        js_state=js_state,
+        policy=policy,
+        dry_run=args.dry_run,
+    )
 
-    # Save to program api/ directory
-    out_file = os.path.join(prog_dir, "api", f"api_probe_{os.path.basename(args.url.rstrip('/'))}.json")
-    with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(result_data, f, indent=2)
+    # Execute Analysis
+    if not (args.tree and not (args.spec or args.domain or args.asset or args.endpoint)):
+        stats = engine.run_analysis(
+            domain=args.domain,
+            asset=args.asset,
+            spec_path=args.spec,
+            resume=args.resume,
+        )
 
+    # Output Presentation
     if args.json:
-        print(json.dumps(result_data, indent=2))
-    else:
-        print("[*] HTTP Method Responses:")
-        for m, data in methods_res.items():
-            allow_header = data.get("allow")
-            allow_str = f" (Allow: {allow_header})" if allow_header else ""
-            print(f"    - {m:<8}: status {data.get('status')}{allow_str}")
-        if graphql_res:
-            print(f"[*] GraphQL Introspection: {'ENABLED (Informational/Attack Surface)' if graphql_res.get('introspection_enabled') else 'Disabled / Inaccessible'}")
-        print(f"[+] Results written to: {out_file}")
+        if os.path.exists(api_state.api_file):
+            with open(api_state.api_file, "r", encoding="utf-8") as f:
+                print(f.read())
+        else:
+            print(json.dumps({"endpoints": [], "parameters": [], "specifications": []}, indent=2))
+    elif args.tree or not (args.json):
+        target_h = args.asset or args.domain
+        render_api_tree(api_state, target_host=target_h)
 
 
 if __name__ == "__main__":

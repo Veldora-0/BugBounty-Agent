@@ -291,6 +291,26 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_api_engine(self) -> Dict[str, Any]:
+        """Category 14: API Security & Parameter Intelligence Engine verification."""
+        try:
+            from framework.api.engine import ApiIntelligenceEngine
+            from framework.api.model import ApiEndpoint, ApiParameter
+            from framework.api.parser import infer_path_parameters, classify_parameter_role
+
+            tmpl, params = infer_path_parameters("https://example.com/api/v1/users/12345")
+            role = classify_parameter_role("user_id")
+            engine = ApiIntelligenceEngine()
+            healthy = (
+                ("{user_id}" in tmpl or "{id}" in tmpl)
+                and len(params) == 1
+                and role == "user_id"
+                and engine.policy.max_endpoints > 0
+            )
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -306,5 +326,6 @@ class SystemDoctor:
             "recon_engine": self.check_recon_engine(),
             "webapp_engine": self.check_webapp_engine(),
             "javascript_engine": self.check_javascript_engine(),
+            "api_engine": self.check_api_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }

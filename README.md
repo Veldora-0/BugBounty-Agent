@@ -415,6 +415,38 @@ The **JavaScript Intelligence Engine** (`framework/javascript/` & `scripts/bb-js
 
 ---
 
+## Phase 5: API Security & Parameter Intelligence Engine
+
+The **API Security & Parameter Intelligence Engine** (`framework/api/` & `scripts/bb-api`) transforms multi-source observations into an authoritative, normalized API attack surface model:
+
+* **Multi-Source Intelligence Correlation**: Correlates API endpoints across Phase 2 HTTP reconnaissance, Phase 3 web crawling, Phase 4 JavaScript bundle analysis, and authoritative API specifications into unified endpoint entities with rich multi-source provenance.
+* **OpenAPI 2.0 & 3.x Specification Ingestion**: Safely parses OpenAPI 2.0 (Swagger) and OpenAPI 3.x specifications in JSON and YAML formats. Extracts servers/base paths, operations, query/path/header/cookie/body parameters, request bodies, response schemas, and authentication schemes (`basic`, `bearer`, `api-key`, `oauth2`, `openid-connect`).
+* **REST Intelligence & Path Parameter Inference**: Recognizes and normalizes REST path parameter patterns (`/api/v1/users/123` $\longrightarrow$ `/api/v1/users/{user_id}`, `/api/orders/<uuid>` $\longrightarrow$ `/api/orders/{order_id}`), preserving concrete observed URLs alongside generalized route templates.
+* **GraphQL Intelligence**: Automatically detects GraphQL endpoints and operations from URLs, content types, and script bodies. Supports controlled, safe schema introspection checks under strict request limits.
+* **Parameter Intelligence & Semantic Classification**: Unifies parameters across query strings, path templates, forms, request payloads, and client scripts. Classifies semantic roles (`user_id`, `account_id`, `resource_id`, `redirect`, `callback`, `search`, `filter`, `sort`, `page`, `limit`, `token`, `session`, `file`).
+* **Bounded Schema Representations**: Builds bounded structural models of request and response payloads, enforcing maximum depth and field limits to prevent recursion and memory exhaustion.
+* **Integrated API Graph**: Direct semantic graph relationships (`WebApplication` $\longrightarrow$ `ApiApplication` $\longrightarrow$ `ApiEndpoint` $\longrightarrow$ `ApiParameter`, `ApiSpecification` $\longrightarrow$ `ApiEndpoint`, `JavaScriptResource` $\longrightarrow$ `ApiEndpoint`).
+* **Atomic State Persistence**: Writes observations atomically to `~/BugBounty-Workspace/programs/<name>/state/api.json`. Supports incremental and resumable execution (`--resume`).
+* **CLI Utility**:
+  ```bash
+  # Render visual ASCII API attack surface tree for a program workspace
+  ./scripts/bb-api --program acme-corp --tree
+
+  # Target a specific domain or host
+  ./scripts/bb-api --program acme-corp --domain api.example.com --tree
+
+  # Ingest and parse an OpenAPI / Swagger specification
+  ./scripts/bb-api --program acme-corp --spec https://api.example.com/openapi.json
+
+  # Filter and inspect GraphQL services
+  ./scripts/bb-api --program acme-corp --graphql --json
+
+  # Passive analysis only using existing observations
+  ./scripts/bb-api --program acme-corp --passive-only
+  ```
+
+---
+
 ## OpenCode V2 Runtime & Security Architecture
 
 BugBounty-Agent is architected natively for **OpenCode V2** on Kali/Linux research workstations.
@@ -440,6 +472,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | **Nuclei Scanning** | `shell` | `*bb-nuclei*`, `nuclei *` | `ask` | Human confirmation required before vulnerability scanning |
 | **Web App Crawling** | `shell` | `*bb-webapp*`, `katana *` | `ask` | Human confirmation required before crawling web applications |
 | **JavaScript Analysis** | `shell` | `*bb-js*` | `ask` | Human confirmation required before running JavaScript endpoint extraction |
+| **API Intelligence** | `shell` | `*bb-api*` | `ask` | Human confirmation required before probing API specifications or endpoints |
 | **Tool Installation** | `shell` | `*bb-install*` | `ask` | Human confirmation required before modifying system tools |
 | **Tool Updates** | `shell` | `*bb-update*` | `ask` | Human confirmation required before updating system tools |
 | **Remote Git Push** | `shell` | `git push *` | `ask` | Confirmation required before modifying remote repository |
