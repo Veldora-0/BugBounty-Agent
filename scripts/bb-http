@@ -1,124 +1,238 @@
 #!/usr/bin/env python3
 """
-bb-http — Controlled, scope-enforcing HTTP client with automatic evidence capture.
+bb-http — BugBounty-Agent HTTP / Header Trust & Protocol Security Engine.
 
-Never fires a request without verifying that the target URL is IN_SCOPE.
-Sanitizes credentials and captures request/response transactions for reproducible evidence.
+Provides hypothesis-driven validation for Host header injection,
+X-Forwarded-Host/Forwarded proxy trust, scheme trust, CORS trust boundaries,
+HTTP Parameter Pollution (HPP), and cache-poisoning foundations.
 """
 
+from __future__ import annotations
+
 import argparse
+from collections import defaultdict
 import json
 import os
 import sys
-import time
-import urllib.error
-import urllib.request
-import urllib.parse
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+import uuid
 
 REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from framework.common.config import get_program_dir
-from framework.common.evidence import EvidenceStore
-from framework.scope.engine import ScopeEngine, ScopeStatus
+from framework.http_trust.approval import HumanApprovalGate
+from framework.http_trust.engine import HttpTrustEngine
+from framework.http_trust.lab import LocalHttpTrustLab
+from framework.http_trust.model import (
+    HeaderTrustCandidate,
+    HttpTrustCategory,
+    HttpTrustConfidence,
+    TrustClassification,
+    TrustSource,
+)
+from framework.http_trust.prioritization import HttpTrustPrioritizer
+from framework.http_trust.state import HttpTrustStateManager
+from framework.scope.engine import ScopeEngine
+from framework.validation.policy import SecurityTestPolicy
+
+
+def render_http_trust_tree(summary_data: Dict[str, Any], candidates: List[HeaderTrustCandidate], program_name: str) -> None:
+    """Renders visual ASCII tree of ranked HTTP trust candidates, planned tests, and findings."""
+    print("\n==============================================================================")
+    print("                    HTTP / HEADER TRUST & PROTOCOL SECURITY TREE              ")
+    print("==============================================================================")
+
+    state = summary_data.get("summary", {})
+    by_cat = state.get("by_category", {})
+    by_life = state.get("by_lifecycle", {})
+
+    print(f"\n[*] Program:              {program_name}")
+    print(f"[*] Total Candidates:     {state.get('total_candidates', len(candidates))}")
+    print(f"[*] Tested Candidates:    {state.get('tested_candidates', 0)}")
+    print(f"[*] Verified Findings:    {state.get('findings_recorded', 0)}")
+    print(f"[*] Categories:           Host: {by_cat.get('host', 0)} | Fwd: {by_cat.get('forwarded', 0)} | Scheme: {by_cat.get('scheme', 0)} | CORS: {by_cat.get('cors', 0)} | HPP: {by_cat.get('hpp', 0)} | Cache: {by_cat.get('cache', 0)}")
+    print(f"[*] Lifecycles:           Candidate: {by_life.get('CANDIDATE', 0)} | Observed: {by_life.get('OBSERVED', 0)} | Validated: {by_life.get('VALIDATED', 0)} | Rejected: {by_life.get('REJECTED', 0)}")
+
+    if not candidates:
+        print("\n[*] No HTTP trust candidates recorded in current state.")
+        print("==============================================================================\n")
+        return
+
+    # Group by category
+    grouped: Dict[str, List[HeaderTrustCandidate]] = defaultdict(list)
+    for c in candidates:
+        grouped[c.category.value].append(c)
+
+    for cat_name, cat_list in sorted(grouped.items()):
+        print(f"\n[+] CATEGORY: {cat_name.upper()} ({len(cat_list)} candidates)")
+        sorted_list = sorted(cat_list, key=lambda x: -x.priority)
+        for c in sorted_list[:20]:
+            print(f"    - [Priority {c.priority:2d}] [{c.lifecycle.value}] [{c.confidence.value}] {c.method} {c.endpoint} (header: '{c.header_name}')")
+            print(f"        Trust Class: {c.trust_classification.value} | Source: {c.trust_source.value}")
+            if c.observed_behavior:
+                print(f"        Behavior: {c.observed_behavior}")
+            if c.evidence_references:
+                print(f"        Evidence: {', '.join(c.evidence_references)}")
+
+    print("\n==============================================================================")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Scope-enforced HTTP client with evidence logging.")
-    parser.add_argument("url", help="Target URL to request")
-    parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
-    parser.add_argument("--method", "-m", default="GET", choices=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"])
-    parser.add_argument("--header", "-H", action="append", default=[], help="Header in 'Name: Value' format")
-    parser.add_argument("--data", "-d", help="HTTP request body data")
-    parser.add_argument("--timeout", type=int, default=15, help="Timeout in seconds (default 15)")
-    parser.add_argument("--no-evidence", action="store_true", help="Skip saving evidence capture")
-    parser.add_argument("--json", action="store_true", help="Output result as JSON")
+    parser = argparse.ArgumentParser(
+        prog="bb-http",
+        description="BugBounty-Agent HTTP / Header Trust & Protocol Security Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Passive discovery and ranking
+  bb-http --program acme-corp --passive-only --tree
+
+  # Test endpoint with dry-run
+  bb-http --program acme-corp -e "https://app.example.com/login" --category host --dry-run
+
+  # Local security lab validation
+  bb-http --lab --tree
+  bb-http --lab -e "http://lab.local/auth/forgot-password" --approve
+  bb-http --lab -e "http://lab.local/api/user/profile" --cors --approve
+        """,
+    )
+
+    parser.add_argument("-p", "--program", default="default", help="Target program name in workspace")
+    parser.add_argument("-s", "--scope", default="scope.yaml", help="Path to scope.yaml file")
+    parser.add_argument("-d", "--domain", help="Filter target domain")
+    parser.add_argument("-a", "--asset", help="Filter target asset hostname")
+    parser.add_argument("-e", "--endpoint", help="Target endpoint URL to analyze or test")
+    parser.add_argument("--header", help="Specific header name to test (e.g. Host, X-Forwarded-Host, Origin)")
+    parser.add_argument("--category", choices=["host", "forwarded", "scheme", "redirect", "url_poisoning", "cors", "hpp", "cache", "all"], default="all", help="Test category filter")
+    parser.add_argument("--host", dest="cat_host", action="store_true", help="Filter to Host Header Injection")
+    parser.add_argument("--forwarded", dest="cat_fwd", action="store_true", help="Filter to Forwarded proxy trust")
+    parser.add_argument("--cors", dest="cat_cors", action="store_true", help="Filter to CORS trust boundary testing")
+    parser.add_argument("--hpp", dest="cat_hpp", action="store_true", help="Filter to HTTP Parameter Pollution")
+    parser.add_argument("--cache", dest="cat_cache", action="store_true", help="Filter to cache behavior analysis")
+    parser.add_argument("--min-priority", type=int, default=0, help="Minimum priority score threshold (0-100)")
+    parser.add_argument("--max-tests", type=int, default=50, help="Maximum number of test cases to execute")
+    parser.add_argument("--max-requests", type=int, default=100, help="Maximum HTTP requests budget")
+    parser.add_argument("--max-bytes", type=int, default=1048576, help="Maximum response byte limit")
+    parser.add_argument("--timeout", type=float, default=10.0, help="HTTP request timeout in seconds")
+    parser.add_argument("--passive-only", action="store_true", help="Rank candidates passively without sending network probes")
+    parser.add_argument("--dry-run", action="store_true", help="Plan test cases without sending network probes or modifying state")
+    parser.add_argument("--resume", action="store_true", default=True, help="Skip previously tested fingerprints")
+    parser.add_argument("--approve", action="store_true", help="Authorize execution of planned non-destructive probes")
+    parser.add_argument("--dossier", action="store_true", help="Render human review audit dossier for target candidate")
+    parser.add_argument("--lab", action="store_true", help="Run against deterministic local security lab scenarios")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    parser.add_argument("--tree", action="store_true", help="Render ASCII tree view of candidates and findings")
+
     args = parser.parse_args()
 
-    prog_dir = get_program_dir(args.program)
-    scope_file = os.path.join(prog_dir, "scope", "scope.yaml")
-    if not os.path.isfile(scope_file):
-        print(f"[!] Error: Scope configuration not found: {scope_file}", file=sys.stderr)
-        sys.exit(2)
+    # Category resolution
+    active_cat = args.category
+    if args.cat_host:
+        active_cat = "host"
+    elif args.cat_fwd:
+        active_cat = "forwarded"
+    elif args.cat_cors:
+        active_cat = "cors"
+    elif args.cat_hpp:
+        active_cat = "hpp"
+    elif args.cat_cache:
+        active_cat = "cache"
 
-    engine = ScopeEngine.from_file(scope_file)
-
-    # 1. SCOPE VERIFICATION (Mandatory before network interaction)
-    decision = engine.check(args.url)
-    if decision.status != ScopeStatus.IN_SCOPE:
-        print(f"[!] REFUSING REQUEST: Target '{args.url}' is NOT in scope!", file=sys.stderr)
-        print(f"[!] Reason: {decision.reason} ({decision.status.value})", file=sys.stderr)
-        sys.exit(1)
-
-    # 2. BUILD REQUEST
-    headers = {
-        "User-Agent": "BugBounty-Agent/1.0 (Authorized Security Research)",
-    }
-    for h in args.header:
-        if ":" in h:
-            k, v = h.split(":", 1)
-            headers[k.strip()] = v.strip()
-
-    data_bytes = args.data.encode("utf-8") if args.data else None
-    req = urllib.request.Request(args.url, data=data_bytes, headers=headers, method=args.method)
-
-    raw_req_headers = "\n".join(f"{k}: {v}" for k, v in headers.items())
-    raw_req = f"{args.method} {args.url} HTTP/1.1\n{raw_req_headers}\n\n{args.data or ''}"
-
-    # 3. EXECUTE REQUEST
-    status_code = None
-    response_body = ""
-    response_headers = ""
-    error_msg = None
-    start_time = time.time()
-
-    try:
-        with urllib.request.urlopen(req, timeout=args.timeout) as resp:
-            status_code = resp.status
-            response_body = resp.read().decode("utf-8", errors="replace")
-            response_headers = str(resp.headers)
-    except urllib.error.HTTPError as e:
-        status_code = e.code
-        response_body = e.read().decode("utf-8", errors="replace")
-        response_headers = str(e.headers)
-    except Exception as e:
-        error_msg = str(e)
-
-    elapsed_ms = int((time.time() - start_time) * 1000)
-    raw_res = f"HTTP/1.1 {status_code}\n{response_headers}\n\n{response_body}" if status_code else f"Error: {error_msg}"
-
-    # 4. CAPTURE EVIDENCE
-    evidence_id = None
-    if not args.no_evidence:
-        ev_dir = os.path.join(prog_dir, "evidence")
-        store = EvidenceStore(ev_dir)
-        ev_record = store.save_http_capture(
-            raw_req,
-            raw_res,
-            metadata={"target_url": args.url, "method": args.method, "status_code": status_code},
-        )
-        evidence_id = ev_record["evidence_id"]
-
-    # 5. OUTPUT
-    if args.json:
-        result = {
-            "url": args.url,
-            "method": args.method,
-            "status_code": status_code,
-            "elapsed_ms": elapsed_ms,
-            "error": error_msg,
-            "evidence_id": evidence_id,
-            "body": response_body[:2000],  # preview
-        }
-        print(json.dumps(result, indent=2))
+    # Program directory setup
+    if args.lab:
+        program_dir = get_program_dir("local-lab")
+        program_name = "local-lab"
+        scope_engine = ScopeEngine({
+            "program": {"name": "local-lab"},
+            "targets": {
+                "domains": ["lab.local", "*.local", "localhost", "127.0.0.1"],
+                "urls": ["http://lab.local/", "https://lab.local/"],
+            },
+        })
     else:
-        print(f"[*] {args.method} {args.url} -> {status_code} ({elapsed_ms}ms)")
-        if evidence_id:
-            print(f"[+] Evidence preserved: {evidence_id}")
-        if response_body:
-            print("\n--- Response Body Preview ---")
-            print(response_body[:1000])
+        program_dir = get_program_dir(args.program)
+        program_name = args.program
+        scope_path = os.path.join(program_dir, args.scope)
+        scope_engine = ScopeEngine.from_file(scope_path) if os.path.isfile(scope_path) else ScopeEngine({"targets": {"domains": ["*"], "urls": ["*"]}})
+
+    # Lab Hook
+    send_hook = None
+    if args.lab:
+        lab = LocalHttpTrustLab()
+        send_hook = lab.handle_request
+
+    # Security Test Policy
+    policy = SecurityTestPolicy(
+        max_requests_per_test=args.max_requests,
+        max_response_bytes=args.max_bytes,
+        timeout=args.timeout,
+    )
+
+    # Initialize Engine
+    engine = HttpTrustEngine(
+        program_dir=program_dir,
+        scope_engine=scope_engine,
+        policy=policy,
+        send_request_hook=send_hook,
+        auto_approve=args.approve,
+        lab_mode=args.lab,
+    )
+
+    # If single endpoint is given directly and not yet in candidates, synthesize candidate
+    if args.endpoint:
+        hdr_to_use = args.header or ("Origin" if active_cat == "cors" else "Host")
+        parsed_ep = urlparse(args.endpoint)
+        score, reasons, sev, _ = HttpTrustPrioritizer.evaluate(hdr_to_use, args.endpoint, active_cat)
+        cand = HeaderTrustCandidate(
+            candidate_id=f"htc-cli-{uuid.uuid4().hex[:8]}",
+            header_name=hdr_to_use,
+            endpoint=args.endpoint,
+            application=parsed_ep.netloc or "lab.local",
+            category=active_cat if active_cat != "all" else "host",
+            priority=score,
+            severity=sev,
+            provenance={"reasons": reasons},
+        )
+        if args.dossier:
+            gate = HumanApprovalGate()
+            print(gate.generate_dossier(cand))
+            sys.exit(0)
+
+        engine.state_mgr.save_candidate(cand)
+
+    # Pipeline Execution
+    result = engine.run_pipeline(
+        endpoint_filter=args.endpoint,
+        header_filter=args.header,
+        category_filter=active_cat,
+        min_priority=args.min_priority,
+        passive_only=args.passive_only,
+        dry_run=args.dry_run,
+        resume=args.resume,
+        max_tests=args.max_tests,
+    )
+
+    # Output Rendering
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
+
+    all_cands = engine.state_mgr.list_candidates()
+    state = engine.state_mgr.load_state()
+
+    if args.tree or not args.endpoint:
+        render_http_trust_tree(state, all_cands, program_name)
+    else:
+        print(f"\n[+] Executed {result.get('tests_executed', 0)} HTTP trust test cases")
+        for r in result.get("results", []):
+            print(f"    - [{r.get('result')}] [{r.get('confidence')}] {r.get('endpoint')} (header: '{r.get('header')}')")
+            print(f"        Category: {r.get('category')} | Signals: {', '.join(r.get('signals', []))}")
+            if r.get("summary"):
+                print(f"        -> {r.get('summary')}")
+        print()
 
 
 if __name__ == "__main__":

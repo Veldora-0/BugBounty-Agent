@@ -134,3 +134,21 @@ Specialized subsystem for comprehensive, non-destructive Cross-Site Scripting an
   bb-xss --program acme-corp --passive-only --json
   bb-xss --program acme-corp --dry-run
   ```
+
+---
+
+## 10. Phase 11: HTTP / Header Trust & Protocol Security (`bb-http`)
+Specialized subsystem for bounded HTTP metadata and header trust validation:
+* **Host Header Injection**: Validates whether server-generated URLs (password reset, invitations, verification links) or redirects trust user-supplied `Host`.
+* **Reverse Proxy Trust**: Probes whether `X-Forwarded-Host`, `X-Original-Host`, or `Forwarded` override the host boundary.
+* **CORS Trust Analysis**: Differentiates public wildcard APIs from high-risk reflected origins with credentials allowed.
+* **HTTP Parameter Pollution**: Characterizes query/form parser precedence (`FIRST_VALUE`, `LAST_VALUE`, `ARRAY`).
+* **Cache-Poisoning Foundation**: Models unkeyed header hypotheses without polluting shared production caches.
+* **State File**: `~/BugBounty-Workspace/programs/<program>/state/http-trust.json`
+* **CLI Tool**: `bb-http`
+  ```bash
+  bb-http --program acme-corp --tree
+  bb-http --program acme-corp -e "https://app.example.com/login" --category host --dry-run
+  bb-http --lab --tree
+  bb-http --lab -e "http://lab.local/auth/forgot-password" --approve
+  ```

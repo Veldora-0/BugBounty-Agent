@@ -96,3 +96,34 @@ bb-webapp --program <program-name> --json
 3. **No Vulnerability Exploitation**: Phase 3 is strictly mapping and intelligence gathering. Forms are **never automatically submitted**, inputs are never fuzzed, and application state is never mutated.
 4. **Deterministic Normalization**: All URLs are canonicalized via `canonicalize_url()` (default ports stripped, path traversal resolved, fragments removed, query parameters sorted deterministically).
 5. **Atomic State Persistence**: Stored in `~/BugBounty-Workspace/programs/<name>/state/webapps.json` using atomic temporary file swaps (`_atomic_write_json`).
+
+---
+
+## 5. HTTP / Header Trust & Protocol Security (Phase 11)
+
+Header manipulation alone is never a finding. Phase 11 analyzes whether user-supplied metadata in headers is trusted by the server/proxy to produce a security-sensitive effect:
+
+```
+header manipulation → server/proxy trust → security-sensitive effect → proof → finding
+```
+
+### Key Capabilities & Vectors (`bb-http`)
+* **Host Header Injection**: Tests whether `Host` controls password-reset URLs, invitation links, activation tokens, or OpenGraph URLs.
+* **Proxy / Forwarded Trust**: Tests whether reverse-proxy headers (`X-Forwarded-Host`, `X-Original-Host`, `Forwarded`) take precedence over `Host`.
+* **Scheme Trust**: Validates `X-Forwarded-Proto` and `X-Forwarded-Port` for scheme downgrade or insecure link generation.
+* **Redirect Host Poisoning**: Evaluates whether `Location` redirect targets are poisoned to point to the researcher canary domain (`bb11-<program>-<id>.researcher-controlled.example`).
+* **CORS Trust Boundaries**: Distinguishes public wildcard CORS (`*` without creds) from dangerous reflected origin with `Access-Control-Allow-Credentials: true`.
+* **HTTP Parameter Pollution (HPP)**: Evaluates backend parser precedence (`FIRST_VALUE`, `LAST_VALUE`, `ARRAY`) when duplicate parameters are supplied.
+* **Cache-Poisoning Foundation**: Inspects caching headers (`Cache-Control`, `X-Cache`, `Age`) and detects unkeyed header variations without aggressive shared-cache poisoning (`MANUAL_REVIEW_REQUIRED` for production safety).
+
+```bash
+# Run passive analysis and render ranked candidate tree
+bb-http --program <program-name> --passive-only --tree
+
+# Dry-run validation plan on target endpoint
+bb-http --program <program-name> -e "https://app.example.com/login" --category host --dry-run
+
+# Local deterministic security lab testing
+bb-http --lab --tree
+bb-http --lab -e "http://lab.local/auth/forgot-password" --approve
+```

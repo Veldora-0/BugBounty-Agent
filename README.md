@@ -67,6 +67,7 @@ BugBounty-Agent/
 │   ├── authz/                 # Authorization intelligence, BOLA/IDOR baseline validation, human approval gate
 │   ├── ssrf/                  # SSRF intelligence, out-of-band canary correlation, blind verification
 │   ├── injection/             # Injection intelligence, prioritization, SQLi/NoSQLi/SSTI/Command validators
+│   ├── http_trust/            # HTTP / Header trust intelligence, Host injection, CORS, HPP, cache foundation
 │   ├── tools/                 # Tool registry, installer, doctor, deployer
 │   └── common/                # Evidence store, sanitization, tool detection, config
 │
@@ -74,12 +75,12 @@ BugBounty-Agent/
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
-│   ├── bb-doctor              # Diagnostics utility across 19 system categories
+│   ├── bb-doctor              # Diagnostics utility across 20 system categories
 │   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
 │   ├── bb-recon               # Controlled recon (subfinder, assetfinder, httpx)
-│   ├── bb-http                # Rate-limited HTTP client with evidence logging
+│   ├── bb-http                # HTTP / Header Trust & Protocol Security validation engine
 │   ├── bb-content             # Controlled content fuzzer wrapper (ffuf)
 │   ├── bb-js                  # JavaScript endpoint & secret analyzer
 │   ├── bb-api                 # REST/GraphQL API method and schema prober

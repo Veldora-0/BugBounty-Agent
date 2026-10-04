@@ -479,6 +479,55 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_http_trust_engine(self) -> Dict[str, Any]:
+        """Category 20: HTTP / Header Trust & Protocol Security Subsystem."""
+        try:
+            from framework.http_trust.model import (
+                HeaderTrustCandidate,
+                HttpTrustCategory,
+                TrustClassification,
+                generate_canary_host,
+            )
+            from framework.http_trust.prioritization import HttpTrustPrioritizer
+            from framework.http_trust.comparator import HttpTrustComparator
+            from framework.validation.request import ControlledResponse
+
+            canary = generate_canary_host("lab", "test01", lab_mode=True)
+            score, reasons, sev, wf = HttpTrustPrioritizer.evaluate(
+                "Host",
+                "https://lab.local/auth/forgot-password",
+                HttpTrustCategory.HOST_INJECTION,
+            )
+
+            cand = HeaderTrustCandidate(
+                candidate_id="doc-http-01",
+                header_name="Host",
+                endpoint="https://lab.local/auth/forgot-password",
+                application="lab.local",
+                category=HttpTrustCategory.HOST_INJECTION,
+                priority=score,
+            )
+
+            base = ControlledResponse(status_code=200, headers={}, body_text="<a href='https://lab.local/reset?tok=1'>Reset</a>")
+            test = ControlledResponse(status_code=200, headers={}, body_text=f"<a href='https://{canary}/reset?tok=1'>Reset</a>")
+            comp = HttpTrustComparator.compare(
+                HttpTrustCategory.HOST_INJECTION,
+                "Host",
+                canary,
+                base,
+                test,
+            )
+
+            healthy = (
+                score >= 70
+                and "researcher-controlled.example" in canary
+                and comp.is_validated
+                and cand.compute_fingerprint() is not None
+            )
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -500,6 +549,7 @@ class SystemDoctor:
             "authz_engine": self.check_authz_engine(),
             "ssrf_engine": self.check_ssrf_engine(),
             "injection_engine": self.check_injection_engine(),
+            "http_trust_engine": self.check_http_trust_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }
 

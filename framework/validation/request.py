@@ -143,12 +143,18 @@ class ControlledResponse:
         self.elapsed_seconds = float(elapsed_seconds)
         self.final_url = final_url
         self.redirect_history = list(redirect_history or [])
+        if "body_text" in kwargs:
+            self.body = str(kwargs.pop("body_text"))
         for k, v in kwargs.items():
             setattr(self, k, v)
 
     @property
     def body_text(self) -> str:
         return self.body
+
+    @body_text.setter
+    def body_text(self, val: str) -> None:
+        self.body = str(val or "")
 
     @property
     def content_type(self) -> str:
