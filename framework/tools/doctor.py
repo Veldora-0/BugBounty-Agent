@@ -528,6 +528,54 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_business_logic_engine(self) -> Dict[str, Any]:
+        """Category 21: Business Logic & Workflow Intelligence Subsystem."""
+        try:
+            from framework.business_logic.model import (
+                BusinessLogicCategory,
+                InvariantStatus,
+                Workflow,
+                WorkflowStep,
+            )
+            from framework.business_logic.invariants import BusinessLogicInvariantEngine
+            from framework.validation.request import ControlledResponse
+
+            base = ControlledResponse(status_code=400, body_text='{"error": "REQUIRES_AUTH"}')
+            test = ControlledResponse(status_code=200, body_text='{"status": "SUCCESS", "captured": true}')
+
+            status, details, signals = BusinessLogicInvariantEngine.evaluate_invariant(
+                category=BusinessLogicCategory.STEP_SKIPPING,
+                rule_name="Prerequisite Enforcement",
+                baseline_resp=base,
+                test_resp=test,
+            )
+            healthy = (status == InvariantStatus.INVARIANT_VIOLATED and "STEP_SKIPPING_PERMITTED" in signals)
+            return {"status": "HEALTHY" if healthy else "ERROR", "healthy": healthy}
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
+    def check_external_pentest_engines(self) -> Dict[str, Any]:
+        """Category 22: External Pentesting Engines Integration Layer."""
+        try:
+            from framework.external_engines.correlator import ExternalEngineSelector
+            from framework.external_engines.xalgorix import XalgorixAdapter
+            from framework.external_engines.strix import StrixAdapter
+
+            selector = ExternalEngineSelector()
+            engines = selector.list_engines()
+            xalgorix_det = XalgorixAdapter().detect()
+            strix_det = StrixAdapter().detect()
+
+            return {
+                "status": "HEALTHY",
+                "healthy": True,
+                "engines_count": len(engines),
+                "xalgorix": xalgorix_det["status"],
+                "strix": strix_det["status"],
+            }
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -550,6 +598,8 @@ class SystemDoctor:
             "ssrf_engine": self.check_ssrf_engine(),
             "injection_engine": self.check_injection_engine(),
             "http_trust_engine": self.check_http_trust_engine(),
+            "business_logic_engine": self.check_business_logic_engine(),
+            "external_pentest_engines": self.check_external_pentest_engines(),
             "opencode_integration": self.check_opencode_integration(),
         }
 

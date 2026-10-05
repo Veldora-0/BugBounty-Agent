@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""
+bb-engines — External Pentesting Engine Management and Detection Utility (Phase 12).
+
+Detects, health-checks, inspects, and audits external pentesting engines
+such as Xalgorix and Strix.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.external_engines.correlator import ExternalEngineSelector
+from framework.external_engines.strix import StrixAdapter
+from framework.external_engines.xalgorix import XalgorixAdapter
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="bb-engines",
+        description="External Pentesting Engine Management and Detection Utility",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bb-engines --list
+  bb-engines --detect
+  bb-engines --doctor
+        """,
+    )
+
+    parser.add_argument("--list", action="store_true", help="List all registered external engines")
+    parser.add_argument("--detect", action="store_true", help="Run capability and CLI presence detection across external engines")
+    parser.add_argument("--doctor", action="store_true", help="Run deep diagnostic health check on external pentest engines")
+    parser.add_argument("--engine", choices=["xalgorix", "strix"], help="Filter by specific engine name")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+
+    args = parser.parse_args()
+
+    selector = ExternalEngineSelector()
+    engines = {"xalgorix": XalgorixAdapter(), "strix": StrixAdapter()}
+
+    if args.engine:
+        engines = {args.engine: engines[args.engine]}
+
+    if args.json:
+        if args.doctor:
+            res = {k: v.health_check() for k, v in engines.items()}
+        else:
+            res = {k: v.detect() for k, v in engines.items()}
+        print(json.dumps(res, indent=2))
+        return
+
+    print("\n==============================================================================")
+    print("                 EXTERNAL PENTESTING ENGINES REGISTRY                         ")
+    print("==============================================================================")
+
+    for name, adapter in engines.items():
+        det = adapter.detect()
+        installed_badge = "[INSTALLED]" if det["installed"] else "[OPTIONAL / NOT INSTALLED]"
+        print(f"\n[*] ENGINE: {name.upper()} {installed_badge}")
+        print(f"    Repository:       {det['repo_url']}")
+        print(f"    Pinned Release:   {det['pinned_version']}")
+        print(f"    Detected Version: {det['version']}")
+        print(f"    Executable Path:  {det.get('executable_path') or 'None'}")
+
+        if args.doctor:
+            health = adapter.health_check()
+            status_badge = "[HEALTHY / READY]" if health["healthy"] else f"[{health['status']}]"
+            print(f"    Health Status:    {status_badge}")
+            print(f"    Diagnostic Note:  {health['message']}")
+
+    print("\n==============================================================================")
+
+
+if __name__ == "__main__":
+    main()

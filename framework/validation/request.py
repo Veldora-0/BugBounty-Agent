@@ -29,6 +29,7 @@ class ControlledRequest:
         cookies: Optional[Dict[str, str]] = None,
         json_body: Optional[Any] = None,
         form_body: Optional[Dict[str, str]] = None,
+        body: Optional[str | bytes] = None,
         mutated_target: Optional[str] = None,
         mutated_value: Optional[str] = None,
     ):
@@ -40,8 +41,24 @@ class ControlledRequest:
         self.cookies: Dict[str, str] = {k: str(v) for k, v in (cookies or {}).items()}
         self.json_body = json_body
         self.form_body = dict(form_body or {}) if form_body is not None else None
+        self._raw_body = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body
         self.mutated_target = mutated_target
         self.mutated_value = mutated_value
+
+    @property
+    def body(self) -> Optional[str]:
+        """Returns string representation of body."""
+        if self._raw_body is not None:
+            return self._raw_body
+        if self.json_body is not None:
+            return json.dumps(self.json_body)
+        if self.form_body is not None:
+            return urlencode(self.form_body)
+        return ""
+
+    @body.setter
+    def body(self, val: Optional[str | bytes]) -> None:
+        self._raw_body = val.decode("utf-8", errors="replace") if isinstance(val, bytes) else val
 
     @property
     def url(self) -> str:
@@ -117,6 +134,7 @@ class ControlledRequest:
             cookies=copy.deepcopy(self.cookies),
             json_body=copy.deepcopy(self.json_body),
             form_body=copy.deepcopy(self.form_body),
+            body=self.body,
             mutated_target=self.mutated_target,
             mutated_value=self.mutated_value,
         )

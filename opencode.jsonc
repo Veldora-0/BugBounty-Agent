@@ -113,6 +113,18 @@
     },
     {
       "action": "shell",
+      "resource": "*bb-workflow*",
+      "effect": "ask",
+      "description": "Require human confirmation before launching active business logic or workflow testing"
+    },
+    {
+      "action": "shell",
+      "resource": "*bb-engines*",
+      "effect": "ask",
+      "description": "Require human confirmation before interacting with external pentesting engines"
+    },
+    {
+      "action": "shell",
       "resource": "subfinder *",
       "effect": "ask",
       "description": "Require human confirmation before executing subfinder directly"

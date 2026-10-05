@@ -30,11 +30,28 @@ Identify flaws in application workflows, business rules, and state machine assum
 * **Parameter Tampering**: Modifying hidden form fields (`tier=free`, `discount_rate=1.0`).
 * **Header Assumptions**: Relying on unverified client headers (`X-Forwarded-For`, `X-User-Role`) for logic decisions.
 
-## 2. Ethical Safeguards
+## 2. Ethical Safeguards & Approval Gates
 * **Zero Real Financial Harm**: Never execute transactions with real victim funds or third-party payment gateways.
 * **Mock / Sandbox First**: Conduct logic tests strictly in development, sandbox, or staging environments when available.
-* **Minimalist Testing**: When testing in production with explicit program authorization, use the minimum allowable transaction amounts ($0.01) and self-revert or report immediately.
+* **Mandatory Human Approval Gate**: `bb-workflow` requires explicit human approval (`--approve`) with a pre-test audit dossier before mutating multi-step resources or executing bounded concurrent race simulations.
+* **Local In-Memory Lab**: 15 deterministic scenarios in `LocalBusinessLogicLab` allow comprehensive verification without any network traffic.
 
-## 3. Evidence Documentation
-* Document the complete sequence of requests in order.
-* Highlight the logical inconsistency between expected business rules and actual observed state.
+## 3. Evidence Documentation & Invariants
+* Document the complete sequence of requests in order with sanitized payloads and SHA-256 evidence digests.
+* Highlight the logical inconsistency between expected business rules and actual observed state via `BusinessLogicInvariantEngine`.
+* Support single replay, sequence replay, and bounded concurrent replay (maximum 5 threads/requests).
+
+## 4. CLI Tool: `bb-workflow`
+```bash
+# Inspect workflow state tree for a program
+bb-workflow --program acme-corp --tree
+
+# Run local in-memory business logic lab scenarios (dry-run)
+bb-workflow --lab --tree
+
+# Run and approve test case in the lab
+bb-workflow --lab --scenario checkout_step_skipping --approve
+
+# Execute workflow testing for a program with approval
+bb-workflow --program acme-corp --workflow checkout --approve
+```

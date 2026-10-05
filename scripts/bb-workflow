@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""
+bb-workflow — BugBounty-Agent Business Logic & Workflow Intelligence Engine.
+
+Models application state machines, detects broken business rules, step skipping,
+replay attacks, price/quantity tampering, and privilege transitions.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.business_logic.approval import WorkflowApprovalGate
+from framework.business_logic.engine import BusinessLogicEngine
+from framework.business_logic.lab import LocalBusinessLogicLab
+from framework.business_logic.model import (
+    BusinessLogicCategory,
+    Workflow,
+    WorkflowHypothesis,
+    WorkflowState,
+)
+from framework.business_logic.state import WorkflowStateManager
+from framework.common.config import get_program_dir
+from framework.scope.engine import ScopeEngine
+from framework.validation.policy import SecurityTestPolicy
+
+
+def render_workflow_tree(summary_data: Dict[str, Any], workflows: List[Workflow], program_name: str) -> None:
+    """Renders visual ASCII tree of business logic workflows, invariants, and findings."""
+    print("\n==============================================================================")
+    print("                 BUSINESS LOGIC & WORKFLOW INTELLIGENCE TREE                  ")
+    print("==============================================================================")
+
+    state = summary_data.get("summary", {})
+    by_cat = state.get("by_category", {})
+    by_life = state.get("by_lifecycle", {})
+
+    print(f"\n[*] Program:              {program_name}")
+    print(f"[*] Total Workflows:      {state.get('total_workflows', len(workflows))}")
+    print(f"[*] Total Hypotheses:     {state.get('total_hypotheses', 0)}")
+    print(f"[*] Tested Hypotheses:    {state.get('tested_hypotheses', 0)}")
+    print(f"[*] Verified Findings:    {state.get('findings_recorded', 0)}")
+
+    if not workflows:
+        print("\n[*] No workflows recorded in current state.")
+        print("==============================================================================\n")
+        return
+
+    for wf in workflows:
+        print(f"\n[+] WORKFLOW: {wf.name} ({wf.workflow_id})")
+        print(f"    Application: {wf.application} | Fingerprint: {wf.compute_fingerprint()[:16]}...")
+        print(f"    Description: {wf.description}")
+        print("    Steps:")
+        for s in wf.steps:
+            terminal_flag = " [TERMINAL]" if s.is_terminal else ""
+            print(f"      - [{s.step_id}] {s.method} {s.endpoint} ({s.name}){terminal_flag}")
+        print("    Invariants:")
+        for inv in wf.invariants:
+            print(f"      - [{inv.category.value}] {inv.rule_name} (Status: {inv.status.value})")
+
+    print("\n==============================================================================")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="bb-workflow",
+        description="BugBounty-Agent Business Logic & Workflow Intelligence Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Discover and render workflow state machines
+  bb-workflow --program acme-corp --tree
+
+  # Run local offline security lab simulation
+  bb-workflow --lab --tree
+  bb-workflow --lab --approve
+        """,
+    )
+
+    parser.add_argument("-p", "--program", default="default", help="Target program name in workspace")
+    parser.add_argument("-s", "--scope", default="scope.yaml", help="Path to scope.yaml file")
+    parser.add_argument("-a", "--application", help="Filter target application hostname")
+    parser.add_argument("-e", "--endpoint", help="Filter target endpoint")
+    parser.add_argument("-w", "--workflow", help="Specific workflow ID or name")
+    parser.add_argument("--actor", default="USER_A", help="Workflow actor profile to test")
+    parser.add_argument("--state", help="Filter target state")
+    parser.add_argument("--category", choices=[c.value for c in BusinessLogicCategory if c != BusinessLogicCategory.UNKNOWN] + ["all"], default="all", help="Vulnerability category filter")
+    parser.add_argument("--passive-only", action="store_true", help="Discover and model workflows without sending network probes")
+    parser.add_argument("--dry-run", action="store_true", help="Plan test cases without executing state-changing requests")
+    parser.add_argument("--resume", action="store_true", default=True, help="Skip previously tested fingerprints")
+    parser.add_argument("--approve", action="store_true", help="Authorize execution of planned non-destructive probes")
+    parser.add_argument("--max-tests", type=int, default=50, help="Maximum number of test cases to execute")
+    parser.add_argument("--max-requests", type=int, default=100, help="Maximum HTTP requests budget")
+    parser.add_argument("--max-concurrency", type=int, default=5, help="Maximum concurrency for race testing")
+    parser.add_argument("--timeout", type=float, default=10.0, help="HTTP request timeout in seconds")
+    parser.add_argument("--lab", action="store_true", help="Run against deterministic local security lab scenarios")
+    parser.add_argument("--tree", action="store_true", help="Render ASCII tree view of workflows and invariants")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+
+    args = parser.parse_args()
+
+    # Program directory setup
+    if args.lab:
+        program_dir = get_program_dir("local-lab")
+        program_name = "local-lab"
+        scope_engine = ScopeEngine({
+            "program": {"name": "local-lab"},
+            "targets": {
+                "domains": ["lab.local", "*.local", "localhost", "127.0.0.1"],
+                "urls": ["http://lab.local/", "https://lab.local/"],
+            },
+        })
+    else:
+        program_dir = get_program_dir(args.program)
+        program_name = args.program
+        scope_path = os.path.join(program_dir, args.scope)
+        scope_engine = ScopeEngine.from_file(scope_path) if os.path.isfile(scope_path) else ScopeEngine({"targets": {"domains": ["*"], "urls": ["*"]}})
+
+    # Lab Hook
+    send_hook = None
+    if args.lab:
+        lab = LocalBusinessLogicLab()
+        send_hook = lab.handle_request
+
+    policy = SecurityTestPolicy(
+        max_requests_per_test=args.max_requests,
+        timeout=args.timeout,
+    )
+
+    engine = BusinessLogicEngine(
+        program_dir=program_dir,
+        scope_engine=scope_engine,
+        policy=policy,
+        send_request_hook=send_hook,
+        auto_approve=args.approve,
+    )
+
+    workflows = engine.state_mgr.list_workflows()
+    if not workflows or not args.resume:
+        workflows = engine.discover_workflows()
+
+    if args.passive_only:
+        state = engine.state_mgr.load_state()
+        if args.json:
+            print(json.dumps(state, indent=2))
+        else:
+            render_workflow_tree(state, workflows, program_name)
+        return
+
+    # Generate and execute hypotheses
+    all_hypotheses = []
+    for wf in workflows:
+        hyps = engine.generate_hypotheses_for_workflow(wf)
+        all_hypotheses.extend(hyps)
+
+    executed_count = 0
+    test_results = []
+    if not args.dry_run:
+        for h in all_hypotheses[:args.max_tests]:
+            if args.approve:
+                engine.approval_gate.approve_hypothesis(h.hypothesis_id)
+            tc = engine.execute_hypothesis(h, dry_run=args.dry_run)
+            if tc:
+                executed_count += 1
+                test_results.append(tc.to_dict())
+
+    state = engine.state_mgr.load_state()
+
+    if args.json:
+        print(json.dumps({"workflows": [w.to_dict() for w in workflows], "results": test_results, "summary": state.get("summary", {})}, indent=2))
+        return
+
+    if args.tree or not test_results:
+        render_workflow_tree(state, workflows, program_name)
+    else:
+        print(f"\n[+] Executed {executed_count} workflow hypothesis tests (Findings: {len(state.get('findings', {}))})")
+        for tc in test_results:
+            print(f"    - [{tc.get('result')}] [{tc.get('confidence')}] {tc.get('endpoint')} ({tc.get('category')})")
+        print()
+
+
+if __name__ == "__main__":
+    main()

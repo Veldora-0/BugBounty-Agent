@@ -152,3 +152,21 @@ Specialized subsystem for bounded HTTP metadata and header trust validation:
   bb-http --lab --tree
   bb-http --lab -e "http://lab.local/auth/forgot-password" --approve
   ```
+
+---
+
+## 11. Phase 12: Business Logic Intelligence & External Pentest Orchestration
+
+
+### A. Business Logic & Workflow Engine (`bb-workflow`)
+* **State Machine Invariants**: `BusinessLogicInvariantEngine` checks multi-step workflow transitions, step skipping, step reordering, negative quantities, parameter tampering, and double redemption.
+* **Deterministic Local Lab**: 15 in-memory scenarios (`LocalBusinessLogicLab`) validating vulnerabilities without external requests.
+* **Safe Replay Engine**: Single replay, sequence replay, and bounded concurrent replay ($\le 5$ requests).
+* **Human Approval Gate**: Explicit pre-test audit dossier generation; execution blocked without `--approve`.
+
+### B. External Pentest Engines (`bb-engines`)
+* **Supported External Engines**:
+  * **Xalgorix** (`v0.4.0-stable`): Modular Python 3 engine.
+  * **Strix** (`v0.3.2-stable`): AI-driven CLI penetration tester (optional).
+* **Single-Agent Invariant**: OpenCode maintains exactly one custom agent: `Bug-Bounty`. External engines are run strictly as sandboxed external CLI tools, NEVER as OpenCode agents.
+* **Independent Validator Principle**: Findings produced by external tools are imported as `EXTERNAL_UNVERIFIED` candidates. They NEVER transition directly to `VALIDATED` without independent empirical reproduction through native BugBounty-Agent validators.
