@@ -50,9 +50,9 @@ def load_scope_engine(program_dir: str, explicit_scope_file: Optional[str] = Non
         if os.path.isfile(cand):
             scope_path = cand
     if scope_path and os.path.isfile(scope_path):
-        return ScopeEngine(scope_path)
+        return ScopeEngine.from_file(scope_path)
     # Default permissive local scope for labs
-    return ScopeEngine(rules={"targets": {"domains": ["*"], "ips": ["127.0.0.1", "localhost"]}})
+    return ScopeEngine({"targets": {"domains": ["*"]}})
 
 
 def main():
