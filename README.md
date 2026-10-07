@@ -69,7 +69,6 @@ BugBounty-Agent/
 │   ├── injection/             # Injection intelligence, prioritization, SQLi/NoSQLi/SSTI/Command validators
 │   ├── http_trust/            # HTTP / Header trust intelligence, Host injection, CORS, HPP, cache foundation
 │   ├── business_logic/        # Business logic state machines, invariant engine, replay, approval gate
-│   ├── external_engines/      # External pentest adapters (Xalgorix, Strix), selector & independent validator
 │   ├── tools/                 # Tool registry, installer, doctor, deployer
 │   └── common/                # Evidence store, sanitization, tool detection, config
 │
@@ -77,14 +76,13 @@ BugBounty-Agent/
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
-│   ├── bb-doctor              # Diagnostics utility across 22 system categories
+│   ├── bb-doctor              # Diagnostics utility across 21 system categories
 │   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
 │   ├── bb-recon               # Controlled recon (subfinder, assetfinder, httpx)
 │   ├── bb-http                # HTTP / Header Trust & Protocol Security validation engine
 │   ├── bb-workflow            # Business logic and multi-step workflow intelligence engine
-│   ├── bb-engines             # External pentesting engine manager & findings correlator
 │   ├── bb-content             # Controlled content fuzzer wrapper (ffuf)
 │   ├── bb-js                  # JavaScript endpoint & secret analyzer
 │   ├── bb-api                 # REST/GraphQL API method and schema prober
@@ -236,7 +234,7 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 ## Tool Intelligence & Management
 
 ### 1. Automatic Diagnostics (`bb-doctor`)
-Run deep diagnostics across 22 system categories:
+Run deep diagnostics across 21 system categories:
 ```bash
 ./scripts/bb-doctor
 ```
@@ -257,7 +255,6 @@ Checks:
 * **Injection Intelligence**: SQLi, NoSQLi, SSTI, and Command injection validators
 * **HTTP Trust Engine**: Host injection, CORS, HPP, and cache-poisoning foundations
 * **Business Logic Engine**: Workflow state machines, 24 invariant evaluations, safe replay, and approval gate
-* **External Pentest Engines**: Xalgorix, Strix detection, schema integrity, and independent validator
 
 ### 2. Safe On-Demand Installation (`bb-install`)
 Install approved tools when needed, either individually or by capability:
@@ -500,9 +497,9 @@ The **Security Validation Foundation Engine** (`framework/validation/` & `script
 
 ---
 
-## Phase 12: Business Logic & Workflow Intelligence + External Pentest Engine Integration
+## Phase 12: Business Logic & Workflow Intelligence
 
-The **Business Logic & Workflow Intelligence Engine** (`framework/business_logic/` & `scripts/bb-workflow`) and **External Pentesting Engine Integration** (`framework/external_engines/` & `scripts/bb-engines`) provide advanced workflow state analysis and bounded external tool orchestration:
+The **Business Logic & Workflow Intelligence Engine** (`framework/business_logic/` & `scripts/bb-workflow`) provides advanced workflow state analysis, deterministic state machine modeling, and controlled vulnerability evaluation:
 
 * **State Machine & Workflow Modeling**: Formally models multi-step application journeys (`Workflow`, `WorkflowStep`, `WorkflowTransition`, `WorkflowState`, `WorkflowActor`, `WorkflowResource`).
 * **Formal Invariant Engine (`BusinessLogicInvariantEngine`)**: Evaluates 24 specific business logic vulnerability classes across 4 domains:
@@ -520,26 +517,12 @@ The **Business Logic & Workflow Intelligence Engine** (`framework/business_logic
 * **Deterministic Local Security Lab (`LocalBusinessLogicLab`)**:
   * 15 deterministic in-memory scenarios covering checkout step skipping, negative quantity cart manipulation, password reset token replay, multi-tenant workspace leakage, and voucher double-spend race condition simulation.
   * Enables 100% offline testing without external network traffic.
-* **External Pentest Engine Integration (Hardened in Phase 12.1)**:
-  * **Xalgorix Adapter**: Tested release `v4.6.121` (commit `17f90ae`, min `v4.0.0`), autonomous AI pentesting platform (Go/TypeScript).
-  * **Strix Adapter**: Tested release `v1.6.2` (commit `b47d018`, min `v1.0.0`), autonomous AI penetration testing CLI. Optional dependency; `NOT_INSTALLED` is a healthy non-blocking state.
-  * **Full Lifecycle Execution**: Generic lifecycle managing `detect -> health_check -> prepare -> approval -> launch -> monitor -> stop -> collect -> parse_results -> cleanup`. Safe argv execution only; no shell strings.
-  * **Empirical Independent Validation**: Findings imported as `EXTERNAL_UNVERIFIED`. HTTP 200 responses alone NEVER validate findings; requires empirical claim reproduction (dual-principal baseline differential, unencoded reflection context, OOB callback, or invariant violation).
-  * **Multi-Fingerprint Correlation**: Correlates native and external findings using AttackSurface, RootCause, Resource, and ActorContext fingerprints to prevent erroneous deduplication.
-  * **Single-Agent Invariant Preserved**: External engines run strictly as sandboxed tools, never as OpenCode custom agents.
 * **CLI Utilities**:
   ```bash
   # Business logic workflows and local lab
   ./scripts/bb-workflow --program acme-corp --tree
   ./scripts/bb-workflow --lab --tree
   ./scripts/bb-workflow --lab --scenario checkout_step_skipping --approve
-
-  # External pentest engines management, dry-run, execution, and correlation
-  ./scripts/bb-engines --detect
-  ./scripts/bb-engines --doctor
-  ./scripts/bb-engines --program acme-corp --targets "https://target.com" --dry-run
-  ./scripts/bb-engines --program acme-corp --targets "https://target.com" --run --engine xalgorix --approve
-  ./scripts/bb-engines --program acme-corp --correlate
   ```
 
 ---
@@ -572,7 +555,6 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | **JavaScript Analysis** | `shell` | `*bb-js*` | `ask` | Human confirmation required before running JavaScript endpoint extraction |
 | **API Intelligence** | `shell` | `*bb-api*` | `ask` | Human confirmation required before probing API specifications or endpoints |
 | **Workflow Intelligence** | `shell` | `*bb-workflow*` | `ask` | Human confirmation required before executing multi-step business logic tests |
-| **External Engines** | `shell` | `*bb-engines*` | `ask` | Human confirmation required before running external pentest engines |
 | **Tool Installation** | `shell` | `*bb-install*` | `ask` | Human confirmation required before modifying system tools |
 | **Tool Updates** | `shell` | `*bb-update*` | `ask` | Human confirmation required before updating system tools |
 | **Remote Git Push** | `shell` | `git push *` | `ask` | Confirmation required before modifying remote repository |

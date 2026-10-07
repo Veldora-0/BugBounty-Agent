@@ -1,5 +1,5 @@
 """
-Deterministic Test Suite for Business Logic & External Pentesting Engines (Phase 12).
+Deterministic Test Suite for Business Logic & Workflow Intelligence (Phase 12).
 
 Tests:
 - Workflow extraction & state machines
@@ -8,9 +8,6 @@ Tests:
 - Replay engine: single, sequence, and bounded concurrent race simulations
 - Approval gating & pre-test audit dossiers
 - State persistence in ~/BugBounty-Workspace/.../state/workflows.json
-- External pentesting engine contracts & adapters (Xalgorix, Strix)
-- Engine detection, health check, job preparation, and result parsing
-- Independent validator & external finding correlator
 - Security hygiene: zero shell=True, os.system, eval, or exec
 """
 
@@ -46,18 +43,6 @@ from framework.business_logic.model import (
 )
 from framework.business_logic.replay import WorkflowReplayEngine, WorkflowStateMachine
 from framework.business_logic.state import WorkflowStateManager
-from framework.external_engines.base import (
-    ExternalEngineStatus,
-    ExternalFinding,
-    ExternalPentestEngine,
-)
-from framework.external_engines.correlator import (
-    ExternalEngineSelector,
-    ExternalFindingCorrelator,
-    IndependentValidator,
-)
-from framework.external_engines.strix import StrixAdapter
-from framework.external_engines.xalgorix import XalgorixAdapter
 from framework.findings.lifecycle import FindingLifecycle
 from framework.scope.engine import ScopeEngine
 from framework.validation.request import ControlledRequest, ControlledResponse
@@ -263,138 +248,13 @@ def test_engine_pipeline_and_state_persistence(temp_program_dir, mock_lab):
 
 
 # ============================================================================
-# 5. External Pentest Engine Integration
-# ============================================================================
-
-def test_external_engine_adapters_and_detection():
-    x_adapter = XalgorixAdapter()
-    x_det = x_adapter.detect()
-    assert x_det["name"] == "xalgorix"
-    assert x_det["tested_release"] == "v4.6.121"
-    assert "installed" in x_det
-
-    s_adapter = StrixAdapter()
-    s_det = s_adapter.detect()
-    assert s_det["name"] == "strix"
-    assert s_det["tested_release"] == "v1.6.2"
-    assert "installed" in s_det
-
-    selector = ExternalEngineSelector()
-    all_engines = selector.list_engines()
-    assert len(all_engines) == 2
-
-
-def test_external_job_preparation_and_scope_filtering(temp_program_dir):
-    scope = ScopeEngine({
-        "program": {"name": "test"},
-        "targets": {
-            "domains": ["lab.local"],
-            "urls": ["http://lab.local/api"],
-        },
-    })
-    x_adapter = XalgorixAdapter()
-    targets = ["http://lab.local/api", "https://out-of-scope.example/admin"]
-    job = x_adapter.prepare_job(temp_program_dir, targets, scope, budget_requests=50)
-
-    # Out-of-scope target must be excluded
-    assert len(job.target_set) == 1
-    assert "out-of-scope.example" not in job.target_set[0]
-    assert job.agent_budget == 50
-    assert job.engine == "xalgorix"
-
-
-def test_external_finding_parsing_and_correlation(temp_program_dir):
-    report_file = os.path.join(temp_program_dir, "xalgorix_findings.json")
-    mock_data = [
-        {
-            "run_id": "run-x1",
-            "vulnerability_class": "step_skipping",
-            "title": "Bypassed checkout step",
-            "endpoint": "http://lab.local/api/checkout/capture",
-            "severity": "HIGH",
-            "confidence": "VALIDATED",
-        }
-    ]
-    with open(report_file, "w", encoding="utf-8") as f:
-        json.dump(mock_data, f)
-
-    x_adapter = XalgorixAdapter()
-    ext_findings = x_adapter.parse_results(report_file)
-    assert len(ext_findings) == 1
-    assert ext_findings[0].engine == "xalgorix"
-
-    native_finding = WorkflowFinding(
-        finding_id="wf-find-101",
-        workflow_id="wf-1",
-        test_case_id="tc-1",
-        title="Business Logic Vulnerability: Step Skipping",
-        category=BusinessLogicCategory.STEP_SKIPPING,
-        severity="HIGH",
-        endpoint="http://lab.local/api/checkout/capture",
-        actor="USER_A",
-        violated_invariant="Step skipped",
-        description="Capture permitted",
-        remediation="Enforce sequence",
-        evidence_id="ev-101",
-    )
-
-    correlated = ExternalFindingCorrelator.correlate([native_finding], ext_findings)
-    assert len(correlated) == 1
-    assert "external_xalgorix" in correlated[0]["sources"]
-    assert len(correlated[0]["external_confirmations"]) == 1
-
-
-def test_independent_validator_reproduction():
-    mock_ext_finding = ExternalFinding(
-        finding_id="ext-f-1",
-        engine="xalgorix",
-        engine_version="v4.6.121",
-        run_id="run-1",
-        target="http://lab.local",
-        vulnerability_class="step_skipping",
-        title="Unverified Step Bypass",
-        severity="HIGH",
-        confidence="CANDIDATE",
-        endpoint="http://lab.local/reproduce",
-    )
-
-    def success_hook(req):
-        return ControlledResponse(status_code=200, body_text='{"reproduced": true}')
-
-    def fail_hook(req):
-        return ControlledResponse(status_code=403, body_text='{"error": "FORBIDDEN"}')
-
-    validator_pass = IndependentValidator(success_hook)
-    # With empirical invariant violation context
-    life_pass, note_pass = validator_pass.independently_validate(
-        mock_ext_finding,
-        context={"invariant_violated": True},
-    )
-    assert life_pass == FindingLifecycle.VALIDATED
-    assert "Invariant violation confirmed" in note_pass
-
-    # False positive test: HTTP 200 without invariant violation is rejected
-    life_fp, note_fp = validator_pass.independently_validate(
-        mock_ext_finding,
-        context={"invariant_violated": False},
-    )
-    assert life_fp == FindingLifecycle.REJECTED
-
-    validator_fail = IndependentValidator(fail_hook)
-    life_fail, note_fail = validator_fail.independently_validate(mock_ext_finding)
-    assert life_fail == FindingLifecycle.REJECTED
-
-
-
-# ============================================================================
-# 6. Security Hygiene Invariants
+# 5. Security Hygiene Invariants
 # ============================================================================
 
 def test_security_hygiene_no_shell_exec():
     """Verify strictly zero shell=True, os.system, eval, or exec in Phase 12 frameworks."""
     dirs_to_check = [
         os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "framework", "business_logic")),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "framework", "external_engines")),
     ]
     for d in dirs_to_check:
         for root, _, files in os.walk(d):

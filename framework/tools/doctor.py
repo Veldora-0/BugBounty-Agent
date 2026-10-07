@@ -554,28 +554,6 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
-    def check_external_pentest_engines(self) -> Dict[str, Any]:
-        """Category 22: External Pentesting Engines Integration Layer."""
-        try:
-            from framework.external_engines.correlator import ExternalEngineSelector
-            from framework.external_engines.xalgorix import XalgorixAdapter
-            from framework.external_engines.strix import StrixAdapter
-
-            selector = ExternalEngineSelector()
-            engines = selector.list_engines()
-            xalgorix_det = XalgorixAdapter().detect()
-            strix_det = StrixAdapter().detect()
-
-            return {
-                "status": "HEALTHY",
-                "healthy": True,
-                "engines_count": len(engines),
-                "xalgorix": xalgorix_det["status"],
-                "strix": strix_det["status"],
-            }
-        except Exception as e:
-            return {"status": "ERROR", "healthy": False, "error": str(e)}
-
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -599,7 +577,6 @@ class SystemDoctor:
             "injection_engine": self.check_injection_engine(),
             "http_trust_engine": self.check_http_trust_engine(),
             "business_logic_engine": self.check_business_logic_engine(),
-            "external_pentest_engines": self.check_external_pentest_engines(),
             "opencode_integration": self.check_opencode_integration(),
         }
 
