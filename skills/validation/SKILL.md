@@ -155,18 +155,24 @@ Specialized subsystem for bounded HTTP metadata and header trust validation:
 
 ---
 
-## 11. Phase 12: Business Logic Intelligence & External Pentest Orchestration
-
+## 11. Phase 12 & 12.1: Business Logic Intelligence & External Pentest Orchestration Hardening
 
 ### A. Business Logic & Workflow Engine (`bb-workflow`)
-* **State Machine Invariants**: `BusinessLogicInvariantEngine` checks multi-step workflow transitions, step skipping, step reordering, negative quantities, parameter tampering, and double redemption.
+* **State Machine Invariants**: `BusinessLogicInvariantEngine` checks multi-step workflow transitions, step skipping, step reordering, negative quantities, parameter tampering, and double redemption across 24 invariant classes.
 * **Deterministic Local Lab**: 15 in-memory scenarios (`LocalBusinessLogicLab`) validating vulnerabilities without external requests.
-* **Safe Replay Engine**: Single replay, sequence replay, and bounded concurrent replay ($\le 5$ requests).
+* **Safe Replay Engine**: Single replay, sequence replay, and bounded concurrent replay ($\le 5$ requests, $\le 10$s timeout).
 * **Human Approval Gate**: Explicit pre-test audit dossier generation; execution blocked without `--approve`.
 
 ### B. External Pentest Engines (`bb-engines`)
-* **Supported External Engines**:
-  * **Xalgorix** (`v0.4.0-stable`): Modular Python 3 engine.
-  * **Strix** (`v0.3.2-stable`): AI-driven CLI penetration tester (optional).
-* **Single-Agent Invariant**: OpenCode maintains exactly one custom agent: `Bug-Bounty`. External engines are run strictly as sandboxed external CLI tools, NEVER as OpenCode agents.
-* **Independent Validator Principle**: Findings produced by external tools are imported as `EXTERNAL_UNVERIFIED` candidates. They NEVER transition directly to `VALIDATED` without independent empirical reproduction through native BugBounty-Agent validators.
+* **Supported External Engines (Optional)**:
+  * **Xalgorix** (Current tested release: `v4.6.121`, commit `17f90ae`, min: `v4.0.0`): Autonomous AI pentesting platform (Go/TypeScript).
+  * **Strix** (Current tested release: `v1.6.2`, commit `b47d018`, min: `v1.0.0`): Autonomous AI penetration testing CLI agent.
+* **Truthful Version Policy**: Detects `INSTALLED`, `NOT_INSTALLED`, `VERSION_MISMATCH`, and `UNSUPPORTED_VERSION`. Never fakes compatibility with unknown releases.
+* **No Automatic Installation**: External tools must be installed and configured manually by the operator; `NOT_INSTALLED` is a healthy, non-blocking optional state.
+* **Strict ScopeEngine Enforcement**: Every target URL must pass ScopeEngine verification before being passed to an external engine.
+* **Full Process Lifecycle**: Governed by `detect -> health_check -> prepare -> approval -> launch -> monitor -> stop -> collect -> parse_results -> cleanup`.
+* **Safe Execution Only**: Invoked exclusively via safe argv lists (`subprocess.Popen`). Shell execution, `os.system()`, `eval()`, and `exec()` are strictly forbidden.
+* **Budget Realism**: When an external CLI lacks deterministic HTTP request caps, reports `ENGINE_REQUEST_BUDGET_UNSUPPORTED` and enforces strict process timeouts and scope constraints instead of faking request counts.
+* **Independent Validator Principle**: External findings start as `EXTERNAL_UNVERIFIED`. A simple HTTP 200 response NEVER validates an external finding. The validator empirically tests the specific claim (dual-principal differential baselines for authorization, reflection context for XSS, OOB canary interaction for SSRF, invariant violation for logic).
+* **Multi-Fingerprint Correlation**: Correlates native and external findings using `AttackSurfaceFingerprint`, `RootCauseFingerprint`, `ResourceFingerprint`, and `ActorContextFingerprint` to prevent accidental merges across different actors or endpoints.
+* **Dry-Run & Approval Gates**: `bb-engines --dry-run` displays execution plans without invoking processes. Execution requires explicit `--approve`.

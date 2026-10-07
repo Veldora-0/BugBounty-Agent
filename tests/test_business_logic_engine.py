@@ -270,13 +270,13 @@ def test_external_engine_adapters_and_detection():
     x_adapter = XalgorixAdapter()
     x_det = x_adapter.detect()
     assert x_det["name"] == "xalgorix"
-    assert x_det["pinned_version"] == "v0.4.0-stable"
+    assert x_det["tested_release"] == "v4.6.121"
     assert "installed" in x_det
 
     s_adapter = StrixAdapter()
     s_det = s_adapter.detect()
     assert s_det["name"] == "strix"
-    assert s_det["pinned_version"] == "v0.3.2-stable"
+    assert s_det["tested_release"] == "v1.6.2"
     assert "installed" in s_det
 
     selector = ExternalEngineSelector()
@@ -297,9 +297,10 @@ def test_external_job_preparation_and_scope_filtering(temp_program_dir):
     job = x_adapter.prepare_job(temp_program_dir, targets, scope, budget_requests=50)
 
     # Out-of-scope target must be excluded
-    assert len(job["scoped_targets"]) == 1
-    assert "out-of-scope.example" not in job["scoped_targets"][0]
-    assert job["max_requests"] == 50
+    assert len(job.target_set) == 1
+    assert "out-of-scope.example" not in job.target_set[0]
+    assert job.agent_budget == 50
+    assert job.engine == "xalgorix"
 
 
 def test_external_finding_parsing_and_correlation(temp_program_dir):
@@ -347,13 +348,13 @@ def test_independent_validator_reproduction():
     mock_ext_finding = ExternalFinding(
         finding_id="ext-f-1",
         engine="xalgorix",
-        engine_version="v0.4.0-stable",
+        engine_version="v4.6.121",
         run_id="run-1",
         target="http://lab.local",
         vulnerability_class="step_skipping",
         title="Unverified Step Bypass",
         severity="HIGH",
-        confidence="VALIDATED",
+        confidence="CANDIDATE",
         endpoint="http://lab.local/reproduce",
     )
 
@@ -364,14 +365,25 @@ def test_independent_validator_reproduction():
         return ControlledResponse(status_code=403, body_text='{"error": "FORBIDDEN"}')
 
     validator_pass = IndependentValidator(success_hook)
-    life_pass, note_pass = validator_pass.independently_validate(mock_ext_finding)
+    # With empirical invariant violation context
+    life_pass, note_pass = validator_pass.independently_validate(
+        mock_ext_finding,
+        context={"invariant_violated": True},
+    )
     assert life_pass == FindingLifecycle.VALIDATED
-    assert "Independently reproduced" in note_pass
+    assert "Invariant violation confirmed" in note_pass
+
+    # False positive test: HTTP 200 without invariant violation is rejected
+    life_fp, note_fp = validator_pass.independently_validate(
+        mock_ext_finding,
+        context={"invariant_violated": False},
+    )
+    assert life_fp == FindingLifecycle.REJECTED
 
     validator_fail = IndependentValidator(fail_hook)
     life_fail, note_fail = validator_fail.independently_validate(mock_ext_finding)
     assert life_fail == FindingLifecycle.REJECTED
-    assert "Reproduction failed" in note_fail
+
 
 
 # ============================================================================

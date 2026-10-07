@@ -220,7 +220,7 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 11. **XSS Analysis**: `dalfox`, `bb-injection`
 12. **Injection & Parser Flaws**: `sqlmap`, `nuclei`, `bb-injection`
 13. **Authorization (BOLA/IDOR)**: `bb-authz` (dual-account reasoning), `proxify`
-14. **Business Logic & Workflows**: `bb-business-logic`, `playwright`
+14. **Business Logic & Workflows**: `bb-workflow`, `playwright`
 15. **Out-of-Band (OOB) & SSRF**: `interactsh`
 16. **Vulnerability Signals**: `nuclei` (signals ingested strictly as unverified candidates)
 17. **Cloud & External Intelligence**: `uncover`, `cdncheck`, `mapcidr`
@@ -520,11 +520,13 @@ The **Business Logic & Workflow Intelligence Engine** (`framework/business_logic
 * **Deterministic Local Security Lab (`LocalBusinessLogicLab`)**:
   * 15 deterministic in-memory scenarios covering checkout step skipping, negative quantity cart manipulation, password reset token replay, multi-tenant workspace leakage, and voucher double-spend race condition simulation.
   * Enables 100% offline testing without external network traffic.
-* **External Pentest Engine Integration**:
-  * **Xalgorix Adapter**: Pinned version `v0.4.0-stable`, modular Python pentesting framework.
-  * **Strix Adapter**: Pinned version `v0.3.2-stable`, AI-driven CLI penetration testing agent. Gracefully degrades if uninstalled.
-  * **Independent Validator Principle**: Findings from external tools are imported as `EXTERNAL_UNVERIFIED` candidates and must be reproduced through native validators before reaching `VALIDATED` status.
-  * **Single-Agent Invariant Preserved**: External engines run as sandboxed CLI tools, never as OpenCode custom agents.
+* **External Pentest Engine Integration (Hardened in Phase 12.1)**:
+  * **Xalgorix Adapter**: Tested release `v4.6.121` (commit `17f90ae`, min `v4.0.0`), autonomous AI pentesting platform (Go/TypeScript).
+  * **Strix Adapter**: Tested release `v1.6.2` (commit `b47d018`, min `v1.0.0`), autonomous AI penetration testing CLI. Optional dependency; `NOT_INSTALLED` is a healthy non-blocking state.
+  * **Full Lifecycle Execution**: Generic lifecycle managing `detect -> health_check -> prepare -> approval -> launch -> monitor -> stop -> collect -> parse_results -> cleanup`. Safe argv execution only; no shell strings.
+  * **Empirical Independent Validation**: Findings imported as `EXTERNAL_UNVERIFIED`. HTTP 200 responses alone NEVER validate findings; requires empirical claim reproduction (dual-principal baseline differential, unencoded reflection context, OOB callback, or invariant violation).
+  * **Multi-Fingerprint Correlation**: Correlates native and external findings using AttackSurface, RootCause, Resource, and ActorContext fingerprints to prevent erroneous deduplication.
+  * **Single-Agent Invariant Preserved**: External engines run strictly as sandboxed tools, never as OpenCode custom agents.
 * **CLI Utilities**:
   ```bash
   # Business logic workflows and local lab
@@ -532,10 +534,11 @@ The **Business Logic & Workflow Intelligence Engine** (`framework/business_logic
   ./scripts/bb-workflow --lab --tree
   ./scripts/bb-workflow --lab --scenario checkout_step_skipping --approve
 
-  # External pentest engines management and correlation
+  # External pentest engines management, dry-run, execution, and correlation
   ./scripts/bb-engines --detect
   ./scripts/bb-engines --doctor
-  ./scripts/bb-engines --program acme-corp --run --engine xalgorix --approve
+  ./scripts/bb-engines --program acme-corp --targets "https://target.com" --dry-run
+  ./scripts/bb-engines --program acme-corp --targets "https://target.com" --run --engine xalgorix --approve
   ./scripts/bb-engines --program acme-corp --correlate
   ```
 

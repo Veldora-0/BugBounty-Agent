@@ -1272,3 +1272,64 @@ tools:
       command: "jq --version"
       min_version: "1.6"
     security_notes: "Standard command-line JSON parser."
+
+  # ----------------------------------------------------------------------------
+  # EXTERNAL PENTEST ENGINES (OPTIONAL)
+  # ----------------------------------------------------------------------------
+  - name: xalgorix
+    category: external-pentest-engine
+    binary: xalgorix
+    tier: OPTIONAL
+    description: "Autonomous AI penetration testing platform (Go/TypeScript engine with CLI interface)."
+    capabilities:
+      - web-pentesting
+      - autonomous-recon
+      - automated-vulnerability-analysis
+    fallback: null
+    platforms: [linux, darwin]
+    install:
+      preferred: manual
+      apt_package: null
+      release_repo: "xalgorix/xalgorix"
+      auto_install: false
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: [XALGORIX_API_KEY, XALGORIX_LLM, OPENAI_API_KEY, ANTHROPIC_API_KEY]
+      docs_path: null
+    official_url: "https://github.com/xalgorix/xalgorix"
+    documentation_url: "https://docs.xalgorix.com"
+    verify:
+      command: "xalgorix --version"
+      min_version: "4.0.0"
+    security_notes: "External autonomous tool. Never run without ScopeEngine boundaries and operator approval. Findings require independent validation."
+
+  - name: strix
+    category: external-pentest-engine
+    binary: strix
+    tier: OPTIONAL
+    description: "Autonomous AI penetration testing CLI agent."
+    capabilities:
+      - web-pentesting
+      - code-analysis
+      - autonomous-recon
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: manual
+      pip_package: strix
+      release_repo: "usestrix/strix"
+      auto_install: false
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: [OPENAI_API_KEY, ANTHROPIC_API_KEY]
+      docs_path: null
+    official_url: "https://github.com/usestrix/strix"
+    documentation_url: "https://docs.strix.ai"
+    verify:
+      command: "strix --version"
+      min_version: "1.0.0"
+    security_notes: "Optional external tool. Never run without ScopeEngine boundaries and operator approval. Findings require independent validation."
