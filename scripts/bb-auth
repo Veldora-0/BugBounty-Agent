@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""
+bb-auth — BugBounty-Agent Authentication, Session & Identity Security Intelligence Engine.
+
+Identifies, models, safely validates, and prioritizes authentication, session,
+MFA, password-reset, and identity security weaknesses in authorized bug bounty targets.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.authentication.engine import AuthenticationSecurityEngine
+from framework.authentication.lab import LocalAuthenticationSecurityLab
+from framework.authentication.models import (
+    AuthenticationFindingCandidate,
+    AuthenticationHypothesis,
+    HypothesisValidationStatus,
+)
+from framework.authentication.policy import AuthenticationApprovalGate
+from framework.common.config import get_program_dir
+from framework.scope.engine import ScopeEngine
+
+
+def render_active_validation_plan(
+    target: str,
+    identity: str,
+    operation: str,
+    endpoint: str,
+    method: str,
+    hypothesis: str,
+    scope_decision: str,
+    policy_decision: str,
+    request_budget: int,
+    expected_result: str,
+) -> None:
+    """Displays pre-execution validation audit dossier."""
+    print("\n------------------------------------------------------------------------------")
+    print("                AUTHENTICATION VALIDATION AUDIT DOSSIER                       ")
+    print("------------------------------------------------------------------------------")
+    print(f"Target:          {target}")
+    print(f"Identity:        {identity}")
+    print(f"Operation:       {operation}")
+    print(f"Endpoint:        {endpoint}")
+    print(f"Method:          {method}")
+    print(f"Hypothesis:      {hypothesis}")
+    print(f"Scope Decision:  {scope_decision}")
+    print(f"Policy Decision: {policy_decision}")
+    print(f"Request Budget:  {request_budget} probe(s)")
+    print(f"Expected Result: {expected_result}")
+    print("------------------------------------------------------------------------------\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="bb-auth",
+        description="BugBounty-Agent Authentication, Session & Identity Security Intelligence Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Inspect authentication tree for target program
+  bb-auth --program acme-corp --tree
+
+  # Passive discovery without network probing
+  bb-auth --program acme-corp --passive-only --json
+
+  # List generated hypotheses
+  bb-auth --program acme-corp --hypotheses
+
+  # Dry-run validation planning for session flows
+  bb-auth --program acme-corp --flow session --dry-run
+
+  # Execute against deterministic local authentication lab
+  bb-auth --lab --tree
+        """,
+    )
+
+    parser.add_argument("-p", "--program", default="default", help="Target program name in workspace")
+    parser.add_argument("-s", "--scope", help="Path to scope.yaml file")
+    parser.add_argument("-d", "--domain", help="Filter target domain")
+    parser.add_argument("-a", "--asset", help="Analyze specific asset")
+    parser.add_argument("--passive-only", action="store_true", help="Discover and model surfaces without validation requests")
+    parser.add_argument("--dry-run", action="store_true", help="Plan validation checks without sending network traffic")
+    parser.add_argument("--resume", action="store_true", help="Skip previously tested hypotheses")
+    parser.add_argument("--hypotheses", action="store_true", help="List authentication hypotheses only")
+    parser.add_argument("--validate", action="store_true", help="Execute safe, bounded differential validation")
+    parser.add_argument("--flow", choices=["login", "logout", "reset", "mfa", "session", "token"], help="Filter by authentication flow type")
+    parser.add_argument("--identity", default="researcher_default", help="Specify researcher-controlled identity profile ID")
+    parser.add_argument("--lab", action="store_true", help="Execute against deterministic local authentication lab")
+    parser.add_argument("--approve", action="store_true", help="Explicit human approval for sensitive state mutations")
+    parser.add_argument("--tree", action="store_true", help="Render ASCII tree view of authentication surfaces and findings")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+
+    args = parser.parse_args()
+
+    # Handle Local Lab Simulation
+    if args.lab:
+        workspace_dir = get_program_dir(f"lab_{args.program}")
+        engine = AuthenticationSecurityEngine(workspace_dir=workspace_dir)
+        lab_results = engine.execute_lab_simulation()
+
+        if args.json:
+            print(json.dumps(lab_results, indent=2))
+            return
+
+        if args.tree:
+            print(engine.render_tree())
+            return
+
+        print("\n==============================================================================")
+        print("          LOCAL AUTHENTICATION SECURITY LAB EXECUTION RESULTS                ")
+        print("==============================================================================")
+        print(f"Total Scenarios:  {lab_results['total_scenarios']}")
+        print(f"Passed:           {lab_results['passed_scenarios']}")
+        print(f"Success Rate:     {lab_results['success_rate']}%")
+        print(f"Findings Created: {lab_results['findings_generated']}")
+        print("\nScenario Breakdown:")
+        for det in lab_results["details"]:
+            status_tag = "[PASS]" if det["matches_expectation"] else "[FAIL]"
+            print(f"  {status_tag} {det['scenario_id']:<38} -> Verdict: {det['verdict']}")
+            print(f"         Reason: {det['reason']}")
+        print("==============================================================================\n")
+        return
+
+    # Real Target Program Execution
+    workspace_dir = get_program_dir(args.program)
+    scope_engine = None
+    if args.scope and os.path.isfile(args.scope):
+        scope_engine = ScopeEngine.from_file(args.scope)
+    elif os.path.isfile(os.path.join(workspace_dir, "scope.yaml")):
+        scope_engine = ScopeEngine.from_file(os.path.join(workspace_dir, "scope.yaml"))
+
+    engine = AuthenticationSecurityEngine(workspace_dir=workspace_dir, scope_engine=scope_engine)
+
+    if args.resume:
+        engine.load_existing_state()
+
+    # Discover and formulate
+    engine.discover_surfaces()
+    engine.formulate_hypotheses()
+
+    # Filter by flow if requested
+    if args.flow:
+        flow_upper = args.flow.upper()
+        engine.surfaces = [s for s in engine.surfaces if flow_upper in s.flow_type.value]
+        engine.hypotheses = [h for h in engine.hypotheses if flow_upper in h.family or flow_upper in h.endpoint.upper()]
+
+    # Hypotheses-only output
+    if args.hypotheses:
+        if args.json:
+            print(json.dumps([h.to_dict() for h in engine.hypotheses], indent=2))
+        else:
+            print(f"\n[*] Discovered {len(engine.hypotheses)} authentication hypotheses:")
+            for h in engine.hypotheses:
+                print(f"  - [{h.validation_status.value}] [{h.impact_hint}] {h.endpoint} ({h.family})")
+                print(f"    Rationale: {h.rationale}")
+        return
+
+    # Dry-run or active validation planning
+    if args.dry_run or args.validate:
+        for hyp in engine.hypotheses:
+            is_allowed, scope_reason = engine.policy.is_target_allowed(hyp.endpoint)
+            req_op = "INSPECT" if args.dry_run else "VALIDATE"
+            needs_appr = engine.policy.requires_human_approval(req_op)
+            policy_decision = "REQUIRES_APPROVAL" if needs_appr else "PERMITTED"
+
+            render_active_validation_plan(
+                target=args.program,
+                identity=args.identity,
+                operation=req_op,
+                endpoint=hyp.endpoint,
+                method="GET/POST",
+                hypothesis=f"{hyp.family} ({hyp.hypothesis_id})",
+                scope_decision=scope_reason,
+                policy_decision=policy_decision,
+                request_budget=engine.policy.MAX_REQUESTS_PER_HYPOTHESIS,
+                expected_result=hyp.expected_behavior,
+            )
+
+            if args.validate and needs_appr and not args.approve:
+                print(f"[!] Operation on {hyp.endpoint} skipped: --approve required for state-changing action.\n")
+
+    # Save state
+    engine.persist_state()
+
+    # Output formatting
+    if args.json:
+        payload = {
+            "surfaces": [s.to_dict() for s in engine.surfaces],
+            "hypotheses": [h.to_dict() for h in engine.hypotheses],
+            "findings": [f.to_dict() for f in engine.findings],
+        }
+        print(json.dumps(payload, indent=2))
+    elif args.tree or not (args.dry_run or args.validate):
+        print(engine.render_tree())
+
+
+if __name__ == "__main__":
+    main()

@@ -57,6 +57,7 @@ EXPECTED_SKILLS = {
     "evidence",
     "reporting",
     "knowledge-research",
+    "authentication",
 }
 
 OLD_AGENTS = [
@@ -313,7 +314,7 @@ def test_agent_frontmatter_validity():
     assert fm["name"] == "Bug-Bounty"
     assert fm["mode"] == "primary"
     assert isinstance(fm.get("description"), str) and len(fm["description"]) > 10
-    assert isinstance(fm.get("skills"), list) and len(fm["skills"]) == 17
+    assert isinstance(fm.get("skills"), list) and len(fm["skills"]) == 18
 
     # Validate that all referenced skills exist on disk
     for skill in fm["skills"]:
@@ -347,8 +348,8 @@ def test_bug_bounty_agent_policy():
 # 4. Canonical Skills Discovery Tests
 # ==============================================================================
 
-def test_all_17_skills_discovered():
-    """Verifies that all 17 canonical skills exist in repository skills/."""
+def test_all_18_skills_discovered():
+    """Verifies that all 18 canonical skills exist in repository skills/."""
     skill_dirs = [d for d in os.listdir(SKILLS_DIR) if os.path.isdir(os.path.join(SKILLS_DIR, d))]
     assert set(skill_dirs) == EXPECTED_SKILLS
 

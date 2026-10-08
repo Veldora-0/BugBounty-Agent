@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.14.0] - 2026-10-08
+
+### Phase 14: Authentication, Session & Identity Security Intelligence Engine
+
+#### Added
+* **Authentication Security Framework (`framework/authentication/`)**:
+  * Structured identity models (`IdentityProfile`) and bi-directional bridge with Phase 8 `PrincipalProfile`. Strict redaction: passwords and live tokens are never stored.
+  * Multi-flow surface discovery (`AuthenticationSurfaceDiscoverer`) ingesting login, logout, password change, reset, MFA, and refresh endpoints from previous phases.
+  * Session lifecycle and fixation intelligence (`SessionAnalyzer`) tracking hashed/masked fingerprints (`sess_sha256_...`), rotation, logout invalidation, and password-change invalidation.
+  * Token & JWT structural parser (`TokenAnalyzer`) locally decoding headers, algorithms, and claims without live signature tampering; detecting transport leaks in URL query parameters.
+  * Password reset and differential account enumeration analyzer (`PasswordResetAnalyzer`) detecting token reuse, expiration enforcement, and repeatable differential signals.
+  * Multi-factor authentication analyzer (`MFAAnalyzer`) identifying pre-MFA privilege exposure on sensitive account endpoints without OTP brute-forcing.
+  * Active false positive rejection (`AuthenticationFalsePositiveClassifier`) eliminating HTTP 200 login pages, non-sensitive missing cookie attributes, and normal access controls.
+  * Safety policy & approval gate (`AuthenticationSecurityPolicy`, `AuthenticationApprovalGate`) enforcing scope boundaries, blocking metadata addresses, and requiring `--approve` for sensitive mutations.
+  * Atomic state persistence (`AuthenticationStateManager`) storing state at `state/authentication.json` with resume capability.
+* **Deterministic Local Authentication Lab (`LocalAuthenticationSecurityLab`)**:
+  * 21 deterministic, 100% offline scenarios demonstrating bypasses, pre-MFA exposures, session invalidation, fixation, token reuse, enumeration, and false positive rejections.
+* **CLI Wrapper (`scripts/bb-auth`, `scripts/bb-auth.cmd`)**:
+  * Commands for `--tree`, `--json`, `--passive-only`, `--dry-run`, `--resume`, `--hypotheses`, `--validate`, `--flow`, `--identity`, `--approve`, and `--lab`.
+* **System Diagnostics & Skills Integration**:
+  * Updated `framework/tools/doctor.py` and `scripts/bb-doctor` with Category 23: Authentication & Session Security.
+  * Added permission rule `*bb-auth*` with `ask` effect to `opencode.jsonc`.
+  * Created dedicated methodology skill [`skills/authentication/SKILL.md`](skills/authentication/SKILL.md), expanding modular skills to 18.
+
+---
+
 ## [1.13.0] - 2026-10-08
 
 ### Phase 13: Cloud Security & Misconfiguration Intelligence Engine

@@ -20,6 +20,7 @@ skills:
   - evidence
   - reporting
   - knowledge-research
+  - authentication
 permissions:
   - action: shell
     resource: "*bb-scope-check*"
@@ -71,6 +72,9 @@ permissions:
     effect: ask
   - action: shell
     resource: "*bb-api*"
+    effect: ask
+  - action: shell
+    resource: "*bb-auth*"
     effect: ask
   - action: shell
     resource: "*bb-install*"

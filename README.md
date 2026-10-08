@@ -50,6 +50,7 @@ BugBounty-Agent/
 │   ├── injection/
 │   ├── business-logic/
 │   ├── cloud-security/
+│   ├── authentication/
 │   ├── browser/
 │   ├── oob/
 │   ├── validation/
@@ -70,6 +71,7 @@ BugBounty-Agent/
 │   ├── http_trust/            # HTTP / Header trust intelligence, Host injection, CORS, HPP, cache foundation
 │   ├── business_logic/        # Business logic state machines, invariant engine, replay, approval gate
 │   ├── cloud_security/        # Cloud security & misconfiguration intelligence, S3/Blob/GCS, takeover
+│   ├── authentication/        # Authentication, session & identity security intelligence, MFA, reset
 │   ├── tools/                 # Tool registry, installer, doctor, deployer
 │   └── common/                # Evidence store, sanitization, tool detection, config
 │
@@ -77,7 +79,7 @@ BugBounty-Agent/
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
-│   ├── bb-doctor              # Diagnostics utility across 22 system categories
+│   ├── bb-doctor              # Diagnostics utility across 23 system categories
 │   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
@@ -85,6 +87,7 @@ BugBounty-Agent/
 │   ├── bb-http                # HTTP / Header Trust & Protocol Security validation engine
 │   ├── bb-workflow            # Business logic and multi-step workflow intelligence engine
 │   ├── bb-cloud               # Cloud security & misconfiguration intelligence engine
+│   ├── bb-auth                # Authentication, session & identity security intelligence engine
 │   ├── bb-content             # Controlled content fuzzer wrapper (ffuf)
 │   ├── bb-js                  # JavaScript endpoint & secret analyzer
 │   ├── bb-api                 # REST/GraphQL API method and schema prober
@@ -558,6 +561,54 @@ The **Cloud Security & Misconfiguration Intelligence Engine** (`framework/cloud_
   # Run 100% offline local cloud security lab
   ./scripts/bb-cloud --lab --tree
   ./scripts/bb-cloud --lab --validate
+  ```
+
+---
+
+## Phase 14: Authentication, Session & Identity Security Intelligence
+
+The **Authentication, Session & Identity Security Intelligence Engine** (`framework/authentication/` & `scripts/bb-auth`) models authentication state machines, session lifecycles, and identity boundaries:
+
+* **Authentication Surface Discovery**: Automatically ingests endpoints and forms from previous phases (Phases 3, 4, 5, 8, and 12), cataloging login, logout, password change, password reset, MFA, and refresh endpoints.
+* **Structured Identity & Session Modeling**:
+  * `IdentityProfile`: Tracks researcher-controlled identities across lifecycle states (`ANONYMOUS`, `MFA_REQUIRED`, `AUTHENTICATED`, `LOGGED_OUT`). Strictly redacts and forbids storing raw passwords.
+  * `SessionProfile`: Analyzes session lifecycles using SHA-256 masked fingerprints (`sess_sha256_...`), observing creation, rotation, invalidation, and transport attributes.
+* **Controlled Differential Testing & False Positive Elimination**:
+  * Compares Anonymous vs Authenticated vs Pre-MFA responses.
+  * Actively rejects HTTP 200 login forms, public pages, and normal 401/403 access controls as non-vulnerabilities.
+* **Session Fixation & Invalidation**:
+  * Detects unrotated session identifiers surviving login transitions and granting authenticated access.
+  * Validates session invalidation following logout or password change by verifying that protected endpoints return HTTP 401 rather than active user data.
+* **Password Reset & Account Enumeration**:
+  * Verifies reset token one-time use, expiration enforcement, and session invalidation post-reset.
+  * Evaluates repeatable differential signals (status code, body length, redirects, distinct error messages) to identify genuine account enumeration while rejecting uniform responses.
+* **MFA State Machine & Pre-MFA Exposure**:
+  * Detects sensitive account APIs accessible using pre-MFA tokens before secondary factor verification.
+  * Strictly prohibits OTP brute-forcing, OTP flooding, or automated CAPTCHA bypasses.
+* **Token & JWT Structural Intelligence**:
+  * Decodes JWT headers and payloads locally without live tampering or signature brute-forcing.
+  * Classifies missing expiration claims (`exp`) as informational configuration observations.
+  * Flags transport exposure (tokens leaked in URL query parameters or Referer headers).
+* **Strict Non-Destructive Boundaries & Human Approval Gate**:
+  * Zero password spraying, credential stuffing, password guessing, or brute force.
+  * Sensitive state mutations (password reset execution, password changes, MFA enrollments) strictly require operator confirmation (`--approve`).
+* **Deterministic Local Authentication Lab (`LocalAuthenticationSecurityLab`)**: 21 in-memory offline scenarios covering bypasses, pre-MFA exposures, logout invalidation, session fixation, token reuse, enumeration, and false-positive elimination.
+* **CLI Utilities**:
+  ```bash
+  # Render visual authentication intelligence tree
+  ./scripts/bb-auth --program acme-corp --tree
+
+  # Passive discovery and modeling without active requests
+  ./scripts/bb-auth --program acme-corp --passive-only --json
+
+  # List generated hypotheses
+  ./scripts/bb-auth --program acme-corp --hypotheses
+
+  # Dry-run validation planning for session flows
+  ./scripts/bb-auth --program acme-corp --flow session --dry-run
+
+  # Run 100% offline local authentication security lab
+  ./scripts/bb-auth --lab --tree
   ```
 
 ---

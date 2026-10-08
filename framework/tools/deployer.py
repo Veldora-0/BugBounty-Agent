@@ -1,7 +1,7 @@
 """
 OpenCode Global Deployment and Synchronization Engine.
 
-Deploys and synchronizes the canonical Bug-Bounty agent and 17 modular skills
+Deploys and synchronizes the canonical Bug-Bounty agent and 18 modular skills
 from the BugBounty-Agent repository into the user's global OpenCode environment
 (~/.config/opencode/ and ~/.local/bin/).
 """
@@ -103,7 +103,7 @@ class OpenCodeDeployer:
         return {"status": "ok", "agent": "Bug-Bounty", "mode": mode, "destination": dst}
 
     def deploy_skills(self, prefer_symlink: bool = True) -> Dict[str, Any]:
-        """Deploys all 17 skills to global OpenCode skills directory."""
+        """Deploys all 18 skills to global OpenCode skills directory."""
         if not os.path.isdir(self.skills_src):
             return {"status": "error", "message": f"Skills source directory not found: {self.skills_src}"}
 
@@ -317,7 +317,7 @@ class OpenCodeDeployer:
         """
         Executes full deployment:
         1. Deploys agent to ~/.config/opencode/agents/Bug-Bounty.md
-        2. Deploys 17 skills to ~/.config/opencode/skills/
+        2. Deploys 18 skills to ~/.config/opencode/skills/
         3. Configures default_agent and permissions in ~/.config/opencode/opencode.jsonc
         4. Links CLI utilities to ~/.local/bin/
         5. Verifies duplicate prevention

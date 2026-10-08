@@ -582,6 +582,32 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_authentication_engine(self) -> Dict[str, Any]:
+        """Category 23: Authentication, Session & Identity Security Intelligence Engine."""
+        try:
+            from framework.authentication.models import AuthenticationState, AuthenticationFindingFamily
+            from framework.authentication.lab import LocalAuthenticationSecurityLab
+            from framework.authentication.engine import AuthenticationSecurityEngine
+            from framework.authentication.sessions import SessionAnalyzer
+            from framework.authentication.tokens import TokenAnalyzer
+
+            scenarios = LocalAuthenticationSecurityLab.list_scenarios()
+            token_meta = TokenAnalyzer.analyze_jwt_structure("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
+
+            healthy = (
+                len(scenarios) >= 18
+                and token_meta.is_jwt
+                and len(AuthenticationFindingFamily.ALL_FAMILIES) >= 10
+            )
+            return {
+                "status": "HEALTHY" if healthy else "ERROR",
+                "healthy": healthy,
+                "scenarios_count": len(scenarios),
+                "families_count": len(AuthenticationFindingFamily.ALL_FAMILIES),
+            }
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -606,6 +632,7 @@ class SystemDoctor:
             "http_trust_engine": self.check_http_trust_engine(),
             "business_logic_engine": self.check_business_logic_engine(),
             "cloud_security_engine": self.check_cloud_security_engine(),
+            "auth_engine": self.check_authentication_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }
 

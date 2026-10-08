@@ -78,7 +78,7 @@ def main():
         sys.exit(0)
 
     mode = "copy" if args.copy else "symlink"
-    print(f"[*] Deploying Bug-Bounty agent and 17 skills to global OpenCode ({deployer.config_dir})...")
+    print(f"[*] Deploying Bug-Bounty agent and 18 skills to global OpenCode ({deployer.config_dir})...")
     print(f"[*] Deployment mode: {mode}")
 
     res = deployer.deploy(mode=mode)

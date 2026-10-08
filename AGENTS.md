@@ -7,7 +7,7 @@ This document details the architectural model of **BugBounty-Agent**, defining t
 ## Architectural Model: Single Global Agent with Modular Skills
 
 > [!IMPORTANT]
-> **Single-Agent Decision**: This repository is designed around **ONE OpenCode agent named exactly `Bug-Bounty`** (canonical source in `agents/Bug-Bounty.md`, deployed globally to `~/.config/opencode/agents/Bug-Bounty.md`). All specialized bug bounty research capabilities are implemented as **17 modular skills** (`skills/`, deployed globally to `~/.config/opencode/skills/`), rather than separate subagents.
+> **Single-Agent Decision**: This repository is designed around **ONE OpenCode agent named exactly `Bug-Bounty`** (canonical source in `agents/Bug-Bounty.md`, deployed globally to `~/.config/opencode/agents/Bug-Bounty.md`). All specialized bug bounty research capabilities are implemented as **18 modular skills** (`skills/`, deployed globally to `~/.config/opencode/skills/`), rather than separate subagents.
 >
 > *The previous 14-agent multi-agent architecture will be explored in a separate, dedicated repository in the future. It is intentionally NOT merged into this repository.*
 
@@ -35,6 +35,7 @@ flowchart TD
         Orchestrator --> S8["injection"]
         Orchestrator --> S9["business-logic"]
         Orchestrator --> S10["cloud-security"]
+        Orchestrator --> S18["authentication"]
     end
 
     subgraph "Quality & Delivery Skills"
@@ -68,7 +69,7 @@ flowchart TD
 
 ---
 
-## The 17 Modular Skills Catalog
+## The 18 Modular Skills Catalog
 
 | Skill Name | Capability Category | Key Objective & Constraint |
 | :--- | :--- | :--- |
@@ -82,6 +83,7 @@ flowchart TD
 | **`injection`** | Safe Input Testing | Non-destructive proofs (time delay, arithmetic markers like `{{7*7}}`) for XSS, SQLi, SSTI, command injection. |
 | **`business-logic`** | Logic & Workflows | Multi-step workflow bypasses, race conditions, negative quantity manipulation. Zero financial harm. |
 | **`cloud-security`** | Cloud Review | Public S3/GCS buckets, metadata SSRF (`169.254.169.254`), dangling CNAME takeovers. Never attack 3rd parties. |
+| **`authentication`** | Identity & Session Security | Login/logout flows, session fixation, session invalidation, MFA transitions, password reset tokens, JWT parsing. |
 | **`browser`** | Dynamic Web Analysis | Headless Playwright browser automation, SPA DOM evaluation, storage inspection, client WebSocket monitoring. |
 | **`oob`** | Out-of-Band Testing | Interactsh integration, blind SSRF/XXE/RCE callback verification, correlation of DNS/HTTP interactions. |
 | **`validation`** | Adversarial QC | 6-gate verification checklist: challenges candidate findings, eliminates scanner false positives, scores confidence. |

@@ -22,7 +22,7 @@ BugBounty-Agent is built on four core architectural tenets:
                            │
 ┌──────────────────────────▼─────────────────────────────┐
 │                 Modular Skills Catalog                 │
-│      (17 methodology SKILL.md guides and rules)        │
+│      (18 methodology SKILL.md guides and rules)        │
 └──────────────────────────┬─────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────┐
@@ -35,6 +35,7 @@ BugBounty-Agent is built on four core architectural tenets:
 │   ├── framework/scope (Engine, Normalizer, Boundary)   │
 │   ├── framework/state (Manager, Fingerprint, Dedup)    │
 │   ├── framework/findings (Schema, Lifecycle, Report)   │
+│   ├── framework/authentication (Models, Sessions, MFA) │
 │   └── framework/common (Evidence, Tools, Config)       │
 └──────────────────────────┬─────────────────────────────┘
                            │

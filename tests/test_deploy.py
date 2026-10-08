@@ -29,7 +29,7 @@ def temp_env():
 
 
 def test_deployer_copy_mode(temp_env):
-    """Verifies that deployer deploys agent, 17 skills, scripts, and config in copy mode."""
+    """Verifies that deployer deploys agent, 18 skills, scripts, and config in copy mode."""
     deployer = OpenCodeDeployer(
         repo_root=REPO_ROOT,
         config_dir=temp_env["config_dir"],
@@ -41,7 +41,7 @@ def test_deployer_copy_mode(temp_env):
     assert res["agent"]["status"] == "ok"
     assert res["agent"]["mode"] == "copied"
     assert res["skills"]["status"] == "ok"
-    assert res["skills"]["skills_deployed"] == 17
+    assert res["skills"]["skills_deployed"] == 18
     assert res["scripts"]["status"] == "ok"
     assert res["scripts"]["scripts_linked"] >= 13
 
@@ -56,7 +56,7 @@ def test_deployer_copy_mode(temp_env):
     # Verify skills in destination
     skills_path = os.path.join(temp_env["config_dir"], "skills")
     skill_dirs = [d for d in os.listdir(skills_path) if os.path.isdir(os.path.join(skills_path, d))]
-    assert len(skill_dirs) == 17
+    assert len(skill_dirs) == 18
 
     # Verify each skill contains SKILL.md
     for s in skill_dirs:
@@ -83,7 +83,7 @@ def test_deployer_copy_mode(temp_env):
     st = deployer.check_status()
     assert st["is_valid"] is True
     assert st["agent_deployed"] is True
-    assert st["skills_count"] == 17
+    assert st["skills_count"] == 18
     assert st["default_agent"] == "Bug-Bounty"
 
 
@@ -103,7 +103,7 @@ def test_deployer_idempotency(temp_env):
 
     st = deployer.check_status()
     assert st["is_valid"] is True
-    assert st["skills_count"] == 17
+    assert st["skills_count"] == 18
 
 
 def test_deployer_uninstall(temp_env):
@@ -119,7 +119,7 @@ def test_deployer_uninstall(temp_env):
 
     un_res = deployer.uninstall()
     assert un_res["agent_removed"] is True
-    assert un_res["skills_removed"] == 17
+    assert un_res["skills_removed"] == 18
     assert un_res["scripts_removed"] >= 13
 
     st = deployer.check_status()

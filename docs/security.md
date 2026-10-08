@@ -26,3 +26,21 @@ The framework code enforces the following non-negotiable architectural boundarie
    * Real target data and secrets must never be added to repository commits.
 3. **Pre-Commit Verification**:
    * Before committing, verify git status to confirm no local target data or runtime files are tracked.
+
+---
+
+## 3. Authentication & Identity Testing Safeguards (Phase 14)
+
+1. **Researcher-Controlled Accounts Only**:
+   * All authentication, session, password-reset, and MFA testing is performed strictly against explicitly designated, researcher-controlled accounts.
+   * Never send password reset requests or verification emails to third-party accounts.
+2. **Explicitly Prohibited Operations**:
+   * **Zero** password spraying, credential stuffing, password guessing, or dictionary attacks.
+   * **Zero** token brute forcing, OTP brute forcing, or OTP flooding.
+   * **Zero** CAPTCHA bypass, SIM swap attacks, or attacks against third-party Identity Providers (IdPs).
+   * **Zero** mass account enumeration or automated account takeover attempts.
+3. **Human Approval Gate (`AuthenticationApprovalGate`)**:
+   * State-mutating operations (password reset submission, password changes, MFA enrollments, session revocations) require explicit `--approve` operator confirmation and produce an audit dossier before execution.
+4. **Credential Redaction Invariant**:
+   * Passwords, live session cookies, refresh tokens, and bearer tokens are never persisted in state files or reports; only cryptographic SHA-256 fingerprint references (`sess_sha256_...`) are tracked.
+

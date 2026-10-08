@@ -1,10 +1,10 @@
 # BugBounty-Agent — Skills Catalog
 
-BugBounty-Agent equips the unified `Bug-Bounty` agent with 17 modular OpenCode skills maintained in the repository under `skills/` and deployed globally to `~/.config/opencode/skills/`. Each skill provides specialized methodology, decision trees, criteria, and safety constraints.
+BugBounty-Agent equips the unified `Bug-Bounty` agent with 18 modular OpenCode skills maintained in the repository under `skills/` and deployed globally to `~/.config/opencode/skills/`. Each skill provides specialized methodology, decision trees, criteria, and safety constraints.
 
 ---
 
-## 17 Modular Skills Directory
+## 18 Modular Skills Directory
 
 ### 1. `scope-management`
 * **Purpose**: Scope boundary validation and offline verification.
@@ -75,3 +75,8 @@ BugBounty-Agent equips the unified `Bug-Bounty` agent with 17 modular OpenCode s
 ### 17. `knowledge-research`
 * **Purpose**: Public vulnerability intelligence and research.
 * **Methodology**: Queries public vulnerability databases (HackerOne disclosed reports, CVE, CWE, CISA KEV, OWASP guides) to formulate targeted testing hypotheses against modern architectures.
+
+### 18. `authentication`
+* **Purpose**: Authentication, session & identity security intelligence.
+* **Methodology**: Evaluates login/logout flows, session fixation, session invalidation after logout and password changes, MFA state transitions, password-reset token one-time use and expiration, differential account enumeration, and JWT structural claims without credential guessing, spraying, or brute forcing. Employs human approval gating for state-changing operations.
+
