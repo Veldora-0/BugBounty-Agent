@@ -119,6 +119,12 @@
     },
     {
       "action": "shell",
+      "resource": "*bb-cloud*",
+      "effect": "ask",
+      "description": "Require human confirmation before launching active cloud security testing or validation"
+    },
+    {
+      "action": "shell",
       "resource": "subfinder *",
       "effect": "ask",
       "description": "Require human confirmation before executing subfinder directly"

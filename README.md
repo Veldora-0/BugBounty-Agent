@@ -69,6 +69,7 @@ BugBounty-Agent/
 │   ├── injection/             # Injection intelligence, prioritization, SQLi/NoSQLi/SSTI/Command validators
 │   ├── http_trust/            # HTTP / Header trust intelligence, Host injection, CORS, HPP, cache foundation
 │   ├── business_logic/        # Business logic state machines, invariant engine, replay, approval gate
+│   ├── cloud_security/        # Cloud security & misconfiguration intelligence, S3/Blob/GCS, takeover
 │   ├── tools/                 # Tool registry, installer, doctor, deployer
 │   └── common/                # Evidence store, sanitization, tool detection, config
 │
@@ -76,13 +77,14 @@ BugBounty-Agent/
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
-│   ├── bb-doctor              # Diagnostics utility across 21 system categories
+│   ├── bb-doctor              # Diagnostics utility across 22 system categories
 │   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
 │   ├── bb-recon               # Controlled recon (subfinder, assetfinder, httpx)
 │   ├── bb-http                # HTTP / Header Trust & Protocol Security validation engine
 │   ├── bb-workflow            # Business logic and multi-step workflow intelligence engine
+│   ├── bb-cloud               # Cloud security & misconfiguration intelligence engine
 │   ├── bb-content             # Controlled content fuzzer wrapper (ffuf)
 │   ├── bb-js                  # JavaScript endpoint & secret analyzer
 │   ├── bb-api                 # REST/GraphQL API method and schema prober
@@ -234,7 +236,7 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 ## Tool Intelligence & Management
 
 ### 1. Automatic Diagnostics (`bb-doctor`)
-Run deep diagnostics across 21 system categories:
+Run deep diagnostics across 22 system categories:
 ```bash
 ./scripts/bb-doctor
 ```
@@ -255,6 +257,7 @@ Checks:
 * **Injection Intelligence**: SQLi, NoSQLi, SSTI, and Command injection validators
 * **HTTP Trust Engine**: Host injection, CORS, HPP, and cache-poisoning foundations
 * **Business Logic Engine**: Workflow state machines, 24 invariant evaluations, safe replay, and approval gate
+* **Cloud Security Engine**: Cloud provider classification, object storage exposure, takeover signatures, and false positive elimination
 
 ### 2. Safe On-Demand Installation (`bb-install`)
 Install approved tools when needed, either individually or by capability:
@@ -527,6 +530,38 @@ The **Business Logic & Workflow Intelligence Engine** (`framework/business_logic
 
 ---
 
+## Phase 13: Cloud Security & Misconfiguration Intelligence
+
+The **Cloud Security & Misconfiguration Intelligence Engine** (`framework/cloud_security/` & `scripts/bb-cloud`) identifies cloud infrastructure, evaluates object storage exposure, and detects dangling DNS takeovers:
+
+* **Multi-Signal Provider Fingerprinting**: Accurately classifies AWS, Azure, GCP, Cloudflare, Fastly, DigitalOcean, and Oracle by scoring DNS CNAMEs, IP/ASN ownership, TLS SAN records, and HTTP server headers.
+* **Cloud Service Identification**: Distinguishes object storage (S3, Blob, GCS), CDNs (CloudFront, Azure Front Door), serverless endpoints (Cloud Run, Cloud Functions), app hosting, and administrative interfaces.
+* **Exposure Hypothesis Formulation**:
+  * **Public Object Read**: Verified using safe `HEAD` probes without massive downloads.
+  * **Public Object Listing**: Verified by checking for XML/JSON enumeration schemas (`<ListBucketResult>`, `<EnumerationResults>`).
+  * **Suspected Write Capability**: Flagged as `WRITE_CAPABILITY_SUSPECTED` for manual operator review; automatic file uploads are strictly disabled.
+  * **Cloud Subdomain Takeover**: Detects orphaned cloud CNAMEs returning provider-specific registration prompts (`NoSuchBucket`, `404 Web Site not found`). Never attempts automatic resource claiming.
+  * **Unauthenticated Admin Interfaces**: Distinguishes public interfaces from unauthenticated administrative panels by verifying login/SSO barriers.
+* **Strict False Positive Elimination (`CloudFalsePositiveClassifier`)**: Rejects CDN normal endpoints, active access controls (HTTP 403 / `AccessDenied`), standard HTML website hosting, and generic 404s.
+* **Deterministic Local Security Lab (`LocalCloudSecurityLab`)**: 15 in-memory offline scenarios covering S3/Blob/GCS read and listing, dangling CNAME takeovers, admin interfaces, and false-positive rejections.
+* **CLI Utilities**:
+  ```bash
+  # Render cloud intelligence tree
+  ./scripts/bb-cloud --program acme-corp --tree
+
+  # Passive cloud asset mapping
+  ./scripts/bb-cloud --program acme-corp --passive-only --json
+
+  # Dry-run of planned cloud validation checks
+  ./scripts/bb-cloud --program acme-corp --dry-run
+
+  # Run 100% offline local cloud security lab
+  ./scripts/bb-cloud --lab --tree
+  ./scripts/bb-cloud --lab --validate
+  ```
+
+---
+
 
 ## OpenCode V2 Runtime & Security Architecture
 
@@ -555,6 +590,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | **JavaScript Analysis** | `shell` | `*bb-js*` | `ask` | Human confirmation required before running JavaScript endpoint extraction |
 | **API Intelligence** | `shell` | `*bb-api*` | `ask` | Human confirmation required before probing API specifications or endpoints |
 | **Workflow Intelligence** | `shell` | `*bb-workflow*` | `ask` | Human confirmation required before executing multi-step business logic tests |
+| **Cloud Intelligence** | `shell` | `*bb-cloud*` | `ask` | Human confirmation required before executing active cloud security tests |
 | **Tool Installation** | `shell` | `*bb-install*` | `ask` | Human confirmation required before modifying system tools |
 | **Tool Updates** | `shell` | `*bb-update*` | `ask` | Human confirmation required before updating system tools |
 | **Remote Git Push** | `shell` | `git push *` | `ask` | Confirmation required before modifying remote repository |

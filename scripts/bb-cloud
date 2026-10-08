@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""
+bb-cloud — BugBounty-Agent Cloud Security & Misconfiguration Intelligence Engine.
+
+Classifies cloud providers, identifies services, formulates exposure hypotheses,
+applies safe non-destructive validation, and detects cloud misconfigurations.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.cloud_security.engine import CloudSecurityEngine
+from framework.cloud_security.lab import LocalCloudSecurityLab
+from framework.cloud_security.models import (
+    CloudAsset,
+    CloudExposureHypothesis,
+    CloudHypothesisType,
+    CloudProvider,
+    HypothesisValidationStatus,
+)
+from framework.cloud_security.policy import CloudSecurityPolicy
+from framework.common.config import get_program_dir
+from framework.scope.engine import ScopeEngine
+
+
+def render_cloud_tree(summary_data: Dict[str, Any], assets: List[Dict[str, Any]], hypotheses: List[Dict[str, Any]], findings: List[Dict[str, Any]], program_name: str) -> None:
+    """Renders visual ASCII tree of cloud assets, services, hypotheses, and findings."""
+    print("\n==============================================================================")
+    print("                 CLOUD SECURITY & MISCONFIGURATION INTELLIGENCE TREE          ")
+    print("==============================================================================")
+    print(f"\n[*] Program:            {program_name}")
+    print(f"[*] Total Cloud Assets: {summary_data.get('total_assets', len(assets))}")
+    print(f"[*] Total Hypotheses:   {summary_data.get('total_hypotheses', len(hypotheses))}")
+    print(f"[*] Validated Findings: {summary_data.get('total_findings', len(findings))}")
+
+    if not assets and not hypotheses:
+        print("\n[*] No cloud assets or hypotheses recorded in current state.")
+        print("==============================================================================\n")
+        return
+
+    print("\n[+] CLOUD ASSETS & SERVICES:")
+    for a in assets:
+        provider = a.get("provider", "UNKNOWN")
+        service = a.get("service", "Unknown")
+        print(f"    - [{provider}] {a.get('asset')} ({service}) | Confidence: {a.get('confidence', 0.5)}")
+
+    if hypotheses:
+        print("\n[+] EXPOSURE HYPOTHESES:")
+        for h in hypotheses:
+            status = h.get("validation_status", "NEEDS_VALIDATION")
+            htype = h.get("hypothesis_type", "UNKNOWN")
+            sev = h.get("severity_hint", "INFO")
+            print(f"    - [{status}] [{sev}] {h.get('asset')} -> {htype}")
+            print(f"      Rationale: {h.get('rationale')}")
+
+    if findings:
+        print("\n[+] VALIDATED FINDING CANDIDATES:")
+        for f in findings:
+            print(f"    - [VALIDATED] {f.get('title')} ({f.get('asset')})")
+            print(f"      Endpoint: {f.get('endpoint')}")
+            print(f"      Remediation: {f.get('remediation')}")
+
+    print("\n==============================================================================")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="bb-cloud",
+        description="BugBounty-Agent Cloud Security & Misconfiguration Intelligence Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Inspect cloud intelligence tree for a target program
+  bb-cloud --program acme-corp --tree
+
+  # Passive cloud discovery without network probing
+  bb-cloud --program acme-corp --passive-only --json
+
+  # Filter by provider
+  bb-cloud --program acme-corp --provider aws --tree
+
+  # Execute dry-run of planned cloud validation checks
+  bb-cloud --program acme-corp --dry-run
+
+  # Run deterministic offline local cloud security lab
+  bb-cloud --lab --tree
+  bb-cloud --lab --validate
+        """,
+    )
+
+    parser.add_argument("-p", "--program", default="default", help="Target program name in workspace")
+    parser.add_argument("-s", "--scope", help="Path to scope.yaml file")
+    parser.add_argument("-d", "--domain", help="Filter target domain")
+    parser.add_argument("-a", "--asset", help="Analyze specific asset")
+    parser.add_argument("--provider", choices=["aws", "azure", "gcp", "cloudflare", "fastly", "digitalocean", "all"], default="all", help="Filter by cloud provider")
+    parser.add_argument("--passive-only", action="store_true", help="Fingerprint and model assets without validation requests")
+    parser.add_argument("--dry-run", action="store_true", help="Plan validation probes without sending HTTP traffic")
+    parser.add_argument("--resume", action="store_true", help="Skip previously tested hypotheses")
+    parser.add_argument("--hypotheses", action="store_true", help="List exposure hypotheses only")
+    parser.add_argument("--validate", action="store_true", help="Execute safe, bounded non-destructive validation probes")
+    parser.add_argument("--lab", action="store_true", help="Execute against deterministic local security lab scenarios")
+    parser.add_argument("--tree", action="store_true", help="Render ASCII tree view of cloud assets and findings")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+
+    args = parser.parse_args()
+
+    # Handle Local Lab Simulation
+    if args.lab:
+        requester = LocalCloudSecurityLab.make_mock_requester()
+        program_dir = get_program_dir(f"lab_{args.program}")
+        engine = CloudSecurityEngine(program_dir, request_hook=requester)
+
+        scenarios = LocalCloudSecurityLab.list_scenarios()
+        for skey in scenarios:
+            sdata = LocalCloudSecurityLab.get_scenario(skey)
+            if not sdata:
+                continue
+
+            # Filter by provider if requested
+            if args.provider != "all" and sdata["provider"].value.lower() != args.provider:
+                continue
+
+            cloud_asset, hypotheses = engine.analyze_asset(
+                asset_identifier=sdata["asset"],
+                hostname=sdata["asset"],
+                headers=dict(sdata["mock_response"].headers),
+                server=sdata["mock_response"].headers.get("server"),
+            )
+
+            if args.validate or not args.passive_only:
+                engine.validate_hypotheses(hypotheses, dry_run=args.dry_run, resume=args.resume)
+
+        state = engine.state_mgr.load_state()
+        summary = engine.state_mgr.get_summary()
+
+        if args.json:
+            print(json.dumps(state, indent=2))
+        else:
+            render_cloud_tree(summary, state["assets"], state["hypotheses"], state["findings"], f"LAB: {args.program}")
+        return
+
+    # Real Program Workflow
+    program_dir = get_program_dir(args.program)
+    scope_engine = None
+    scope_path = args.scope or os.path.join(program_dir, "scope.yaml")
+    if os.path.isfile(scope_path):
+        scope_engine = ScopeEngine.from_file(scope_path)
+
+    engine = CloudSecurityEngine(program_dir, scope_engine=scope_engine)
+
+    if args.asset:
+        cloud_asset, hypotheses = engine.analyze_asset(asset_identifier=args.asset)
+        if args.validate:
+            engine.validate_hypotheses(hypotheses, dry_run=args.dry_run, resume=args.resume)
+
+    state = engine.state_mgr.load_state()
+    summary = engine.state_mgr.get_summary()
+
+    if args.json:
+        print(json.dumps(state, indent=2))
+    elif args.tree or not args.validate:
+        render_cloud_tree(summary, state["assets"], state["hypotheses"], state["findings"], args.program)
+
+
+if __name__ == "__main__":
+    main()

@@ -554,6 +554,34 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_cloud_security_engine(self) -> Dict[str, Any]:
+        """Category 22: Cloud Security & Misconfiguration Intelligence Subsystem."""
+        try:
+            from framework.cloud_security.models import CloudProvider, CloudServiceType
+            from framework.cloud_security.fingerprints import ProviderFingerprinter
+            from framework.cloud_security.lab import LocalCloudSecurityLab
+            from framework.cloud_security.engine import CloudSecurityEngine
+
+            prov, conf, sigs = ProviderFingerprinter.fingerprint(
+                hostname="assets.s3.amazonaws.com",
+                headers={"server": "AmazonS3", "x-amz-request-id": "123"},
+            )
+            scenarios = LocalCloudSecurityLab.list_scenarios()
+
+            healthy = (
+                prov == CloudProvider.AWS
+                and conf >= 0.70
+                and len(scenarios) >= 12
+            )
+            return {
+                "status": "HEALTHY" if healthy else "ERROR",
+                "healthy": healthy,
+                "scenarios_count": len(scenarios),
+                "test_provider": prov.value,
+            }
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -577,6 +605,7 @@ class SystemDoctor:
             "injection_engine": self.check_injection_engine(),
             "http_trust_engine": self.check_http_trust_engine(),
             "business_logic_engine": self.check_business_logic_engine(),
+            "cloud_security_engine": self.check_cloud_security_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }
 
