@@ -1259,15 +1259,27 @@ def test_operational_family_password_reset_state_confusion():
 
 def test_operational_family_mfa_bypass():
     """Verifies operational validation and negative controls for MFA_BYPASS."""
-    # Positive Control: MFA endpoint accepts invalid factor
+    # Positive Control: MFA endpoint accepts factor and session elevation to protected resource is verified
     v_pos, r_pos = SafeAuthenticationValidator.validate_mfa_bypass(
         endpoint="/api/v1/auth/mfa/verify",
         status_code=200,
         response_body='{"status": "verified", "session_token": "elevated_123"}',
         submitted_valid_code=False,
+        session_elevated=True,
     )
     assert v_pos == HypothesisValidationStatus.VALIDATED
     assert "bypass confirmed" in r_pos.lower()
+
+    # Candidate Control: Endpoint returns 200/keywords but session elevation to protected resource was not proven
+    v_cand, r_cand = SafeAuthenticationValidator.validate_mfa_bypass(
+        endpoint="/api/v1/auth/mfa/verify",
+        status_code=200,
+        response_body='{"status": "verified", "session_token": "elevated_123"}',
+        submitted_valid_code=False,
+        session_elevated=False,
+    )
+    assert v_cand == HypothesisValidationStatus.CANDIDATE
+    assert "session elevation could not be confirmed" in r_cand.lower() or "protected resource could not be confirmed" in r_cand.lower()
 
     # Negative Control: MFA endpoint rejects invalid factor (HTTP 401)
     v_neg, r_neg = SafeAuthenticationValidator.validate_mfa_bypass(
@@ -1305,16 +1317,31 @@ def test_operational_family_mfa_state_confusion():
 
 def test_operational_family_authentication_state_inconsistency():
     """Verifies operational validation and negative controls for AUTHENTICATION_STATE_INCONSISTENCY."""
-    # Positive Control: Auth boundary reports unauthenticated (401), but resource returns user data (200)
+    # Positive Control: Auth boundary reports unauthenticated (401), baseline 200, resource returns user data (200)
     v_pos, r_pos = SafeAuthenticationValidator.validate_authentication_state_inconsistency(
         endpoint="/api/v1/user/data",
         auth_status_code=401,
         auth_status_body='{"authenticated": false, "message": "unauthenticated"}',
         resource_status_code=200,
         resource_body='{"user_id": "usr_77", "email": "victim@corp.local"}',
+        baseline_status_code=200,
+        baseline_body='{"user_id": "usr_77", "email": "victim@corp.local"}',
     )
     assert v_pos == HypothesisValidationStatus.VALIDATED
     assert "state inconsistency confirmed" in r_pos.lower()
+
+    # Negative Control: Generic shell returned on unauthenticated request
+    v_shell, r_shell = SafeAuthenticationValidator.validate_authentication_state_inconsistency(
+        endpoint="/api/v1/user/data",
+        auth_status_code=401,
+        auth_status_body='{"authenticated": false}',
+        resource_status_code=200,
+        resource_body='<!doctype html><html><body><div id="root"></div></body></html>',
+        baseline_status_code=200,
+        baseline_body='{"user_id": "usr_77", "email": "victim@corp.local"}',
+    )
+    assert v_shell == HypothesisValidationStatus.REJECTED
+    assert "generic public shell" in r_shell.lower()
 
     # Negative Control: Both boundaries consistent (both 401 unauthenticated)
     v_neg, r_neg = SafeAuthenticationValidator.validate_authentication_state_inconsistency(
@@ -1611,6 +1638,40 @@ class _LocalAuthHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(401, {"error": "Unauthorized"})
             return
 
+        elif "/api/v1/user/protected-data" in self.path:
+            cookie = self.headers.get("Cookie", "")
+            auth = self.headers.get("Authorization", "")
+            has_creds = ("session=sess_mfa_ok" in cookie) or ("Bearer mfa_bypass_token" in auth) or ("session=sess_active" in cookie)
+            if has_creds and self.server.mfa_bypass_mode == "VULNERABLE":
+                self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "secret": "protected_vault_access"})
+            else:
+                self._send_json(401, {"error": "MFA verification required", "challenge": "otp"})
+            return
+
+        elif "/api/v1/auth/status" in self.path:
+            self._send_json(401, {"authenticated": False, "message": "unauthenticated"})
+            return
+
+        elif "/api/v1/resource/user-data" in self.path:
+            cookie = self.headers.get("Cookie", "")
+            auth = self.headers.get("Authorization", "")
+            is_authed = bool(cookie or auth)
+            if self.server.inconsistency_mode == "INCONSISTENT":
+                self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "account_id": "acc_123"})
+            elif self.server.inconsistency_mode == "GENERIC_SHELL":
+                if is_authed:
+                    self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "account_id": "acc_123"})
+                else:
+                    self._send_html(200, '<!doctype html><html><body><div id="root"></div></body></html>')
+            elif self.server.inconsistency_mode == "PUBLIC_LANDING":
+                self._send_html(200, '<!doctype html><html><body><h1>Welcome to Acme Public Portal</h1></body></html>')
+            else:
+                if is_authed:
+                    self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "account_id": "acc_123"})
+                else:
+                    self._send_json(401, {"error": "Unauthorized"})
+            return
+
         self._send_json(404, {"error": "Not Found"})
 
     def do_POST(self):
@@ -1638,6 +1699,11 @@ class _LocalAuthHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(200, {"status": "ok", "message": "Request received"})
                 return
 
+            elif self.server.reset_mode == "GENERIC_COOKIE":
+                # Returns 200 and a session cookie, but DOES NOT mutate password
+                self._send_json(200, {"status": "ok"}, cookie="session=sess_generic_unmutated; Path=/")
+                return
+
             elif self.server.reset_mode == "GENERIC_SHELL":
                 self._send_html(200, '<!doctype html><html><body><div id="root"></div></body></html>')
                 return
@@ -1652,6 +1718,22 @@ class _LocalAuthHandler(http.server.BaseHTTPRequestHandler):
                     {"status": "password updated successfully", "user_id": "alice"},
                     cookie="session=sess_reset_active; Path=/",
                 )
+                return
+
+        elif "/api/v1/auth/mfa/verify" in self.path:
+            if self.server.mfa_bypass_mode == "VULNERABLE":
+                self._send_json(
+                    200,
+                    {"status": "mfa_verified", "user_id": "alice"},
+                    cookie="session=sess_mfa_ok; Path=/",
+                )
+                return
+            elif self.server.mfa_bypass_mode == "KEYWORDS_ONLY":
+                # Returns 200 with tokens/keywords, but protected resource will reject
+                self._send_json(200, {"status": "ok", "session_token": "token_only", "user_id": "alice"})
+                return
+            else:
+                self._send_json(401, {"error": "Invalid verification code", "challenge": "otp"})
                 return
 
         elif "/api/v1/auth/login" in self.path:
@@ -1699,6 +1781,8 @@ def local_auth_fixture():
     server.mfa_mode = "SECURE"
     server.enum_mode = "CONSISTENT"
     server.enum_trial_count = 0
+    server.mfa_bypass_mode = "ENFORCED"
+    server.inconsistency_mode = "CONSISTENT"
     server.session_b_elevated = False
     server.session_invalidated = False
     server.user_passwords = {"alice": "OriginalPass1!"}
@@ -1840,6 +1924,67 @@ def test_integration_password_reset_generic_status_cannot_validate(temp_workspac
     assert server.user_passwords["alice"] == "OriginalPass1!"  # Password was NOT modified
 
 
+def test_integration_password_reset_session_cookie_alone_cannot_validate(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves a session cookie or token returned by an unverified password reset request
+    by itself NEVER establishes VALIDATED without verified follow-up state mutation.
+    """
+    server, port = local_auth_fixture
+    server.reset_mode = "GENERIC_COOKIE"  # Issues cookie but does not mutate password
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.executor.allow_fixture_port(port)
+    engine.policy.allowed_fixture_ports.add(port)
+
+    engine.identity_mgr.register_identity(
+        identity_id="alice",
+        username="alice",
+        role="USER",
+        attributes={
+            "researcher_controlled": True,
+            "credentials_available": True,
+            "test_mutation_credential": "NewAttemptPassword99!",
+        },
+    )
+
+    reset_surf = AuthenticationStep(
+        step_id="step_reset_confirm",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        method="POST",
+        flow_type=AuthenticationFlowType.PASSWORD_RESET,
+        parameter_names=["username", "new_password", "token"],
+    )
+    login_surf = AuthenticationStep(
+        step_id="step_login",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/login",
+        method="POST",
+        flow_type=AuthenticationFlowType.LOGIN,
+        parameter_names=["username", "password"],
+    )
+    engine.surfaces = [reset_surf, login_surf]
+
+    h_reset = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-RESET-COOKIE",
+        family=AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        principal="alice",
+        required_state=AuthenticationState.ANONYMOUS,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="400",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine.hypotheses = [h_reset]
+
+    engine.validate_hypotheses(approve=True)
+
+    # Invariant: Must NOT be VALIDATED; returns CANDIDATE because credential mutation was not confirmed via login
+    assert h_reset.validation_status == HypothesisValidationStatus.CANDIDATE
+    assert "not confirmed" in h_reset.rationale.lower()
+    assert server.user_passwords["alice"] == "OriginalPass1!"  # Database unmutated
+
+
 def test_integration_password_reset_enforced_boundary(temp_workspace, local_auth_fixture):
     """
     Integration Test: Proves correctly enforced security boundaries (HTTP 400 Bad Request)
@@ -1965,6 +2110,219 @@ def test_integration_mfa_state_confusion_vulnerable_and_secure(temp_workspace, l
     assert h_mfa_sec.validation_status == HypothesisValidationStatus.REJECTED
     assert "isolation maintained" in h_mfa_sec.rationale.lower()
     shutil.rmtree(tmp_sec, ignore_errors=True)
+
+
+def test_integration_mfa_bypass_verified_elevation_and_keywords_only(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves MFA_BYPASS requires verified access to a protected resource.
+    Response keywords/tokens alone without protected access CANNOT validate (yields CANDIDATE).
+    """
+    server, port = local_auth_fixture
+
+    # Test 1: Vulnerable mode (Factor bypassed AND protected resource accessible) -> VALIDATED
+    server.mfa_bypass_mode = "VULNERABLE"
+    engine_vuln = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine_vuln.executor.allow_fixture_port(port)
+    engine_vuln.policy.allowed_fixture_ports.add(port)
+    engine_vuln.identity_mgr.register_identity(identity_id="alice", username="alice", role="USER")
+    engine_vuln.sessions = [SessionProfile(session_id="sess_active", identity_id="alice", attributes={"pre_mfa_token": "pre_mfa_123"})]
+
+    mfa_surf = AuthenticationStep(step_id="mfa", endpoint=f"http://127.0.0.1:{port}/api/v1/auth/mfa/verify", method="POST", flow_type=AuthenticationFlowType.MFA_VERIFICATION)
+    prot_surf = AuthenticationStep(step_id="prot", endpoint=f"http://127.0.0.1:{port}/api/v1/user/protected-data", method="GET", flow_type=AuthenticationFlowType.PASSWORD_RESET)
+    engine_vuln.surfaces = [mfa_surf, prot_surf]
+
+    h_vuln = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-MFA-BYP-VULN",
+        family=AuthenticationFindingFamily.MFA_BYPASS,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/mfa/verify",
+        principal="alice",
+        required_state=AuthenticationState.MFA_REQUIRED,
+        observed_state=AuthenticationState.MFA_REQUIRED,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine_vuln.hypotheses = [h_vuln]
+    engine_vuln.validate_hypotheses(approve=True)
+    assert h_vuln.validation_status == HypothesisValidationStatus.VALIDATED
+    assert "bypass confirmed" in h_vuln.rationale.lower()
+
+    # Test 2: Keywords only mode (Returns 200 with tokens/keywords, but protected resource returns 401) -> CANDIDATE
+    server.mfa_bypass_mode = "KEYWORDS_ONLY"
+    tmp_kw = tempfile.mkdtemp(prefix="bb_mfa_kw_")
+    engine_kw = AuthenticationSecurityEngine(workspace_dir=tmp_kw)
+    engine_kw.executor.allow_fixture_port(port)
+    engine_kw.policy.allowed_fixture_ports.add(port)
+    engine_kw.identity_mgr.register_identity(identity_id="alice", username="alice", role="USER")
+    engine_kw.sessions = [SessionProfile(session_id="sess_active", identity_id="alice", attributes={"pre_mfa_token": "pre_mfa_123"})]
+    engine_kw.surfaces = [mfa_surf, prot_surf]
+
+    h_kw = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-MFA-BYP-KW",
+        family=AuthenticationFindingFamily.MFA_BYPASS,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/mfa/verify",
+        principal="alice",
+        required_state=AuthenticationState.MFA_REQUIRED,
+        observed_state=AuthenticationState.MFA_REQUIRED,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine_kw.hypotheses = [h_kw]
+    engine_kw.validate_hypotheses(approve=True)
+    assert h_kw.validation_status == HypothesisValidationStatus.CANDIDATE
+    assert "could not be confirmed" in h_kw.rationale.lower()
+    shutil.rmtree(tmp_kw, ignore_errors=True)
+
+    # Test 3: Enforced mode (Factor correctly rejected: 401) -> REJECTED
+    server.mfa_bypass_mode = "ENFORCED"
+    tmp_enf = tempfile.mkdtemp(prefix="bb_mfa_enf_")
+    engine_enf = AuthenticationSecurityEngine(workspace_dir=tmp_enf)
+    engine_enf.executor.allow_fixture_port(port)
+    engine_enf.policy.allowed_fixture_ports.add(port)
+    engine_enf.identity_mgr.register_identity(identity_id="alice", username="alice", role="USER")
+    engine_enf.sessions = [SessionProfile(session_id="sess_active", identity_id="alice", attributes={"pre_mfa_token": "pre_mfa_123"})]
+    engine_enf.surfaces = [mfa_surf, prot_surf]
+
+    h_enf = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-MFA-BYP-ENF",
+        family=AuthenticationFindingFamily.MFA_BYPASS,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/mfa/verify",
+        principal="alice",
+        required_state=AuthenticationState.MFA_REQUIRED,
+        observed_state=AuthenticationState.MFA_REQUIRED,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine_enf.hypotheses = [h_enf]
+    engine_enf.validate_hypotheses(approve=True)
+    assert h_enf.validation_status == HypothesisValidationStatus.REJECTED
+    assert "correctly enforced" in h_enf.rationale.lower()
+    shutil.rmtree(tmp_enf, ignore_errors=True)
+
+
+def test_integration_authentication_state_inconsistency_baseline_and_negative_controls(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves AUTHENTICATION_STATE_INCONSISTENCY compares unauthenticated requests
+    against an authenticated baseline, and rejects public landing pages and generic application shells.
+    """
+    server, port = local_auth_fixture
+
+    status_surf = AuthenticationStep(step_id="status", endpoint=f"http://127.0.0.1:{port}/api/v1/auth/status", method="GET", flow_type=AuthenticationFlowType.PASSWORD_RESET)
+
+    # Test 1: Inconsistent mode (Auth status reports unauthenticated 401, while protected resource exposes user data without auth) -> VALIDATED
+    server.inconsistency_mode = "INCONSISTENT"
+    engine_incons = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine_incons.executor.allow_fixture_port(port)
+    engine_incons.policy.allowed_fixture_ports.add(port)
+    engine_incons.identity_mgr.register_identity(identity_id="alice", username="alice", role="USER")
+    engine_incons.sessions = [SessionProfile(session_id="sess_active", identity_id="alice")]
+    engine_incons.surfaces = [status_surf]
+
+    h_incons = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-INCONS-VULN",
+        family=AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/resource/user-data",
+        principal="alice",
+        required_state=AuthenticationState.AUTHENTICATED,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine_incons.hypotheses = [h_incons]
+    engine_incons.validate_hypotheses(approve=True)
+    assert h_incons.validation_status == HypothesisValidationStatus.VALIDATED
+    assert "state inconsistency confirmed" in h_incons.rationale.lower()
+
+    # Test 2: Negative Control (Generic Shell: unauthenticated returns <div id="root"></div>) -> REJECTED
+    server.inconsistency_mode = "GENERIC_SHELL"
+    tmp_shell = tempfile.mkdtemp(prefix="bb_incons_shell_")
+    engine_shell = AuthenticationSecurityEngine(workspace_dir=tmp_shell)
+    engine_shell.executor.allow_fixture_port(port)
+    engine_shell.policy.allowed_fixture_ports.add(port)
+    engine_shell.identity_mgr.register_identity(identity_id="alice", username="alice", role="USER")
+    engine_shell.sessions = [SessionProfile(session_id="sess_active", identity_id="alice")]
+    engine_shell.surfaces = [status_surf]
+
+    h_shell = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-INCONS-SHELL",
+        family=AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/resource/user-data",
+        principal="alice",
+        required_state=AuthenticationState.AUTHENTICATED,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine_shell.hypotheses = [h_shell]
+    engine_shell.validate_hypotheses(approve=True)
+    assert h_shell.validation_status == HypothesisValidationStatus.REJECTED
+    assert "generic public shell" in h_shell.rationale.lower()
+    shutil.rmtree(tmp_shell, ignore_errors=True)
+
+    # Test 3: Negative Control (Public Landing: returns public welcome portal) -> REJECTED
+    server.inconsistency_mode = "PUBLIC_LANDING"
+    tmp_pub = tempfile.mkdtemp(prefix="bb_incons_pub_")
+    engine_pub = AuthenticationSecurityEngine(workspace_dir=tmp_pub)
+    engine_pub.executor.allow_fixture_port(port)
+    engine_pub.policy.allowed_fixture_ports.add(port)
+    engine_pub.identity_mgr.register_identity(identity_id="alice", username="alice", role="USER")
+    engine_pub.sessions = [SessionProfile(session_id="sess_active", identity_id="alice")]
+    engine_pub.surfaces = [status_surf]
+
+    h_pub = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-INCONS-PUB",
+        family=AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/resource/user-data",
+        principal="alice",
+        required_state=AuthenticationState.AUTHENTICATED,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine_pub.hypotheses = [h_pub]
+    engine_pub.validate_hypotheses(approve=True)
+    assert h_pub.validation_status == HypothesisValidationStatus.REJECTED
+    assert "generic public shell" in h_pub.rationale.lower() or "no state inconsistency" in h_pub.rationale.lower() or "without protected data" in h_pub.rationale.lower()
+    shutil.rmtree(tmp_pub, ignore_errors=True)
+
+    # Test 4: Correctly Enforced / Consistent Access Control (Unauthenticated returns 401) -> REJECTED
+    server.inconsistency_mode = "CONSISTENT"
+    tmp_cons = tempfile.mkdtemp(prefix="bb_incons_cons_")
+    engine_cons = AuthenticationSecurityEngine(workspace_dir=tmp_cons)
+    engine_cons.executor.allow_fixture_port(port)
+    engine_cons.policy.allowed_fixture_ports.add(port)
+    engine_cons.identity_mgr.register_identity(identity_id="alice", username="alice", role="USER")
+    engine_cons.sessions = [SessionProfile(session_id="sess_active", identity_id="alice")]
+    engine_cons.surfaces = [status_surf]
+
+    h_cons = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-INCONS-CONS",
+        family=AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/resource/user-data",
+        principal="alice",
+        required_state=AuthenticationState.AUTHENTICATED,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine_cons.hypotheses = [h_cons]
+    engine_cons.validate_hypotheses(approve=True)
+    assert h_cons.validation_status == HypothesisValidationStatus.REJECTED
+    assert "consistent across system boundaries" in h_cons.rationale.lower()
+    shutil.rmtree(tmp_cons, ignore_errors=True)
 
 
 def test_integration_account_enumeration_trials_and_rate_limiting(temp_workspace, local_auth_fixture):

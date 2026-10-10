@@ -503,6 +503,175 @@ The **Security Validation Foundation Engine** (`framework/validation/` & `script
 
 ---
 
+## Phase 7: Cross-Site Scripting (XSS) Intelligence & Controlled Validation
+
+The **XSS Intelligence & Validation Engine** (`framework/xss/` & `scripts/bb-xss`) performs context-aware, non-destructive XSS candidate triage and verification across Reflected, DOM, and Stored vectors without unbounded scanning:
+
+* **Context-Aware Reflection Engine (`ReflectedXssValidator`)**:
+  * Employs harmless, deterministic marker tokens (`XSHIELD_REFLECT_<token>`) to establish raw reflection.
+  * Contextual parsing: Analyzes response context (`HTML_BODY`, `HTML_ATTRIBUTE`, `SCRIPT_TAG`, `JSON`, `UNKNOWN`) to verify whether reflections break out of lexical enclosures.
+  * False-positive filtering: Rejects reflections inside safely encoded contexts (`&lt;...&gt;`), plaintext content types, and generic error reflections.
+* **DOM Source-to-Sink Static Analysis (`DomXssAnalyzer`)**:
+  * Statically analyzes JavaScript sources (`location.search`, `location.hash`, `document.referrer`, `window.name`, `postMessage`) and hazardous sinks (`eval`, `innerHTML`, `document.write`, `setTimeout`, `location.href`).
+  * Traces data flow and sanitization indicators (DOMPurify, encodeURIComponent, textContent) without executing untrusted scripts.
+* **Stored Retrieval Correlation (`StoredXssCorrelator`)**:
+  * Correlates multi-step injection and display endpoints via unique canary markers.
+  * Requires strict state tracking across injection and retrieval phases before marking candidates.
+* **Optional Headless Browser Confirmation**:
+  * Sandboxed Playwright verification (`--browser`) reserved strictly for confirmed candidates in browser-backed environments.
+* **CLI Utility**:
+  ```bash
+  # Render ASCII XSS intelligence and candidate tree
+  ./scripts/bb-xss --program acme-corp --tree
+
+  # Run full non-destructive XSS pipeline across discovered endpoints
+  ./scripts/bb-xss --program acme-corp --domain app.example.com
+
+  # Targeted single-endpoint reflection validation
+  ./scripts/bb-xss --program acme-corp --endpoint "https://app.example.com/search" --parameter q
+
+  # Passive-only inspection of stored state and DOM artifacts
+  ./scripts/bb-xss --program acme-corp --passive-only --json
+  ```
+
+---
+
+## Phase 8: Authorization & Access Control (BOLA / IDOR) Intelligence
+
+The **Authorization & Access Control Intelligence Engine** (`framework/authz/` & `scripts/bb-authz`) validates object-level, functional, and tenant authorization boundaries through comparative multi-principal testing:
+
+* **Comparative 3-Point Access Control Baseline (`AccessControlComparator`)**:
+  * Differential testing using two distinct researcher-controlled identities (User A, User B) and an unauthenticated probe.
+  * Invariant: Horizontal BOLA/IDOR is verified only when User B successfully accesses User A's private resource and receives genuine resource data identical to User A's baseline.
+  * Soft-404 and Generic 200 Rejection: Detects and rejects empty envelopes, generic permission denial messages returned with HTTP 200, and identical responses across identities.
+* **Supported Authorization Categories**:
+  * **Horizontal BOLA/IDOR**: Cross-account access within the same tenant tier.
+  * **Vertical Privilege Escalation**: Low-privileged roles invoking high-privileged/admin endpoints.
+  * **Tenant Boundary Isolation**: Cross-tenant data leakage across separate organizational containers.
+  * **Unauthenticated Access**: Direct access to protected resources without credentials or session cookies.
+* **Human Approval Gating (`HumanApprovalGate`)**:
+  * Strict safety enforcement: All stateful or potentially mutating tests require explicit researcher approval (`--approve`).
+  * Scope enforcement is non-bypassable even with approval.
+* **Deterministic Local Security Lab (`LocalAuthzLab`)**:
+  * 8 offline simulation scenarios for automated verification without network activity (Horizontal IDOR, Vertical Escalation, Tenant Failure, Correct Enforcement, Soft-404, Generic 200 Denial, Unauthenticated Resource, Intentionally Public).
+* **CLI Utility**:
+  ```bash
+  # Render authorization candidate hierarchy and lifecycle tree
+  ./scripts/bb-authz --program acme-corp --tree
+
+  # Run comparative authorization tests against discovered resources
+  ./scripts/bb-authz --program acme-corp --domain app.example.com
+
+  # Execute state-changing / mutation test cases with explicit approval
+  ./scripts/bb-authz --program acme-corp --domain app.example.com --approve
+
+  # Offline evaluation using local lab fixture
+  ./scripts/bb-authz --program acme-corp --lab
+  ```
+
+---
+
+## Phase 9: SSRF & Out-of-Band (OOB) Interaction Intelligence
+
+The **SSRF & Out-of-Band Intelligence Engine** (`framework/ssrf/` & `scripts/bb-ssrf`) validates Server-Side Request Forgery and out-of-band interactions using researcher-controlled canaries and safe callbacks:
+
+* **Canary Token & Correlation Management (`CanaryManager`)**:
+  * Generates unique cryptographic canary tokens per test (`canary_<hash>.<oob-domain>`).
+  * Maps callbacks precisely to test candidates, eliminating cross-test collision.
+* **Multi-Provider Architecture (`OobProviderFactory`)**:
+  * **Mock Provider (`MockOobProvider`)**: Deterministic local testing and test suite verification.
+  * **Interactsh Integration (`InteractshProvider`)**: Safe out-of-band DNS, HTTP, and HTTPS interaction verification.
+* **Supported SSRF Vulnerability Classes**:
+  * **Direct SSRF**: Target fetches external canary URL and echoes responses.
+  * **Blind SSRF**: Asynchronous background HTTP requests verified via OOB interaction polling.
+  * **DNS-Only Server-Side Interaction**: Target resolves canary hostname without issuing HTTP requests.
+  * **Redirect-Mediated SSRF**: Backend follows 3xx redirects to canary endpoints.
+* **Anti-SSRF Protection & Safety Rules**:
+  * Rejects private IP addresses (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`) and local hostnames.
+  * Restricts schemes to `http` and `https`, rejecting dangerous protocols (`file://`, `gopher://`, `dict://`).
+* **Deterministic Local Security Lab (`LocalSsrfLab`)**:
+  * 12 distinct SSRF and OOB interaction scenarios for offline test verification.
+* **CLI Utility**:
+  ```bash
+  # Render SSRF candidate status, OOB interactions, and findings
+  ./scripts/bb-ssrf --program acme-corp --tree
+
+  # Run SSRF candidate evaluation using default OOB provider
+  ./scripts/bb-ssrf --program acme-corp --domain app.example.com
+
+  # Execute approved tests with explicit human authorization
+  ./scripts/bb-ssrf --program acme-corp --domain app.example.com --approve
+
+  # Run local SSRF lab simulations across all 12 scenarios
+  ./scripts/bb-ssrf --program acme-corp --lab
+  ```
+
+---
+
+## Phase 10: Injection Intelligence & Controlled Validation
+
+The **Injection Intelligence Engine** (`framework/injection/` & `scripts/bb-inject`) performs hypothesis-driven, non-destructive testing for SQLi, NoSQLi, SSTI, and Command Injection:
+
+* **Non-Destructive Differential Testing**:
+  * **Boolean-Based SQL Injection**: Evaluates truth-functional pairs (`id=1 AND 1=1` vs `id=1 AND 1=2`) against baseline behavior without using destructive SQL statements or bulk extraction.
+  * **NoSQL Injection**: Tests query operator differentials (`{"$gt": ""}`, `{"$ne": null}`) against strict type baselines.
+  * **Server-Side Template Injection (SSTI)**: Uses harmless arithmetic markers (`{{7*7}}`, `${7*7}`, `<%= 7*7 %>`) and checks for rendered evaluated outputs (`49`) without invoking remote code execution.
+  * **Command Injection Foundation**: Identifies parameter reflection into shell contexts using safe, non-destructive echo markers with strict timeouts.
+* **False-Positive Elimination & Operational Anomaly Handling**:
+  * Distinguishes syntax errors from actual SQLi vulnerabilities.
+  * Detects WAF challenges, rate limits (HTTP 429), and caching variations to prevent false positives.
+  * Timing-based verification (`--timing`) uses strictly bounded delays ($\le 5$ seconds) with baseline jitter compensation.
+* **Prioritization & Scoring (`InjectionPrioritizer`)**:
+  * Prioritizes candidates on a 0–100 scale based on parameter names, reflection signals, and technology fingerprints.
+* **Deterministic Local Security Lab (`LocalInjectionLab`)**:
+  * 15 comprehensive simulation scenarios covering SQL, NoSQL, SSTI, Command Injection, and anomalous conditions.
+* **CLI Utility**:
+  ```bash
+  # Render prioritized injection candidate tree
+  ./scripts/bb-inject --program acme-corp --tree
+
+  # Run non-destructive injection testing against discovered endpoints
+  ./scripts/bb-inject --program acme-corp --domain app.example.com
+
+  # Enable bounded timing-differential tests with human approval
+  ./scripts/bb-inject --program acme-corp --domain app.example.com --timing --approve
+
+  # Run offline validation through the 15-scenario local injection lab
+  ./scripts/bb-inject --program acme-corp --lab
+  ```
+
+---
+
+## Phase 11: HTTP / Header Trust & Protocol Security
+
+The **HTTP / Header Trust & Protocol Security Engine** (`framework/http_trust/` & `scripts/bb-http`) evaluates protocol trust boundaries, reverse-proxy assumptions, and header-based vulnerabilities:
+
+* **Header Trust & Protocol Analysis**:
+  * **Host Header Injection**: Tests for unvalidated Host header usage in absolute URLs, password-reset links, canonical links, and redirect destinations.
+  * **X-Forwarded-Host & Forwarded Trust**: Evaluates whether intermediate proxies trust spoofed forward headers over direct socket connections.
+  * **Scheme & Protocol Trust (`X-Forwarded-Proto`)**: Tests whether backend applications alter URL schemes or downgrade security based on client-controlled protocol headers.
+  * **CORS Trust Boundaries**: Checks for dangerous `Access-Control-Allow-Origin: <reflected>` combined with `Access-Control-Allow-Credentials: true`, distinguishing public APIs from authenticated credential leaks.
+  * **HTTP Parameter Pollution (HPP)**: Evaluates parameter precedence differences between front-end and back-end parsers.
+  * **Cache Poisoning Foundation**: Identifies unkeyed header reflections and responses cached with client-controlled inputs without causing denial of service.
+* **Deterministic Local Security Lab (`LocalHttpTrustLab`)**:
+  * 15 distinct header trust, CORS reflection, HPP, and cache scenarios for fully offline verification.
+* **CLI Utility**:
+  ```bash
+  # Render HTTP header trust candidate tree and verification status
+  ./scripts/bb-http --program acme-corp --tree
+
+  # Evaluate HTTP header trust boundaries against target domain
+  ./scripts/bb-http --program acme-corp --domain app.example.com
+
+  # Execute approved stateful header tests
+  ./scripts/bb-http --program acme-corp --domain app.example.com --approve
+
+  # Run offline tests against all 15 scenarios in the local HTTP trust lab
+  ./scripts/bb-http --program acme-corp --lab
+  ```
+
+---
+
 ## Phase 12: Business Logic & Workflow Intelligence
 
 The **Business Logic & Workflow Intelligence Engine** (`framework/business_logic/` & `scripts/bb-workflow`) provides advanced workflow state analysis, deterministic state machine modeling, and controlled vulnerability evaluation:

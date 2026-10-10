@@ -523,25 +523,28 @@ class SafeAuthenticationValidator:
                 HypothesisValidationStatus.REJECTED,
                 f"Endpoint '{endpoint}' returned generic public shell without confirming state transition.",
             )
-        if AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(step_status, step_body):
+        if not issued_session_token and AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(step_status, step_body):
             return (
                 HypothesisValidationStatus.REJECTED,
                 f"Endpoint '{endpoint}' returned generic status without proof of password mutation.",
             )
 
-        # Invariant check: Did a real state transition or session issuance occur?
-        if state_transition_confirmed or issued_session_token:
+        # Invariant check: Did a real state mutation occur?
+        # A session cookie or token by itself must NEVER establish VALIDATED.
+        # It strictly requires confirmed state mutation (e.g., successful follow-up authentication with test credential).
+        if state_transition_confirmed:
             return (
                 HypothesisValidationStatus.VALIDATED,
                 f"Password reset state confusion confirmed on '{endpoint}': final state transition accepted (HTTP {step_status}) "
-                f"and verified state mutation / authenticated session observed without verified prerequisite token/step.",
+                f"and verified state mutation observed via follow-up authentication without verified prerequisite token/step.",
             )
 
-        # An unverified response returning 200 without error is an anomaly/candidate, NOT proof of password change!
+        # If a session token was issued or step returned 200, but credential change was not confirmed via login:
         return (
             HypothesisValidationStatus.CANDIDATE,
-            f"Endpoint '{endpoint}' accepted unverified state transition request (HTTP {step_status}), "
-            f"but state mutation was not confirmed by post-verification check.",
+            f"Endpoint '{endpoint}' accepted unverified state transition request (HTTP {step_status})"
+            + (f" with session artifact" if issued_session_token else "")
+            + ", but state mutation was not confirmed by follow-up authentication check.",
         )
 
     @classmethod
@@ -592,19 +595,19 @@ class SafeAuthenticationValidator:
                 f"MFA challenge response on '{endpoint}' is generic status or shell; no authenticated elevation verified.",
             )
 
-        # Verification that session was elevated or protected data returned
-        has_auth_elevation = session_elevated or bool(issued_auth_token) or any(
-            k in lower_body for k in ['"authenticated": true', '"authenticated":true', '"mfa_verified": true', '"mfa_verified":true', "session_token", "access_token", "user_id"]
-        )
-        if has_auth_elevation:
+        # Invariant check: Response keywords such as session_token, access_token, user_id, or authenticated: true
+        # MUST NEVER be standalone proof of MFA bypass.
+        # Verified access to a known protected resource without completing the required MFA factor is mandatory.
+        if session_elevated:
             return (
                 HypothesisValidationStatus.VALIDATED,
-                f"MFA bypass confirmed on '{endpoint}': challenge endpoint accepted invalid or missing verification factor (HTTP {status_code}) and elevated session state.",
+                f"MFA bypass confirmed on '{endpoint}': challenge endpoint accepted invalid or missing verification factor (HTTP {status_code}) and elevated session gained verified access to protected resource.",
             )
 
+        # If challenge response returned 200/201/302 without error, but protected resource access was not verified:
         return (
             HypothesisValidationStatus.CANDIDATE,
-            f"MFA challenge endpoint returned HTTP {status_code} without error, but session elevation could not be confirmed.",
+            f"MFA challenge endpoint returned HTTP {status_code} without error, but access to a protected resource could not be confirmed without completing MFA.",
         )
 
     @classmethod
@@ -682,22 +685,74 @@ class SafeAuthenticationValidator:
         auth_status_body: str,
         resource_status_code: int,
         resource_body: str,
+        baseline_status_code: Optional[int] = None,
+        baseline_body: Optional[str] = None,
     ) -> Tuple[HypothesisValidationStatus, str]:
         """
         Validates whether conflicting authentication states exist across system boundaries
         (e.g., auth check endpoint reports unauthenticated while resource endpoint grants access).
+        Compares unauthenticated access with a researcher-controlled authenticated baseline.
+        Rejects public resources, login pages, and generic application shells as negative controls.
         """
-        # Component 1 (auth check) reports unauthenticated / logged out
-        c1_unauth = auth_status_code in (401, 403) or any(s in auth_status_body.lower() for s in ["\"authenticated\": false", "\"logged_in\": false", "unauthenticated", "logged out"])
-        
-        # Component 2 (resource) permits access to protected user data
-        c2_auth = resource_status_code in (200, 201) and any(s in resource_body.lower() for s in ["user_id", "email", "account", "profile", "admin", "tenant"])
+        # Negative control checks on resource response:
+        if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resource_status_code, resource_body):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Resource endpoint '{endpoint}' presented login page; no state inconsistency.",
+            )
+        if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(resource_status_code, resource_body):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Resource endpoint '{endpoint}' returned generic public shell; negative control rejected.",
+            )
+        if AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(resource_status_code, resource_body):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Resource endpoint '{endpoint}' returned generic status without protected data.",
+            )
 
-        if c1_unauth and c2_auth:
+        # Baseline verification: If authenticated baseline was provided, ensure resource is genuinely protected
+        if baseline_status_code is not None and baseline_status_code not in (200, 201):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Baseline access to '{endpoint}' failed (HTTP {baseline_status_code}); resource is not confirmed accessible.",
+            )
+
+        # Normal access control: If the resource properly rejects unauthenticated access (401 or 403), state is consistent
+        if resource_status_code in (401, 403):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Authentication state is consistent across system boundaries (HTTP {auth_status_code} / HTTP {resource_status_code}).",
+            )
+
+        # Component 1 (auth check) reports unauthenticated / logged out
+        lower_auth = auth_status_body.lower()
+        c1_unauth = auth_status_code in (401, 403) or any(
+            s in lower_auth for s in ['"authenticated": false', '"authenticated":false', '"logged_in": false', '"logged_in":false', "unauthenticated", "logged out"]
+        )
+
+        # Component 2 (resource) exposes protected user data
+        lower_res = resource_body.lower()
+        has_user_data = any(s in lower_res for s in ['"user_id"', '"account_id"', '"email"', "user-profile", "account balance", "user details", '"tenant"'])
+
+        if baseline_body:
+            lower_base = baseline_body.lower()
+            # Verify resource exposes the same protected data as authenticated baseline
+            has_matching_data = any(
+                token in lower_res for token in ['"user_id"', '"email"', '"account_id"'] if token in lower_base
+            )
+            if not has_matching_data and not has_user_data:
+                return (
+                    HypothesisValidationStatus.REJECTED,
+                    f"Resource endpoint '{endpoint}' unauthenticated response did not expose protected baseline user data.",
+                )
+
+        if c1_unauth and resource_status_code in (200, 201) and has_user_data:
             return (
                 HypothesisValidationStatus.VALIDATED,
                 f"Authentication state inconsistency confirmed: auth boundary reports unauthenticated (HTTP {auth_status_code}) while protected resource '{endpoint}' returns active user session data (HTTP {resource_status_code}).",
             )
+
         return (
             HypothesisValidationStatus.REJECTED,
             f"Authentication state is consistent across system boundaries (HTTP {auth_status_code} / HTTP {resource_status_code}).",

@@ -686,11 +686,67 @@ class AuthenticationSecurityEngine:
                     mfa_res = self.executor.execute_request(mfa_ep, method="POST", data=mfa_payload, headers=mfa_headers)
                     if mfa_res.get("evidence"):
                         evidence_chain.append(mfa_res["evidence"])
+
+                    # Verify whether the resulting researcher session can access a known protected resource
+                    session_elevated = False
+                    issued_token = None
+
+                    # Extract issued cookie or token from mfa_res
+                    resp_hdrs = mfa_res.get("headers", {})
+                    resp_cookie = resp_hdrs.get("set-cookie", "")
+                    mfa_b = mfa_res.get("body", "")
+                    try:
+                        bj = json.loads(mfa_b)
+                        if isinstance(bj, dict):
+                            issued_token = bj.get("token") or bj.get("access_token") or bj.get("session_token")
+                    except Exception:
+                        pass
+
+                    # Locate protected resource surface
+                    protected_surface = next(
+                        (s for s in self.surfaces if s.flow_type not in (AuthenticationFlowType.LOGIN, AuthenticationFlowType.MFA_VERIFICATION, AuthenticationFlowType.LOGOUT)
+                         or any(p in s.endpoint.lower() for p in ["/profile", "/settings", "/account", "/dashboard", "/user", "/me"])),
+                        None
+                    )
+                    test_resource_ep = protected_surface.endpoint if protected_surface else (
+                        h.endpoint if not any(seg in h.endpoint.lower() for seg in ["mfa", "2fa", "otp", "verify"]) else None
+                    )
+
+                    if test_resource_ep and mfa_res.get("status_code") in (200, 201, 302):
+                        # Construct test headers using resulting credentials
+                        prot_headers = {}
+                        if resp_cookie:
+                            prot_headers["Cookie"] = resp_cookie
+                        elif active_session and active_session.session_id:
+                            prot_headers["Cookie"] = f"session={active_session.session_id}"
+
+                        if issued_token:
+                            prot_headers["Authorization"] = f"Bearer {issued_token}"
+                        elif pre_mfa_tok:
+                            prot_headers["Authorization"] = f"Bearer {pre_mfa_tok}"
+
+                        res_check = self.executor.execute_request(test_resource_ep, method="GET", headers=prot_headers)
+                        if res_check.get("evidence"):
+                            evidence_chain.append(res_check["evidence"])
+
+                        rc_status = res_check.get("status_code", 0)
+                        rc_body = res_check.get("body", "")
+                        rc_lower = rc_body.lower()
+                        # Verify access to protected resource without MFA prompt
+                        if rc_status in (200, 201) and not any(p in rc_lower for p in ["enter code", "otp", "two-factor", "2fa", "challenge"]):
+                            if not AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(rc_status, rc_body) and \
+                               not AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(rc_status, rc_body) and \
+                               not AuthenticationFalsePositiveClassifier.is_login_page_false_positive(rc_status, rc_body):
+                                if any(k in rc_lower for k in ['"user_id"', '"account_id"', '"email"', 'user-profile', 'dashboard', 'settings', 'account']):
+                                    session_elevated = True
+
                     verdict, reason = SafeAuthenticationValidator.validate_mfa_bypass(
                         endpoint=mfa_ep,
                         status_code=mfa_res.get("status_code", 0),
                         response_body=mfa_res.get("body", ""),
                         submitted_valid_code=False,
+                        session_elevated=session_elevated,
+                        issued_auth_token=issued_token,
                     )
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
@@ -713,16 +769,20 @@ class AuthenticationSecurityEngine:
                     sess_a_id = active_session.session_id if active_session else dual_sessions[0].session_id
                     sess_b = session_b_id or dual_sessions[1].session_id
 
-                    # 1. Baseline observation: verify Session B is initially challenged / unverified
+                    # Identify protected resource to evaluate
+                    protected_surf = next((s for s in self.surfaces if any(seg in s.endpoint.lower() for seg in ["/settings", "/profile", "/account", "/dashboard", "/user", "/me"])), None)
+                    protected_ep = protected_surf.endpoint if protected_surf else h.endpoint
+
+                    # 1. Baseline observation: verify Session B is initially challenged / unverified on protected resource
                     pre_res_b = self.executor.execute_request(
-                        h.endpoint,
+                        protected_ep,
                         method="GET",
                         headers={"Cookie": f"session={sess_b}"},
                     )
                     if pre_res_b.get("evidence"):
                         evidence_chain.append(pre_res_b["evidence"])
 
-                    # 2. Session A completes/submits factor verification
+                    # 2. Session A completes/submits factor verification (Session B does NOT submit)
                     action_res_a = self.executor.execute_request(
                         target_ep,
                         method="POST",
@@ -732,9 +792,9 @@ class AuthenticationSecurityEngine:
                     if action_res_a.get("evidence"):
                         evidence_chain.append(action_res_a["evidence"])
 
-                    # 3. Post-action observation: check whether Session B gained authorization
+                    # 3. Post-action observation: check whether Session B gained unauthorized access to protected resource
                     post_res_b = self.executor.execute_request(
-                        h.endpoint,
+                        protected_ep,
                         method="GET",
                         headers={"Cookie": f"session={sess_b}"},
                     )
@@ -745,18 +805,23 @@ class AuthenticationSecurityEngine:
                     pre_b_challenged = pre_res_b.get("status_code") in (401, 403) or any(
                         p in pre_res_b.get("body", "").lower() for p in ["enter code", "otp", "2fa", "verify identity", "challenge"]
                     )
-                    post_b_success = post_res_b.get("status_code") in (200, 201)
+                    post_b_status = post_res_b.get("status_code", 0)
+                    post_b_body = post_res_b.get("body", "")
+                    not_generic = not AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(post_b_status, post_b_body) and \
+                                  not AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(post_b_status, post_b_body) and \
+                                  not AuthenticationFalsePositiveClassifier.is_login_page_false_positive(post_b_status, post_b_body)
                     has_protected = any(
-                        k in post_res_b.get("body", "").lower() for k in ['"user_id"', '"account_id"', '"email"', 'user-profile', 'dashboard']
+                        k in post_b_body.lower() for k in ['"user_id"', '"account_id"', '"email"', 'user-profile', 'dashboard', 'settings', 'account balance', 'user details']
                     )
-                    cross_session_elevated = pre_b_challenged and post_b_success and has_protected
+                    no_mfa_prompt = not any(p in post_b_body.lower() for p in ["enter code", "otp", "two-factor", "2fa", "verify identity", "challenge"])
+                    cross_session_elevated = pre_b_challenged and (post_b_status in (200, 201)) and not_generic and has_protected and no_mfa_prompt
 
                     verdict, reason = SafeAuthenticationValidator.validate_mfa_state_confusion(
-                        endpoint=h.endpoint,
+                        endpoint=protected_ep,
                         pre_status_b=pre_res_b.get("status_code", 0),
                         pre_body_b=pre_res_b.get("body", ""),
-                        post_status_b=post_res_b.get("status_code", 0),
-                        post_body_b=post_res_b.get("body", ""),
+                        post_status_b=post_b_status,
+                        post_body_b=post_b_body,
                         cross_session_elevated=cross_session_elevated,
                     )
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
@@ -768,13 +833,13 @@ class AuthenticationSecurityEngine:
                 test_tok = active_token.token_value if active_token and getattr(active_token, "token_value", None) else None
 
                 if not status_surface:
-                    verdict = HypothesisValidationStatus.SKIPPED
-                    reason = "Skipped: Missing discovered authentication status verification endpoint (e.g. /status, /me)"
-                    is_valid = False
+                    h.validation_status = HypothesisValidationStatus.SKIPPED
+                    h.rationale = "Skipped: Missing discovered authentication status verification endpoint (e.g. /status, /me)"
+                    continue
                 elif not test_sess and not test_tok:
-                    verdict = HypothesisValidationStatus.SKIPPED
-                    reason = "Skipped: Missing researcher test session or token to verify cross-boundary state consistency"
-                    is_valid = False
+                    h.validation_status = HypothesisValidationStatus.SKIPPED
+                    h.rationale = "Skipped: Missing researcher test session or token to verify cross-boundary state consistency"
+                    continue
                 else:
                     auth_headers = {}
                     if test_tok:
@@ -782,18 +847,29 @@ class AuthenticationSecurityEngine:
                     if test_sess:
                         auth_headers["Cookie"] = f"session={test_sess}"
 
-                    status_res = self.executor.execute_request(status_surface.endpoint, method="GET", headers=auth_headers)
-                    resource_res = self.executor.execute_request(h.endpoint, method="GET", headers=auth_headers)
+                    # 1. Authenticated baseline check on resource endpoint
+                    baseline_res = self.executor.execute_request(h.endpoint, method="GET", headers=auth_headers)
+                    if baseline_res.get("evidence"):
+                        evidence_chain.append(baseline_res["evidence"])
+
+                    # 2. Check auth status component response (reports unauthenticated / logged out)
+                    status_res = self.executor.execute_request(status_surface.endpoint, method="GET")
                     if status_res.get("evidence"):
                         evidence_chain.append(status_res["evidence"])
-                    if resource_res.get("evidence"):
-                        evidence_chain.append(resource_res["evidence"])
+
+                    # 3. Check unauthenticated access to resource endpoint
+                    unauth_resource_res = self.executor.execute_request(h.endpoint, method="GET")
+                    if unauth_resource_res.get("evidence"):
+                        evidence_chain.append(unauth_resource_res["evidence"])
+
                     verdict, reason = SafeAuthenticationValidator.validate_authentication_state_inconsistency(
                         endpoint=h.endpoint,
                         auth_status_code=status_res.get("status_code", 0),
                         auth_status_body=status_res.get("body", ""),
-                        resource_status_code=resource_res.get("status_code", 0),
-                        resource_body=resource_res.get("body", ""),
+                        resource_status_code=unauth_resource_res.get("status_code", 0),
+                        resource_body=unauth_resource_res.get("body", ""),
+                        baseline_status_code=baseline_res.get("status_code", 0),
+                        baseline_body=baseline_res.get("body", ""),
                     )
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
