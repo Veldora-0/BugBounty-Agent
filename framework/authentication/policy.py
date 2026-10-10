@@ -22,7 +22,6 @@ def resolve_scope_file(program_dir: str, scope_override: Optional[str] = None) -
     1. Explicit scope_override path
     2. Canonical initialized program scope path: <program_dir>/scope/scope.yaml
     3. Workspace program root fallback: <program_dir>/scope.yaml
-    4. Current working directory fallback: ./scope/scope.yaml or ./scope.yaml
     """
     if scope_override:
         norm_override = os.path.abspath(scope_override)
@@ -40,15 +39,6 @@ def resolve_scope_file(program_dir: str, scope_override: Optional[str] = None) -
     prog_root_path = os.path.join(norm_prog, "scope.yaml")
     if os.path.isfile(prog_root_path):
         return prog_root_path
-
-    # Local working directory fallback (if running from program directory)
-    cwd_scope_sub = os.path.abspath(os.path.join("scope", "scope.yaml"))
-    if os.path.isfile(cwd_scope_sub):
-        return cwd_scope_sub
-
-    cwd_scope = os.path.abspath("scope.yaml")
-    if os.path.isfile(cwd_scope):
-        return cwd_scope
 
     return None
 
@@ -197,7 +187,7 @@ class AuthenticationApprovalGate:
         INVARIANT: Operator approval NEVER overrides scope restrictions.
         """
         if not is_in_scope:
-            return False, "Target is OUT_OF_SCOPE. Operator approval cannot override scope restrictions."
+            return False, "Approval cannot override scope restrictions: Target is OUT_OF_SCOPE"
 
         if not is_approved:
             return (

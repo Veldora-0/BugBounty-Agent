@@ -1,8 +1,9 @@
 """
-Cryptographic Evidence Management Engine for Authentication (Phase 14).
+Cryptographic Evidence Management Engine for Authentication (Phase 14.1 / 14.2).
 
 Captures and formats sanitized evidence records with cryptographic SHA-256 digests.
 Strictly redacts passwords, session secrets, bearer tokens, refresh tokens, OTPs, and API keys.
+Recursively sanitizes nested dictionaries, JSON payloads, headers, cookies, and query strings.
 """
 
 from __future__ import annotations
@@ -74,6 +75,33 @@ class AuthenticationEvidenceManager:
         return clean
 
     @classmethod
+    def sanitize_dict(cls, data: Any) -> Any:
+        """
+        Recursively traverses nested dictionaries and lists, replacing values for sensitive
+        keys ('password', 'secret', 'token', 'key', 'otp', 'cookie', 'auth') with standard redaction tokens.
+        """
+        if isinstance(data, dict):
+            sanitized: Dict[str, Any] = {}
+            for k, v in data.items():
+                k_lower = str(k).lower()
+                if any(p in k_lower for p in ["password", "passwd", "pwd"]):
+                    sanitized[k] = "[REDACTED_PASSWORD]"
+                elif any(s in k_lower for s in ["secret", "client_secret", "api_key", "apikey"]):
+                    sanitized[k] = "[REDACTED_SECRET]"
+                elif any(c in k_lower for c in ["cookie", "session", "sid"]):
+                    sanitized[k] = "[REDACTED_COOKIE]"
+                elif any(t in k_lower for t in ["token", "bearer", "otp", "totp", "auth"]):
+                    sanitized[k] = "[REDACTED_TOKEN]"
+                else:
+                    sanitized[k] = cls.sanitize_dict(v)
+            return sanitized
+        elif isinstance(data, list):
+            return [cls.sanitize_dict(item) for item in data]
+        elif isinstance(data, str):
+            return cls.sanitize(data)
+        return data
+
+    @classmethod
     def record_evidence(
         cls,
         endpoint: str,
@@ -89,8 +117,8 @@ class AuthenticationEvidenceManager:
         """
         Creates a signed, sanitized evidence dictionary with a SHA-256 checksum.
         NOTE: Computed SHA-256 digests over sanitized request and response representations
-        are strictly for provenance tracking and auditability. Cryptographic hashes are
-        provenance metadata, NOT standalone proof of vulnerability.
+        are strictly for provenance tracking, deduplication, and auditability.
+        Cryptographic hashes represent provenance metadata, NOT standalone proof of vulnerability.
         """
         clean_req = cls.sanitize(request_summary)
         clean_res = cls.sanitize(response_summary)
@@ -98,6 +126,8 @@ class AuthenticationEvidenceManager:
         timestamp = datetime.now(timezone.utc).isoformat()
         digest_input = f"{endpoint}|{method}|{status_code}|{clean_req}|{clean_res}|{timestamp}"
         sha256_digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+
+        clean_meta = cls.sanitize_dict(metadata or {})
 
         return {
             "evidence_id": f"ev_{sha256_digest[:16]}",
@@ -111,5 +141,5 @@ class AuthenticationEvidenceManager:
             "response_redacted": clean_res,
             "sha256_digest": sha256_digest,
             "timestamp": timestamp,
-            "metadata": metadata or {},
+            "metadata": clean_meta,
         }

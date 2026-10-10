@@ -1,15 +1,16 @@
 """
-Authentication Hypothesis Generation Engine (Phase 14.1).
+Authentication Hypothesis Generation Engine (Phase 14.1 / 14.2).
 
 Formulates structured, testable hypotheses regarding authentication boundaries,
 session lifecycles, MFA enforcement, and token security based on discovered attack surfaces.
 Strictly maps hypotheses to the 14 declared families in AuthenticationFindingFamily.
+Uses deterministic SHA-256 fingerprinting for robust deduplication and cross-run resume.
 """
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, List, Optional
-import uuid
 
 from framework.authentication.models import (
     AuthenticationFindingFamily,
@@ -22,8 +23,29 @@ from framework.authentication.models import (
 )
 
 
+def generate_hypothesis_id(
+    family: AuthenticationFindingFamily | str,
+    endpoint: str,
+    principal: str,
+    required_state: AuthenticationState | str,
+) -> str:
+    """
+    Generates a deterministic hypothesis ID based on canonical SHA-256 hash.
+    Ensures context-awareness: distinct endpoints, families, principals, or required states
+    produce distinct IDs, enabling legitimate re-testing while preventing redundant probes.
+    """
+    fam_str = family.value if hasattr(family, "value") else str(family)
+    req_str = required_state.value if hasattr(required_state, "value") else str(required_state)
+    raw = f"{fam_str.upper()}|{endpoint.strip()}|{principal.strip()}|{req_str.upper()}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
+    fam_clean = fam_str.replace("_", "-")[:8]
+    return f"HYP-{fam_clean}-{digest}"
+
+
 class AuthenticationHypothesisEngine:
     """Generates structured hypotheses from discovered authentication surfaces and identities."""
+
+    generate_hypothesis_id = staticmethod(generate_hypothesis_id)
 
     @classmethod
     def generate_hypotheses_for_endpoint(
@@ -41,7 +63,12 @@ class AuthenticationHypothesisEngine:
         if any(p in ep_lower for p in ["/admin", "/api/user", "/profile", "/dashboard", "/account", "/settings"]):
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-AUTH-BYPASS-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.AUTHENTICATION_BYPASS,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.AUTHENTICATED,
+                    ),
                     family=AuthenticationFindingFamily.AUTHENTICATION_BYPASS,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -59,7 +86,12 @@ class AuthenticationHypothesisEngine:
         if any(p in ep_lower for p in ["/api/account", "/profile", "/settings", "/billing", "/api/v1/user"]):
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-PRE-MFA-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.PRE_AUTH_PRIVILEGE_EXPOSURE,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.MFA_VERIFIED,
+                    ),
                     family=AuthenticationFindingFamily.PRE_AUTH_PRIVILEGE_EXPOSURE,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -77,7 +109,12 @@ class AuthenticationHypothesisEngine:
         if any(p in ep_lower for p in ["/login", "/signin", "/auth/login", "/session"]):
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-SESS-FIX-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.SESSION_FIXATION,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.AUTHENTICATED,
+                    ),
                     family=AuthenticationFindingFamily.SESSION_FIXATION,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -92,7 +129,12 @@ class AuthenticationHypothesisEngine:
             )
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-SESS-NOT-ROT-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.SESSION_NOT_ROTATED,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.AUTHENTICATED,
+                    ),
                     family=AuthenticationFindingFamily.SESSION_NOT_ROTATED,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -110,7 +152,12 @@ class AuthenticationHypothesisEngine:
         if any(p in ep_lower for p in ["/logout", "/signout", "/api/logout", "/auth/logout"]):
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-SESS-LOGOUT-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.SESSION_NOT_INVALIDATED,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.AUTHENTICATED,
+                    ),
                     family=AuthenticationFindingFamily.SESSION_NOT_INVALIDATED,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -128,7 +175,12 @@ class AuthenticationHypothesisEngine:
         if any(p in ep_lower for p in ["/password/reset", "/reset-password", "/forgot-password", "/account/recovery"]):
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-RESET-REUSE-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.PASSWORD_RESET_TOKEN_REUSE,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.RECOVERY,
+                    ),
                     family=AuthenticationFindingFamily.PASSWORD_RESET_TOKEN_REUSE,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -143,7 +195,12 @@ class AuthenticationHypothesisEngine:
             )
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-RESET-CONFUSION-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.RECOVERY,
+                    ),
                     family=AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -158,7 +215,12 @@ class AuthenticationHypothesisEngine:
             )
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-ACCT-ENUM-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.ACCOUNT_ENUMERATION,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.ANONYMOUS,
+                    ),
                     family=AuthenticationFindingFamily.ACCOUNT_ENUMERATION,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -176,7 +238,12 @@ class AuthenticationHypothesisEngine:
         if any(p in ep_lower for p in ["/mfa", "/2fa", "/otp", "/verify-mfa", "/two-factor"]):
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-MFA-BYPASS-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.MFA_BYPASS,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.MFA_VERIFIED,
+                    ),
                     family=AuthenticationFindingFamily.MFA_BYPASS,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -191,7 +258,12 @@ class AuthenticationHypothesisEngine:
             )
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-MFA-CONFUSION-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.MFA_STATE_CONFUSION,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.MFA_REQUIRED,
+                    ),
                     family=AuthenticationFindingFamily.MFA_STATE_CONFUSION,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -209,7 +281,12 @@ class AuthenticationHypothesisEngine:
         if any(p in ep_lower for p in ["/token/refresh", "/auth/refresh", "/refresh-token"]):
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-REFRESH-REUSE-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.REFRESH_TOKEN_REUSE,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.AUTHENTICATED,
+                    ),
                     family=AuthenticationFindingFamily.REFRESH_TOKEN_REUSE,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -227,7 +304,12 @@ class AuthenticationHypothesisEngine:
         if any(p in ep_lower for p in ["token=", "access_token=", "bearer=", "auth="]):
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-TOKEN-TRANS-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.TOKEN_TRANSPORT_EXPOSURE,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.AUTHENTICATED,
+                    ),
                     family=AuthenticationFindingFamily.TOKEN_TRANSPORT_EXPOSURE,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -245,7 +327,12 @@ class AuthenticationHypothesisEngine:
         if any(p in ep_lower for p in ["/api/v", "/internal/auth", "/gateway"]):
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-STATE-INCONSIST-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.AUTHENTICATED,
+                    ),
                     family=AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY,
                     endpoint=endpoint,
                     principal=principal_id,
@@ -263,7 +350,12 @@ class AuthenticationHypothesisEngine:
         if any(p in ep_lower for p in ["/login", "/auth", "/session", "/api/auth"]):
             hypotheses.append(
                 AuthenticationHypothesis(
-                    hypothesis_id=f"HYP-AUTH-CONFIG-{uuid.uuid4().hex[:6]}",
+                    hypothesis_id=cls.generate_hypothesis_id(
+                        AuthenticationFindingFamily.AUTHENTICATION_CONFIGURATION_WEAKNESS,
+                        endpoint,
+                        principal_id,
+                        AuthenticationState.AUTHENTICATED,
+                    ),
                     family=AuthenticationFindingFamily.AUTHENTICATION_CONFIGURATION_WEAKNESS,
                     endpoint=endpoint,
                     principal=principal_id,

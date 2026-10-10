@@ -208,9 +208,18 @@ Examples:
 
         # Dry-run validation planning dossier
         if args.dry_run:
+            operation_map = {
+                "PASSWORD_RESET_TOKEN_REUSE": "PASSWORD_RESET_SUBMIT",
+                "PASSWORD_RESET_STATE_CONFUSION": "PASSWORD_RESET_SUBMIT",
+                "MFA_BYPASS": "MFA_ENROLLMENT",
+                "MFA_STATE_CONFUSION": "MFA_ENROLLMENT",
+                "SESSION_NOT_INVALIDATED": "SESSION_REVOKE",
+                "SESSION_FIXATION": "SESSION_REVOKE",
+                "REFRESH_TOKEN_REUSE": "TOKEN_REFRESH_TEST",
+            }
             for hyp in engine.hypotheses:
                 is_allowed, scope_reason = engine.policy.is_target_allowed(hyp.endpoint)
-                req_op = "INSPECT"
+                req_op = operation_map.get(hyp.family, "INSPECT")
                 needs_appr = engine.policy.requires_human_approval(req_op)
                 policy_decision = "REQUIRES_APPROVAL" if needs_appr else "PERMITTED"
 
@@ -250,8 +259,26 @@ Examples:
                 "findings": [f.to_dict() for f in engine.findings],
             }
             print(json.dumps(payload, indent=2))
-        elif args.tree or not (args.dry_run or args.validate):
+        elif args.tree:
             print(engine.render_tree())
+        else:
+            val_count = sum(1 for f in engine.findings if f.confidence == "CONFIRMED")
+            info_count = sum(1 for f in engine.findings if f.confidence != "CONFIRMED")
+            skip_count = sum(1 for h in engine.hypotheses if h.validation_status == HypothesisValidationStatus.SKIPPED)
+            pend_count = sum(1 for h in engine.hypotheses if h.validation_status == HypothesisValidationStatus.NEEDS_APPROVAL)
+
+            print("\n==============================================================================")
+            print("                 AUTHENTICATION VALIDATION EXECUTION SUMMARY                  ")
+            print("==============================================================================")
+            print(f"Surfaces Discovered:     {len(engine.surfaces)}")
+            print(f"Hypotheses Formulated:   {len(engine.hypotheses)}")
+            print(f"Validated Findings:      {val_count}")
+            print(f"Informational Notes:     {info_count}")
+            print(f"Skipped Prerequisites:   {skip_count}")
+            print(f"Pending Approvals:       {pend_count}")
+            print("==============================================================================\n")
+            if not args.validate and not args.dry_run:
+                print(engine.render_tree())
 
         if has_pending_approval and not args.approve:
             print("\n[!] Warning: State-mutating validation steps require operator confirmation (--approve).")

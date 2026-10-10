@@ -594,11 +594,12 @@ The **Authentication, Session & Identity Security Intelligence Engine** (`framew
   * Decodes JWT headers and payloads locally without live tampering or signature brute-forcing.
   * Classifies missing expiration claims (`exp`) as informational configuration observations.
   * Flags transport exposure (tokens leaked in URL query parameters or Referer headers).
-* **Bounded Execution & Fail-Closed Scope**:
-  * Uses `BoundedAuthenticationExecutor` and `AuthSafeRedirectHandler` with anti-SSRF protections, maximum 10-second timeout, maximum 100KB response limit, and redirect hops caps.
-  * Resolves canonical `<program_dir>/scope/scope.yaml` and enforces strict fail-closed offline scope checking via `ScopeEngine.check()`.
+* **Bounded Execution, Destination-IP Pinning & Fail-Closed Scope (Phase 14.2)**:
+  * Uses `BoundedAuthenticationExecutor` and `AuthSafeRedirectHandler` with standard TLS certificate/hostname verification, destination-IP pinning (preserving SNI and `Host` header to prevent DNS rebinding), safe environment proxy bypassing, anti-SSRF protections (including IPv4, IPv6, and IPv4-mapped IPv6 `::ffff:0:0/96`), maximum 10-second timeout, maximum 100KB response limit, and 5 redirect hops caps.
+  * Resolves canonical `<program_dir>/scope/scope.yaml` without unsafe working directory fallbacks; enforces strict fail-closed offline scope checking via `ScopeEngine.check()`.
   * Safe execution boundaries: zero password spraying, credential stuffing, password guessing, or brute force.
   * Sensitive state mutations (password reset execution, password changes, MFA enrollments) strictly require operator confirmation (`--approve`). Operator approval never overrides scope boundaries.
+  * Real target validation utilizes authentic multi-step differential sequences with zero hardcoded synthetic responses. Missing credentials or sessions deterministically report `SKIPPED` or `CANDIDATE`.
 * **Deduplication, Resume & Native Finding Integration**:
   * Deterministic SHA-256 test fingerprinting in `state/tests.json` via `StateManager.record_test` and `StateManager.has_test_run`.
   * State resumption (`--resume`) and cryptographic evidence sanitization with family-specific redactions (`[REDACTED_PASSWORD]`, `[REDACTED_COOKIE]`, `[REDACTED_TOKEN]`, `[REDACTED_SECRET]`).

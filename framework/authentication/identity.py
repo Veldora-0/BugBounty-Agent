@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from framework.authentication.models import (
@@ -89,27 +89,35 @@ class IdentityManager:
             return seeded
 
         principals = data.get("principals", {})
+        principal_items: List[Tuple[str, Dict[str, Any]]] = []
         if isinstance(principals, dict):
             for pid, pdata in principals.items():
-                if not isinstance(pdata, dict):
-                    continue
-                username = pdata.get("username") or pdata.get("principal_id") or pid
-                role = pdata.get("role", "USER")
-                tenant = pdata.get("tenant") or pdata.get("tenant_id")
-                priv_level = pdata.get("privilege_level", 10)
-                is_active = pdata.get("is_active", True)
-                state = AuthenticationState.AUTHENTICATED if is_active else AuthenticationState.ANONYMOUS
+                if isinstance(pdata, dict):
+                    principal_items.append((pid, pdata))
+        elif isinstance(principals, list):
+            for item in principals:
+                if isinstance(item, dict):
+                    pid = item.get("principal_id") or item.get("username") or f"id_{uuid.uuid4().hex[:8]}"
+                    principal_items.append((pid, item))
 
-                prof = self.register_identity(
-                    username=username,
-                    role=role,
-                    tenant=tenant,
-                    identity_id=pid,
-                    state=state,
-                    source="PHASE_8_AUTHORIZATION",
-                    attributes={"privilege_level": priv_level},
-                )
-                seeded.append(prof)
+        for pid, pdata in principal_items:
+            username = pdata.get("username") or pdata.get("principal_id") or pid
+            role = pdata.get("role", "USER")
+            tenant = pdata.get("tenant") or pdata.get("tenant_id")
+            priv_level = pdata.get("privilege_level", 10)
+            is_active = pdata.get("is_active", True)
+            state = AuthenticationState.AUTHENTICATED if is_active else AuthenticationState.ANONYMOUS
+
+            prof = self.register_identity(
+                username=username,
+                role=role,
+                tenant=tenant,
+                identity_id=pid,
+                state=state,
+                source="PHASE_8_AUTHORIZATION",
+                attributes={"privilege_level": priv_level},
+            )
+            seeded.append(prof)
 
         return seeded
 

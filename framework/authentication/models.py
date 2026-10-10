@@ -591,7 +591,22 @@ class AuthenticationFindingCandidate:
             AuthenticationFindingFamily.AUTHENTICATION_CONFIGURATION_WEAKNESS,
         }
 
-        if is_validated and self.family not in obs_only_families:
+        evidence_items = []
+        for ev in self.evidence_chain:
+            if isinstance(ev, dict):
+                evidence_items.append({
+                    "type": "http_interaction",
+                    "content": ev.get("response_redacted") or ev.get("request_redacted") or str(ev),
+                    "metadata": {
+                        "sha256": ev.get("sha256_digest", ""),
+                        "status_code": ev.get("status_code", 0),
+                        "endpoint": ev.get("endpoint", self.endpoint),
+                    },
+                    "timestamp": ev.get("timestamp", self.timestamp),
+                })
+
+        has_evidence = len(evidence_items) > 0
+        if is_validated and self.family not in obs_only_families and has_evidence:
             lifecycle = FindingLifecycle.VALIDATED
         elif self.family in obs_only_families:
             lifecycle = FindingLifecycle.INFORMATIONAL
@@ -616,20 +631,6 @@ class AuthenticationFindingCandidate:
             f"Execute authentication/session test under context identity: {self.identity_id}",
             f"Observe application response for vulnerability family: {self.family}",
         ]
-
-        evidence_items = []
-        for ev in self.evidence_chain:
-            if isinstance(ev, dict):
-                evidence_items.append({
-                    "type": "http_interaction",
-                    "content": ev.get("response_redacted") or ev.get("request_redacted") or str(ev),
-                    "metadata": {
-                        "sha256": ev.get("sha256_digest", ""),
-                        "status_code": ev.get("status_code", 0),
-                        "endpoint": ev.get("endpoint", self.endpoint),
-                    },
-                    "timestamp": ev.get("timestamp", self.timestamp),
-                })
 
         return Finding(
             finding_id=self.finding_id,

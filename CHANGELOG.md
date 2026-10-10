@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.14.2] - 2026-10-10
+
+### Phase 14.2: Authentication Validation Integrity & Executor Safety
+
+#### Added & Improved
+* **Request-Executor Safety & TLS Verification (`framework/authentication/executor.py`)**:
+  * Restored standard TLS certificate and hostname verification (`ssl.create_default_context()`, `check_hostname=True`, `verify_mode=CERT_REQUIRED`) with fail-closed TLS error handling.
+  * Destination-IP pinning at socket connection (`PinnedHTTPConnection`, `PinnedHTTPSConnection`) preserving TLS SNI and HTTP `Host` header, eliminating DNS rebinding / TOCTOU windows.
+  * Safe environment proxy bypassing (`ProxyHandler({})`) preventing unauthorized ambient proxy interception.
+  * Hardened anti-SSRF defenses including IPv4, IPv6, IPv4-mapped IPv6 (`::ffff:0:0/96`), link-local, and cloud metadata.
+  * Per-redirect hop independent anti-SSRF and scope re-verification (`AuthSafeRedirectHandler`) with protocol downgrade prevention and 5-hop cap.
+  * Zero-traffic guarantees in `--dry-run`, `--passive-only`, and `--hypotheses` modes.
+* **Scope Resolution & Approval Gate Safety (`framework/authentication/policy.py`, `scripts/bb-auth`)**:
+  * Eliminated unsafe current-working-directory scope fallbacks (`./scope/scope.yaml`, `./scope.yaml`); fail-closed on missing or ambiguous scope.
+  * Tied approval gate to concrete operations (`PASSWORD_RESET_SUBMIT`, `PASSWORD_CHANGE`, `MFA_ENROLLMENT`); enforced strict invariant that operator approval never overrides scope boundaries.
+* **Deterministic Fingerprints & State Storage (`framework/authentication/hypotheses.py`, `storage.py`, `models.py`)**:
+  * Replaced random UUIDs with deterministic SHA-256 hypothesis IDs (`HYP-<family>-<hash>`) over family, endpoint, principal, and required state.
+  * Resilient state loading distinguishing missing files from corrupted JSON, backing up corrupted files to `.corrupt.<timestamp>` and raising `CorruptedStateError`.
+  * Recursive dictionary and JSON credential sanitization (`sanitize_dict`) in `AuthenticationEvidenceManager`.
+  * Finding lifecycles assign `FindingLifecycle.VALIDATED` only on true operational differential proof; observation-only families remain `INFORMATIONAL`.
+  * Surfaced finding persistence errors instead of silently discarding findings.
+* **Genuine Validation Pipeline (`framework/authentication/engine.py`, `validators.py`)**:
+  * Completely purged hardcoded synthetic mock strings (`sess_fixed_id`, synthetic JSON bodies) from real target evaluation paths.
+  * Implemented authentic differential verification sequences for all 11 operational families.
+  * Explicitly report `SKIPPED` / `MISSING_PREREQUISITES` or `CANDIDATE` when test credentials or sessions are missing.
+  * Updated tree rendering and CLI summaries to visually distinguish verified findings, informational notes, unverified candidates, and skipped hypotheses.
+* **Comprehensive Test Suite (`tests/test_authentication_engine.py`)**:
+  * Added negative control tests with local HTTP fixture server.
+  * Added zero-traffic assertions, proxy isolation, and DNS rebinding pinning tests (total 47 tests passing in suite; 346 passing repo-wide).
+
+---
+
 ## [1.14.1] - 2026-10-10
 
 ### Phase 14.1: Authentication Engine Hardening & Pipeline Integration

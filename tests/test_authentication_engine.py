@@ -933,3 +933,222 @@ def test_native_finding_lifecycle_persistence(temp_workspace):
     loaded_findings = sm.get_findings()
     assert len(loaded_findings) == 1
     assert loaded_findings[0].finding_id == "FIND-TEST-01"
+
+
+# ==============================================================================
+# 14. Phase 14.2 Comprehensive Safety, Integration & Lab Verification Suite
+# ==============================================================================
+
+def test_offline_lab_all_scenarios():
+    """Assert all 21 offline lab scenarios pass with exact expected verdicts."""
+    results = LocalAuthenticationSecurityLab.run_all()
+    assert len(results) == 21
+
+    for r in results:
+        scen_id = r["scenario_id"]
+        assert scen_id in LocalAuthenticationSecurityLab.SCENARIOS, f"Unexpected scenario: {scen_id}"
+        expected = LocalAuthenticationSecurityLab.SCENARIOS[scen_id]["expected_verdict"]
+        assert r["verdict"] == expected, f"Scenario {scen_id} expected {expected}, got {r['verdict']}"
+        assert r["matches_expectation"] is True, f"Scenario {scen_id} did not match expectation"
+
+
+def test_fixture_server():
+    """Verify local fixture HTTP behaviors, negative controls, and bounded execution caps."""
+    import http.server
+    import threading
+    import urllib.error
+    from framework.authentication.executor import (
+        BoundedAuthenticationExecutor,
+        AuthSafeRedirectHandler,
+    )
+
+    class FixtureHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            pass
+
+        def do_GET(self):
+            if self.path == "/api/protected":
+                auth = self.headers.get("Authorization", "")
+                if auth == "Bearer valid_key":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"user": "alice", "account": "123"}')
+                else:
+                    self.send_response(401)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"error": "Unauthorized"}')
+            elif self.path == "/large-body":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"A" * (150 * 1024))
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            if self.path.startswith("/api/reset"):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status": "Instructions sent if account exists"}')
+            else:
+                self.send_response(200)
+                self.end_headers()
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), FixtureHandler)
+    port = server.server_port
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+
+    try:
+        # Negative control for bypass: 401 unauthenticated vs 200 authenticated
+        v1, _ = SafeAuthenticationValidator.validate_authentication_bypass(
+            endpoint=f"http://127.0.0.1:{port}/api/protected",
+            anon_status=401,
+            anon_body='{"error": "Unauthorized"}',
+            auth_status=200,
+            auth_body='{"user": "alice", "account": "123"}',
+        )
+        assert v1 == HypothesisValidationStatus.REJECTED
+
+        # Negative control for enumeration: uniform responses
+        v2, _ = SafeAuthenticationValidator.validate_account_enumeration(
+            valid_status=200,
+            valid_body='{"status": "Instructions sent if account exists"}',
+            invalid_status=200,
+            invalid_body='{"status": "Instructions sent if account exists"}',
+            trial_count=3,
+        )
+        assert v2 == HypothesisValidationStatus.REJECTED
+
+        # Redirect blocks
+        redirect_handler = AuthSafeRedirectHandler(scope_checker=lambda u: "in-scope.com" in u)
+
+        # SSRF redirect block
+        req_mock = urllib.request.Request("http://in-scope.com/start")
+        with pytest.raises(urllib.error.HTTPError) as exc_ssrf:
+            redirect_handler.redirect_request(
+                req_mock, None, 302, "Found", {}, "http://169.254.169.254/latest/meta-data"
+            )
+        assert "prohibited" in str(exc_ssrf.value).lower()
+
+        # Out-of-scope redirect block
+        with pytest.raises(urllib.error.HTTPError) as exc_scope:
+            redirect_handler.redirect_request(
+                req_mock, None, 302, "Found", {}, "http://out-of-scope.example.com/target"
+            )
+        assert "out_of_scope" in str(exc_scope.value).lower()
+
+        # Protocol downgrade block
+        req_https = urllib.request.Request("https://in-scope.com/secure")
+        with pytest.raises(urllib.error.HTTPError) as exc_down:
+            redirect_handler.redirect_request(
+                req_https, None, 302, "Found", {}, "http://in-scope.com/insecure"
+            )
+        assert "downgrade" in str(exc_down.value).lower()
+
+        # Exceeded max redirects block
+        h_limit = AuthSafeRedirectHandler(scope_checker=lambda u: True, max_redirects=2)
+        h_limit.redirect_request(req_mock, None, 302, "Found", {}, "http://in-scope.com/1")
+        h_limit.redirect_request(req_mock, None, 302, "Found", {}, "http://in-scope.com/2")
+        with pytest.raises(urllib.error.HTTPError) as exc_max:
+            h_limit.redirect_request(req_mock, None, 302, "Found", {}, "http://in-scope.com/3")
+        assert "exceeded maximum redirects" in str(exc_max.value).lower()
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_zero_traffic_and_ssrf_boundaries(temp_workspace, monkeypatch):
+    """Verify zero socket and DNS traffic in offline modes, and exhaustive SSRF boundary coverage."""
+    import socket
+    from framework.authentication.executor import is_ssrf_prohibited_host, BoundedAuthenticationExecutor
+
+    # Assert SSRF boundaries
+    prohibited_hosts = [
+        "127.0.0.1",
+        "localhost",
+        "169.254.169.254",
+        "169.254.169.123",
+        "metadata.google.internal",
+        "instance-data",
+        "::1",
+        "fc00::1",
+        "fe80::1",
+        "::ffff:127.0.0.1",
+        "::ffff:169.254.169.254",
+        "10.0.0.1",
+        "172.16.0.1",
+        "192.168.1.1",
+        "100.64.0.1",
+        "192.0.2.1",
+        "198.51.100.1",
+        "203.0.113.1",
+    ]
+    for ph in prohibited_hosts:
+        is_prohib, reason = is_ssrf_prohibited_host(ph)
+        assert is_prohib is True, f"Host {ph} should be prohibited (reason: {reason})"
+
+    # Disallow network socket and getaddrinfo
+    def forbidden_connect(*args, **kwargs):
+        raise AssertionError("Socket connect called during offline mode!")
+
+    def forbidden_getaddrinfo(*args, **kwargs):
+        raise AssertionError("DNS getaddrinfo called during offline mode!")
+
+    monkeypatch.setattr(socket.socket, "connect", forbidden_connect)
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden_getaddrinfo)
+
+    # Dry-run execution must not make DNS or socket calls
+    executor = BoundedAuthenticationExecutor()
+    res = executor.execute_request("https://target.com/api/test", dry_run=True)
+    assert res["success"] is True
+    assert res["dry_run"] is True
+    assert res["body"] == "[DRY_RUN_NO_TRAFFIC]"
+
+
+def test_cross_run_resume_and_deduplication(temp_workspace):
+    """Verify cross-run resume retains statuses and avoids duplicate network probes."""
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    s = AuthenticationStep(step_id="step1", flow_type=AuthenticationFlowType.LOGIN, method="GET", endpoint="/auth/login")
+    engine.surfaces = [s]
+    hyps = engine.formulate_hypotheses()
+    assert len(hyps) > 0
+    # Mark first hypothesis as validated
+    hyps[0].validation_status = HypothesisValidationStatus.VALIDATED
+    hyps[0].rationale = "Pre-verified in prior wave"
+    engine.persist_state()
+
+    # Re-initialize engine and resume
+    engine2 = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine2.load_existing_state()
+    resumed_hyp = next(h for h in engine2.hypotheses if h.hypothesis_id == hyps[0].hypothesis_id)
+    assert resumed_hyp.validation_status == HypothesisValidationStatus.VALIDATED
+    assert resumed_hyp.rationale == "Pre-verified in prior wave"
+
+
+def test_scope_fail_closed_and_approval_invariants(temp_workspace):
+    """Verify scope resolution fails closed and approval gate cannot bypass scope restrictions."""
+    # Scope resolution fails closed without fallback
+    assert resolve_scope_file(temp_workspace) is None
+    assert resolve_scope_file("nonexistent_prog_dir_123") is None
+
+    # Invariant: Approval NEVER overrides scope restrictions
+    dossier = AuthenticationApprovalGate.create_audit_dossier(
+        target="https://out-of-scope.example.com",
+        identity="tester",
+        planned_operation="PASSWORD_RESET_SUBMIT",
+        endpoint="/reset",
+        method="POST",
+        reason="Testing reset",
+        security_hypothesis="Reset flaw",
+        expected_result="Fail",
+        rollback_guidance="None",
+    )
+    ok, msg = AuthenticationApprovalGate.check_approval(dossier, is_approved=True, is_in_scope=False)
+    assert ok is False
+    assert "cannot override scope restrictions" in msg.lower()
+

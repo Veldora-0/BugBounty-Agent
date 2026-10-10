@@ -1,15 +1,19 @@
 """
-State Persistence & Workspace Storage Engine (Phase 14).
+State Persistence & Workspace Storage Engine (Phase 14.1 / 14.2).
 
 Persists discovered authentication surfaces, identities, session models, hypotheses,
 and findings to state/authentication.json.
-Enforces atomic cross-platform file replacement and resume capability.
+Enforces atomic cross-platform file replacement, explicit corruption detection,
+and resume capability.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import sys
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +26,11 @@ from framework.authentication.models import (
     SessionProfile,
     TokenMetadata,
 )
+
+
+class CorruptedStateError(Exception):
+    """Raised when an existing state file exists on disk but is unparseable or corrupted."""
+    pass
 
 
 class AuthenticationStateManager:
@@ -58,7 +67,7 @@ class AuthenticationStateManager:
             "tokens": [t.to_dict() for t in (token_metadata or [])],
         }
 
-        # Write to temporary file in same directory, close handle, then atomic os.replace
+        # Write to temporary file in same directory, flush, fsync, then atomic os.replace
         temp_file = os.path.join(self.state_dir, f"authentication_{os.getpid()}_{uuid.uuid4().hex[:6]}.tmp")
         try:
             with open(temp_file, "w", encoding="utf-8") as f:
@@ -74,7 +83,7 @@ class AuthenticationStateManager:
                     pass
 
     def load_state(self) -> Dict[str, Any]:
-        """Loads state from disk if present."""
+        """Loads state from disk if present. Fails closed and raises CorruptedStateError on corrupt JSON."""
         if not os.path.isfile(self.state_file):
             return {
                 "surfaces": [],
@@ -85,6 +94,7 @@ class AuthenticationStateManager:
                 "findings": [],
                 "evidence": [],
                 "tokens": [],
+                "is_corrupted": False,
             }
 
         try:
@@ -99,15 +109,15 @@ class AuthenticationStateManager:
                 "findings": [AuthenticationFindingCandidate.from_dict(fc) for fc in data.get("findings", [])],
                 "evidence": data.get("evidence", []),
                 "tokens": [TokenMetadata.from_dict(t) for t in data.get("tokens", [])],
+                "is_corrupted": False,
             }
-        except Exception:
-            return {
-                "surfaces": [],
-                "identities": [],
-                "flows": [],
-                "sessions": [],
-                "hypotheses": [],
-                "findings": [],
-                "evidence": [],
-                "tokens": [],
-            }
+        except Exception as e:
+            ts = int(time.time())
+            corrupt_backup = f"{self.state_file}.corrupt.{ts}"
+            try:
+                shutil.copy2(self.state_file, corrupt_backup)
+            except OSError:
+                pass
+            print(f"[-] Error: Failed to parse authentication state from {self.state_file}: {e}", file=sys.stderr)
+            print(f"[-] Corrupted state backed up to {corrupt_backup}", file=sys.stderr)
+            raise CorruptedStateError(f"Authentication state file '{self.state_file}' is corrupted: {e}") from e

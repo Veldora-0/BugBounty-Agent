@@ -4,6 +4,7 @@
 
 - ✅ **v1.0 Foundational Capabilities** — Phases 1–14 (shipped 2026-10-08)
 - ✅ **v1.14.1 Hardening & Pipeline Integration** — Phase 14.1 (shipped 2026-10-10)
+- ✅ **v1.14.2 Validation Integrity & Executor Safety** — Phase 14.2 (shipped 2026-10-10)
 
 ## Completed Milestones
 
@@ -27,86 +28,71 @@
 
 </details>
 
-<details open>
+<details>
 <summary>✅ v1.14.1 Hardening & Pipeline Integration (Phase 14.1) — SHIPPED 2026-10-10</summary>
 
 - **Phase 14.1: Authentication Engine Hardening & Pipeline Integration** — End-to-end execution pipeline, fail-closed scope resolution (`ScopeEngine.check()`, canonical `<program_dir>/scope/scope.yaml`), cross-phase state ingestion from 7 schemas, operational coverage of 14 families, differential validation heuristics, test deduplication in `state/tests.json`, `--resume` support, credential sanitization, and native findings persistence in `state/findings.json`.
 
 </details>
 
+<details>
+<summary>✅ v1.14.2 Validation Integrity & Executor Safety (Phase 14.2) — SHIPPED 2026-10-10</summary>
+
+- **Phase 14.2: Authentication Validation Integrity & Executor Safety** — TLS verification restoration (`ssl.create_default_context()`, `check_hostname=True`), destination IP pinning mitigating DNS rebinding/TOCTOU, comprehensive anti-SSRF defenses (IPv4, IPv6, IPv4-mapped IPv6, metadata), per-redirect scope and SSRF re-evaluation, elimination of synthetic comparison responses from live target validation, deterministic context-aware hypothesis IDs (`HYP-<family>-<digest>`), corruption handling and atomic state writes, comprehensive credential redaction, and authentic differential validation sequences.
+
+</details>
+
 ---
 
-## Completed Phase Details
+## Active Phase Details
 
-### Phase 14.1: Authentication Engine Hardening & Pipeline Integration
-
-**Goal**: Transform the Phase 14 authentication baseline into a fully hardened, pipeline-integrated operational subsystem capable of consuming real multi-phase state, enforcing strict scope boundaries, executing deterministic test workflows, and producing high-confidence validated findings.
-
-**Depends on**: Phase 14 baseline  
-**Requirements**: PIPE-01, PIPE-02, PIPE-03, PIPE-04, SCOPE-01, SCOPE-02, SCOPE-03, STATE-01, STATE-02, STATE-03, STATE-04, STATE-05, STATE-06, STATE-07, COV-01, COV-02, COV-03, COV-04, COV-05, COV-06, COV-07, COV-08, COV-09, COV-10, COV-11, COV-12, COV-13, COV-14, HEUR-01, HEUR-02, HEUR-03, HEUR-04, HEUR-05, DEDUP-01, DEDUP-02, DEDUP-03, EVID-01, EVID-02, EVID-03, TEST-01, TEST-02, TEST-03, TEST-04, TEST-05, DOCS-01, DOCS-02, DOCS-03
-
-**Success Criteria** (what must be TRUE):
-1. `bb-auth --validate` executes end-to-end without unhandled exceptions across surface discovery, hypothesis generation, safe testing, and evidence generation. Dry-run, passive-only, and lab paths make zero external network requests.
-2. Scope engine validates all target URLs and hostnames offline prior to network interaction; missing or ambiguous scope deterministically fails closed.
-3. Ingests actual state files (`state/webapps.json`, `state/api.json`, `state/javascript.json`, `state/assets.json`, `state/recon.json`, `state/authorization.json`, `state/workflows.json`) using real models, with graceful degradation when individual files are missing or empty.
-4. Preserves all 14 declared vulnerability families in `AuthenticationFindingFamily`, clearly distinguishing operational validation (with baseline differential evidence) from observation-only hardening concerns.
-5. Evidence-backed validation rejects status-code-only false positives (generic 200 OK login pages and WAF challenges). Password-reset testing is restricted to researcher-controlled accounts, and operator approval (`--approve`) is strictly enforced for mutations.
-6. Deterministic SHA-256 test fingerprints prevent duplicate probing in `state/tests.json`, and `--resume` accurately restores engine state.
-7. Verified findings integrate natively into `framework.findings.schema.Finding` within `state/findings.json` without parallel models. Sensitive credentials are fully redacted, and request/response hashes are treated as provenance records rather than vulnerability proof.
-8. All 21 existing offline lab scenarios pass, plus 18 new integration/safety test cases pass. Pytest suite passes 100% on Windows and Kali Linux, all 23 `bb-doctor` categories report `[HEALTHY]`, OpenCode configuration is verified, and work concludes in one final implementation commit: `fix: harden authentication validation pipeline`.
+None (Phase 14.2 completed).
 
 **Plans** (Sequential Execution — Completed):
 
-- [x] **14.1-01: Pipeline & Scope Engine Integration**
-  - Connect `bb-auth --validate` execution stages end-to-end through a bounded internal request executor.
-  - Require integration test proving `bb-auth --validate --lab` executes real hypothesis processing and validation.
-  - Integrate `ScopeEngine` using its actual `check(target)` API returning `ScopeDecision` and checking `status == ScopeStatus.IN_SCOPE`.
-  - Resolve canonical initialized program scope path `<program_dir>/scope/scope.yaml` (or explicit `--scope`), failing closed if missing or ambiguous.
-  - Enforce zero external network traffic on dry-run, passive-only, hypothesis-only, and lab paths.
-  - Ensure clean termination with exit codes (0=clean, 1=error/scope, 2=pending approval) without uncaught exceptions.
+- [x] **14.2-01: Request-Executor Safety, TLS Verification & Scope/Approval Integrity**
+  - Restore standard TLS certificate and hostname verification in `BoundedAuthenticationExecutor`.
+  - Harden anti-SSRF defenses against IPv4, IPv6, IPv4-mapped IPv6, and cloud metadata.
+  - Mitigate DNS rebinding and TOCTOU races by pre-resolving and pinning connection destination IPs.
+  - Re-verify scope and destination safety on each redirect hop (max 5 redirects).
+  - Eliminate unsafe current working directory scope fallbacks in `resolve_scope_file`.
+  - Bind approval gate to concrete operations and enforce invariant that approval never overrides scope.
 
-- [x] **14.1-02: Cross-Phase State Ingestion & Surface Discovery**
-  - Implement real schema loaders for `state/webapps.json` (`WebAppStateManager`), `state/api.json` (`ApiStateManager`), `state/javascript.json` (`JavaScriptStateManager`), `state/assets.json`, and `state/recon.json` (lists of dicts vs dicts).
-  - Ingest authorization context from `state/authorization.json` (`AuthorizationStateManager`, dict of principals) and workflow context from `state/workflows.json` (`WorkflowStateManager`, dict of workflows).
-  - Implement defensive error handling for missing, empty, partial, or corrupted JSON state files without crashing.
-  - Map discovered routes, parameters, cookies, tokens, and forms into unified `AuthenticationSurfaceDiscoverer`.
+- [x] **14.2-02: State Ingestion Resiliency, Deterministic Fingerprinting & Evidence Redaction**
+  - Implement deterministic, context-aware hypothesis IDs based on canonical SHA-256 hashes instead of random UUIDs.
+  - Eliminate silent exception swallowing in `AuthenticationStateManager.load_state()`.
+  - Ingest actual schemas across all 7 state files (`webapps.json`, `api.json`, `javascript.json`, `assets.json`, `recon.json`, `authorization.json`, `workflows.json`) with resilient handling for lists and dicts.
+  - Expand credential redaction to include JSON structures, nested headers, Bearer/Basic, cookies, OTPs, and query parameters.
+  - Enforce native finding lifecycle accuracy (`FindingLifecycle.VALIDATED` only on true verification; observations remain `INFORMATIONAL`).
 
-- [x] **14.1-03: Operational Coverage & Hardened Validation Heuristics**
-  - Implement operational validation across all 11 operational families (`AUTHENTICATION_BYPASS`, `PRE_AUTH_PRIVILEGE_EXPOSURE`, `SESSION_FIXATION`, `SESSION_NOT_INVALIDATED`, `PASSWORD_RESET_TOKEN_REUSE`, `PASSWORD_RESET_STATE_CONFUSION`, `ACCOUNT_ENUMERATION`, `MFA_BYPASS`, `MFA_STATE_CONFUSION`, `REFRESH_TOKEN_REUSE`, `AUTHENTICATION_STATE_INCONSISTENCY`).
-  - Classify 3 observation-only families (`SESSION_NOT_ROTATED`, `TOKEN_TRANSPORT_EXPOSURE`, `AUTHENTICATION_CONFIGURATION_WEAKNESS`) as observations without escalating to unproven vulnerabilities.
-  - Implement baseline differential validation (anonymous vs authenticated) to reject generic 200 OK login forms and WAF challenges.
-  - Treat timing differences and response text variations as signals, requiring repeatable differential evidence across multiple trials for account enumeration.
-  - Enforce operator approval gating (`AuthenticationApprovalGate`) via `--approve` for state mutations on test accounts. Invariant: approval never overrides scope restrictions.
+- [x] **14.2-03: Genuine Validation Pipeline & Honest Family Status**
+  - Purge all hardcoded synthetic comparison responses from `engine.py`.
+  - Implement genuine bounded multi-step test sequences for operational families using actual requests and researcher identities.
+  - Set explicit non-validated states (`SKIPPED`, `UNVALIDATED`, `MISSING_PREREQUISITES`) when test prerequisites or credentials are not provided.
+  - Strictly preserve observation-only families as informational hardening observations without escalating to vulnerabilities.
+  - Update tree rendering and reporting to honestly differentiate candidates, observations, and validated findings.
 
-- [x] **14.1-04: Deterministic Fingerprinting, Deduplication, Resume & Evidence Model**
-  - Implement deterministic SHA-256 test fingerprints via `generate_test_fingerprint` with context-awareness (principal, role) to prevent suppressing legitimate retests.
-  - Integrate with `state/tests.json` using exact `StateManager.has_test_run` and `StateManager.record_test` methods.
-  - Support `--resume` flag to recover previously evaluated hypotheses and findings from `state/authentication.json`.
-  - Enforce strict credential sanitization in `AuthenticationEvidenceManager` (passwords, cookies, tokens, OTPs, API keys) with SHA-256 provenance hashes.
-  - Map verified candidates to native `framework.findings.schema.Finding` objects respecting `FindingLifecycle.VALIDATED` only on true verification, and persist via `StateManager.save_finding`.
-
-- [x] **14.1-05: Regression Testing, Doctor Diagnostics, Cross-Platform Validation & Documentation**
-  - Preserve all 21 existing offline authentication lab scenarios in `framework/authentication/lab.py`.
-  - Add 18 new integration and safety test cases covering real state ingestion, fail-closed scope, redaction, deduplication, resume, and baseline validation.
-  - Run active tests against local lab targets only with zero external network traffic.
-  - Verify complete regression suite passes on Windows workstation and Kali Linux VM (`python -m pytest -q`).
-  - Verify all 23 diagnostic categories report `[HEALTHY]` in `bb-doctor`.
-  - Validate global deployment (`bb-deploy`) and OpenCode configuration (`Bug-Bounty`, 18 skills).
-  - Update `skills/authentication/SKILL.md`, `README.md`, `CHANGELOG.md`, and `docs/architecture.md`.
-  - Conclude implementation in a single consolidated commit: `fix: harden authentication validation pipeline`.
+- [x] **14.2-04: Comprehensive Safety, Integration & Lab Verification Suite**
+  - Preserve all 21 offline lab scenarios with 100% deterministic accuracy.
+  - Implement local fixture HTTP server integration tests with negative controls for each operational family.
+  - Assert zero socket creation and zero DNS resolution in all offline modes (`--dry-run`, `--passive-only`, `--lab`).
+  - Add security boundary tests for TLS errors, SSRF blocks (including IPv4-mapped IPv6), DNS rebinding, and fail-closed scope resolution.
+  - Run full regression suite across repository (`python -m pytest -q`) and verify `bb-doctor` Category 23.
+  - Update documentation (`skills/authentication/SKILL.md`, `README.md`, `CHANGELOG.md`, `docs/architecture.md`) and prepare single consolidated commit.
 
 ---
 
 ## Progress
 
 **Execution Order:**
-Plans execute strictly in sequence: 14.1-01 → 14.1-02 → 14.1-03 → 14.1-04 → 14.1-05. No parallelization.
+Plans execute strictly in sequence: 14.2-01 → 14.2-02 → 14.2-03 → 14.2-04. No parallelization.
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | Phases 1–14 | v1.0 | 14/14 | Complete | 2026-10-08 |
 | Phase 14.1: Authentication Hardening | v1.14.1 | 5/5 | Complete | 2026-10-10 |
+| Phase 14.2: Validation Integrity & Safety | v1.14.2 | 4/4 | Complete | 2026-10-10 |
 
 ---
-*Roadmap defined: 2026-10-09*
-*Immediate focus: Phase 14.1 only*
+*Roadmap updated: 2026-10-10*  
+*Immediate focus: Phase 14.2 complete*

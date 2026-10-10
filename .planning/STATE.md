@@ -2,26 +2,27 @@
 
 ## Project Reference
 
-See: `.planning/PROJECT.md` (updated 2026-10-09)
+See: `.planning/PROJECT.md` (updated 2026-10-10)
 
 **Core value:** Enable safe, hypothesis-driven, non-destructive bug bounty security research with strict offline scope enforcement, local data isolation outside Git, and adversarial validation without scanner false positives.  
-**Current focus:** Phase 14.1: Authentication Engine Hardening & Pipeline Integration
+**Current focus:** Phase 14.2: Authentication Validation Integrity & Executor Safety
 
 ## Current Position
 
-Phase: 14.1 of 14.1 (Authentication Engine Hardening & Pipeline Integration)  
-Plan: 5 of 5 executed (All 5 plans completed)  
-Status: Phase 14.1 complete; all tests passing (341/341 passed across test suite), Doctor healthy across all 23 categories  
-Last activity: 2026-10-10 — Executed Plans 14.1-01 through 14.1-05: bounded executor, scope fail-closed, cross-phase state ingestion, 14 families operational coverage, test dedup, findings persistence, regression testing, and deployment sync  
+Phase: 14.2 of 14.2 (Authentication Validation Integrity & Executor Safety)  
+Plan: 4 of 4 executed (4 of 4 complete)  
+Status: Phase 14.2 execution complete; all 4 plans implemented, verified, and audited  
+Last activity: 2026-10-10 — Completed Phase 14.2: Request-executor safety (TLS verification, anti-SSRF, destination-IP pinning, safe redirects), state ingestion resiliency, deterministic hypothesis fingerprints, credential redaction, honest validation pipeline, negative controls, and offline lab scenarios  
 
-Progress: [██████████] 100% (Phase 14.1)
+Progress: [██████████] 100% (Phase 14.2)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5
-- Baseline product phases complete: 14 (Phases 1–14) + Phase 14.1
-- Automated tests passing: 341/341 (100% passing across entire suite, 42/42 in test_authentication_engine.py)
+- Total plans completed: 4 (Phase 14.2)
+- Baseline product phases complete: 14 (Phases 1–14) + Phase 14.1 (5 plans completed) + Phase 14.2 (4 plans completed)
+- Automated tests passing: 346/346 (100% passing across entire suite)
+- Target plans: 4 (14.2-01 to 14.2-04)
 
 ## Accumulated Context
 
@@ -33,21 +34,21 @@ Recent decisions affecting current work (from PROJECT.md):
 - 18 Skills Architecture: Retain existing 18 modular skills without adding subagents.
 - Native Subsystems: Zero external autonomous scanning engines (no Xalgorix, no Strix).
 - Preserved Taxonomy: Strictly preserve the 14 declared families in `AuthenticationFindingFamily`.
-- Real State Integration: Ingest real state files (`webapps.json`, `api.json`, `javascript.json`, `recon.json`, `assets.json`, `authorization.json`, `workflows.json`) using actual schemas.
-- Native Finding Model: Integrate findings into `framework.findings.schema.Finding` and `state/findings.json` without parallel structures.
-- Sequential Execution: Execute Phase 14.1 plans sequentially without parallelization.
-- Safe Testing: No live credential attacks, brute forcing, spraying, or external target scans.
-- Consolidated Commit: Conclude implementation in one final commit: `fix: harden authentication validation pipeline`.
+- Real Differential Validation: Purge hardcoded synthetic comparison responses from live target validation.
+- Connection-Time Pinning: Validate and pin destination IP addresses during socket connection to eliminate TOCTOU / DNS rebinding risks.
+- Standard TLS Verification: Enforce normal hostname and certificate validation (`check_hostname=True`, `verify_mode=ssl.CERT_REQUIRED`), failing closed on certificate errors.
+- Strict Scope Resolution: Remove unsafe cwd fallbacks in `resolve_scope_file`; fail closed on missing/ambiguous scope.
+- Scope-Approval Invariant: Operator approval (`--approve`) can NEVER override scope boundaries.
+- Deterministic Hypothesis Fingerprints: Generate context-aware SHA-256 IDs to make deduplication and `--resume` reliable across runs.
+- Consolidated Commit: Conclude implementation in one final commit: `fix: correct authentication validation integrity and executor safety`.
 
 ### Pending Todos
 
-None yet.
+None.
 
 ### Blockers/Concerns
 
-- Scope engine resolution must fail closed upon missing or ambiguous `scope.yaml`.
-- Windows console `cp1252` encoding requires pure ASCII tree outputs (`\--`, `|--`).
-- Multi-phase state ingestion must tolerate missing, partial, or corrupted JSON state files gracefully.
+None.
 
 ## Deferred Items
 
@@ -55,6 +56,7 @@ None.
 
 ## Session Continuity
  
-Last session: 2026-10-10 13:35  
-Stopped at: Final plan audit and correction pass complete. All 5 plans updated with exact codebase signatures and invariants. Ready for execution review.  
-Resume file: .planning/phases/14.1-authentication-engine-hardening-pipeline-integration/14.1-01-PLAN.md  
+Last session: 2026-10-10 15:25  
+Stopped at: Phase 14.2 execution fully verified. All 346 tests passing. Ready for consolidated commit and push.  
+Resume file: None (Phase 14.2 complete)  
+
