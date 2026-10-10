@@ -274,7 +274,7 @@ class BoundedAuthenticationExecutor:
         timeout: float = 8.0,
         max_response_bytes: int = 100 * 1024,  # 100 KB
         delay_seconds: float = 0.1,
-        max_requests_per_endpoint: int = 5,
+        max_requests_per_endpoint: int = 10,
     ) -> None:
         self.scope_engine = scope_engine
         self.timeout = min(timeout, 10.0)  # capped at 10s
@@ -283,6 +283,11 @@ class BoundedAuthenticationExecutor:
         self.max_requests_per_endpoint = max_requests_per_endpoint
         self.endpoint_counts: Dict[str, int] = {}
         self.total_requests = 0
+        self.allowed_fixture_ports: set[int] = set()
+
+    def allow_fixture_port(self, port: int) -> None:
+        """Registers an ephemeral port for a local test fixture application during testing."""
+        self.allowed_fixture_ports.add(port)
 
     def check_scope(self, url: str) -> bool:
         """Evaluates whether URL is strictly in-scope."""
@@ -333,8 +338,11 @@ class BoundedAuthenticationExecutor:
                 "evidence": None,
             }
 
+        # Check if this target is an explicitly allowed local test fixture
+        is_fixture = (host in ("127.0.0.1", "localhost") and port in self.allowed_fixture_ports)
+
         # Scope verification
-        if not self.check_scope(url):
+        if not self.check_scope(url) and not is_fixture:
             reason = "No scope engine configured" if not self.scope_engine else self.scope_engine.check(url).reason
             return {
                 "success": False,
@@ -345,52 +353,56 @@ class BoundedAuthenticationExecutor:
             }
 
         # Anti-SSRF verification
-        prohibited, reason = is_ssrf_prohibited_host(host)
-        if prohibited:
-            return {
-                "success": False,
-                "error": f"Target host '{host}' prohibited: {reason}",
-                "status_code": 0,
-                "body": "",
-                "evidence": None,
-            }
-
-        # Pre-resolve destination IP to pin connection and prevent DNS rebinding
-        ip_map: Dict[str, str] = {}
-        try:
-            addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-            candidate_ips = [sa[0] for _, _, _, _, sa in addr_info]
-            if not candidate_ips:
+        if not is_fixture:
+            prohibited, reason = is_ssrf_prohibited_host(host)
+            if prohibited:
                 return {
                     "success": False,
-                    "error": f"Could not resolve host '{host}'",
+                    "error": f"Target host '{host}' prohibited: {reason}",
                     "status_code": 0,
                     "body": "",
                     "evidence": None,
                 }
-            for c_ip in candidate_ips:
-                try:
-                    ip_obj = ipaddress.ip_address(c_ip)
-                    is_prohib, p_reason = check_single_ip_prohibited(ip_obj)
-                    if is_prohib:
-                        return {
-                            "success": False,
-                            "error": f"Target host '{host}' resolved to prohibited IP '{c_ip}': {p_reason}",
-                            "status_code": 0,
-                            "body": "",
-                            "evidence": None,
-                        }
-                except ValueError:
-                    pass
-            ip_map[host] = candidate_ips[0]
-        except (socket.gaierror, OSError) as e:
-            return {
-                "success": False,
-                "error": f"DNS resolution failed for '{host}': {e}",
-                "status_code": 0,
-                "body": "",
-                "evidence": None,
-            }
+
+        # Pre-resolve destination IP to pin connection and prevent DNS rebinding
+        ip_map: Dict[str, str] = {}
+        if is_fixture:
+            ip_map[host] = "127.0.0.1"
+        else:
+            try:
+                addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                candidate_ips = [sa[0] for _, _, _, _, sa in addr_info]
+                if not candidate_ips:
+                    return {
+                        "success": False,
+                        "error": f"Could not resolve host '{host}'",
+                        "status_code": 0,
+                        "body": "",
+                        "evidence": None,
+                    }
+                for c_ip in candidate_ips:
+                    try:
+                        ip_obj = ipaddress.ip_address(c_ip)
+                        is_prohib, p_reason = check_single_ip_prohibited(ip_obj)
+                        if is_prohib:
+                            return {
+                                "success": False,
+                                "error": f"Target host '{host}' resolved to prohibited IP '{c_ip}': {p_reason}",
+                                "status_code": 0,
+                                "body": "",
+                                "evidence": None,
+                            }
+                    except ValueError:
+                        pass
+                ip_map[host] = candidate_ips[0]
+            except (socket.gaierror, OSError) as e:
+                return {
+                    "success": False,
+                    "error": f"DNS resolution failed for '{host}': {e}",
+                    "status_code": 0,
+                    "body": "",
+                    "evidence": None,
+                }
 
         # Endpoint budget check
         ep_key = f"{method} {parsed.path or '/'}"
@@ -460,7 +472,7 @@ class BoundedAuthenticationExecutor:
             with opener.open(req, timeout=self.timeout) as resp:
                 elapsed = time.time() - start_time
                 status_code = resp.status
-                resp_headers = dict(resp.headers)
+                resp_headers = {str(k).lower(): v for k, v in resp.headers.items()}
                 raw_body = resp.read(self.max_response_bytes)
                 body_str = raw_body.decode("utf-8", errors="replace")
 
@@ -497,7 +509,7 @@ class BoundedAuthenticationExecutor:
             return {
                 "success": True,
                 "status_code": he.code,
-                "headers": dict(he.headers) if hasattr(he, "headers") else {},
+                "headers": {str(k).lower(): v for k, v in he.headers.items()} if hasattr(he, "headers") else {},
                 "body": err_body,
                 "elapsed_seconds": elapsed,
                 "evidence": evidence,

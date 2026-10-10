@@ -286,15 +286,43 @@ class SafeAuthenticationValidator:
         action_name: str = "logout",
     ) -> Tuple[HypothesisValidationStatus, str]:
         """Validates whether a session was properly invalidated post-logout or post-password change."""
-        is_vuln, reason = SessionAnalyzer.evaluate_session_invalidation(
-            session_id=session_id,
-            status_code=post_logout_status,
-            response_body=post_logout_body,
-            action_name=action_name,
+        # 1. Normal invalidation check (401 / 403 / redirect to login)
+        if post_logout_status in (401, 403):
+            return HypothesisValidationStatus.REJECTED, f"Session correctly invalidated: server returned HTTP {post_logout_status}."
+
+        # 2. Reject public landing, login page, or generic shell false positives
+        if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(post_logout_status, post_logout_body):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Endpoint '{endpoint}' presented a public login interface post-{action_name}; protected access was terminated.",
+            )
+        if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(post_logout_status, post_logout_body):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Endpoint '{endpoint}' returned a public landing/shell without user data post-{action_name}.",
+            )
+        if AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(post_logout_status, post_logout_body):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Endpoint '{endpoint}' returned a generic status response without protected data post-{action_name}.",
+            )
+
+        # 3. Security invariant: Did the session actually retain access to protected user data?
+        lower_b = post_logout_body.lower()
+        has_user_payload = any(k in lower_b for k in [
+            '"user_id"', '"account_id"', '"email"', 'user-profile', 'dashboard-content',
+            'account balance', 'user details', 'role',
+        ])
+        if post_logout_status in (200, 201) and has_user_payload:
+            return (
+                HypothesisValidationStatus.VALIDATED,
+                f"Session '{session_id}' remained active with HTTP {post_logout_status} exposing protected user data after {action_name}. The server failed to invalidate server-side session.",
+            )
+
+        return (
+            HypothesisValidationStatus.REJECTED,
+            f"Session did not retain protected user access post-{action_name} (HTTP {post_logout_status}).",
         )
-        if is_vuln:
-            return HypothesisValidationStatus.VALIDATED, reason
-        return HypothesisValidationStatus.REJECTED, reason
 
     @classmethod
     def validate_session_fixation(
@@ -352,22 +380,79 @@ class SafeAuthenticationValidator:
     @classmethod
     def validate_account_enumeration(
         cls,
-        valid_status: int,
-        valid_body: str,
-        invalid_status: int,
-        invalid_body: str,
+        valid_status: int = 0,
+        valid_body: str = "",
+        invalid_status: int = 0,
+        invalid_body: str = "",
         valid_redirect: Optional[str] = None,
         invalid_redirect: Optional[str] = None,
         timing_delta_ms: float = 0.0,
         trial_count: int = 3,
         trial_consistency: bool = True,
+        trials: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[HypothesisValidationStatus, str]:
         """
         Validates account enumeration differential signals.
-        Timing differences and text variations are treated as signals, not standalone proof.
-        Requires at least 3 controlled trials with confirmed consistency before assigning VALIDATED.
-        Incomplete trial sets (< 3 trials) report INFORMATIONAL / CANDIDATE.
+        Evaluates the full set of controlled trials (status, body differences, redirects, rate limiting).
+        Requires repeatable consistent evidence across all trials before assigning VALIDATED.
         """
+        # If full structured trials list provided, evaluate all trials
+        if trials is not None:
+            if not trials:
+                return HypothesisValidationStatus.REJECTED, "No trial data provided for account enumeration validation."
+
+            # 1. Rate limiting check across all trials
+            for idx, t in enumerate(trials):
+                v_s = t.get("valid_status", 0)
+                inv_s = t.get("invalid_status", 0)
+                v_b = t.get("valid_body", "").lower()
+                inv_b = t.get("invalid_body", "").lower()
+                if v_s == 429 or inv_s == 429 or "rate limit" in v_b or "rate limit" in inv_b or "too many requests" in v_b or "too many requests" in inv_b:
+                    return (
+                        HypothesisValidationStatus.REJECTED,
+                        f"Account enumeration inconclusive: rate limiting observed during trial {idx + 1}; cannot confirm differential.",
+                    )
+
+            # 2. Incomplete trials check
+            if len(trials) < 3:
+                return (
+                    HypothesisValidationStatus.INFORMATIONAL,
+                    f"Differential observed, but requires at least 3 controlled trials to validate repeatability (completed {len(trials)}/3).",
+                )
+
+            # 3. Analyze each trial and verify consistency across ALL trials
+            trial_signals = []
+            for t in trials:
+                sig, r = PasswordResetAnalyzer.analyze_account_enumeration(
+                    valid_user_status=t.get("valid_status", 0),
+                    valid_user_body=t.get("valid_body", ""),
+                    invalid_user_status=t.get("invalid_status", 0),
+                    invalid_user_body=t.get("invalid_body", ""),
+                    valid_user_redirect=t.get("valid_redirect"),
+                    invalid_user_redirect=t.get("invalid_redirect"),
+                )
+                trial_signals.append((sig, r))
+
+            first_sig, first_r = trial_signals[0]
+            if first_sig != AccountEnumerationSignal.STRONG_ENUMERATION_SIGNAL:
+                if any(s == AccountEnumerationSignal.WEAK_ENUMERATION_SIGNAL for s, _ in trial_signals):
+                    return HypothesisValidationStatus.INFORMATIONAL, "Weak differential signal observed; not sufficiently repeatable for validation."
+                return HypothesisValidationStatus.REJECTED, "No definitive account enumeration signal observed across trials."
+
+            # Verify consistency across all trials
+            all_strong = all(s == AccountEnumerationSignal.STRONG_ENUMERATION_SIGNAL for s, _ in trial_signals)
+            if not all_strong:
+                return (
+                    HypothesisValidationStatus.REJECTED,
+                    "Account enumeration differential was inconsistent across controlled trials; rejected as timing/noise artifact.",
+                )
+
+            return (
+                HypothesisValidationStatus.VALIDATED,
+                f"Confirmed repeatable differential across all {len(trials)} controlled trials: {first_r}",
+            )
+
+        # Legacy fallback if trials not supplied
         if not trial_consistency:
             return (
                 HypothesisValidationStatus.REJECTED,
@@ -400,30 +485,63 @@ class SafeAuthenticationValidator:
         step_status: int,
         step_body: str,
         is_prerequisite_satisfied: bool = False,
+        state_transition_confirmed: bool = False,
+        issued_session_token: Optional[str] = None,
     ) -> Tuple[HypothesisValidationStatus, str]:
         """
         Validates whether a password reset state machine permits completing a later step
         (e.g., password change confirmation) without the prerequisite verification token or step.
+        Requires evidence that the security invariant was actually violated (state transition confirmed
+        or authenticated session granted). A generic HTTP 200 or success string alone cannot establish
+        vulnerability.
         """
         if is_prerequisite_satisfied:
             return HypothesisValidationStatus.REJECTED, "Normal workflow execution: prerequisite step was satisfied."
 
-        is_success = step_status in (200, 201, 204, 302)
-        lower_b = step_body.lower()
-        error_markers = ["invalid", "expired", "missing", "token required", "unauthorized", "error", "forbidden", "fail", "bad request"]
-        has_error = any(err in lower_b for err in error_markers)
-        success_markers = ["password updated", "password changed", "success", "reset complete", "updated successfully"]
-        has_success = any(sm in lower_b for sm in success_markers)
-
-        if is_success and not has_error and (has_success or step_status in (200, 204)):
+        if step_status not in (200, 201, 204, 302):
             return (
-                HypothesisValidationStatus.VALIDATED,
-                f"Password reset state confusion confirmed on '{endpoint}': final state transition accepted (HTTP {step_status}) without verified prerequisite token/step.",
+                HypothesisValidationStatus.REJECTED,
+                f"Password reset workflow correctly rejected state transition when prerequisite was unsatisfied (HTTP {step_status}).",
             )
 
+        lower_b = step_body.lower()
+        error_markers = ["invalid", "expired", "missing", "token required", "unauthorized", "error", "forbidden", "fail", "bad request"]
+        if any(err in lower_b for err in error_markers):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Password reset workflow returned error indication for unverified step (HTTP {step_status}).",
+            )
+
+        # Reject generic shells, login forms, or generic status false positives
+        if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(step_status, step_body):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Endpoint '{endpoint}' displayed login interface rather than completing unverified state transition.",
+            )
+        if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(step_status, step_body):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Endpoint '{endpoint}' returned generic public shell without confirming state transition.",
+            )
+        if AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(step_status, step_body):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Endpoint '{endpoint}' returned generic status without proof of password mutation.",
+            )
+
+        # Invariant check: Did a real state transition or session issuance occur?
+        if state_transition_confirmed or issued_session_token:
+            return (
+                HypothesisValidationStatus.VALIDATED,
+                f"Password reset state confusion confirmed on '{endpoint}': final state transition accepted (HTTP {step_status}) "
+                f"and verified state mutation / authenticated session observed without verified prerequisite token/step.",
+            )
+
+        # An unverified response returning 200 without error is an anomaly/candidate, NOT proof of password change!
         return (
-            HypothesisValidationStatus.REJECTED,
-            f"Password reset workflow correctly rejected state transition when prerequisite was unsatisfied (HTTP {step_status}).",
+            HypothesisValidationStatus.CANDIDATE,
+            f"Endpoint '{endpoint}' accepted unverified state transition request (HTTP {step_status}), "
+            f"but state mutation was not confirmed by post-verification check.",
         )
 
     @classmethod
@@ -433,51 +551,127 @@ class SafeAuthenticationValidator:
         status_code: int,
         response_body: str,
         submitted_valid_code: bool = False,
+        session_elevated: bool = False,
+        issued_auth_token: Optional[str] = None,
     ) -> Tuple[HypothesisValidationStatus, str]:
         """
         Validates whether an MFA verification challenge can be bypassed with invalid/empty factor.
+        Requires proof that session was elevated or granted access.
         """
         if submitted_valid_code:
             return HypothesisValidationStatus.REJECTED, "Valid MFA factor submitted; normal verification behavior."
 
-        is_vuln, reason = MFAAnalyzer.evaluate_mfa_factor_verification(
-            status_code=status_code,
-            response_body=response_body,
-            submitted_valid_code=False,
+        # Status must be successful
+        if status_code not in (200, 201, 302):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"MFA verification challenge correctly enforced on '{endpoint}' (HTTP {status_code}).",
+            )
+
+        # Rejection of error responses
+        lower_body = response_body.lower()
+        error_indicated = any(e in lower_body for e in ["invalid", "incorrect", "expired", "failed", "unauthorized", "error"])
+        if error_indicated:
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"MFA verification challenge correctly rejected invalid factor on '{endpoint}' (HTTP {status_code}).",
+            )
+
+        # Rejection of prompt persistence (still asking for MFA code)
+        mfa_prompt = any(p in lower_body for p in ["enter code", "otp", "two-factor", "2fa", "verify identity", "challenge"])
+        if mfa_prompt:
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"MFA challenge on '{endpoint}' is still presenting verification prompt; access was not bypassed.",
+            )
+
+        if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(status_code, response_body) or \
+           AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(status_code, response_body):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"MFA challenge response on '{endpoint}' is generic status or shell; no authenticated elevation verified.",
+            )
+
+        # Verification that session was elevated or protected data returned
+        has_auth_elevation = session_elevated or bool(issued_auth_token) or any(
+            k in lower_body for k in ['"authenticated": true', '"authenticated":true', '"mfa_verified": true', '"mfa_verified":true', "session_token", "access_token", "user_id"]
         )
-        if is_vuln:
+        if has_auth_elevation:
             return (
                 HypothesisValidationStatus.VALIDATED,
-                f"MFA bypass confirmed on '{endpoint}': challenge endpoint accepted invalid or missing verification factor (HTTP {status_code}).",
+                f"MFA bypass confirmed on '{endpoint}': challenge endpoint accepted invalid or missing verification factor (HTTP {status_code}) and elevated session state.",
             )
+
         return (
-            HypothesisValidationStatus.REJECTED,
-            f"MFA verification challenge correctly enforced on '{endpoint}' (HTTP {status_code}).",
+            HypothesisValidationStatus.CANDIDATE,
+            f"MFA challenge endpoint returned HTTP {status_code} without error, but session elevation could not be confirmed.",
         )
 
     @classmethod
     def validate_mfa_state_confusion(
         cls,
         endpoint: str,
-        target_status: int,
-        target_body: str,
+        target_status: Optional[int] = None,
+        target_body: Optional[str] = None,
         cross_session_elevated: bool = False,
+        pre_status_b: Optional[int] = None,
+        pre_body_b: Optional[str] = None,
+        post_status_b: Optional[int] = None,
+        post_body_b: Optional[str] = None,
     ) -> Tuple[HypothesisValidationStatus, str]:
         """
         Validates whether completing MFA for one session/factor confuses the state of another unverified session.
+        Compares actual state and access boundaries of two distinct test sessions.
+        A response keyword or successful HTTP status alone is NOT proof of cross-session escalation.
         """
-        is_success = target_status in (200, 201)
-        lower_b = target_body.lower()
+        # Support both new detailed signature and legacy arguments
+        status_to_check = post_status_b if post_status_b is not None else target_status
+        body_to_check = post_body_b if post_body_b is not None else (target_body or "")
+
+        if status_to_check is None:
+            return HypothesisValidationStatus.REJECTED, "Missing session observations to evaluate MFA state confusion."
+
+        # If pre-observation was provided for Session B, verify Session B was initially unverified / challenged
+        if pre_status_b is not None and pre_status_b not in (401, 403):
+            lower_pre = (pre_body_b or "").lower()
+            mfa_prompt_pre = any(p in lower_pre for p in ["enter code", "otp", "two-factor", "2fa", "verify identity", "challenge"])
+            if not mfa_prompt_pre:
+                return (
+                    HypothesisValidationStatus.REJECTED,
+                    "Session B was not in a pre-MFA challenged state prior to test; cannot verify cross-session escalation.",
+                )
+
+        # Check post-test Session B state
+        is_success = status_to_check in (200, 201)
+        lower_b = body_to_check.lower()
         mfa_prompt = any(p in lower_b for p in ["enter code", "otp", "two-factor", "2fa", "verify identity", "challenge"])
 
-        if cross_session_elevated or (is_success and not mfa_prompt and len(target_body) > 10):
+        # Eliminate generic shells, login forms, or generic status
+        if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(status_to_check, body_to_check) or \
+           AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(status_to_check, body_to_check):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Session B received generic shell or status from '{endpoint}'; no elevated authenticated access confirmed.",
+            )
+
+        # Require genuine cross-session escalation evidence:
+        has_protected_data = any(k in lower_b for k in ['"user_id"', '"account_id"', '"email"', 'user-profile', 'dashboard', 'account balance', 'user details'])
+
+        if cross_session_elevated and is_success and not mfa_prompt and has_protected_data:
             return (
                 HypothesisValidationStatus.VALIDATED,
-                f"MFA state confusion confirmed on '{endpoint}': unverified session gained elevated authenticated access following external factor completion (HTTP {target_status}).",
+                f"MFA state confusion confirmed on '{endpoint}': unverified session gained elevated authenticated access following external factor completion (HTTP {status_to_check}).",
             )
+
+        if not cross_session_elevated:
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"MFA state isolation maintained on '{endpoint}': unverified session was not elevated by external session completion (HTTP {status_to_check}).",
+            )
+
         return (
             HypothesisValidationStatus.REJECTED,
-            f"MFA state isolation maintained on '{endpoint}': unverified session correctly challenged (HTTP {target_status}).",
+            f"MFA state isolation maintained on '{endpoint}': unverified session was not elevated (HTTP {status_to_check}).",
         )
 
     @classmethod

@@ -122,7 +122,12 @@ class IdentityManager:
         return seeded
 
     def get_identity(self, identity_id: str) -> Optional[IdentityProfile]:
-        return self._identities.get(identity_id)
+        if identity_id in self._identities:
+            return self._identities[identity_id]
+        for p in self._identities.values():
+            if p.username == identity_id:
+                return p
+        return None
 
     def list_identities(self) -> List[IdentityProfile]:
         return list(self._identities.values())

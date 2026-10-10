@@ -83,3 +83,6 @@ build/
 venv/
 ENV/
 env/
+
+# Planning artifacts (preserved locally, untracked in git repository)
+.planning/

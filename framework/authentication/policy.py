@@ -47,7 +47,7 @@ class AuthenticationSecurityPolicy:
     """Enforces safety rules and resource boundaries for authentication testing."""
 
     DEFAULT_TIMEOUT_SECONDS = 8.0
-    MAX_REQUESTS_PER_HYPOTHESIS = 5
+    MAX_REQUESTS_PER_HYPOTHESIS = 10
     MAX_RESPONSE_BYTES = 100 * 1024  # 100 KB
 
     # Explicitly forbidden operations
@@ -76,6 +76,7 @@ class AuthenticationSecurityPolicy:
 
     def __init__(self, scope_engine: Optional[ScopeEngine] = None) -> None:
         self.scope_engine = scope_engine
+        self.allowed_fixture_ports: set[int] = set()
 
     def is_target_allowed(self, target_url: str) -> Tuple[bool, str]:
         """Validates that target URL is in-scope and does not target prohibited cloud metadata."""
@@ -88,6 +89,11 @@ class AuthenticationSecurityPolicy:
 
         parsed = urlparse(target_url)
         host = (parsed.hostname or "").lower()
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+        # Permit explicitly configured local fixture application during automated testing
+        if host in ("127.0.0.1", "localhost") and port in self.allowed_fixture_ports:
+            return True, f"Permitted local test fixture on port {port}"
 
         # Block metadata and link-local IP addresses
         if host in ("169.254.169.254", "metadata.google.internal", "127.0.0.1", "localhost"):

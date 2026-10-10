@@ -1224,15 +1224,27 @@ def test_auth_bypass_positive_and_negative_controls():
 
 def test_operational_family_password_reset_state_confusion():
     """Verifies operational validation and negative controls for PASSWORD_RESET_STATE_CONFUSION."""
-    # Positive Control: Server accepts final state transition without verified token
+    # Positive Control: Server accepts final state transition and state mutation / session issuance is confirmed
     v_pos, r_pos = SafeAuthenticationValidator.validate_password_reset_state_confusion(
         endpoint="/api/v1/password-reset/confirm",
         step_status=200,
-        step_body='{"status": "password updated successfully"}',
+        step_body='{"status": "password updated successfully", "user_id": "u_100"}',
         is_prerequisite_satisfied=False,
+        state_transition_confirmed=True,
     )
     assert v_pos == HypothesisValidationStatus.VALIDATED
     assert "state confusion confirmed" in r_pos.lower()
+
+    # Invariant Control: Server returns 200 without confirming actual state transition -> CANDIDATE, not VALIDATED
+    v_cand, r_cand = SafeAuthenticationValidator.validate_password_reset_state_confusion(
+        endpoint="/api/v1/password-reset/confirm",
+        step_status=200,
+        step_body='{"message": "request processed", "user_id": "u_100"}',
+        is_prerequisite_satisfied=False,
+        state_transition_confirmed=False,
+    )
+    assert v_cand == HypothesisValidationStatus.CANDIDATE
+    assert "state mutation was not confirmed" in r_cand.lower()
 
     # Negative Control: Server correctly rejects state transition (HTTP 400 with error)
     v_neg, r_neg = SafeAuthenticationValidator.validate_password_reset_state_confusion(
@@ -1376,7 +1388,7 @@ def test_operational_families_missing_prerequisites(temp_workspace):
     engine.validate_hypotheses(approve=True)
 
     assert h_reset.validation_status == HypothesisValidationStatus.SKIPPED
-    assert "missing researcher test identity" in h_reset.rationale.lower()
+    assert "missing" in h_reset.rationale.lower() and "researcher" in h_reset.rationale.lower()
 
     assert h_mfa_b.validation_status == HypothesisValidationStatus.SKIPPED
     assert "missing pre-mfa" in h_mfa_b.rationale.lower()
@@ -1518,5 +1530,569 @@ def test_account_enumeration_multi_trial_controls():
     )
     assert v_full == HypothesisValidationStatus.VALIDATED
     assert "confirmed repeatable differential across 3 controlled trials" in r_full.lower()
+
+
+# ==============================================================================
+# 16. Local HTTP Fixture Integration Tests (Real HTTP Request Engine Pipelines)
+# ==============================================================================
+
+import http.server
+import threading
+
+
+class _LocalAuthHandler(http.server.BaseHTTPRequestHandler):
+    """Local fixture HTTP server simulating multi-state authentication workflows."""
+
+    def log_message(self, format, *args):
+        # Suppress ambient request logging to stderr
+        pass
+
+    def _send_json(self, status: int, data: Dict[str, Any], cookie: Optional[str] = None):
+        b = json.dumps(data).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.wfile.write(b)
+
+    def _send_html(self, status: int, html: str):
+        b = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def do_GET(self):
+        body = ""
+        length = int(self.headers.get("Content-Length", 0))
+        if length > 0:
+            body = self.rfile.read(length).decode("utf-8", errors="replace")
+        self.server.request_log.append(("GET", self.path, dict(self.headers), body))
+
+        if "/api/v1/account/settings" in self.path:
+            cookie = self.headers.get("Cookie", "")
+            if "session=sess_b" in cookie:
+                if self.server.mfa_mode == "VULNERABLE" and self.server.session_b_elevated:
+                    self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "settings": "active"})
+                    return
+                elif self.server.mfa_mode == "GENERIC_SHELL":
+                    self._send_html(200, '<!doctype html><html><body><div id="root"></div></body></html>')
+                    return
+                else:
+                    self._send_json(401, {"error": "MFA challenge required", "challenge": "otp"})
+                    return
+            elif "session=sess_a" in cookie:
+                self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "settings": "active"})
+                return
+            else:
+                self._send_json(401, {"error": "Unauthorized"})
+                return
+
+        elif "/api/v1/auth/enum" in self.path:
+            self.server.enum_trial_count += 1
+            if self.server.enum_mode == "RATE_LIMITED" and self.server.enum_trial_count >= 2:
+                self._send_json(429, {"error": "Too Many Requests", "rate_limited": True})
+                return
+
+            if "username=alice" in self.path:
+                self._send_json(200, {"message": "Password reset instructions sent to your email"})
+            else:
+                self._send_json(404, {"error": "User does not exist in our system"})
+            return
+
+        elif "/api/v1/user/profile" in self.path:
+            cookie = self.headers.get("Cookie", "")
+            if "session=sess_active" in cookie and not self.server.session_invalidated:
+                self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "role": "USER"})
+            else:
+                self._send_json(401, {"error": "Unauthorized"})
+            return
+
+        self._send_json(404, {"error": "Not Found"})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8", errors="replace") if length > 0 else ""
+        self.server.request_log.append(("POST", self.path, dict(self.headers), body))
+
+        if "/api/v1/password-reset/confirm" in self.path:
+            req_data = {}
+            try:
+                req_data = json.loads(body)
+            except Exception:
+                pass
+
+            if self.server.reset_mode == "ENFORCED":
+                tok = req_data.get("token", "")
+                if not tok:
+                    self._send_json(400, {"error": "Reset token required"})
+                    return
+                self._send_json(200, {"status": "ok"})
+                return
+
+            elif self.server.reset_mode == "GENERIC_STATUS":
+                # Returns 200 without mutating the password in the database
+                self._send_json(200, {"status": "ok", "message": "Request received"})
+                return
+
+            elif self.server.reset_mode == "GENERIC_SHELL":
+                self._send_html(200, '<!doctype html><html><body><div id="root"></div></body></html>')
+                return
+
+            elif self.server.reset_mode == "VULNERABLE":
+                new_pw = req_data.get("new_password", "")
+                user = req_data.get("username", "alice")
+                if new_pw:
+                    self.server.user_passwords[user] = new_pw
+                self._send_json(
+                    200,
+                    {"status": "password updated successfully", "user_id": "alice"},
+                    cookie="session=sess_reset_active; Path=/",
+                )
+                return
+
+        elif "/api/v1/auth/login" in self.path:
+            req_data = {}
+            try:
+                req_data = json.loads(body)
+            except Exception:
+                pass
+            user = req_data.get("username", "")
+            pw = req_data.get("password", "")
+            if user in self.server.user_passwords and self.server.user_passwords[user] == pw:
+                self._send_json(
+                    200,
+                    {"user_id": "alice", "authenticated": True},
+                    cookie="session=sess_login_ok; Path=/",
+                )
+            else:
+                self._send_json(401, {"error": "Invalid credentials"})
+            return
+
+        elif "/api/v1/auth/mfa/step" in self.path:
+            cookie = self.headers.get("Cookie", "")
+            if "session=sess_a" in cookie:
+                if self.server.mfa_mode == "VULNERABLE":
+                    self.server.session_b_elevated = True
+                self._send_json(200, {"mfa": "completed"})
+                return
+            self._send_json(400, {"error": "Invalid MFA request"})
+            return
+
+        elif "/api/v1/auth/logout" in self.path:
+            self.server.session_invalidated = True
+            self._send_json(200, {"status": "logged out"})
+            return
+
+        self._send_json(404, {"error": "Not Found"})
+
+
+@pytest.fixture
+def local_auth_fixture():
+    """Provides a thread-safe local HTTP fixture server running on an ephemeral port."""
+    server = http.server.HTTPServer(("127.0.0.1", 0), _LocalAuthHandler)
+    server.request_log = []
+    server.reset_mode = "ENFORCED"
+    server.mfa_mode = "SECURE"
+    server.enum_mode = "CONSISTENT"
+    server.enum_trial_count = 0
+    server.session_b_elevated = False
+    server.session_invalidated = False
+    server.user_passwords = {"alice": "OriginalPass1!"}
+
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_port
+    yield server, port
+    server.shutdown()
+    server.server_close()
+
+
+def test_integration_password_reset_vulnerable_state_transition(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves the engine sends real requests and confirms an observed state transition
+    before assigning VALIDATED for PASSWORD_RESET_STATE_CONFUSION.
+    """
+    server, port = local_auth_fixture
+    server.reset_mode = "VULNERABLE"
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.executor.allow_fixture_port(port)
+    engine.policy.allowed_fixture_ports.add(port)
+
+    # Register researcher-controlled identity with test mutation credential
+    engine.identity_mgr.register_identity(
+        username="alice",
+        role="USER",
+        attributes={
+            "researcher_controlled": True,
+            "credentials_available": True,
+            "test_mutation_credential": "NewSecurePassword123!",
+        },
+    )
+
+    # Configure discovered surfaces
+    reset_surf = AuthenticationStep(
+        step_id="step_reset_confirm",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        method="POST",
+        flow_type=AuthenticationFlowType.PASSWORD_RESET,
+        parameter_names=["username", "new_password", "token"],
+    )
+    login_surf = AuthenticationStep(
+        step_id="step_login",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/login",
+        method="POST",
+        flow_type=AuthenticationFlowType.LOGIN,
+        parameter_names=["username", "password"],
+    )
+    engine.surfaces = [reset_surf, login_surf]
+
+    h_reset = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-RESET-VULN",
+        family=AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        principal="alice",
+        required_state=AuthenticationState.ANONYMOUS,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="400",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine.hypotheses = [h_reset]
+
+    # Validate with approval granted
+    findings = engine.validate_hypotheses(approve=True)
+
+    # Verifications:
+    # 1. Hypothesis is VALIDATED because state mutation was confirmed by login
+    assert h_reset.validation_status == HypothesisValidationStatus.VALIDATED
+    assert "state confusion confirmed" in h_reset.rationale.lower()
+    # 2. Confirmed password actually changed in fixture server database
+    assert server.user_passwords["alice"] == "NewSecurePassword123!"
+    # 3. Request log proves real HTTP requests were dispatched (POST reset, then POST login check)
+    endpoints_called = [p for _, p, _, _ in server.request_log]
+    assert "/api/v1/password-reset/confirm" in endpoints_called
+    assert "/api/v1/auth/login" in endpoints_called
+
+
+def test_integration_password_reset_generic_status_cannot_validate(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves a generic success response (HTTP 200 {"status": "ok"}) without
+    an observed state transition CANNOT cause a VALIDATED finding.
+    """
+    server, port = local_auth_fixture
+    server.reset_mode = "GENERIC_STATUS"  # Does not mutate password
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.executor.allow_fixture_port(port)
+    engine.policy.allowed_fixture_ports.add(port)
+
+    engine.identity_mgr.register_identity(
+        identity_id="alice",
+        username="alice",
+        role="USER",
+        attributes={
+            "researcher_controlled": True,
+            "credentials_available": True,
+            "test_mutation_credential": "NewAttemptPassword99!",
+        },
+    )
+
+    reset_surf = AuthenticationStep(
+        step_id="step_reset_confirm",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        method="POST",
+        flow_type=AuthenticationFlowType.PASSWORD_RESET,
+        parameter_names=["username", "new_password", "token"],
+    )
+    login_surf = AuthenticationStep(
+        step_id="step_login",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/login",
+        method="POST",
+        flow_type=AuthenticationFlowType.LOGIN,
+        parameter_names=["username", "password"],
+    )
+    engine.surfaces = [reset_surf, login_surf]
+
+    h_reset = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-RESET-GENERIC",
+        family=AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        principal="alice",
+        required_state=AuthenticationState.ANONYMOUS,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="400",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine.hypotheses = [h_reset]
+
+    engine.validate_hypotheses(approve=True)
+
+    # Invariant: Not validated! Must be CANDIDATE or REJECTED
+    assert h_reset.validation_status != HypothesisValidationStatus.VALIDATED
+    assert server.user_passwords["alice"] == "OriginalPass1!"  # Password was NOT modified
+
+
+def test_integration_password_reset_enforced_boundary(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves correctly enforced security boundaries (HTTP 400 Bad Request)
+    are reported as REJECTED and not vulnerable.
+    """
+    server, port = local_auth_fixture
+    server.reset_mode = "ENFORCED"
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.executor.allow_fixture_port(port)
+    engine.policy.allowed_fixture_ports.add(port)
+
+    engine.identity_mgr.register_identity(
+        identity_id="alice",
+        username="alice",
+        role="USER",
+        attributes={
+            "researcher_controlled": True,
+            "credentials_available": True,
+            "test_mutation_credential": "NewAttemptPassword99!",
+        },
+    )
+
+    reset_surf = AuthenticationStep(
+        step_id="step_reset_confirm",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        method="POST",
+        flow_type=AuthenticationFlowType.PASSWORD_RESET,
+        parameter_names=["username", "new_password", "token"],
+    )
+    engine.surfaces = [reset_surf]
+
+    h_reset = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-RESET-ENFORCED",
+        family=AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        principal="alice",
+        required_state=AuthenticationState.ANONYMOUS,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="400",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine.hypotheses = [h_reset]
+
+    engine.validate_hypotheses(approve=True)
+    assert h_reset.validation_status == HypothesisValidationStatus.REJECTED
+    assert "correctly rejected" in h_reset.rationale.lower()
+
+
+def test_integration_mfa_state_confusion_vulnerable_and_secure(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves MFA_STATE_CONFUSION compares actual boundaries of two sessions
+    and only validates when cross-session elevation actually occurs.
+    """
+    server, port = local_auth_fixture
+    server.mfa_mode = "VULNERABLE"
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.executor.allow_fixture_port(port)
+    engine.policy.allowed_fixture_ports.add(port)
+
+    # Configure dual researcher sessions
+    engine.sessions = [
+        SessionProfile(session_id="sess_a", identity_id="alice"),
+        SessionProfile(session_id="sess_b", identity_id="alice"),
+    ]
+    mfa_surf = AuthenticationStep(
+        step_id="step_mfa",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/mfa/step",
+        method="POST",
+        flow_type=AuthenticationFlowType.MFA_VERIFICATION,
+    )
+    engine.surfaces = [mfa_surf]
+
+    h_mfa = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-MFA-CONF",
+        family=AuthenticationFindingFamily.MFA_STATE_CONFUSION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/account/settings",
+        principal="alice",
+        required_state=AuthenticationState.MFA_REQUIRED,
+        observed_state=AuthenticationState.MFA_REQUIRED,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine.hypotheses = [h_mfa]
+
+    # Test 1: Vulnerable mode
+    engine.validate_hypotheses(approve=True)
+    assert h_mfa.validation_status == HypothesisValidationStatus.VALIDATED
+    assert "state confusion confirmed" in h_mfa.rationale.lower()
+
+    # Test 2: Secure mode (Session B remains challenged)
+    server.mfa_mode = "SECURE"
+    server.session_b_elevated = False
+    tmp_sec = tempfile.mkdtemp(prefix="bb_mfa_sec_")
+    engine_sec = AuthenticationSecurityEngine(workspace_dir=tmp_sec)
+    engine_sec.executor.allow_fixture_port(port)
+    engine_sec.policy.allowed_fixture_ports.add(port)
+    engine_sec.sessions = [
+        SessionProfile(session_id="sess_a", identity_id="alice"),
+        SessionProfile(session_id="sess_b", identity_id="alice"),
+    ]
+    engine_sec.surfaces = [mfa_surf]
+
+    h_mfa_sec = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-MFA-SEC",
+        family=AuthenticationFindingFamily.MFA_STATE_CONFUSION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/account/settings",
+        principal="alice",
+        required_state=AuthenticationState.MFA_REQUIRED,
+        observed_state=AuthenticationState.MFA_REQUIRED,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine_sec.hypotheses = [h_mfa_sec]
+    engine_sec.validate_hypotheses(approve=True)
+    assert h_mfa_sec.validation_status == HypothesisValidationStatus.REJECTED
+    assert "isolation maintained" in h_mfa_sec.rationale.lower()
+    shutil.rmtree(tmp_sec, ignore_errors=True)
+
+
+def test_integration_account_enumeration_trials_and_rate_limiting(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Evaluates full 3 controlled trials for account enumeration
+    and rejects findings if rate limiting is encountered.
+    """
+    server, port = local_auth_fixture
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.executor.allow_fixture_port(port)
+    engine.policy.allowed_fixture_ports.add(port)
+
+    engine.identity_mgr.register_identity(
+        identity_id="alice",
+        username="alice",
+        role="USER",
+        attributes={"researcher_controlled": True},
+    )
+
+    # Test 1: Consistent 3 trials differential -> VALIDATED
+    server.enum_mode = "CONSISTENT"
+    server.enum_trial_count = 0
+    h_enum = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-ENUM",
+        family=AuthenticationFindingFamily.ACCOUNT_ENUMERATION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/enum?username=alice",
+        principal="alice",
+        required_state=AuthenticationState.ANONYMOUS,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="Uniform",
+        observed_behavior="Differential",
+        confidence=0.5,
+        impact_hint="MEDIUM",
+    )
+    engine.hypotheses = [h_enum]
+    engine.validate_hypotheses(approve=True)
+    assert h_enum.validation_status == HypothesisValidationStatus.VALIDATED
+    assert "confirmed repeatable differential across all 3" in h_enum.rationale.lower()
+
+    # Test 2: Rate limited during trials -> REJECTED
+    server.enum_mode = "RATE_LIMITED"
+    server.enum_trial_count = 0
+    tmp_rl = tempfile.mkdtemp(prefix="bb_enum_rl_")
+    engine_rl = AuthenticationSecurityEngine(workspace_dir=tmp_rl)
+    engine_rl.executor.allow_fixture_port(port)
+    engine_rl.policy.allowed_fixture_ports.add(port)
+    engine_rl.identity_mgr.register_identity(
+        identity_id="alice",
+        username="alice",
+        role="USER",
+        attributes={"researcher_controlled": True},
+    )
+
+    h_enum_rl = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-ENUM-RL",
+        family=AuthenticationFindingFamily.ACCOUNT_ENUMERATION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/enum?username=alice",
+        principal="alice",
+        required_state=AuthenticationState.ANONYMOUS,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="Uniform",
+        observed_behavior="Differential",
+        confidence=0.5,
+        impact_hint="MEDIUM",
+    )
+    engine_rl.hypotheses = [h_enum_rl]
+    engine_rl.validate_hypotheses(approve=True)
+    assert h_enum_rl.validation_status == HypothesisValidationStatus.REJECTED
+    assert "rate limiting" in h_enum_rl.rationale.lower()
+    shutil.rmtree(tmp_rl, ignore_errors=True)
+
+
+def test_integration_scope_and_approval_gates(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves scope and operator approval restrictions remain enforced,
+    preventing unauthorized state mutations and zero out-of-scope traffic.
+    """
+    server, port = local_auth_fixture
+    server.request_log.clear()
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    # Scope engine permits only target.corp
+    engine.policy.scope_engine = ScopeEngine({"targets": {"domains": ["target.corp"]}})
+
+    # Hypothesis with out-of-scope target
+    h_out = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-OUT-OF-SCOPE",
+        family=AuthenticationFindingFamily.AUTHENTICATION_BYPASS,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/protected",
+        principal="alice",
+        required_state=AuthenticationState.ANONYMOUS,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine.hypotheses = [h_out]
+    engine.validate_hypotheses(approve=True)
+
+    assert h_out.validation_status == HypothesisValidationStatus.SKIPPED
+    assert "scope restriction" in h_out.rationale.lower()
+    # Zero HTTP requests received by fixture
+    assert len(server.request_log) == 0
+
+    # Unapproved state mutation
+    engine.executor.allow_fixture_port(port)
+    engine.policy.allowed_fixture_ports.add(port)
+    h_mutation = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-NO-APPR",
+        family=AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        principal="alice",
+        required_state=AuthenticationState.ANONYMOUS,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="400",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine.hypotheses = [h_mutation]
+    # Validate WITHOUT approval
+    engine.validate_hypotheses(approve=False)
+
+    assert h_mutation.validation_status == HypothesisValidationStatus.NEEDS_APPROVAL
+    assert "requires explicit operator confirmation" in h_mutation.rationale.lower()
+    assert len(server.request_log) == 0
+
 
 

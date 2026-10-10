@@ -456,11 +456,9 @@ class AuthenticationSecurityEngine:
                             param_name = k
                             break
 
-                    trial_results = []
-                    consistent = True
-                    first_diff_signal = None
+                    trials_data = []
 
-                    # Execute 3 controlled trials comparing valid user vs distinct nonexistent users
+                    # Execute 3 controlled trials comparing researcher-controlled valid user vs distinct nonexistent synthetic identities
                     for trial_idx in range(3):
                         rand_user = f"nonexistent_{trial_idx}_{hashlib.sha256(f'{h.endpoint}_{trial_idx}'.encode()).hexdigest()[:6]}@example.invalid"
                         q_valid = [(k, v) for k, v in base_qsl if k != param_name] + [(param_name, active_identity.username)]
@@ -477,32 +475,22 @@ class AuthenticationSecurityEngine:
                         if t_inv.get("evidence"):
                             evidence_chain.append(t_inv["evidence"])
 
-                        # Check if rate-limited or blocked
+                        trials_data.append({
+                            "valid_status": t_val.get("status_code", 0),
+                            "valid_body": t_val.get("body", ""),
+                            "valid_redirect": t_val.get("headers", {}).get("location"),
+                            "invalid_status": t_inv.get("status_code", 0),
+                            "invalid_body": t_inv.get("body", ""),
+                            "invalid_redirect": t_inv.get("headers", {}).get("location"),
+                        })
+
+                        # Stop if rate-limited
                         if t_val.get("status_code") == 429 or t_inv.get("status_code") == 429:
-                            consistent = False
                             break
 
-                        diff_sig = (t_val.get("status_code") != t_inv.get("status_code"), t_val.get("status_code"), t_inv.get("status_code"))
-                        if first_diff_signal is None:
-                            first_diff_signal = diff_sig
-                        elif first_diff_signal != diff_sig:
-                            consistent = False
-
-                        trial_results.append((t_val, t_inv))
-
-                    if len(trial_results) >= 3 and consistent:
-                        v_first, inv_first = trial_results[0]
-                        verdict, reason = SafeAuthenticationValidator.validate_account_enumeration(
-                            valid_status=v_first.get("status_code", 0),
-                            valid_body=v_first.get("body", ""),
-                            invalid_status=inv_first.get("status_code", 0),
-                            invalid_body=inv_first.get("body", ""),
-                            trial_count=len(trial_results),
-                            trial_consistency=True,
-                        )
-                    else:
-                        verdict = HypothesisValidationStatus.INFORMATIONAL if len(trial_results) < 3 else HypothesisValidationStatus.REJECTED
-                        reason = f"Account enumeration incomplete or inconsistent across trials (completed {len(trial_results)}/3, consistent={consistent})."
+                    verdict, reason = SafeAuthenticationValidator.validate_account_enumeration(
+                        trials=trials_data,
+                    )
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
             elif h.family == AuthenticationFindingFamily.PRE_AUTH_PRIVILEGE_EXPOSURE:
@@ -574,27 +562,103 @@ class AuthenticationSecurityEngine:
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
             elif h.family == AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION:
-                # 8. PASSWORD_RESET_STATE_CONFUSION: Requires reset workflow endpoint and researcher test identity
+                # 8. PASSWORD_RESET_STATE_CONFUSION: Requires reset workflow endpoint, researcher-controlled test identity, and parameter info
                 reset_surface = next((s for s in self.surfaces if s.flow_type == AuthenticationFlowType.PASSWORD_RESET), None)
                 target_ep = reset_surface.endpoint if reset_surface else h.endpoint
-                if not active_identity or not active_identity.username:
+
+                # Check researcher-controlled identity requirement
+                is_controlled = (
+                    active_identity and active_identity.username and (
+                        active_identity.attributes.get("researcher_controlled") is True
+                        or active_identity.attributes.get("credentials_available") is True
+                    )
+                )
+                test_mutation = active_identity.attributes.get("test_mutation_credential") if active_identity and active_identity.attributes else None
+
+                if not is_controlled:
                     verdict = HypothesisValidationStatus.SKIPPED
-                    reason = "Skipped: Missing researcher test identity to validate password reset state machine"
+                    reason = "Skipped: Missing explicitly configured researcher-controlled test identity for password reset state validation"
                     is_valid = False
                 elif not any(seg in target_ep.lower() for seg in ["reset", "password", "confirm", "update"]):
                     verdict = HypothesisValidationStatus.SKIPPED
                     reason = "Skipped: Missing discovered password reset workflow endpoint"
                     is_valid = False
+                elif not test_mutation:
+                    verdict = HypothesisValidationStatus.SKIPPED
+                    reason = "Skipped: Missing explicitly configured researcher test mutation credential (refusing to invent arbitrary passwords)"
+                    is_valid = False
                 else:
-                    probe_payload = json.dumps({"username": active_identity.username, "new_password": "TestPassword123!", "token": ""})
-                    probe_res = self.executor.execute_request(target_ep, method="POST", data=probe_payload)
+                    # Parameter discovery
+                    discovered_params = (getattr(reset_surface, "parameter_names", None) or getattr(reset_surface, "parameters", None)) if reset_surface else None
+                    user_param = "username"
+                    pass_param = "new_password"
+                    token_param = "token"
+                    if discovered_params and isinstance(discovered_params, list):
+                        for p in discovered_params:
+                            p_lower = str(p).lower()
+                            if any(k in p_lower for k in ["user", "login", "account", "email"]):
+                                user_param = str(p)
+                            elif any(k in p_lower for k in ["pass", "pwd", "secret"]):
+                                pass_param = str(p)
+                            elif any(k in p_lower for k in ["token", "code", "key", "state", "ticket"]):
+                                token_param = str(p)
+
+                    # Build probe using discovered parameter names and researcher-controlled test parameters (unverified empty token)
+                    probe_dict = {
+                        user_param: active_identity.username,
+                        pass_param: test_mutation,
+                        token_param: "",
+                    }
+                    probe_payload = json.dumps(probe_dict)
+                    probe_res = self.executor.execute_request(
+                        target_ep,
+                        method="POST",
+                        data=probe_payload,
+                        headers={"Content-Type": "application/json"},
+                    )
                     if probe_res.get("evidence"):
                         evidence_chain.append(probe_res["evidence"])
+
+                    # Determine if actual security invariant violation / state transition occurred
+                    state_transition_confirmed = False
+                    issued_session = None
+
+                    # Check for session token issuance in response
+                    resp_headers = probe_res.get("headers", {})
+                    resp_cookies = resp_headers.get("set-cookie", "")
+                    if "session=" in resp_cookies or "auth=" in resp_cookies:
+                        issued_session = resp_cookies
+
+                    resp_body = probe_res.get("body", "")
+                    try:
+                        resp_json = json.loads(resp_body)
+                        if isinstance(resp_json, dict) and any(k in resp_json for k in ["session", "token", "access_token"]):
+                            issued_session = str(resp_json.get("session") or resp_json.get("token") or resp_json.get("access_token"))
+                    except Exception:
+                        pass
+
+                    # If login endpoint exists in discovered surfaces, verify if credential was actually mutated
+                    login_surface = next((s for s in self.surfaces if s.flow_type == AuthenticationFlowType.LOGIN), None)
+                    if login_surface and probe_res.get("status_code") in (200, 201, 204, 302):
+                        login_payload = json.dumps({"username": active_identity.username, "password": test_mutation})
+                        login_check = self.executor.execute_request(
+                            login_surface.endpoint,
+                            method="POST",
+                            data=login_payload,
+                            headers={"Content-Type": "application/json"},
+                        )
+                        if login_check.get("evidence"):
+                            evidence_chain.append(login_check["evidence"])
+                        if login_check.get("status_code") in (200, 201) and "session" in login_check.get("headers", {}).get("set-cookie", "").lower():
+                            state_transition_confirmed = True
+
                     verdict, reason = SafeAuthenticationValidator.validate_password_reset_state_confusion(
                         endpoint=target_ep,
                         step_status=probe_res.get("status_code", 0),
                         step_body=probe_res.get("body", ""),
                         is_prerequisite_satisfied=False,
+                        state_transition_confirmed=state_transition_confirmed,
+                        issued_session_token=issued_session,
                     )
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
@@ -634,9 +698,9 @@ class AuthenticationSecurityEngine:
                 # 10. MFA_STATE_CONFUSION: Requires dual test sessions to test cross-session state isolation
                 mfa_surface = next((s for s in self.surfaces if s.flow_type == AuthenticationFlowType.MFA_VERIFICATION), None)
                 dual_sessions = [s for s in self.sessions if s.session_id]
-                session_b = active_identity.attributes.get("session_b") if active_identity and active_identity.attributes else None
+                session_b_id = active_identity.attributes.get("session_b") if active_identity and active_identity.attributes else None
 
-                if len(dual_sessions) < 2 and not session_b:
+                if len(dual_sessions) < 2 and not session_b_id:
                     verdict = HypothesisValidationStatus.SKIPPED
                     reason = "Skipped: Missing dual test sessions to validate cross-session MFA state isolation"
                     is_valid = False
@@ -646,19 +710,54 @@ class AuthenticationSecurityEngine:
                     is_valid = False
                 else:
                     target_ep = mfa_surface.endpoint if mfa_surface else h.endpoint
-                    second_sess = session_b or dual_sessions[1].session_id
-                    conf_res = self.executor.execute_request(
-                        target_ep,
+                    sess_a_id = active_session.session_id if active_session else dual_sessions[0].session_id
+                    sess_b = session_b_id or dual_sessions[1].session_id
+
+                    # 1. Baseline observation: verify Session B is initially challenged / unverified
+                    pre_res_b = self.executor.execute_request(
+                        h.endpoint,
                         method="GET",
-                        headers={"Cookie": f"session={second_sess}"},
+                        headers={"Cookie": f"session={sess_b}"},
                     )
-                    if conf_res.get("evidence"):
-                        evidence_chain.append(conf_res["evidence"])
+                    if pre_res_b.get("evidence"):
+                        evidence_chain.append(pre_res_b["evidence"])
+
+                    # 2. Session A completes/submits factor verification
+                    action_res_a = self.executor.execute_request(
+                        target_ep,
+                        method="POST",
+                        headers={"Cookie": f"session={sess_a_id}"},
+                        data=json.dumps({"factor_step": "complete"}),
+                    )
+                    if action_res_a.get("evidence"):
+                        evidence_chain.append(action_res_a["evidence"])
+
+                    # 3. Post-action observation: check whether Session B gained authorization
+                    post_res_b = self.executor.execute_request(
+                        h.endpoint,
+                        method="GET",
+                        headers={"Cookie": f"session={sess_b}"},
+                    )
+                    if post_res_b.get("evidence"):
+                        evidence_chain.append(post_res_b["evidence"])
+
+                    # Cross-session escalation occurs ONLY if Session B was challenged pre-action and gained access post-action
+                    pre_b_challenged = pre_res_b.get("status_code") in (401, 403) or any(
+                        p in pre_res_b.get("body", "").lower() for p in ["enter code", "otp", "2fa", "verify identity", "challenge"]
+                    )
+                    post_b_success = post_res_b.get("status_code") in (200, 201)
+                    has_protected = any(
+                        k in post_res_b.get("body", "").lower() for k in ['"user_id"', '"account_id"', '"email"', 'user-profile', 'dashboard']
+                    )
+                    cross_session_elevated = pre_b_challenged and post_b_success and has_protected
+
                     verdict, reason = SafeAuthenticationValidator.validate_mfa_state_confusion(
-                        endpoint=target_ep,
-                        target_status=conf_res.get("status_code", 0),
-                        target_body=conf_res.get("body", ""),
-                        cross_session_elevated=False,
+                        endpoint=h.endpoint,
+                        pre_status_b=pre_res_b.get("status_code", 0),
+                        pre_body_b=pre_res_b.get("body", ""),
+                        post_status_b=post_res_b.get("status_code", 0),
+                        post_body_b=post_res_b.get("body", ""),
+                        cross_session_elevated=cross_session_elevated,
                     )
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
