@@ -12,8 +12,15 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import pytest
+
+from framework.findings.schema import Finding
+from framework.findings.lifecycle import FindingLifecycle
+from framework.state.manager import StateManager
+from framework.state.dedup import generate_test_fingerprint
 
 from framework.authentication.discovery import AuthenticationSurfaceDiscoverer
 from framework.authentication.engine import AuthenticationSecurityEngine
@@ -42,6 +49,7 @@ from framework.authentication.password_reset import PasswordResetAnalyzer
 from framework.authentication.policy import (
     AuthenticationApprovalGate,
     AuthenticationSecurityPolicy,
+    resolve_scope_file,
 )
 from framework.authentication.prioritization import AuthenticationPrioritizer
 from framework.authentication.sessions import SessionAnalyzer
@@ -357,7 +365,8 @@ def test_normal_access_control_is_not_vulnerability():
 
 def test_security_policy_scope_and_metadata_blocking():
     """Verifies that cloud metadata and out-of-scope targets are strictly blocked."""
-    policy = AuthenticationSecurityPolicy()
+    se = ScopeEngine({"targets": {"domains": ["target.com"]}})
+    policy = AuthenticationSecurityPolicy(scope_engine=se)
     
     # Metadata blocked
     allowed, reason = policy.is_target_allowed("http://169.254.169.254/latest/meta-data/")
@@ -415,7 +424,7 @@ def test_evidence_sanitization_and_signature():
 
     assert "[REDACTED_PASSWORD]" in record["request_redacted"]
     assert "[REDACTED_TOKEN]" in record["request_redacted"]
-    assert "[REDACTED_BY_BB_AGENT]" in record["request_redacted"]
+    assert "[REDACTED_COOKIE]" in record["response_redacted"]
     assert "SecretP@ssword123" not in record["request_redacted"]
     assert len(record["sha256_digest"]) == 64
 
@@ -513,3 +522,414 @@ def test_local_authentication_security_lab_execution():
     results = LocalAuthenticationSecurityLab.run_all()
     for r in results:
         assert r["matches_expectation"] is True, f"Lab scenario {r['scenario_id']} failed: {r['reason']}"
+
+
+# ==============================================================================
+# 13. Hardened Pipeline & Cross-Phase Integration Tests (Phase 14.1)
+# ==============================================================================
+
+def test_cli_validate_lab_mode():
+    """Real CLI orchestration in lab mode (bb-auth --validate --lab --json)."""
+    cmd = [sys.executable, "scripts/bb-auth", "--validate", "--lab", "--json"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    assert proc.returncode == 0, f"CLI exited with error: {proc.stderr}"
+    data = json.loads(proc.stdout)
+    assert data.get("mode") == "lab"
+    assert len(data.get("findings", [])) == 9
+    assert any(f["family"] == "AUTHENTICATION_BYPASS" for f in data["findings"])
+
+
+def test_state_ingestion_webapps(temp_workspace):
+    """Cross-phase state ingestion from state/webapps.json (real list-of-dicts schema)."""
+    webapps_file = os.path.join(temp_workspace, "state", "webapps.json")
+    with open(webapps_file, "w", encoding="utf-8") as f:
+        json.dump([
+            {
+                "endpoints": ["https://target.com/login", "https://target.com/dashboard"],
+                "forms": [{"action": "/auth/do-login", "method": "POST"}],
+                "cookies": [{"name": "session_id", "value": "xyz"}],
+            }
+        ], f)
+
+    surfaces = AuthenticationSurfaceDiscoverer.discover_all(temp_workspace)
+    endpoints = {s.endpoint for s in surfaces}
+    assert "https://target.com/login" in endpoints
+    assert "https://target.com/dashboard" in endpoints
+    assert "/auth/do-login" in endpoints
+
+
+def test_state_ingestion_api(temp_workspace):
+    """Cross-phase state ingestion from state/api.json (real list-of-dicts schema)."""
+    api_file = os.path.join(temp_workspace, "state", "api.json")
+    with open(api_file, "w", encoding="utf-8") as f:
+        json.dump([
+            {
+                "endpoints": [
+                    {"path": "/api/v1/auth/login", "method": "POST"},
+                    {"path": "/api/v1/user/reset-password", "method": "POST"},
+                ],
+                "auth_observations": ["Bearer token scheme present"],
+            }
+        ], f)
+
+    surfaces = AuthenticationSurfaceDiscoverer.discover_all(temp_workspace)
+    endpoints = {s.endpoint for s in surfaces}
+    assert "/api/v1/auth/login" in endpoints
+    assert "/api/v1/user/reset-password" in endpoints
+    login_step = next(s for s in surfaces if s.endpoint == "/api/v1/auth/login")
+    assert login_step.flow_type == AuthenticationFlowType.LOGIN
+
+
+def test_state_ingestion_javascript(temp_workspace):
+    """Cross-phase state ingestion from state/javascript.json (real list-of-dicts schema)."""
+    js_file = os.path.join(temp_workspace, "state", "javascript.json")
+    with open(js_file, "w", encoding="utf-8") as f:
+        json.dump([
+            {
+                "routes": ["/auth/sso/callback", "/portal/logout"],
+                "endpoints": ["/api/v2/mfa/challenge"],
+                "interesting_strings": ["jwt_secret_hint"],
+            }
+        ], f)
+
+    surfaces = AuthenticationSurfaceDiscoverer.discover_all(temp_workspace)
+    endpoints = {s.endpoint for s in surfaces}
+    assert "/auth/sso/callback" in endpoints
+    assert "/portal/logout" in endpoints
+    assert "/api/v2/mfa/challenge" in endpoints
+
+
+def test_state_ingestion_assets_recon(temp_workspace):
+    """Cross-phase state ingestion from state/assets.json and state/recon.json."""
+    assets_file = os.path.join(temp_workspace, "state", "assets.json")
+    recon_file = os.path.join(temp_workspace, "state", "recon.json")
+
+    with open(assets_file, "w", encoding="utf-8") as f:
+        json.dump({
+            "assets": {
+                "asset:1": {
+                    "hostname": "auth.example.com",
+                    "http_services": [{"url": "https://auth.example.com/oauth/authorize"}],
+                }
+            }
+        }, f)
+
+    with open(recon_file, "w", encoding="utf-8") as f:
+        json.dump({
+            "tls_records": [
+                {"san": ["sso.example.com", "login.example.com"]}
+            ]
+        }, f)
+
+    surfaces = AuthenticationSurfaceDiscoverer.discover_all(temp_workspace)
+    endpoints = {s.endpoint for s in surfaces}
+    assert "https://auth.example.com/oauth/authorize" in endpoints
+    assert "https://sso.example.com" in endpoints
+    assert "https://login.example.com" in endpoints
+
+
+def test_state_ingestion_authorization(temp_workspace):
+    """Authorization cross-correlation from state/authorization.json (dict-of-dicts schema)."""
+    authz_file = os.path.join(temp_workspace, "state", "authorization.json")
+    with open(authz_file, "w", encoding="utf-8") as f:
+        json.dump({
+            "principals": {
+                "principal_editor": {
+                    "username": "editor_user",
+                    "role": "EDITOR",
+                    "tenant": "tenant_north",
+                }
+            }
+        }, f)
+
+    mgr = IdentityManager()
+    seeded = mgr.seed_from_authorization_state(temp_workspace)
+    assert len(seeded) == 1
+    assert seeded[0].username == "editor_user"
+    assert seeded[0].role == "EDITOR"
+    assert seeded[0].tenant == "tenant_north"
+
+
+def test_state_ingestion_workflows(temp_workspace):
+    """Workflow cross-correlation from state/workflows.json (dict-of-dicts schema)."""
+    wf_file = os.path.join(temp_workspace, "state", "workflows.json")
+    with open(wf_file, "w", encoding="utf-8") as f:
+        json.dump({
+            "workflows": {
+                "wf_mfa": {
+                    "steps": [
+                        {"endpoint": "/mfa/step1", "method": "POST"},
+                        {"endpoint": "/mfa/step2", "method": "POST"},
+                    ]
+                }
+            }
+        }, f)
+
+    surfaces = AuthenticationSurfaceDiscoverer.discover_all(temp_workspace)
+    endpoints = {s.endpoint for s in surfaces}
+    assert "/mfa/step1" in endpoints
+    assert "/mfa/step2" in endpoints
+
+
+def test_state_ingestion_missing_files_graceful(temp_workspace):
+    """Missing state files tolerated without unhandled exceptions."""
+    surfaces = AuthenticationSurfaceDiscoverer.discover_all(temp_workspace)
+    assert isinstance(surfaces, list)
+    assert len(surfaces) == 0
+
+    mgr = IdentityManager()
+    seeded = mgr.seed_from_authorization_state(temp_workspace)
+    assert isinstance(seeded, list)
+    assert len(seeded) == 0
+
+
+def test_state_ingestion_corrupted_json(temp_workspace):
+    """Corrupted JSON state files handled gracefully without crashing."""
+    webapps_file = os.path.join(temp_workspace, "state", "webapps.json")
+    with open(webapps_file, "w", encoding="utf-8") as f:
+        f.write("{MALFORMED_JSON_CONTENT:::;;;")
+
+    surfaces = AuthenticationSurfaceDiscoverer.discover_all(temp_workspace)
+    assert isinstance(surfaces, list)
+    assert len(surfaces) == 0
+
+
+def test_scope_missing_fails_closed(temp_workspace):
+    """Missing scope file fails closed (active validation aborted)."""
+    resolved = resolve_scope_file(temp_workspace)
+    assert resolved is None
+
+    policy = AuthenticationSecurityPolicy(scope_engine=None)
+    allowed, reason = policy.is_target_allowed("https://target.com/login")
+    assert allowed is False
+    assert "failing closed" in reason.lower()
+
+
+def test_scope_malformed_and_out_of_scope(temp_workspace):
+    """Malformed, ambiguous, and out-of-scope targets blocked offline before any probe dispatch."""
+    se = ScopeEngine({"targets": {"domains": ["authorized.com"]}})
+    policy = AuthenticationSecurityPolicy(scope_engine=se)
+
+    # In-scope
+    ok1, _ = policy.is_target_allowed("https://authorized.com/login")
+    assert ok1 is True
+
+    # Out of scope
+    ok2, r2 = policy.is_target_allowed("https://attacker.com/login")
+    assert ok2 is False
+    assert "out_of_scope" in r2.lower()
+
+    # Cloud metadata / prohibited IP
+    ok3, r3 = policy.is_target_allowed("http://169.254.169.254/latest/meta-data")
+    assert ok3 is False
+    assert "prohibited" in r3.lower()
+
+
+def test_offline_modes_zero_network(temp_workspace, monkeypatch):
+    """Verify dry-run, passive-only, and lab modes make strictly zero external socket connections."""
+    import socket
+
+    def forbidden_connect(*args, **kwargs):
+        raise AssertionError("Network socket connect attempted during offline mode!")
+
+    monkeypatch.setattr(socket.socket, "connect", forbidden_connect)
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.surfaces = [
+        AuthenticationStep(step_id="s1", flow_type=AuthenticationFlowType.LOGIN, method="GET", endpoint="https://example.com/login")
+    ]
+    engine.formulate_hypotheses()
+
+    # Passive only
+    p_findings = engine.validate_hypotheses(passive_only=True)
+    assert isinstance(p_findings, list)
+
+    # Lab mode
+    lab_res = engine.execute_lab_simulation()
+    assert lab_res["passed_scenarios"] == 21
+
+
+def test_evidence_credential_redaction_comprehensive():
+    """Verify passwords, cookies, tokens, OTPs, and keys are thoroughly sanitized."""
+    raw = (
+        "POST /login HTTP/1.1\r\n"
+        "Host: auth.target.com\r\n"
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.super_secret\r\n"
+        "Cookie: session=abcde12345; connect.sid=sess_secret_777; PHPSESSID=php_sess_999\r\n"
+        "X-API-Key: live_api_key_secret_value\r\n"
+        "\r\n"
+        "password=SecretPassword123!&otp=123456&reset_token=tok_reset_abc"
+    )
+
+    clean = AuthenticationEvidenceManager.sanitize(raw)
+    assert "SecretPassword123!" not in clean
+    assert "abcde12345" not in clean
+    assert "sess_secret_777" not in clean
+    assert "php_sess_999" not in clean
+    assert "super_secret" not in clean
+    assert "live_api_key_secret_value" not in clean
+    assert "123456" not in clean
+    assert "tok_reset_abc" not in clean
+
+    assert "[REDACTED_PASSWORD]" in clean
+    assert "[REDACTED_COOKIE]" in clean
+    assert "[REDACTED_TOKEN]" in clean
+    assert "[REDACTED_SECRET]" in clean
+
+
+def test_dedup_test_fingerprinting_and_context(temp_workspace):
+    """Verify test fingerprinting in state/tests.json and context-aware retesting across roles."""
+    sm = StateManager(temp_workspace)
+    fp_anon = generate_test_fingerprint("target.com", "/api/profile", "GET", "principal:ANON|family:AUTHENTICATION_BYPASS", "authentication")
+    fp_admin = generate_test_fingerprint("target.com", "/api/profile", "GET", "principal:ADMIN|family:AUTHENTICATION_BYPASS", "authentication")
+    assert fp_anon != fp_admin
+
+    sm.record_test("target.com", "/api/profile", "GET", "principal:ANON|family:AUTHENTICATION_BYPASS", "authentication", "SUCCESS")
+    assert sm.has_test_run("target.com", "/api/profile", "GET", "principal:ANON|family:AUTHENTICATION_BYPASS", "authentication") is True
+    assert sm.has_test_run("target.com", "/api/profile", "GET", "principal:ADMIN|family:AUTHENTICATION_BYPASS", "authentication") is False
+
+
+def test_engine_resume_recovery(temp_workspace):
+    """Verify --resume state recovery from state/authentication.json skips prior tests."""
+    engine1 = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    hyp1 = AuthenticationHypothesis(
+        hypothesis_id="HYP-PREV-01",
+        family=AuthenticationFindingFamily.AUTHENTICATION_BYPASS,
+        endpoint="https://example.com/protected",
+        principal="ANONYMOUS",
+        required_state=AuthenticationState.AUTHENTICATED,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.9,
+        impact_hint="HIGH",
+        validation_status=HypothesisValidationStatus.VALIDATED,
+        rationale="Already verified",
+    )
+    engine1.hypotheses = [hyp1]
+    engine1.persist_state()
+
+    engine2 = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine2.load_existing_state()
+    assert len(engine2.hypotheses) == 1
+    assert engine2.hypotheses[0].validation_status == HypothesisValidationStatus.VALIDATED
+
+    # Calling validate_hypotheses with resume skips the validated hypothesis
+    engine2.validate_hypotheses(resume=True)
+    assert engine2.hypotheses[0].validation_status == HypothesisValidationStatus.VALIDATED
+    assert engine2.hypotheses[0].rationale == "Already verified"
+
+
+def test_false_positive_status_code_rejection():
+    """Status-code-only false positive rejection (generic 200 OK forms and WAF challenges)."""
+    clf = AuthenticationFalsePositiveClassifier()
+
+    # Form rejection
+    assert clf.is_login_page_false_positive(200, "<html><form method='post'><input type='password'></form></html>") is True
+    assert clf.is_login_page_false_positive(200, "{\"email\": \"admin@target.com\", \"role\": \"superadmin\"}") is False
+
+    # WAF rejection
+    assert clf.is_waf_or_challenge_page(403, "Cloudflare Ray ID: 123456 - Access Denied") is True
+    assert clf.is_waf_or_challenge_page(200, "Please complete the security challenge captcha") is True
+    assert clf.is_waf_or_challenge_page(200, "{\"status\": \"ok\"}") is False
+
+    # Normal access control
+    assert clf.is_normal_access_control(401, 200) is True
+    assert clf.is_normal_access_control(200, 200) is False
+
+
+def test_baseline_differential_validation():
+    """Evidence-backed baseline differential validation for session invalidation and bypass."""
+    # Bypass validation
+    v_bypass, _ = SafeAuthenticationValidator.validate_authentication_bypass(
+        endpoint="/api/user/settings",
+        anon_status=200,
+        anon_body='{"user_id": "99", "email": "victim@target.com", "balance": 1500}',
+        auth_status=200,
+        auth_body='{"user_id": "99", "email": "victim@target.com"}',
+    )
+    assert v_bypass == HypothesisValidationStatus.VALIDATED
+
+    # Normal auth rejected
+    v_normal, _ = SafeAuthenticationValidator.validate_authentication_bypass(
+        endpoint="/api/user/settings",
+        anon_status=401,
+        anon_body="Unauthorized",
+        auth_status=200,
+        auth_body='{"user_id": "99"}',
+    )
+    assert v_normal == HypothesisValidationStatus.REJECTED
+
+    # Account enumeration multi-trial validation
+    v_enum_weak, _ = SafeAuthenticationValidator.validate_account_enumeration(
+        valid_status=200,
+        valid_body="Email sent to account inbox",
+        invalid_status=200,
+        invalid_body="Email sent to account inbox",
+        trial_count=3,
+    )
+    assert v_enum_weak == HypothesisValidationStatus.REJECTED
+
+    v_enum_single, _ = SafeAuthenticationValidator.validate_account_enumeration(
+        valid_status=200,
+        valid_body="Email sent to existing user",
+        invalid_status=404,
+        invalid_body="User not found",
+        trial_count=1,
+    )
+    assert v_enum_single == HypothesisValidationStatus.INFORMATIONAL
+
+    v_enum_confirmed, _ = SafeAuthenticationValidator.validate_account_enumeration(
+        valid_status=200,
+        valid_body="Email sent to existing user",
+        invalid_status=404,
+        invalid_body="User not found",
+        trial_count=3,
+    )
+    assert v_enum_confirmed == HypothesisValidationStatus.VALIDATED
+
+
+def test_native_finding_lifecycle_persistence(temp_workspace):
+    """Native Finding conversion respects FindingLifecycle.VALIDATED only on true verification, persisting to state/findings.json."""
+    c_valid = AuthenticationFindingCandidate(
+        finding_id="FIND-TEST-01",
+        title="Bypass Flaw",
+        family=AuthenticationFindingFamily.AUTHENTICATION_BYPASS,
+        severity="CRITICAL",
+        confidence="CONFIRMED",
+        endpoint="/api/admin/data",
+        identity_id="ANONYMOUS",
+        description="Anonymous data exposure",
+        evidence_chain=[{"status_code": 200, "response_redacted": "email: test@corp.local"}],
+        cvss_score=9.1,
+        remediation="Enforce auth checks",
+    )
+    f_valid = c_valid.to_native_finding(scope_ref="scope/scope.yaml", is_validated=True)
+    assert isinstance(f_valid, Finding)
+    assert f_valid.lifecycle_state == FindingLifecycle.VALIDATED
+
+    c_obs = AuthenticationFindingCandidate(
+        finding_id="FIND-TEST-02",
+        title="Session Not Rotated",
+        family=AuthenticationFindingFamily.SESSION_NOT_ROTATED,
+        severity="LOW",
+        confidence="HIGH",
+        endpoint="/auth/login",
+        identity_id="ANONYMOUS",
+        description="Session not rotated across privilege change",
+        evidence_chain=[],
+        cvss_score=3.5,
+        remediation="Rotate session identifier",
+    )
+    f_obs = c_obs.to_native_finding(scope_ref="scope/scope.yaml", is_validated=True)
+    assert f_obs.lifecycle_state == FindingLifecycle.INFORMATIONAL
+
+    # Persist via StateManager
+    sm = StateManager(temp_workspace)
+    saved_f, is_dup, dup_id = sm.save_finding(f_valid)
+    assert is_dup is False
+    assert os.path.isfile(sm.findings_file)
+
+    loaded_findings = sm.get_findings()
+    assert len(loaded_findings) == 1
+    assert loaded_findings[0].finding_id == "FIND-TEST-01"

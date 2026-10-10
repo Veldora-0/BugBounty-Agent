@@ -100,8 +100,11 @@ class HypothesisValidationStatus(str, Enum):
     TESTING = "TESTING"
     OBSERVED = "OBSERVED"
     VALIDATED = "VALIDATED"
+    CONFIRMED = "CONFIRMED"
     REJECTED = "REJECTED"
+    SKIPPED = "SKIPPED"
     DUPLICATE = "DUPLICATE"
+    NEEDS_APPROVAL = "NEEDS_APPROVAL"
     NEEDS_MANUAL_REVIEW = "NEEDS_MANUAL_REVIEW"
     INFORMATIONAL = "INFORMATIONAL"
 
@@ -284,6 +287,7 @@ class AuthenticationFlow:
     transitions: List[AuthenticationTransition] = field(default_factory=list)
     endpoint: str = ""
     description: str = ""
+    success_indicators: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -293,6 +297,7 @@ class AuthenticationFlow:
             "transitions": [t.to_dict() for t in self.transitions],
             "endpoint": self.endpoint,
             "description": self.description,
+            "success_indicators": self.success_indicators,
         }
 
     @classmethod
@@ -304,6 +309,7 @@ class AuthenticationFlow:
             transitions=[AuthenticationTransition.from_dict(t) for t in data.get("transitions", [])],
             endpoint=data.get("endpoint", ""),
             description=data.get("description", ""),
+            success_indicators=data.get("success_indicators", []),
         )
 
 
@@ -568,4 +574,81 @@ class AuthenticationFindingCandidate:
             cvss_score=float(data.get("cvss_score", 5.0)),
             remediation=data.get("remediation", ""),
             timestamp=data.get("timestamp", datetime.now(timezone.utc).isoformat()),
+        )
+
+    def to_native_finding(self, scope_ref: str, is_validated: bool = False):
+        """
+        Converts the candidate into a native Finding object complying with FindingLifecycle.
+        Candidates do NOT automatically become VALIDATED without explicit verification proof.
+        """
+        from framework.findings.schema import Finding, VALID_SEVERITIES, VALID_CONFIDENCES
+        from framework.findings.lifecycle import FindingLifecycle
+        from urllib.parse import urlparse
+
+        obs_only_families = {
+            AuthenticationFindingFamily.SESSION_NOT_ROTATED,
+            AuthenticationFindingFamily.TOKEN_TRANSPORT_EXPOSURE,
+            AuthenticationFindingFamily.AUTHENTICATION_CONFIGURATION_WEAKNESS,
+        }
+
+        if is_validated and self.family not in obs_only_families:
+            lifecycle = FindingLifecycle.VALIDATED
+        elif self.family in obs_only_families:
+            lifecycle = FindingLifecycle.INFORMATIONAL
+        else:
+            lifecycle = FindingLifecycle.CANDIDATE
+
+        # Normalize severity and confidence
+        sev = self.severity.upper() if self.severity.upper() in VALID_SEVERITIES else "MEDIUM"
+        conf = self.confidence.upper() if self.confidence.upper() in VALID_CONFIDENCES else "HIGH"
+
+        # Determine asset
+        asset = "authentication-service"
+        if "://" in self.endpoint:
+            p = urlparse(self.endpoint)
+            asset = p.netloc or p.hostname or "authentication-service"
+        elif self.endpoint:
+            parts = [seg for seg in self.endpoint.split("/") if seg]
+            asset = parts[0] if parts else "authentication-service"
+
+        repro_steps = [
+            f"Navigate to target endpoint: {self.endpoint}",
+            f"Execute authentication/session test under context identity: {self.identity_id}",
+            f"Observe application response for vulnerability family: {self.family}",
+        ]
+
+        evidence_items = []
+        for ev in self.evidence_chain:
+            if isinstance(ev, dict):
+                evidence_items.append({
+                    "type": "http_interaction",
+                    "content": ev.get("response_redacted") or ev.get("request_redacted") or str(ev),
+                    "metadata": {
+                        "sha256": ev.get("sha256_digest", ""),
+                        "status_code": ev.get("status_code", 0),
+                        "endpoint": ev.get("endpoint", self.endpoint),
+                    },
+                    "timestamp": ev.get("timestamp", self.timestamp),
+                })
+
+        return Finding(
+            finding_id=self.finding_id,
+            title=self.title or f"Authentication Security Issue: {self.family}",
+            summary=self.description[:200] if self.description else self.title,
+            affected_asset=asset,
+            affected_endpoint=self.endpoint or "/auth",
+            vulnerability_type=self.family,
+            severity=sev,
+            confidence=conf,
+            description=self.description or f"Identified {self.family} on {self.endpoint}",
+            root_cause=f"Inadequate authentication/session controls for {self.family}",
+            prerequisites=f"Access to endpoint under context {self.identity_id}",
+            reproduction_steps=repro_steps,
+            expected_result="Endpoint enforces strict authentication and session boundaries.",
+            observed_result=self.description,
+            security_impact=f"Potential authentication/session compromise: CVSS {self.cvss_score}",
+            remediation=self.remediation or "Follow authentication hardening best practices.",
+            scope_reference=scope_ref,
+            lifecycle_state=lifecycle,
+            evidence=evidence_items,
         )

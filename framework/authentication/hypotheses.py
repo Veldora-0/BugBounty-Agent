@@ -1,8 +1,9 @@
 """
-Authentication Hypothesis Generation Engine (Phase 14).
+Authentication Hypothesis Generation Engine (Phase 14.1).
 
 Formulates structured, testable hypotheses regarding authentication boundaries,
 session lifecycles, MFA enforcement, and token security based on discovered attack surfaces.
+Strictly maps hypotheses to the 14 declared families in AuthenticationFindingFamily.
 """
 
 from __future__ import annotations
@@ -34,9 +35,10 @@ class AuthenticationHypothesisEngine:
         """Formulates potential security hypotheses for a specific authentication endpoint."""
         hypotheses: List[AuthenticationHypothesis] = []
         principal_id = identity.identity_id if identity else "ANONYMOUS"
+        ep_lower = endpoint.lower()
 
-        # Check for potential authentication bypass on protected endpoints
-        if any(p in endpoint.lower() for p in ["/admin", "/api/user", "/profile", "/dashboard", "/account", "/settings"]):
+        # 1. AUTHENTICATION_BYPASS (Operational)
+        if any(p in ep_lower for p in ["/admin", "/api/user", "/profile", "/dashboard", "/account", "/settings"]):
             hypotheses.append(
                 AuthenticationHypothesis(
                     hypothesis_id=f"HYP-AUTH-BYPASS-{uuid.uuid4().hex[:6]}",
@@ -46,15 +48,15 @@ class AuthenticationHypothesisEngine:
                     required_state=AuthenticationState.AUTHENTICATED,
                     observed_state=AuthenticationState.ANONYMOUS,
                     expected_behavior="Endpoint rejects unauthenticated requests with HTTP 401 or 403.",
-                    observed_behavior="To be verified via differential comparison.",
+                    observed_behavior="To be verified via differential comparison against anonymous baseline.",
                     confidence=0.6,
                     impact_hint="HIGH",
                     rationale=f"Endpoint '{endpoint}' manages protected user/administrative state. Verify if authentication challenge is enforced.",
                 )
             )
 
-        # Check for pre-MFA privilege exposure
-        if any(p in endpoint.lower() for p in ["/api/account", "/profile", "/settings", "/billing"]):
+        # 2. PRE_AUTH_PRIVILEGE_EXPOSURE (Operational)
+        if any(p in ep_lower for p in ["/api/account", "/profile", "/settings", "/billing", "/api/v1/user"]):
             hypotheses.append(
                 AuthenticationHypothesis(
                     hypothesis_id=f"HYP-PRE-MFA-{uuid.uuid4().hex[:6]}",
@@ -71,8 +73,41 @@ class AuthenticationHypothesisEngine:
                 )
             )
 
-        # Session invalidation hypotheses
-        if any(p in endpoint.lower() for p in ["/logout", "/signout", "/api/logout"]):
+        # 3. SESSION_FIXATION (Operational) & 5. SESSION_NOT_ROTATED (Observation-Only)
+        if any(p in ep_lower for p in ["/login", "/signin", "/auth/login", "/session"]):
+            hypotheses.append(
+                AuthenticationHypothesis(
+                    hypothesis_id=f"HYP-SESS-FIX-{uuid.uuid4().hex[:6]}",
+                    family=AuthenticationFindingFamily.SESSION_FIXATION,
+                    endpoint=endpoint,
+                    principal=principal_id,
+                    required_state=AuthenticationState.AUTHENTICATED,
+                    observed_state=AuthenticationState.ANONYMOUS,
+                    expected_behavior="Server issues new session identifier upon authentication.",
+                    observed_behavior="To be verified by replaying pre-login session identifier.",
+                    confidence=0.6,
+                    impact_hint="MEDIUM",
+                    rationale="Server must rotate session identifier across login boundary to prevent session fixation.",
+                )
+            )
+            hypotheses.append(
+                AuthenticationHypothesis(
+                    hypothesis_id=f"HYP-SESS-NOT-ROT-{uuid.uuid4().hex[:6]}",
+                    family=AuthenticationFindingFamily.SESSION_NOT_ROTATED,
+                    endpoint=endpoint,
+                    principal=principal_id,
+                    required_state=AuthenticationState.AUTHENTICATED,
+                    observed_state=AuthenticationState.AUTHENTICATED,
+                    expected_behavior="Session token rotated after privilege elevation.",
+                    observed_behavior="Observation: check if session cookie remains unchanged across login.",
+                    confidence=0.4,
+                    impact_hint="LOW",
+                    rationale="Failure to rotate session ID is an informational hardening concern.",
+                )
+            )
+
+        # 4. SESSION_NOT_INVALIDATED (Operational)
+        if any(p in ep_lower for p in ["/logout", "/signout", "/api/logout", "/auth/logout"]):
             hypotheses.append(
                 AuthenticationHypothesis(
                     hypothesis_id=f"HYP-SESS-LOGOUT-{uuid.uuid4().hex[:6]}",
@@ -89,8 +124,8 @@ class AuthenticationHypothesisEngine:
                 )
             )
 
-        # Password reset hypotheses
-        if any(p in endpoint.lower() for p in ["/password/reset", "/reset-password", "/forgot-password"]):
+        # 6. PASSWORD_RESET_TOKEN_REUSE & 7. PASSWORD_RESET_STATE_CONFUSION & 8. ACCOUNT_ENUMERATION
+        if any(p in ep_lower for p in ["/password/reset", "/reset-password", "/forgot-password", "/account/recovery"]):
             hypotheses.append(
                 AuthenticationHypothesis(
                     hypothesis_id=f"HYP-RESET-REUSE-{uuid.uuid4().hex[:6]}",
@@ -108,6 +143,21 @@ class AuthenticationHypothesisEngine:
             )
             hypotheses.append(
                 AuthenticationHypothesis(
+                    hypothesis_id=f"HYP-RESET-CONFUSION-{uuid.uuid4().hex[:6]}",
+                    family=AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION,
+                    endpoint=endpoint,
+                    principal=principal_id,
+                    required_state=AuthenticationState.RECOVERY,
+                    observed_state=AuthenticationState.RECOVERY,
+                    expected_behavior="Password reset requires step-order compliance and valid identity binding.",
+                    observed_behavior="To be verified via parameter manipulation on test account.",
+                    confidence=0.5,
+                    impact_hint="HIGH",
+                    rationale="State confusion during password reset can permit account takeover on researcher test accounts.",
+                )
+            )
+            hypotheses.append(
+                AuthenticationHypothesis(
                     hypothesis_id=f"HYP-ACCT-ENUM-{uuid.uuid4().hex[:6]}",
                     family=AuthenticationFindingFamily.ACCOUNT_ENUMERATION,
                     endpoint=endpoint,
@@ -115,15 +165,48 @@ class AuthenticationHypothesisEngine:
                     required_state=AuthenticationState.ANONYMOUS,
                     observed_state=AuthenticationState.ANONYMOUS,
                     expected_behavior="Endpoint returns uniform response regardless of account existence.",
-                    observed_behavior="To be evaluated via controlled differential probe.",
+                    observed_behavior="To be evaluated via controlled differential probe over multiple trials.",
                     confidence=0.5,
                     impact_hint="LOW",
                     rationale="Password reset initiation should not leak user registration status via differential errors.",
                 )
             )
 
-        # Refresh token hypotheses
-        if any(p in endpoint.lower() for p in ["/token/refresh", "/auth/refresh"]):
+        # 9. MFA_BYPASS & 10. MFA_STATE_CONFUSION
+        if any(p in ep_lower for p in ["/mfa", "/2fa", "/otp", "/verify-mfa", "/two-factor"]):
+            hypotheses.append(
+                AuthenticationHypothesis(
+                    hypothesis_id=f"HYP-MFA-BYPASS-{uuid.uuid4().hex[:6]}",
+                    family=AuthenticationFindingFamily.MFA_BYPASS,
+                    endpoint=endpoint,
+                    principal=principal_id,
+                    required_state=AuthenticationState.MFA_VERIFIED,
+                    observed_state=AuthenticationState.MFA_REQUIRED,
+                    expected_behavior="Access to post-MFA functionality strictly requires successful second factor validation.",
+                    observed_behavior="To be verified by testing post-MFA routes with primary credentials only.",
+                    confidence=0.6,
+                    impact_hint="HIGH",
+                    rationale="MFA verification step must not be skippable via direct endpoint access.",
+                )
+            )
+            hypotheses.append(
+                AuthenticationHypothesis(
+                    hypothesis_id=f"HYP-MFA-CONFUSION-{uuid.uuid4().hex[:6]}",
+                    family=AuthenticationFindingFamily.MFA_STATE_CONFUSION,
+                    endpoint=endpoint,
+                    principal=principal_id,
+                    required_state=AuthenticationState.MFA_REQUIRED,
+                    observed_state=AuthenticationState.MFA_REQUIRED,
+                    expected_behavior="MFA state transitions must be serialized and bound to specific session.",
+                    observed_behavior="To be verified via out-of-order state parameter submission.",
+                    confidence=0.5,
+                    impact_hint="HIGH",
+                    rationale="Intermediate MFA states must not be reused across sessions.",
+                )
+            )
+
+        # 11. REFRESH_TOKEN_REUSE
+        if any(p in ep_lower for p in ["/token/refresh", "/auth/refresh", "/refresh-token"]):
             hypotheses.append(
                 AuthenticationHypothesis(
                     hypothesis_id=f"HYP-REFRESH-REUSE-{uuid.uuid4().hex[:6]}",
@@ -140,4 +223,74 @@ class AuthenticationHypothesisEngine:
                 )
             )
 
+        # 12. TOKEN_TRANSPORT_EXPOSURE (Observation-Only)
+        if any(p in ep_lower for p in ["token=", "access_token=", "bearer=", "auth="]):
+            hypotheses.append(
+                AuthenticationHypothesis(
+                    hypothesis_id=f"HYP-TOKEN-TRANS-{uuid.uuid4().hex[:6]}",
+                    family=AuthenticationFindingFamily.TOKEN_TRANSPORT_EXPOSURE,
+                    endpoint=endpoint,
+                    principal=principal_id,
+                    required_state=AuthenticationState.AUTHENTICATED,
+                    observed_state=AuthenticationState.AUTHENTICATED,
+                    expected_behavior="Sensitive tokens conveyed in secure headers or request bodies, not URL query strings.",
+                    observed_behavior="Observation: token detected in URL or transport parameter.",
+                    confidence=0.7,
+                    impact_hint="LOW",
+                    rationale="Token transport exposure may leak credentials to web server logs or Referer headers.",
+                )
+            )
+
+        # 13. AUTHENTICATION_STATE_INCONSISTENCY
+        if any(p in ep_lower for p in ["/api/v", "/internal/auth", "/gateway"]):
+            hypotheses.append(
+                AuthenticationHypothesis(
+                    hypothesis_id=f"HYP-STATE-INCONSIST-{uuid.uuid4().hex[:6]}",
+                    family=AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY,
+                    endpoint=endpoint,
+                    principal=principal_id,
+                    required_state=AuthenticationState.AUTHENTICATED,
+                    observed_state=AuthenticationState.AUTHENTICATED,
+                    expected_behavior="All backend services uniformly enforce current authentication and revocation state.",
+                    observed_behavior="To be verified via cross-component credential probes.",
+                    confidence=0.4,
+                    impact_hint="MEDIUM",
+                    rationale="Microservice or gateway discrepancies may allow revoked credentials on downstream services.",
+                )
+            )
+
+        # 14. AUTHENTICATION_CONFIGURATION_WEAKNESS (Observation-Only)
+        if any(p in ep_lower for p in ["/login", "/auth", "/session", "/api/auth"]):
+            hypotheses.append(
+                AuthenticationHypothesis(
+                    hypothesis_id=f"HYP-AUTH-CONFIG-{uuid.uuid4().hex[:6]}",
+                    family=AuthenticationFindingFamily.AUTHENTICATION_CONFIGURATION_WEAKNESS,
+                    endpoint=endpoint,
+                    principal=principal_id,
+                    required_state=AuthenticationState.AUTHENTICATED,
+                    observed_state=AuthenticationState.AUTHENTICATED,
+                    expected_behavior="Session cookies configure Secure, HttpOnly, and SameSite; JWTs use strong signing.",
+                    observed_behavior="Observation: check configuration attributes on session cookies and tokens.",
+                    confidence=0.5,
+                    impact_hint="LOW",
+                    rationale="Configuration weaknesses represent defense-in-depth observations unless actively exploitable.",
+                )
+            )
+
         return hypotheses
+
+    @classmethod
+    def generate_all(
+        cls,
+        surfaces: List[AuthenticationStep],
+        identity: Optional[IdentityProfile] = None,
+    ) -> List[AuthenticationHypothesis]:
+        """Generates hypotheses for all provided surfaces."""
+        all_hyps: List[AuthenticationHypothesis] = []
+        seen_ids = set()
+        for s in surfaces:
+            for h in cls.generate_hypotheses_for_endpoint(s.endpoint, step=s, identity=identity):
+                if h.hypothesis_id not in seen_ids:
+                    seen_ids.add(h.hypothesis_id)
+                    all_hyps.append(h)
+        return all_hyps

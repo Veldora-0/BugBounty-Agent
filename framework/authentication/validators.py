@@ -37,10 +37,22 @@ class AuthenticationFalsePositiveClassifier:
 
         lower_body = response_body.lower()
         form_indicators = [
-            "<form", "type=\"password\"", "name=\"password\"", "login to your account",
-            "sign in to continue", "please log in", "enter credentials", "oauth/authorize"
+            "<form", "type=\"password\"", "type='password'", "name=\"password\"", "name='password'",
+            "login to your account", "sign in to continue", "please log in", "enter credentials",
+            "oauth/authorize", "user-login", "auth-form",
         ]
         return any(ind in lower_body for ind in form_indicators)
+
+    @staticmethod
+    def is_waf_or_challenge_page(status_code: int, response_body: str) -> bool:
+        """Detects if response is a WAF challenge, Cloudflare block, or bot detection page."""
+        lower_body = response_body.lower()
+        waf_indicators = [
+            "cf-ray", "cloudflare", "access denied", "attention required",
+            "recaptcha", "hcaptcha", "ddos protection", "incident id",
+            "request blocked", "security challenge", "bot detection",
+        ]
+        return any(ind in lower_body for ind in waf_indicators)
 
     @staticmethod
     def is_normal_access_control(
@@ -210,8 +222,14 @@ class SafeAuthenticationValidator:
         invalid_body: str,
         valid_redirect: Optional[str] = None,
         invalid_redirect: Optional[str] = None,
+        timing_delta_ms: float = 0.0,
+        trial_count: int = 3,
     ) -> Tuple[HypothesisValidationStatus, str]:
-        """Validates account enumeration differential signals."""
+        """
+        Validates account enumeration differential signals.
+        Timing differences and text variations are treated as signals, not standalone proof.
+        Requires repeatable differential evidence (trial_count >= 2) before confirmation.
+        """
         signal, reason = PasswordResetAnalyzer.analyze_account_enumeration(
             valid_user_status=valid_status,
             valid_user_body=valid_body,
@@ -221,7 +239,9 @@ class SafeAuthenticationValidator:
             invalid_user_redirect=invalid_redirect,
         )
         if signal == AccountEnumerationSignal.STRONG_ENUMERATION_SIGNAL:
-            return HypothesisValidationStatus.VALIDATED, reason
+            if trial_count >= 2:
+                return HypothesisValidationStatus.VALIDATED, f"Confirmed repeatable differential: {reason}"
+            return HypothesisValidationStatus.INFORMATIONAL, f"Differential signal observed ({reason}), pending multi-trial verification"
         elif signal == AccountEnumerationSignal.WEAK_ENUMERATION_SIGNAL:
             return HypothesisValidationStatus.INFORMATIONAL, reason
         return HypothesisValidationStatus.REJECTED, reason

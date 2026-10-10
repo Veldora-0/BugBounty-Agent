@@ -3,7 +3,7 @@
 ## Milestones
 
 - ✅ **v1.0 Foundational Capabilities** — Phases 1–14 (shipped 2026-10-08)
-- 🚧 **v1.14.1 Hardening & Pipeline Integration** — Phase 14.1 (in progress)
+- ✅ **v1.14.1 Hardening & Pipeline Integration** — Phase 14.1 (shipped 2026-10-10)
 
 ## Completed Milestones
 
@@ -27,9 +27,16 @@
 
 </details>
 
+<details open>
+<summary>✅ v1.14.1 Hardening & Pipeline Integration (Phase 14.1) — SHIPPED 2026-10-10</summary>
+
+- **Phase 14.1: Authentication Engine Hardening & Pipeline Integration** — End-to-end execution pipeline, fail-closed scope resolution (`ScopeEngine.check()`, canonical `<program_dir>/scope/scope.yaml`), cross-phase state ingestion from 7 schemas, operational coverage of 14 families, differential validation heuristics, test deduplication in `state/tests.json`, `--resume` support, credential sanitization, and native findings persistence in `state/findings.json`.
+
+</details>
+
 ---
 
-## Active Phase Details
+## Completed Phase Details
 
 ### Phase 14.1: Authentication Engine Hardening & Pipeline Integration
 
@@ -48,9 +55,9 @@
 7. Verified findings integrate natively into `framework.findings.schema.Finding` within `state/findings.json` without parallel models. Sensitive credentials are fully redacted, and request/response hashes are treated as provenance records rather than vulnerability proof.
 8. All 21 existing offline lab scenarios pass, plus 18 new integration/safety test cases pass. Pytest suite passes 100% on Windows and Kali Linux, all 23 `bb-doctor` categories report `[HEALTHY]`, OpenCode configuration is verified, and work concludes in one final implementation commit: `fix: harden authentication validation pipeline`.
 
-**Plans** (Sequential Execution — No Parallelization):
+**Plans** (Sequential Execution — Completed):
 
-- [ ] **14.1-01: Pipeline & Scope Engine Integration**
+- [x] **14.1-01: Pipeline & Scope Engine Integration**
   - Connect `bb-auth --validate` execution stages end-to-end through a bounded internal request executor.
   - Require integration test proving `bb-auth --validate --lab` executes real hypothesis processing and validation.
   - Integrate `ScopeEngine` using its actual `check(target)` API returning `ScopeDecision` and checking `status == ScopeStatus.IN_SCOPE`.
@@ -58,27 +65,27 @@
   - Enforce zero external network traffic on dry-run, passive-only, hypothesis-only, and lab paths.
   - Ensure clean termination with exit codes (0=clean, 1=error/scope, 2=pending approval) without uncaught exceptions.
 
-- [ ] **14.1-02: Cross-Phase State Ingestion & Surface Discovery**
+- [x] **14.1-02: Cross-Phase State Ingestion & Surface Discovery**
   - Implement real schema loaders for `state/webapps.json` (`WebAppStateManager`), `state/api.json` (`ApiStateManager`), `state/javascript.json` (`JavaScriptStateManager`), `state/assets.json`, and `state/recon.json` (lists of dicts vs dicts).
   - Ingest authorization context from `state/authorization.json` (`AuthorizationStateManager`, dict of principals) and workflow context from `state/workflows.json` (`WorkflowStateManager`, dict of workflows).
   - Implement defensive error handling for missing, empty, partial, or corrupted JSON state files without crashing.
   - Map discovered routes, parameters, cookies, tokens, and forms into unified `AuthenticationSurfaceDiscoverer`.
 
-- [ ] **14.1-03: Operational Coverage & Hardened Validation Heuristics**
+- [x] **14.1-03: Operational Coverage & Hardened Validation Heuristics**
   - Implement operational validation across all 11 operational families (`AUTHENTICATION_BYPASS`, `PRE_AUTH_PRIVILEGE_EXPOSURE`, `SESSION_FIXATION`, `SESSION_NOT_INVALIDATED`, `PASSWORD_RESET_TOKEN_REUSE`, `PASSWORD_RESET_STATE_CONFUSION`, `ACCOUNT_ENUMERATION`, `MFA_BYPASS`, `MFA_STATE_CONFUSION`, `REFRESH_TOKEN_REUSE`, `AUTHENTICATION_STATE_INCONSISTENCY`).
   - Classify 3 observation-only families (`SESSION_NOT_ROTATED`, `TOKEN_TRANSPORT_EXPOSURE`, `AUTHENTICATION_CONFIGURATION_WEAKNESS`) as observations without escalating to unproven vulnerabilities.
   - Implement baseline differential validation (anonymous vs authenticated) to reject generic 200 OK login forms and WAF challenges.
   - Treat timing differences and response text variations as signals, requiring repeatable differential evidence across multiple trials for account enumeration.
   - Enforce operator approval gating (`AuthenticationApprovalGate`) via `--approve` for state mutations on test accounts. Invariant: approval never overrides scope restrictions.
 
-- [ ] **14.1-04: Deterministic Fingerprinting, Deduplication, Resume & Evidence Model**
+- [x] **14.1-04: Deterministic Fingerprinting, Deduplication, Resume & Evidence Model**
   - Implement deterministic SHA-256 test fingerprints via `generate_test_fingerprint` with context-awareness (principal, role) to prevent suppressing legitimate retests.
   - Integrate with `state/tests.json` using exact `StateManager.has_test_run` and `StateManager.record_test` methods.
   - Support `--resume` flag to recover previously evaluated hypotheses and findings from `state/authentication.json`.
   - Enforce strict credential sanitization in `AuthenticationEvidenceManager` (passwords, cookies, tokens, OTPs, API keys) with SHA-256 provenance hashes.
   - Map verified candidates to native `framework.findings.schema.Finding` objects respecting `FindingLifecycle.VALIDATED` only on true verification, and persist via `StateManager.save_finding`.
 
-- [ ] **14.1-05: Regression Testing, Doctor Diagnostics, Cross-Platform Validation & Documentation**
+- [x] **14.1-05: Regression Testing, Doctor Diagnostics, Cross-Platform Validation & Documentation**
   - Preserve all 21 existing offline authentication lab scenarios in `framework/authentication/lab.py`.
   - Add 18 new integration and safety test cases covering real state ingestion, fail-closed scope, redaction, deduplication, resume, and baseline validation.
   - Run active tests against local lab targets only with zero external network traffic.
@@ -98,7 +105,7 @@ Plans execute strictly in sequence: 14.1-01 → 14.1-02 → 14.1-03 → 14.1-04 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | Phases 1–14 | v1.0 | 14/14 | Complete | 2026-10-08 |
-| Phase 14.1: Authentication Hardening | v1.14.1 | 0/5 | Not started | - |
+| Phase 14.1: Authentication Hardening | v1.14.1 | 5/5 | Complete | 2026-10-10 |
 
 ---
 *Roadmap defined: 2026-10-09*

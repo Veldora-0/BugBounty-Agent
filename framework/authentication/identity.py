@@ -1,13 +1,16 @@
 """
-Identity Modeling Engine for BugBounty-Agent (Phase 14).
+Identity Modeling Engine for BugBounty-Agent (Phase 14.1).
 
 Models security identities, researcher-controlled principals, and their authentication states.
-Provides bi-directional bridging with Phase 8 PrincipalProfile.
+Provides bi-directional bridging with Phase 8 PrincipalProfile and ingests principals from
+state/authorization.json.
 Enforces credential safety: strictly forbids storing raw passwords or session tokens.
 """
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any, Dict, List, Optional
 import uuid
 
@@ -40,7 +43,6 @@ class IdentityManager:
         Sanitizes attributes to ensure no password or secret data can be persisted.
         """
         clean_attrs = attributes or {}
-        # Strip any credential-like fields proactively
         forbidden_keys = {"password", "pass", "pwd", "secret", "token", "raw_cookie", "api_key"}
         sanitized_attrs = {
             k: v for k, v in clean_attrs.items()
@@ -62,6 +64,54 @@ class IdentityManager:
         )
         self._identities[iid] = profile
         return profile
+
+    def seed_from_authorization_state(self, program_dir: str) -> List[IdentityProfile]:
+        """
+        Ingests principals from Phase 8 state/authorization.json.
+        Schema: 'principals' is a dictionary of {principal_id: dict}.
+        Gracefully tolerates missing, empty, or corrupted files.
+        """
+        seeded: List[IdentityProfile] = []
+        filepath = os.path.join(program_dir, "state", "authorization.json")
+        if not os.path.isfile(filepath):
+            filepath = os.path.join(program_dir, "authorization.json")
+
+        if not os.path.isfile(filepath):
+            return seeded
+
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return seeded
+
+        if not isinstance(data, dict):
+            return seeded
+
+        principals = data.get("principals", {})
+        if isinstance(principals, dict):
+            for pid, pdata in principals.items():
+                if not isinstance(pdata, dict):
+                    continue
+                username = pdata.get("username") or pdata.get("principal_id") or pid
+                role = pdata.get("role", "USER")
+                tenant = pdata.get("tenant") or pdata.get("tenant_id")
+                priv_level = pdata.get("privilege_level", 10)
+                is_active = pdata.get("is_active", True)
+                state = AuthenticationState.AUTHENTICATED if is_active else AuthenticationState.ANONYMOUS
+
+                prof = self.register_identity(
+                    username=username,
+                    role=role,
+                    tenant=tenant,
+                    identity_id=pid,
+                    state=state,
+                    source="PHASE_8_AUTHORIZATION",
+                    attributes={"privilege_level": priv_level},
+                )
+                seeded.append(prof)
+
+        return seeded
 
     def get_identity(self, identity_id: str) -> Optional[IdentityProfile]:
         return self._identities.get(identity_id)

@@ -25,7 +25,7 @@ from framework.authentication.models import (
     AuthenticationHypothesis,
     HypothesisValidationStatus,
 )
-from framework.authentication.policy import AuthenticationApprovalGate
+from framework.authentication.policy import AuthenticationApprovalGate, resolve_scope_file
 from framework.common.config import get_program_dir
 from framework.scope.engine import ScopeEngine
 
@@ -80,6 +80,9 @@ Examples:
 
   # Execute against deterministic local authentication lab
   bb-auth --lab --tree
+
+  # Validate against local authentication lab end-to-end
+  bb-auth --validate --lab --tree
         """,
     )
 
@@ -101,106 +104,167 @@ Examples:
 
     args = parser.parse_args()
 
-    # Handle Local Lab Simulation
-    if args.lab:
-        workspace_dir = get_program_dir(f"lab_{args.program}")
-        engine = AuthenticationSecurityEngine(workspace_dir=workspace_dir)
-        lab_results = engine.execute_lab_simulation()
+    try:
+        # Handle Local Lab Simulation / Lab Mode
+        if args.lab:
+            workspace_dir = get_program_dir(f"lab_{args.program}")
+            engine = AuthenticationSecurityEngine(workspace_dir=workspace_dir)
 
-        if args.json:
-            print(json.dumps(lab_results, indent=2))
-            return
+            if args.validate:
+                # End-to-end hypothesis processing and validation against lab fixtures
+                engine.discover_surfaces()
+                engine.formulate_hypotheses()
+                engine.validate_hypotheses(lab_mode=True, approve=args.approve, resume=args.resume)
 
-        if args.tree:
-            print(engine.render_tree())
-            return
+                if args.json:
+                    payload = {
+                        "mode": "lab",
+                        "surfaces": [s.to_dict() for s in engine.surfaces],
+                        "hypotheses": [h.to_dict() for h in engine.hypotheses],
+                        "findings": [f.to_dict() for f in engine.findings],
+                    }
+                    print(json.dumps(payload, indent=2))
+                    sys.exit(0)
 
-        print("\n==============================================================================")
-        print("          LOCAL AUTHENTICATION SECURITY LAB EXECUTION RESULTS                ")
-        print("==============================================================================")
-        print(f"Total Scenarios:  {lab_results['total_scenarios']}")
-        print(f"Passed:           {lab_results['passed_scenarios']}")
-        print(f"Success Rate:     {lab_results['success_rate']}%")
-        print(f"Findings Created: {lab_results['findings_generated']}")
-        print("\nScenario Breakdown:")
-        for det in lab_results["details"]:
-            status_tag = "[PASS]" if det["matches_expectation"] else "[FAIL]"
-            print(f"  {status_tag} {det['scenario_id']:<38} -> Verdict: {det['verdict']}")
-            print(f"         Reason: {det['reason']}")
-        print("==============================================================================\n")
-        return
+                if args.tree:
+                    print(engine.render_tree())
+                    sys.exit(0)
 
-    # Real Target Program Execution
-    workspace_dir = get_program_dir(args.program)
-    scope_engine = None
-    if args.scope and os.path.isfile(args.scope):
-        scope_engine = ScopeEngine.from_file(args.scope)
-    elif os.path.isfile(os.path.join(workspace_dir, "scope.yaml")):
-        scope_engine = ScopeEngine.from_file(os.path.join(workspace_dir, "scope.yaml"))
+                print(f"[+] Lab validation complete: {len(engine.findings)} verified findings generated.")
+                sys.exit(0)
 
-    engine = AuthenticationSecurityEngine(workspace_dir=workspace_dir, scope_engine=scope_engine)
+            # Direct lab simulation run (without --validate flag)
+            lab_results = engine.execute_lab_simulation()
 
-    if args.resume:
-        engine.load_existing_state()
+            if args.json:
+                print(json.dumps(lab_results, indent=2))
+                sys.exit(0)
 
-    # Discover and formulate
-    engine.discover_surfaces()
-    engine.formulate_hypotheses()
+            if args.tree:
+                print(engine.render_tree())
+                sys.exit(0)
 
-    # Filter by flow if requested
-    if args.flow:
-        flow_upper = args.flow.upper()
-        engine.surfaces = [s for s in engine.surfaces if flow_upper in s.flow_type.value]
-        engine.hypotheses = [h for h in engine.hypotheses if flow_upper in h.family or flow_upper in h.endpoint.upper()]
+            print("\n==============================================================================")
+            print("          LOCAL AUTHENTICATION SECURITY LAB EXECUTION RESULTS                ")
+            print("==============================================================================")
+            print(f"Total Scenarios:  {lab_results['total_scenarios']}")
+            print(f"Passed:           {lab_results['passed_scenarios']}")
+            print(f"Success Rate:     {lab_results['success_rate']}%")
+            print(f"Findings Created: {lab_results['findings_generated']}")
+            print("\nScenario Breakdown:")
+            for det in lab_results["details"]:
+                status_tag = "[PASS]" if det["matches_expectation"] else "[FAIL]"
+                print(f"  {status_tag} {det['scenario_id']:<38} -> Verdict: {det['verdict']}")
+                print(f"         Reason: {det['reason']}")
+            print("==============================================================================\n")
+            sys.exit(0)
 
-    # Hypotheses-only output
-    if args.hypotheses:
-        if args.json:
-            print(json.dumps([h.to_dict() for h in engine.hypotheses], indent=2))
-        else:
-            print(f"\n[*] Discovered {len(engine.hypotheses)} authentication hypotheses:")
-            for h in engine.hypotheses:
-                print(f"  - [{h.validation_status.value}] [{h.impact_hint}] {h.endpoint} ({h.family})")
-                print(f"    Rationale: {h.rationale}")
-        return
+        # Real Target Program Execution
+        workspace_dir = get_program_dir(args.program)
+        scope_path = resolve_scope_file(workspace_dir, args.scope)
 
-    # Dry-run or active validation planning
-    if args.dry_run or args.validate:
-        for hyp in engine.hypotheses:
-            is_allowed, scope_reason = engine.policy.is_target_allowed(hyp.endpoint)
-            req_op = "INSPECT" if args.dry_run else "VALIDATE"
-            needs_appr = engine.policy.requires_human_approval(req_op)
-            policy_decision = "REQUIRES_APPROVAL" if needs_appr else "PERMITTED"
+        # Fail closed if active validation is requested but scope is missing
+        if args.validate and not args.dry_run and not args.passive_only:
+            if not scope_path or not os.path.isfile(scope_path):
+                print(f"[-] Error: Scope configuration missing or unresolvable for program '{args.program}'.", file=sys.stderr)
+                print(f"[-] Canonical location expected: {os.path.join(workspace_dir, 'scope', 'scope.yaml')}", file=sys.stderr)
+                print("[-] Active validation aborted for safety (fail-closed).", file=sys.stderr)
+                sys.exit(1)
 
-            render_active_validation_plan(
-                target=args.program,
-                identity=args.identity,
-                operation=req_op,
-                endpoint=hyp.endpoint,
-                method="GET/POST",
-                hypothesis=f"{hyp.family} ({hyp.hypothesis_id})",
-                scope_decision=scope_reason,
-                policy_decision=policy_decision,
-                request_budget=engine.policy.MAX_REQUESTS_PER_HYPOTHESIS,
-                expected_result=hyp.expected_behavior,
+        scope_engine: Optional[ScopeEngine] = None
+        if scope_path and os.path.isfile(scope_path):
+            try:
+                scope_engine = ScopeEngine.from_file(scope_path)
+            except Exception as e:
+                print(f"[-] Error loading scope from {scope_path}: {e}", file=sys.stderr)
+                if args.validate:
+                    sys.exit(1)
+
+        engine = AuthenticationSecurityEngine(workspace_dir=workspace_dir, scope_engine=scope_engine)
+
+        if args.resume:
+            engine.load_existing_state()
+
+        # Discover and formulate
+        engine.discover_surfaces()
+        engine.formulate_hypotheses()
+
+        # Filter by flow if requested
+        if args.flow:
+            flow_upper = args.flow.upper()
+            engine.surfaces = [s for s in engine.surfaces if flow_upper in s.flow_type.value]
+            engine.hypotheses = [h for h in engine.hypotheses if flow_upper in h.family or flow_upper in h.endpoint.upper()]
+
+        # Hypotheses-only output
+        if args.hypotheses:
+            if args.json:
+                print(json.dumps([h.to_dict() for h in engine.hypotheses], indent=2))
+            else:
+                print(f"\n[*] Discovered {len(engine.hypotheses)} authentication hypotheses:")
+                for h in engine.hypotheses:
+                    print(f"  - [{h.validation_status.value}] [{h.impact_hint}] {h.endpoint} ({h.family})")
+                    print(f"    Rationale: {h.rationale}")
+            sys.exit(0)
+
+        # Dry-run validation planning dossier
+        if args.dry_run:
+            for hyp in engine.hypotheses:
+                is_allowed, scope_reason = engine.policy.is_target_allowed(hyp.endpoint)
+                req_op = "INSPECT"
+                needs_appr = engine.policy.requires_human_approval(req_op)
+                policy_decision = "REQUIRES_APPROVAL" if needs_appr else "PERMITTED"
+
+                render_active_validation_plan(
+                    target=args.program,
+                    identity=args.identity,
+                    operation=req_op,
+                    endpoint=hyp.endpoint,
+                    method="GET",
+                    hypothesis=f"{hyp.family} ({hyp.hypothesis_id})",
+                    scope_decision=scope_reason,
+                    policy_decision=policy_decision,
+                    request_budget=engine.policy.MAX_REQUESTS_PER_HYPOTHESIS,
+                    expected_result=hyp.expected_behavior,
+                )
+
+        # Active or dry-run validation
+        if args.validate:
+            engine.validate_hypotheses(
+                dry_run=args.dry_run,
+                passive_only=args.passive_only,
+                approve=args.approve,
+                resume=args.resume,
             )
 
-            if args.validate and needs_appr and not args.approve:
-                print(f"[!] Operation on {hyp.endpoint} skipped: --approve required for state-changing action.\n")
+        # Save state
+        engine.persist_state()
 
-    # Save state
-    engine.persist_state()
+        # Check for pending approvals
+        has_pending_approval = any(h.validation_status == HypothesisValidationStatus.NEEDS_APPROVAL for h in engine.hypotheses)
 
-    # Output formatting
-    if args.json:
-        payload = {
-            "surfaces": [s.to_dict() for s in engine.surfaces],
-            "hypotheses": [h.to_dict() for h in engine.hypotheses],
-            "findings": [f.to_dict() for f in engine.findings],
-        }
-        print(json.dumps(payload, indent=2))
-    elif args.tree or not (args.dry_run or args.validate):
-        print(engine.render_tree())
+        # Output formatting
+        if args.json:
+            payload = {
+                "surfaces": [s.to_dict() for s in engine.surfaces],
+                "hypotheses": [h.to_dict() for h in engine.hypotheses],
+                "findings": [f.to_dict() for f in engine.findings],
+            }
+            print(json.dumps(payload, indent=2))
+        elif args.tree or not (args.dry_run or args.validate):
+            print(engine.render_tree())
+
+        if has_pending_approval and not args.approve:
+            print("\n[!] Warning: State-mutating validation steps require operator confirmation (--approve).")
+            sys.exit(2)
+
+        sys.exit(0)
+
+    except KeyboardInterrupt:
+        print("\n[-] Execution interrupted by user.", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"[-] Execution error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

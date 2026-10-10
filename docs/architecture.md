@@ -54,6 +54,7 @@ BugBounty-Agent is built on four core architectural tenets:
 * **`framework.scope`**: Implements RFC-compliant DNS normalizations, label boundary checks, CIDR/IP evaluations, and recursive subdomain depth logic.
 * **`framework.state`**: Manages isolated JSON state storage per program, tracking discovered assets, endpoints, technologies, and coverage metrics.
 * **`framework.findings`**: Enforces strict finding lifecycle transitions (`OBSERVATION` to `VALIDATED`) and formats reports to 17 standard bug bounty disclosure sections.
+* **`framework.authentication`**: Models authentication state machines, session lifecycles, and identity boundaries across 14 vulnerability families. Ingests 7 real multi-phase state files (`webapps.json`, `api.json`, `javascript.json`, `assets.json`, `recon.json`, `authorization.json`, and `workflows.json`), executes differential baseline testing via `BoundedAuthenticationExecutor` with anti-SSRF protections, enforces fail-closed scope checking, performs deterministic SHA-256 test deduplication, and persists validated findings to `state/findings.json`.
 * **`framework.common`**: Provides cryptographic evidence hashing (SHA-256), credential redaction, and external tool detection.
 
 ### 3.2 Controlled Command Layer

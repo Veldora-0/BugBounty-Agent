@@ -61,7 +61,7 @@ def main():
         print(f"Global Config Dir:     {deployer.config_dir}")
         print(f"Bug-Bounty Agent:      {'Deployed' if st['agent_deployed'] else 'Missing'} ({st['agent_path']})")
         print(f"Agent Symlink:         {st['agent_symlink']}")
-        print(f"Deployed Skills:       {st['skills_count']} / 17 in {st['skills_dir']}")
+        print(f"Deployed Skills:       {st['skills_count']} / 18 in {st['skills_dir']}")
         print(f"Global Default Agent:  {st['default_agent']}")
         print(f"Duplicate Risk:        {st['duplicate_prevention']['status']}")
         print(f"  Note: {st['duplicate_prevention']['message']}")

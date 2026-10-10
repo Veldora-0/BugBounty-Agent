@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.14.1] - 2026-10-10
+
+### Phase 14.1: Authentication Engine Hardening & Pipeline Integration
+
+#### Added & Improved
+* **Pipeline Execution & Scope Engine Integration (`framework/authentication/executor.py`, `framework/authentication/policy.py`)**:
+  * Added `BoundedAuthenticationExecutor` and `AuthSafeRedirectHandler` implementing RFC-compliant HTTP execution capped at 10s timeout, 100KB body limit, and 5 redirect hops with anti-SSRF protections against private/loopback/cloud metadata ranges.
+  * Canonical scope path resolution (`resolve_scope_file`) prioritizing `<program_dir>/scope/scope.yaml` and strict fail-closed enforcement using `ScopeEngine.check()` returning `ScopeDecision(status == ScopeStatus.IN_SCOPE)`.
+  * Safe approval gating (`AuthenticationApprovalGate`) requiring `--approve` for test account state mutations; enforced invariant that operator approval never overrides scope restrictions.
+* **Cross-Phase State Ingestion (`framework/authentication/discovery.py`, `framework/authentication/identity.py`)**:
+  * Unified `AuthenticationSurfaceDiscoverer.discover_all()` ingesting 7 real multi-phase state files: `webapps.json`, `api.json`, `javascript.json`, `assets.json`, `recon.json`, `authorization.json`, and `workflows.json`.
+  * Graceful degradation handling missing, empty, or partial state files.
+  * Identity profile seeding from Phase 8 authorization principals (`seed_from_authorization_state`).
+* **Operational Vulnerability Taxonomy & Heuristics (`framework/authentication/hypotheses.py`, `framework/authentication/validators.py`)**:
+  * Full coverage of all 14 families from `AuthenticationFindingFamily`: 11 operational testing families and 3 observation-only families.
+  * Differential baseline validation (anonymous vs authenticated vs pre-MFA) rejecting generic 200 OK login forms and WAF challenges.
+  * Multi-trial differential validation for account enumeration distinguishing real signal variations from baseline noise.
+* **Deduplication, Evidence Sanitization & Findings Persistence (`framework/authentication/engine.py`, `framework/authentication/evidence.py`, `framework/authentication/models.py`)**:
+  * Test deduplication via `StateManager.record_test` and `StateManager.has_test_run` preventing redundant probes.
+  * Support for `--resume` flag to merge existing engine run state.
+  * Family-specific credential redaction (`[REDACTED_PASSWORD]`, `[REDACTED_COOKIE]`, `[REDACTED_TOKEN]`, `[REDACTED_SECRET]`) with SHA-256 provenance hashes.
+  * Native findings integration persisting confirmed findings into `state/findings.json` using `FindingLifecycle.VALIDATED`.
+* **Testing & Diagnostics**:
+  * 18 new automated integration and safety test cases in `tests/test_authentication_engine.py` (total 42 tests in suite).
+  * Category 23 diagnostic verification reporting `[HEALTHY]` in `bb-doctor`.
+
+---
+
 ## [1.14.0] - 2026-10-08
 
 ### Phase 14: Authentication, Session & Identity Security Intelligence Engine

@@ -411,7 +411,7 @@ class OpenCodeDeployer:
 
         is_valid = (
             agent_deployed
-            and len(deployed_skills) >= 17
+            and len(deployed_skills) >= 18
             and default_agent == "Bug-Bounty"
             and not dup["duplicate_risk"]
         )
