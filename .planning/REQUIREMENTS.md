@@ -16,8 +16,8 @@ Requirements for Phase 14.1 hardening and pipeline integration. Each requirement
 
 ### Scope & Target Integration
 
-- [ ] **SCOPE-01**: Authentication engine integrates directly with `framework.scope.engine.ScopeEngine`, validating all candidate target endpoints offline prior to any network interaction.
-- [ ] **SCOPE-02**: Program-level `scope.yaml` and directory-level scope paths are deterministically resolved; missing or ambiguous scope fails closed and aborts active testing.
+- [ ] **SCOPE-01**: Authentication engine integrates directly with `framework.scope.engine.ScopeEngine`, evaluating all candidate target endpoints offline via `ScopeEngine.check(target)` and requiring `ScopeDecision.status == ScopeStatus.IN_SCOPE` prior to any active network interaction.
+- [ ] **SCOPE-02**: Canonical initialized program scope path `<program_dir>/scope/scope.yaml` (or explicitly passed `--scope`) is resolved deterministically; missing, malformed, or ambiguous scope fails closed and aborts active testing without cross-program fallback.
 - [ ] **SCOPE-03**: Automatic exclusion of out-of-scope third-party identity providers (e.g. Google, GitHub, Okta OAuth endpoints) unless explicitly authorized in `scope.yaml`.
 
 ### Actual Cross-Phase State Ingestion
@@ -54,20 +54,20 @@ Preserves the exact Phase 14 taxonomy (`AuthenticationFindingFamily`) and distin
 - [ ] **HEUR-01**: Evidence-backed validation eliminating status-code-only heuristics; generic 200 OK login pages and WAF challenges are explicitly rejected.
 - [ ] **HEUR-02**: Baseline verification: all bypass and invalidation claims must establish both baseline response (unauthenticated/anonymous) and test response differentials.
 - [ ] **HEUR-03**: Password reset testing is restricted strictly to designated, researcher-controlled accounts; zero testing against third-party users.
-- [ ] **HEUR-04**: Strict operator approval gating (`AuthenticationApprovalGate`) requiring `--approve` for all state-mutating actions (password resets, credential changes, MFA enrollments).
+- [ ] **HEUR-04**: Strict operator approval gating (`AuthenticationApprovalGate`) requiring `--approve` for all state-mutating actions (password resets, credential changes, MFA enrollments). Invariant: operator approval never overrides scope restrictions.
 - [ ] **HEUR-05**: Bounded network requests: rate limits and timeout caps enforced across all active network probes.
 
 ### Deterministic Fingerprinting, Deduplication & Resume
 
 - [ ] **DEDUP-01**: Compute deterministic SHA-256 test fingerprints via `framework.state.dedup.generate_test_fingerprint` combining normalized endpoint, HTTP method, parameter, and category.
-- [ ] **DEDUP-02**: Index executed tests into `state/tests.json` using `StateManager.record_test` to eliminate duplicate network probes across runs.
+- [ ] **DEDUP-02**: Index executed tests into `state/tests.json` using `StateManager.record_test` to eliminate duplicate network probes across runs without suppressing legitimate context-changed retests.
 - [ ] **DEDUP-03**: Support `--resume` flag to recover previously evaluated hypotheses and findings from `state/authentication.json` without re-executing completed tests.
 
 ### Evidence Sanitization & Native Findings Integration
 
 - [ ] **EVID-01**: Strict credential redaction via `AuthenticationEvidenceManager`: passwords, session cookies, bearer tokens, reset tokens, refresh tokens, OTPs, API keys, and authorization headers are sanitized prior to storage.
 - [ ] **EVID-02**: Cryptographic SHA-256 digests generated for request/response captures to ensure provenance, but hashes are never treated as proof of vulnerability on their own.
-- [ ] **EVID-03**: Direct integration with `framework.findings.schema.Finding`: verified candidates are stored in `state/findings.json` using `StateManager.save_finding`, respecting valid severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFORMATIONAL`) and confidence (`CONFIRMED`, `HIGH`, `MEDIUM`, `LOW`) enums.
+- [ ] **EVID-03**: Direct integration with `framework.findings.schema.Finding`: verified candidates transition to `FindingLifecycle.VALIDATED` only after differential verification and false-positive filtering, otherwise persisting as `CANDIDATE`, `OBSERVATION`, or `INFORMATIONAL` in `state/findings.json` using `StateManager.save_finding`.
 
 ### Test Acceptance Criteria & Quality Gates
 
@@ -174,8 +174,8 @@ Mapping of Phase 14.1 requirements to execution plans:
 | DOCS-03 | Plan 14.1-05: Regression Testing, Diagnostics & Documentation | Pending |
 
 **Coverage:**
-- v1 requirements: 48 total
-- Mapped to Phase 14.1 plans: 48
+- v1 requirements: 47 total
+- Mapped to Phase 14.1 plans: 47
 - Unmapped: 0 ✓
 
 ---

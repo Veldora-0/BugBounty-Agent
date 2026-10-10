@@ -51,41 +51,42 @@
 **Plans** (Sequential Execution — No Parallelization):
 
 - [ ] **14.1-01: Pipeline & Scope Engine Integration**
-  - Connect `bb-auth --validate` execution stages from CLI flags to engine orchestrator.
-  - Integrate `ScopeEngine` for mandatory offline target validation.
-  - Implement deterministic `scope.yaml` resolution; fail closed upon missing or ambiguous scope.
-  - Enforce zero external network traffic on dry-run, passive-only, and hypothesis-only paths.
-  - Ensure clean termination with exit codes and ASCII tree summaries without uncaught exceptions.
+  - Connect `bb-auth --validate` execution stages end-to-end through a bounded internal request executor.
+  - Require integration test proving `bb-auth --validate --lab` executes real hypothesis processing and validation.
+  - Integrate `ScopeEngine` using its actual `check(target)` API returning `ScopeDecision` and checking `status == ScopeStatus.IN_SCOPE`.
+  - Resolve canonical initialized program scope path `<program_dir>/scope/scope.yaml` (or explicit `--scope`), failing closed if missing or ambiguous.
+  - Enforce zero external network traffic on dry-run, passive-only, hypothesis-only, and lab paths.
+  - Ensure clean termination with exit codes (0=clean, 1=error/scope, 2=pending approval) without uncaught exceptions.
 
 - [ ] **14.1-02: Cross-Phase State Ingestion & Surface Discovery**
-  - Implement real schema loaders for `state/webapps.json` (`WebAppStateManager`), `state/api.json` (`ApiStateManager`), `state/javascript.json` (`JavaScriptStateManager`), `state/assets.json`, and `state/recon.json`.
-  - Ingest authorization context from `state/authorization.json` (`AuthorizationStateManager`) and workflow context from `state/workflows.json` (`WorkflowStateManager`).
-  - Implement defensive error handling for missing, partial, or corrupted JSON state files.
+  - Implement real schema loaders for `state/webapps.json` (`WebAppStateManager`), `state/api.json` (`ApiStateManager`), `state/javascript.json` (`JavaScriptStateManager`), `state/assets.json`, and `state/recon.json` (lists of dicts vs dicts).
+  - Ingest authorization context from `state/authorization.json` (`AuthorizationStateManager`, dict of principals) and workflow context from `state/workflows.json` (`WorkflowStateManager`, dict of workflows).
+  - Implement defensive error handling for missing, empty, partial, or corrupted JSON state files without crashing.
   - Map discovered routes, parameters, cookies, tokens, and forms into unified `AuthenticationSurfaceDiscoverer`.
 
 - [ ] **14.1-03: Operational Coverage & Hardened Validation Heuristics**
-  - Implement operational validation for operational families (`AUTHENTICATION_BYPASS`, `PRE_AUTH_PRIVILEGE_EXPOSURE`, `SESSION_FIXATION`, `SESSION_NOT_INVALIDATED`, `PASSWORD_RESET_TOKEN_REUSE`, `PASSWORD_RESET_STATE_CONFUSION`, `ACCOUNT_ENUMERATION`, `MFA_BYPASS`, `MFA_STATE_CONFUSION`, `REFRESH_TOKEN_REUSE`, `AUTHENTICATION_STATE_INCONSISTENCY`).
-  - Classify observation-only families (`SESSION_NOT_ROTATED`, `TOKEN_TRANSPORT_EXPOSURE`, `AUTHENTICATION_CONFIGURATION_WEAKNESS`) without escalating to false-positive high-severity findings.
-  - Implement baseline differential validation (anonymous vs authenticated) to reject generic 200 OKs.
-  - Require repeatable differential evidence (>500ms or distinct error strings) for account enumeration.
-  - Enforce operator approval gating (`AuthenticationApprovalGate`) via `--approve` for state mutations on approved test accounts.
+  - Implement operational validation across all 11 operational families (`AUTHENTICATION_BYPASS`, `PRE_AUTH_PRIVILEGE_EXPOSURE`, `SESSION_FIXATION`, `SESSION_NOT_INVALIDATED`, `PASSWORD_RESET_TOKEN_REUSE`, `PASSWORD_RESET_STATE_CONFUSION`, `ACCOUNT_ENUMERATION`, `MFA_BYPASS`, `MFA_STATE_CONFUSION`, `REFRESH_TOKEN_REUSE`, `AUTHENTICATION_STATE_INCONSISTENCY`).
+  - Classify 3 observation-only families (`SESSION_NOT_ROTATED`, `TOKEN_TRANSPORT_EXPOSURE`, `AUTHENTICATION_CONFIGURATION_WEAKNESS`) as observations without escalating to unproven vulnerabilities.
+  - Implement baseline differential validation (anonymous vs authenticated) to reject generic 200 OK login forms and WAF challenges.
+  - Treat timing differences and response text variations as signals, requiring repeatable differential evidence across multiple trials for account enumeration.
+  - Enforce operator approval gating (`AuthenticationApprovalGate`) via `--approve` for state mutations on test accounts. Invariant: approval never overrides scope restrictions.
 
 - [ ] **14.1-04: Deterministic Fingerprinting, Deduplication, Resume & Evidence Model**
-  - Implement deterministic SHA-256 test fingerprints via `generate_test_fingerprint`.
-  - Integrate with `state/tests.json` using `StateManager.record_test` to prevent redundant network probes.
+  - Implement deterministic SHA-256 test fingerprints via `generate_test_fingerprint` with context-awareness (principal, role) to prevent suppressing legitimate retests.
+  - Integrate with `state/tests.json` using exact `StateManager.has_test_run` and `StateManager.record_test` methods.
   - Support `--resume` flag to recover previously evaluated hypotheses and findings from `state/authentication.json`.
-  - Enforce strict credential sanitization in `AuthenticationEvidenceManager` (passwords, cookies, tokens, OTPs, API keys).
-  - Map verified candidates to native `framework.findings.schema.Finding` objects and persist in `state/findings.json` via `StateManager.save_finding`.
+  - Enforce strict credential sanitization in `AuthenticationEvidenceManager` (passwords, cookies, tokens, OTPs, API keys) with SHA-256 provenance hashes.
+  - Map verified candidates to native `framework.findings.schema.Finding` objects respecting `FindingLifecycle.VALIDATED` only on true verification, and persist via `StateManager.save_finding`.
 
 - [ ] **14.1-05: Regression Testing, Doctor Diagnostics, Cross-Platform Validation & Documentation**
   - Preserve all 21 existing offline authentication lab scenarios in `framework/authentication/lab.py`.
   - Add 18 new integration and safety test cases covering real state ingestion, fail-closed scope, redaction, deduplication, resume, and baseline validation.
-  - Run active tests against local lab targets only.
+  - Run active tests against local lab targets only with zero external network traffic.
   - Verify complete regression suite passes on Windows workstation and Kali Linux VM (`python -m pytest -q`).
   - Verify all 23 diagnostic categories report `[HEALTHY]` in `bb-doctor`.
   - Validate global deployment (`bb-deploy`) and OpenCode configuration (`Bug-Bounty`, 18 skills).
   - Update `skills/authentication/SKILL.md`, `README.md`, `CHANGELOG.md`, and `docs/architecture.md`.
-  - Prepare single consolidated implementation commit: `fix: harden authentication validation pipeline`.
+  - Conclude implementation in a single consolidated commit: `fix: harden authentication validation pipeline`.
 
 ---
 
