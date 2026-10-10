@@ -67,11 +67,15 @@ class AuthenticationStateManager:
             "tokens": [t.to_dict() for t in (token_metadata or [])],
         }
 
+        # Apply comprehensive recursive sanitization to guarantee no plaintext secrets reach disk
+        from framework.authentication.evidence import AuthenticationEvidenceManager
+        clean_payload = AuthenticationEvidenceManager.sanitize_dict(payload)
+
         # Write to temporary file in same directory, flush, fsync, then atomic os.replace
         temp_file = os.path.join(self.state_dir, f"authentication_{os.getpid()}_{uuid.uuid4().hex[:6]}.tmp")
         try:
             with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2)
+                json.dump(clean_payload, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp_file, self.state_file)

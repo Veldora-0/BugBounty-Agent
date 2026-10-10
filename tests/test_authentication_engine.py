@@ -1152,3 +1152,371 @@ def test_scope_fail_closed_and_approval_invariants(temp_workspace):
     assert ok is False
     assert "cannot override scope restrictions" in msg.lower()
 
+
+# ==============================================================================
+# 15. Post-Phase-14.2 Corrective Pass Integration & Boundary Verification Suite
+# ==============================================================================
+
+def test_auth_bypass_positive_and_negative_controls():
+    """Verifies that authentication bypass validation requires authenticated baseline and rejects false positives."""
+    # Positive Control: Genuine protected JSON data exposed anonymously matching authenticated baseline
+    verdict, reason = SafeAuthenticationValidator.validate_authentication_bypass(
+        endpoint="/api/v1/user/profile",
+        anon_status=200,
+        anon_body='{"user_id": "usr_99", "email": "alice@corp.local", "role": "admin"}',
+        auth_status=200,
+        auth_body='{"user_id": "usr_99", "email": "alice@corp.local", "role": "admin"}',
+    )
+    assert verdict == HypothesisValidationStatus.VALIDATED
+    assert "protected resource content" in reason
+
+    # Negative Control 1: Missing authenticated context cannot produce VALIDATED
+    v_no_auth, r_no_auth = SafeAuthenticationValidator.validate_authentication_bypass(
+        endpoint="/api/v1/user/profile",
+        anon_status=200,
+        anon_body='{"user_id": "usr_99", "email": "alice@corp.local"}',
+        auth_status=0,
+        auth_body="",
+    )
+    assert v_no_auth == HypothesisValidationStatus.CANDIDATE
+    assert "lacks valid authenticated baseline context" in r_no_auth
+
+    # Negative Control 2: Generic JSON status response rejected as non-vulnerability
+    v_generic_json, _ = SafeAuthenticationValidator.validate_authentication_bypass(
+        endpoint="/api/v1/health",
+        anon_status=200,
+        anon_body='{"status": "ok", "version": "1.0", "alive": true}',
+        auth_status=200,
+        auth_body='{"status": "ok", "version": "1.0", "alive": true}',
+    )
+    assert v_generic_json == HypothesisValidationStatus.REJECTED
+
+    # Negative Control 3: Public SPA landing page / HTML shell rejected
+    v_spa_shell, _ = SafeAuthenticationValidator.validate_authentication_bypass(
+        endpoint="/app",
+        anon_status=200,
+        anon_body='<!DOCTYPE html><html><head><title>App</title></head><body><div id="root"></div><script src="/app.js"></script></body></html>',
+        auth_status=200,
+        auth_body='<!DOCTYPE html><html><head><title>App</title></head><body><div id="root"></div><script src="/app.js"></script></body></html>',
+    )
+    assert v_spa_shell == HypothesisValidationStatus.REJECTED
+
+    # Negative Control 4: Public login page rejected
+    v_login_form, _ = SafeAuthenticationValidator.validate_authentication_bypass(
+        endpoint="/login",
+        anon_status=200,
+        anon_body='<html><form method="POST"><input type="text" name="user"/><input type="password" name="password"/></form></html>',
+        auth_status=200,
+        auth_body='<html><form method="POST"><input type="text" name="user"/><input type="password" name="password"/></form></html>',
+    )
+    assert v_login_form == HypothesisValidationStatus.REJECTED
+
+    # Negative Control 5: Anonymous response 200 does not match authenticated payload
+    v_diff_payload, _ = SafeAuthenticationValidator.validate_authentication_bypass(
+        endpoint="/api/v1/dashboard",
+        anon_status=200,
+        anon_body='{"user": null, "authenticated": false, "public_message": "welcome"}',
+        auth_status=200,
+        auth_body='{"user": "alice", "email": "alice@corp.local", "admin": true}',
+    )
+    assert v_diff_payload == HypothesisValidationStatus.REJECTED
+
+
+def test_operational_family_password_reset_state_confusion():
+    """Verifies operational validation and negative controls for PASSWORD_RESET_STATE_CONFUSION."""
+    # Positive Control: Server accepts final state transition without verified token
+    v_pos, r_pos = SafeAuthenticationValidator.validate_password_reset_state_confusion(
+        endpoint="/api/v1/password-reset/confirm",
+        step_status=200,
+        step_body='{"status": "password updated successfully"}',
+        is_prerequisite_satisfied=False,
+    )
+    assert v_pos == HypothesisValidationStatus.VALIDATED
+    assert "state confusion confirmed" in r_pos.lower()
+
+    # Negative Control: Server correctly rejects state transition (HTTP 400 with error)
+    v_neg, r_neg = SafeAuthenticationValidator.validate_password_reset_state_confusion(
+        endpoint="/api/v1/password-reset/confirm",
+        step_status=400,
+        step_body='{"error": "Token required or expired"}',
+        is_prerequisite_satisfied=False,
+    )
+    assert v_neg == HypothesisValidationStatus.REJECTED
+    assert "correctly rejected" in r_neg.lower()
+
+
+def test_operational_family_mfa_bypass():
+    """Verifies operational validation and negative controls for MFA_BYPASS."""
+    # Positive Control: MFA endpoint accepts invalid factor
+    v_pos, r_pos = SafeAuthenticationValidator.validate_mfa_bypass(
+        endpoint="/api/v1/auth/mfa/verify",
+        status_code=200,
+        response_body='{"status": "verified", "session_token": "elevated_123"}',
+        submitted_valid_code=False,
+    )
+    assert v_pos == HypothesisValidationStatus.VALIDATED
+    assert "bypass confirmed" in r_pos.lower()
+
+    # Negative Control: MFA endpoint rejects invalid factor (HTTP 401)
+    v_neg, r_neg = SafeAuthenticationValidator.validate_mfa_bypass(
+        endpoint="/api/v1/auth/mfa/verify",
+        status_code=401,
+        response_body='{"error": "Invalid verification code"}',
+        submitted_valid_code=False,
+    )
+    assert v_neg == HypothesisValidationStatus.REJECTED
+    assert "correctly enforced" in r_neg.lower()
+
+
+def test_operational_family_mfa_state_confusion():
+    """Verifies operational validation and negative controls for MFA_STATE_CONFUSION."""
+    # Positive Control: Unverified session gained elevated authenticated access
+    v_pos, r_pos = SafeAuthenticationValidator.validate_mfa_state_confusion(
+        endpoint="/api/v1/account/settings",
+        target_status=200,
+        target_body='{"account": "acc_88", "email": "target@corp.local"}',
+        cross_session_elevated=True,
+    )
+    assert v_pos == HypothesisValidationStatus.VALIDATED
+    assert "state confusion confirmed" in r_pos.lower()
+
+    # Negative Control: Unverified session is challenged
+    v_neg, r_neg = SafeAuthenticationValidator.validate_mfa_state_confusion(
+        endpoint="/api/v1/account/settings",
+        target_status=200,
+        target_body='{"challenge": "Enter MFA code", "otp_required": true}',
+        cross_session_elevated=False,
+    )
+    assert v_neg == HypothesisValidationStatus.REJECTED
+    assert "isolation maintained" in r_neg.lower()
+
+
+def test_operational_family_authentication_state_inconsistency():
+    """Verifies operational validation and negative controls for AUTHENTICATION_STATE_INCONSISTENCY."""
+    # Positive Control: Auth boundary reports unauthenticated (401), but resource returns user data (200)
+    v_pos, r_pos = SafeAuthenticationValidator.validate_authentication_state_inconsistency(
+        endpoint="/api/v1/user/data",
+        auth_status_code=401,
+        auth_status_body='{"authenticated": false, "message": "unauthenticated"}',
+        resource_status_code=200,
+        resource_body='{"user_id": "usr_77", "email": "victim@corp.local"}',
+    )
+    assert v_pos == HypothesisValidationStatus.VALIDATED
+    assert "state inconsistency confirmed" in r_pos.lower()
+
+    # Negative Control: Both boundaries consistent (both 401 unauthenticated)
+    v_neg, r_neg = SafeAuthenticationValidator.validate_authentication_state_inconsistency(
+        endpoint="/api/v1/user/data",
+        auth_status_code=401,
+        auth_status_body='{"authenticated": false}',
+        resource_status_code=401,
+        resource_body='{"error": "Unauthorized"}',
+    )
+    assert v_neg == HypothesisValidationStatus.REJECTED
+    assert "consistent across system boundaries" in r_neg.lower()
+
+
+def test_operational_families_missing_prerequisites(temp_workspace):
+    """Verifies that missing test identities or workflow endpoints report explicit missing prerequisites."""
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.policy.scope_engine = ScopeEngine({"targets": {"domains": ["target.local"]}})
+
+    # Formulate hypotheses for the 4 families without providing prerequisites
+    h_reset = AuthenticationHypothesis(
+        hypothesis_id="HYP-TEST-RESET-CONF",
+        family=AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION,
+        endpoint="https://target.local/api/reset",
+        principal="unknown_user",
+        required_state=AuthenticationState.ANONYMOUS,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="400",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    h_mfa_b = AuthenticationHypothesis(
+        hypothesis_id="HYP-TEST-MFA-BYPASS",
+        family=AuthenticationFindingFamily.MFA_BYPASS,
+        endpoint="https://target.local/api/mfa/verify",
+        principal="unknown_user",
+        required_state=AuthenticationState.MFA_REQUIRED,
+        observed_state=AuthenticationState.MFA_REQUIRED,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    h_mfa_c = AuthenticationHypothesis(
+        hypothesis_id="HYP-TEST-MFA-CONF",
+        family=AuthenticationFindingFamily.MFA_STATE_CONFUSION,
+        endpoint="https://target.local/api/mfa/step",
+        principal="unknown_user",
+        required_state=AuthenticationState.MFA_REQUIRED,
+        observed_state=AuthenticationState.MFA_REQUIRED,
+        expected_behavior="403",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    h_incons = AuthenticationHypothesis(
+        hypothesis_id="HYP-TEST-INCONS",
+        family=AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY,
+        endpoint="https://target.local/api/resource",
+        principal="unknown_user",
+        required_state=AuthenticationState.AUTHENTICATED,
+        observed_state=AuthenticationState.UNKNOWN,
+        expected_behavior="Consistent",
+        observed_behavior="Inconsistent",
+        confidence=0.5,
+        impact_hint="MEDIUM",
+    )
+    engine.hypotheses = [h_reset, h_mfa_b, h_mfa_c, h_incons]
+
+    # Validate with empty session/identity/surface context (approval granted for testing)
+    engine.validate_hypotheses(approve=True)
+
+    assert h_reset.validation_status == HypothesisValidationStatus.SKIPPED
+    assert "missing researcher test identity" in h_reset.rationale.lower()
+
+    assert h_mfa_b.validation_status == HypothesisValidationStatus.SKIPPED
+    assert "missing pre-mfa" in h_mfa_b.rationale.lower()
+
+    assert h_mfa_c.validation_status == HypothesisValidationStatus.SKIPPED
+    assert "missing dual test sessions" in h_mfa_c.rationale.lower()
+
+    assert h_incons.validation_status == HypothesisValidationStatus.SKIPPED
+    assert "missing discovered authentication status verification endpoint" in h_incons.rationale.lower()
+
+
+def test_evidence_and_finding_redaction_comprehensive(temp_workspace):
+    """Asserts that sensitive query parameters, secrets, and credentials do not occur anywhere in serialized evidence or findings."""
+    SECRET_PASSWORD = "TestSuperSecretPassword99!"
+    SECRET_TOKEN = "jwt_live_secret_token_abc12345"
+    SECRET_RESET = "reset_tok_exclusive_998877"
+    SECRET_COOKIE = "sess_cookie_raw_value_7788"
+    SECRET_API_KEY = "x_api_key_secret_production_000"
+
+    # 1. URL Query sanitization
+    raw_url = f"https://target.local/api/reset?token={SECRET_RESET}&password={SECRET_PASSWORD}&session={SECRET_COOKIE}&theme=dark"
+    clean_url = AuthenticationEvidenceManager.sanitize_url(raw_url)
+    assert SECRET_RESET not in clean_url
+    assert SECRET_PASSWORD not in clean_url
+    assert SECRET_COOKIE not in clean_url
+    assert "[REDACTED_TOKEN]" in clean_url
+    assert "[REDACTED_PASSWORD]" in clean_url
+    assert "[REDACTED_COOKIE]" in clean_url
+    assert "theme=dark" in clean_url
+
+    # 2. Evidence record creation
+    ev = AuthenticationEvidenceManager.record_evidence(
+        endpoint=raw_url,
+        method="POST",
+        status_code=200,
+        request_summary=f"POST /reset?token={SECRET_RESET} Authorization: Bearer {SECRET_TOKEN} password={SECRET_PASSWORD}",
+        response_summary=f"Set-Cookie: session={SECRET_COOKIE}; api_key: {SECRET_API_KEY}",
+        auth_state_before="ANONYMOUS",
+        auth_state_after="AUTHENTICATED",
+        metadata={"user_token": SECRET_TOKEN, "secret_field": SECRET_API_KEY, "target": raw_url},
+    )
+
+    ev_json = json.dumps(ev)
+    assert SECRET_PASSWORD not in ev_json
+    assert SECRET_TOKEN not in ev_json
+    assert SECRET_RESET not in ev_json
+    assert SECRET_COOKIE not in ev_json
+    assert SECRET_API_KEY not in ev_json
+
+    # 3. Candidate to Native Finding conversion
+    candidate = AuthenticationFindingCandidate(
+        finding_id="FIND-RED-01",
+        title=f"Flaw on {raw_url}",
+        family=AuthenticationFindingFamily.PASSWORD_RESET_TOKEN_REUSE,
+        severity="HIGH",
+        confidence="CONFIRMED",
+        endpoint=raw_url,
+        identity_id=f"user_{SECRET_TOKEN}",
+        description=f"Observed reset token reuse with password={SECRET_PASSWORD} and key={SECRET_API_KEY}",
+        evidence_chain=[ev],
+        cvss_score=8.5,
+        remediation="Enforce single-use tokens",
+    )
+    native_f = candidate.to_native_finding(scope_ref="scope/scope.yaml", is_validated=True)
+    f_dict = native_f.to_dict()
+    f_json = json.dumps(f_dict)
+
+    assert SECRET_PASSWORD not in f_json
+    assert SECRET_TOKEN not in f_json
+    assert SECRET_RESET not in f_json
+    assert SECRET_COOKIE not in f_json
+    assert SECRET_API_KEY not in f_json
+
+    # 4. StateManager and AuthenticationStateManager persistence sanitization
+    storage = AuthenticationStateManager(temp_workspace)
+    storage.save_state(
+        surfaces=[],
+        identities=[],
+        flows=[],
+        sessions=[],
+        hypotheses=[],
+        findings=[candidate],
+        evidence_records=[ev],
+    )
+    with open(storage.state_file, "r", encoding="utf-8") as f:
+        disk_content = f.read()
+
+    assert SECRET_PASSWORD not in disk_content
+    assert SECRET_TOKEN not in disk_content
+    assert SECRET_RESET not in disk_content
+    assert SECRET_COOKIE not in disk_content
+    assert SECRET_API_KEY not in disk_content
+
+
+def test_account_enumeration_multi_trial_controls():
+    """Verifies that account enumeration requires at least 3 trials and rejects incomplete sets."""
+    # Trial count < 3 cannot produce VALIDATED
+    v_two, r_two = SafeAuthenticationValidator.validate_account_enumeration(
+        valid_status=200,
+        valid_body="Instructions sent to email",
+        invalid_status=404,
+        invalid_body="Account does not exist",
+        trial_count=2,
+        trial_consistency=True,
+    )
+    assert v_two == HypothesisValidationStatus.INFORMATIONAL
+    assert "requires at least 3 controlled trials" in r_two.lower()
+
+    v_one, _ = SafeAuthenticationValidator.validate_account_enumeration(
+        valid_status=200,
+        valid_body="Instructions sent",
+        invalid_status=404,
+        invalid_body="Not found",
+        trial_count=1,
+        trial_consistency=True,
+    )
+    assert v_one == HypothesisValidationStatus.INFORMATIONAL
+
+    # Inconsistent trials rejected
+    v_incon, r_incon = SafeAuthenticationValidator.validate_account_enumeration(
+        valid_status=200,
+        valid_body="Instructions sent",
+        invalid_status=404,
+        invalid_body="Not found",
+        trial_count=3,
+        trial_consistency=False,
+    )
+    assert v_incon == HypothesisValidationStatus.REJECTED
+    assert "inconsistent across controlled trials" in r_incon.lower()
+
+    # Full 3 consistent trials -> VALIDATED
+    v_full, r_full = SafeAuthenticationValidator.validate_account_enumeration(
+        valid_status=200,
+        valid_body="Instructions sent to email",
+        invalid_status=404,
+        invalid_body="Account does not exist",
+        trial_count=3,
+        trial_consistency=True,
+    )
+    assert v_full == HypothesisValidationStatus.VALIDATED
+    assert "confirmed repeatable differential across 3 controlled trials" in r_full.lower()
+
+

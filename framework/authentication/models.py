@@ -99,6 +99,7 @@ class HypothesisValidationStatus(str, Enum):
     PLANNED = "PLANNED"
     TESTING = "TESTING"
     OBSERVED = "OBSERVED"
+    CANDIDATE = "CANDIDATE"
     VALIDATED = "VALIDATED"
     CONFIRMED = "CONFIRMED"
     REJECTED = "REJECTED"
@@ -583,6 +584,7 @@ class AuthenticationFindingCandidate:
         """
         from framework.findings.schema import Finding, VALID_SEVERITIES, VALID_CONFIDENCES
         from framework.findings.lifecycle import FindingLifecycle
+        from framework.authentication.evidence import AuthenticationEvidenceManager
         from urllib.parse import urlparse
 
         obs_only_families = {
@@ -591,17 +593,28 @@ class AuthenticationFindingCandidate:
             AuthenticationFindingFamily.AUTHENTICATION_CONFIGURATION_WEAKNESS,
         }
 
+        clean_endpoint = AuthenticationEvidenceManager.sanitize_url(self.endpoint or "/auth")
+        clean_title = AuthenticationEvidenceManager.sanitize(self.title or f"Authentication Security Issue: {self.family}")
+        clean_desc = AuthenticationEvidenceManager.sanitize(self.description or f"Identified {self.family} on {clean_endpoint}")
+        clean_summary = AuthenticationEvidenceManager.sanitize(self.description[:200] if self.description else self.title)
+        clean_remediation = AuthenticationEvidenceManager.sanitize(self.remediation or "Follow authentication hardening best practices.")
+        clean_identity = AuthenticationEvidenceManager.sanitize(self.identity_id or "ANONYMOUS")
+
         evidence_items = []
         for ev in self.evidence_chain:
             if isinstance(ev, dict):
+                raw_content = ev.get("response_redacted") or ev.get("request_redacted") or str(ev)
+                clean_content = AuthenticationEvidenceManager.sanitize(raw_content)
+                meta = ev.get("metadata", {})
+                clean_meta = AuthenticationEvidenceManager.sanitize_dict(meta) if isinstance(meta, dict) else {}
+                clean_meta["sha256"] = ev.get("sha256_digest", clean_meta.get("sha256", ""))
+                clean_meta["status_code"] = ev.get("status_code", clean_meta.get("status_code", 0))
+                clean_meta["endpoint"] = AuthenticationEvidenceManager.sanitize_url(ev.get("endpoint", clean_endpoint))
+
                 evidence_items.append({
                     "type": "http_interaction",
-                    "content": ev.get("response_redacted") or ev.get("request_redacted") or str(ev),
-                    "metadata": {
-                        "sha256": ev.get("sha256_digest", ""),
-                        "status_code": ev.get("status_code", 0),
-                        "endpoint": ev.get("endpoint", self.endpoint),
-                    },
+                    "content": clean_content,
+                    "metadata": clean_meta,
                     "timestamp": ev.get("timestamp", self.timestamp),
                 })
 
@@ -619,36 +632,36 @@ class AuthenticationFindingCandidate:
 
         # Determine asset
         asset = "authentication-service"
-        if "://" in self.endpoint:
-            p = urlparse(self.endpoint)
+        if "://" in clean_endpoint:
+            p = urlparse(clean_endpoint)
             asset = p.netloc or p.hostname or "authentication-service"
-        elif self.endpoint:
-            parts = [seg for seg in self.endpoint.split("/") if seg]
+        elif clean_endpoint:
+            parts = [seg for seg in clean_endpoint.split("/") if seg]
             asset = parts[0] if parts else "authentication-service"
 
         repro_steps = [
-            f"Navigate to target endpoint: {self.endpoint}",
-            f"Execute authentication/session test under context identity: {self.identity_id}",
+            f"Navigate to target endpoint: {clean_endpoint}",
+            f"Execute authentication/session test under context identity: {clean_identity}",
             f"Observe application response for vulnerability family: {self.family}",
         ]
 
         return Finding(
             finding_id=self.finding_id,
-            title=self.title or f"Authentication Security Issue: {self.family}",
-            summary=self.description[:200] if self.description else self.title,
+            title=clean_title,
+            summary=clean_summary,
             affected_asset=asset,
-            affected_endpoint=self.endpoint or "/auth",
+            affected_endpoint=clean_endpoint,
             vulnerability_type=self.family,
             severity=sev,
             confidence=conf,
-            description=self.description or f"Identified {self.family} on {self.endpoint}",
+            description=clean_desc,
             root_cause=f"Inadequate authentication/session controls for {self.family}",
-            prerequisites=f"Access to endpoint under context {self.identity_id}",
+            prerequisites=f"Access to endpoint under context {clean_identity}",
             reproduction_steps=repro_steps,
             expected_result="Endpoint enforces strict authentication and session boundaries.",
-            observed_result=self.description,
+            observed_result=clean_desc,
             security_impact=f"Potential authentication/session compromise: CVSS {self.cvss_score}",
-            remediation=self.remediation or "Follow authentication hardening best practices.",
+            remediation=clean_remediation,
             scope_reference=scope_ref,
             lifecycle_state=lifecycle,
             evidence=evidence_items,

@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunsplit
 import uuid
 
 from framework.authentication.discovery import AuthenticationSurfaceDiscoverer
@@ -24,6 +24,7 @@ from framework.authentication.models import (
     AuthenticationFindingCandidate,
     AuthenticationFindingFamily,
     AuthenticationFlow,
+    AuthenticationFlowType,
     AuthenticationHypothesis,
     AuthenticationState,
     AuthenticationStep,
@@ -244,6 +245,68 @@ class AuthenticationSecurityEngine:
                 self.executor.execute_request(h.endpoint, method="GET", dry_run=True)
                 continue
 
+            # Retrieve active researcher context for principal if configured
+            active_identity = self.identity_mgr.get_identity(h.principal)
+            active_session = next((s for s in self.sessions if s.identity_id == h.principal or s.username == h.principal), None)
+            active_token = next((t for t in self.token_metadata if t.associated_identity == h.principal), None)
+
+            # Pre-flight prerequisite check: fail-safe skip before issuing network requests
+            if h.family == AuthenticationFindingFamily.SESSION_NOT_INVALIDATED and (not active_session or not active_session.session_id):
+                h.validation_status = HypothesisValidationStatus.SKIPPED
+                h.rationale = "Skipped: Missing researcher session context (session_id required to test invalidation)"
+                continue
+            if h.family == AuthenticationFindingFamily.SESSION_FIXATION and (not active_identity or not active_identity.attributes.get("credentials_available")):
+                h.validation_status = HypothesisValidationStatus.SKIPPED
+                h.rationale = "Skipped: Missing researcher test credentials for login boundary verification"
+                continue
+            if h.family == AuthenticationFindingFamily.ACCOUNT_ENUMERATION and (not active_identity or not active_identity.username):
+                h.validation_status = HypothesisValidationStatus.SKIPPED
+                h.rationale = "Skipped: Missing target account identifier parameter for enumeration testing"
+                continue
+            if h.family == AuthenticationFindingFamily.PASSWORD_RESET_TOKEN_REUSE and (not active_identity or not active_identity.attributes.get("reset_token")):
+                h.validation_status = HypothesisValidationStatus.SKIPPED
+                h.rationale = "Skipped: Missing valid researcher-controlled password reset token"
+                continue
+            if h.family == AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION and (not active_identity or not active_identity.username):
+                h.validation_status = HypothesisValidationStatus.SKIPPED
+                h.rationale = "Skipped: Missing researcher test identity to validate password reset state machine"
+                continue
+            if h.family == AuthenticationFindingFamily.REFRESH_TOKEN_REUSE and (not active_token or not active_token.attributes.get("refresh_token")):
+                h.validation_status = HypothesisValidationStatus.SKIPPED
+                h.rationale = "Skipped: Missing valid test refresh token"
+                continue
+            if h.family == AuthenticationFindingFamily.PRE_AUTH_PRIVILEGE_EXPOSURE and (not active_session or not active_session.attributes.get("pre_mfa_token")):
+                h.validation_status = HypothesisValidationStatus.SKIPPED
+                h.rationale = "Skipped: Missing intermediate pre-MFA session token"
+                continue
+            if h.family == AuthenticationFindingFamily.MFA_BYPASS:
+                pre_mfa_tok = active_session.attributes.get("pre_mfa_token") if (active_session and active_session.attributes) else None
+                if not pre_mfa_tok and active_token and getattr(active_token, "token_value", None):
+                    pre_mfa_tok = active_token.token_value
+                if not pre_mfa_tok:
+                    h.validation_status = HypothesisValidationStatus.SKIPPED
+                    h.rationale = "Skipped: Missing pre-MFA researcher test session or token"
+                    continue
+            if h.family == AuthenticationFindingFamily.MFA_STATE_CONFUSION:
+                dual_sessions = [s for s in self.sessions if s.session_id]
+                session_b = active_identity.attributes.get("session_b") if (active_identity and active_identity.attributes) else None
+                if len(dual_sessions) < 2 and not session_b:
+                    h.validation_status = HypothesisValidationStatus.SKIPPED
+                    h.rationale = "Skipped: Missing dual test sessions to validate cross-session MFA state isolation"
+                    continue
+            if h.family == AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY:
+                status_surface = next((s for s in self.surfaces if any(seg in s.endpoint.lower() for seg in ["/status", "/check", "/me", "/whoami"])), None)
+                test_sess = active_session.session_id if active_session else None
+                test_tok = active_token.token_value if active_token and getattr(active_token, "token_value", None) else None
+                if not status_surface:
+                    h.validation_status = HypothesisValidationStatus.SKIPPED
+                    h.rationale = "Skipped: Missing discovered authentication status verification endpoint (e.g. /status, /me)"
+                    continue
+                if not test_sess and not test_tok:
+                    h.validation_status = HypothesisValidationStatus.SKIPPED
+                    h.rationale = "Skipped: Missing researcher test session or token to verify cross-boundary state consistency"
+                    continue
+
             # Execute controlled baseline differential probe
             anon_res = self.executor.execute_request(h.endpoint, method="GET")
             evidence_id = anon_res.get("evidence", {}).get("evidence_id") if isinstance(anon_res.get("evidence"), dict) else None
@@ -288,12 +351,21 @@ class AuthenticationSecurityEngine:
 
             if h.family == AuthenticationFindingFamily.AUTHENTICATION_BYPASS:
                 # 1. AUTHENTICATION_BYPASS: Requires both anonymous and authenticated differential
+                auth_res = None
                 if active_token and getattr(active_token, "token_value", None):
                     auth_res = self.executor.execute_request(
                         h.endpoint,
                         method="GET",
                         headers={"Authorization": f"Bearer {active_token.token_value}"},
                     )
+                elif active_session and getattr(active_session, "session_id", None):
+                    auth_res = self.executor.execute_request(
+                        h.endpoint,
+                        method="GET",
+                        headers={"Cookie": f"session={active_session.session_id}"},
+                    )
+
+                if auth_res:
                     if auth_res.get("evidence"):
                         evidence_chain.append(auth_res["evidence"])
                     verdict, reason = SafeAuthenticationValidator.validate_authentication_bypass(
@@ -305,15 +377,14 @@ class AuthenticationSecurityEngine:
                     )
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
                 else:
-                    # Anonymous probe only: check if sensitive data is returned
-                    lower_b = body.lower()
-                    sensitive_keys = ["email", "user_id", "account", "profile", "admin", "tenant", "roles", "balance"]
-                    if status_code in (200, 201) and any(sk in lower_b for sk in sensitive_keys):
-                        verdict = HypothesisValidationStatus.CANDIDATE
-                        reason = f"Endpoint '{h.endpoint}' returned HTTP {status_code} with sensitive markers, but lacks authenticated baseline identity to verify differential access control."
-                    else:
-                        verdict = HypothesisValidationStatus.REJECTED
-                        reason = f"Endpoint '{h.endpoint}' returned HTTP {status_code} without sensitive markers or access bypass evidence."
+                    # Missing authenticated context: evaluate negative controls or return CANDIDATE
+                    verdict, reason = SafeAuthenticationValidator.validate_authentication_bypass(
+                        endpoint=h.endpoint,
+                        anon_status=status_code,
+                        anon_body=body,
+                        auth_status=0,
+                        auth_body="",
+                    )
                     is_valid = False
 
             elif h.family == AuthenticationFindingFamily.SESSION_NOT_INVALIDATED:
@@ -371,26 +442,67 @@ class AuthenticationSecurityEngine:
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
             elif h.family == AuthenticationFindingFamily.ACCOUNT_ENUMERATION:
-                # 4. ACCOUNT_ENUMERATION: Requires target user identifier parameter
+                # 4. ACCOUNT_ENUMERATION: Requires target user identifier parameter and at least 3 controlled trials
                 if not active_identity or not active_identity.username:
                     verdict = HypothesisValidationStatus.SKIPPED
                     reason = "Skipped: Missing target account identifier parameter for enumeration testing"
                     is_valid = False
                 else:
-                    rand_user = f"nonexistent_{hashlib.sha256(h.endpoint.encode()).hexdigest()[:8]}@example.local"
-                    t1 = self.executor.execute_request(f"{h.endpoint}?username={active_identity.username}", method="GET")
-                    t2 = self.executor.execute_request(f"{h.endpoint}?username={rand_user}", method="GET")
-                    if t1.get("evidence"):
-                        evidence_chain.append(t1["evidence"])
-                    if t2.get("evidence"):
-                        evidence_chain.append(t2["evidence"])
-                    verdict, reason = SafeAuthenticationValidator.validate_account_enumeration(
-                        valid_status=t1.get("status_code", 0),
-                        valid_body=t1.get("body", ""),
-                        invalid_status=t2.get("status_code", 0),
-                        invalid_body=t2.get("body", ""),
-                        trial_count=2,
-                    )
+                    parsed_u = urlparse(h.endpoint)
+                    base_qsl = parse_qsl(parsed_u.query, keep_blank_values=True)
+                    param_name = "username"
+                    for k, _ in base_qsl:
+                        if k.lower() in ("username", "user", "email", "account", "login", "id"):
+                            param_name = k
+                            break
+
+                    trial_results = []
+                    consistent = True
+                    first_diff_signal = None
+
+                    # Execute 3 controlled trials comparing valid user vs distinct nonexistent users
+                    for trial_idx in range(3):
+                        rand_user = f"nonexistent_{trial_idx}_{hashlib.sha256(f'{h.endpoint}_{trial_idx}'.encode()).hexdigest()[:6]}@example.invalid"
+                        q_valid = [(k, v) for k, v in base_qsl if k != param_name] + [(param_name, active_identity.username)]
+                        q_invalid = [(k, v) for k, v in base_qsl if k != param_name] + [(param_name, rand_user)]
+
+                        url_valid = urlunsplit((parsed_u.scheme, parsed_u.netloc, parsed_u.path, urlencode(q_valid), parsed_u.fragment))
+                        url_invalid = urlunsplit((parsed_u.scheme, parsed_u.netloc, parsed_u.path, urlencode(q_invalid), parsed_u.fragment))
+
+                        t_val = self.executor.execute_request(url_valid, method="GET")
+                        t_inv = self.executor.execute_request(url_invalid, method="GET")
+
+                        if t_val.get("evidence"):
+                            evidence_chain.append(t_val["evidence"])
+                        if t_inv.get("evidence"):
+                            evidence_chain.append(t_inv["evidence"])
+
+                        # Check if rate-limited or blocked
+                        if t_val.get("status_code") == 429 or t_inv.get("status_code") == 429:
+                            consistent = False
+                            break
+
+                        diff_sig = (t_val.get("status_code") != t_inv.get("status_code"), t_val.get("status_code"), t_inv.get("status_code"))
+                        if first_diff_signal is None:
+                            first_diff_signal = diff_sig
+                        elif first_diff_signal != diff_sig:
+                            consistent = False
+
+                        trial_results.append((t_val, t_inv))
+
+                    if len(trial_results) >= 3 and consistent:
+                        v_first, inv_first = trial_results[0]
+                        verdict, reason = SafeAuthenticationValidator.validate_account_enumeration(
+                            valid_status=v_first.get("status_code", 0),
+                            valid_body=v_first.get("body", ""),
+                            invalid_status=inv_first.get("status_code", 0),
+                            invalid_body=inv_first.get("body", ""),
+                            trial_count=len(trial_results),
+                            trial_consistency=True,
+                        )
+                    else:
+                        verdict = HypothesisValidationStatus.INFORMATIONAL if len(trial_results) < 3 else HypothesisValidationStatus.REJECTED
+                        reason = f"Account enumeration incomplete or inconsistent across trials (completed {len(trial_results)}/3, consistent={consistent})."
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
             elif h.family == AuthenticationFindingFamily.PRE_AUTH_PRIVILEGE_EXPOSURE:
@@ -462,28 +574,129 @@ class AuthenticationSecurityEngine:
                     is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
             elif h.family == AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION:
-                # 8. PASSWORD_RESET_STATE_CONFUSION: Requires multi-step workflow context
-                verdict = HypothesisValidationStatus.SKIPPED
-                reason = "Skipped: Missing multi-step reset workflow context or test token"
-                is_valid = False
+                # 8. PASSWORD_RESET_STATE_CONFUSION: Requires reset workflow endpoint and researcher test identity
+                reset_surface = next((s for s in self.surfaces if s.flow_type == AuthenticationFlowType.PASSWORD_RESET), None)
+                target_ep = reset_surface.endpoint if reset_surface else h.endpoint
+                if not active_identity or not active_identity.username:
+                    verdict = HypothesisValidationStatus.SKIPPED
+                    reason = "Skipped: Missing researcher test identity to validate password reset state machine"
+                    is_valid = False
+                elif not any(seg in target_ep.lower() for seg in ["reset", "password", "confirm", "update"]):
+                    verdict = HypothesisValidationStatus.SKIPPED
+                    reason = "Skipped: Missing discovered password reset workflow endpoint"
+                    is_valid = False
+                else:
+                    probe_payload = json.dumps({"username": active_identity.username, "new_password": "TestPassword123!", "token": ""})
+                    probe_res = self.executor.execute_request(target_ep, method="POST", data=probe_payload)
+                    if probe_res.get("evidence"):
+                        evidence_chain.append(probe_res["evidence"])
+                    verdict, reason = SafeAuthenticationValidator.validate_password_reset_state_confusion(
+                        endpoint=target_ep,
+                        step_status=probe_res.get("status_code", 0),
+                        step_body=probe_res.get("body", ""),
+                        is_prerequisite_satisfied=False,
+                    )
+                    is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
             elif h.family == AuthenticationFindingFamily.MFA_BYPASS:
-                # 9. MFA_BYPASS: Requires MFA-enabled test account credentials
-                verdict = HypothesisValidationStatus.SKIPPED
-                reason = "Skipped: Missing MFA-enabled researcher test account"
-                is_valid = False
+                # 9. MFA_BYPASS: Requires MFA verification endpoint and researcher pre-MFA test session/token
+                mfa_surface = next((s for s in self.surfaces if s.flow_type == AuthenticationFlowType.MFA_VERIFICATION), None)
+                mfa_ep = mfa_surface.endpoint if mfa_surface else h.endpoint
+                pre_mfa_tok = None
+                if active_session and active_session.attributes:
+                    pre_mfa_tok = active_session.attributes.get("pre_mfa_token")
+                if not pre_mfa_tok and active_token and getattr(active_token, "token_value", None):
+                    pre_mfa_tok = active_token.token_value
+
+                if not pre_mfa_tok:
+                    verdict = HypothesisValidationStatus.SKIPPED
+                    reason = "Skipped: Missing pre-MFA researcher test session or token"
+                    is_valid = False
+                elif not any(seg in mfa_ep.lower() for seg in ["mfa", "2fa", "verify", "otp"]):
+                    verdict = HypothesisValidationStatus.SKIPPED
+                    reason = "Skipped: Missing discovered MFA verification challenge endpoint"
+                    is_valid = False
+                else:
+                    mfa_payload = json.dumps({"code": "000000", "otp": "000000"})
+                    mfa_headers = {"Authorization": f"Bearer {pre_mfa_tok}"} if pre_mfa_tok else {}
+                    mfa_res = self.executor.execute_request(mfa_ep, method="POST", data=mfa_payload, headers=mfa_headers)
+                    if mfa_res.get("evidence"):
+                        evidence_chain.append(mfa_res["evidence"])
+                    verdict, reason = SafeAuthenticationValidator.validate_mfa_bypass(
+                        endpoint=mfa_ep,
+                        status_code=mfa_res.get("status_code", 0),
+                        response_body=mfa_res.get("body", ""),
+                        submitted_valid_code=False,
+                    )
+                    is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
             elif h.family == AuthenticationFindingFamily.MFA_STATE_CONFUSION:
-                # 10. MFA_STATE_CONFUSION: Requires dual intermediate session contexts
-                verdict = HypothesisValidationStatus.SKIPPED
-                reason = "Skipped: Missing dual intermediate MFA session contexts"
-                is_valid = False
+                # 10. MFA_STATE_CONFUSION: Requires dual test sessions to test cross-session state isolation
+                mfa_surface = next((s for s in self.surfaces if s.flow_type == AuthenticationFlowType.MFA_VERIFICATION), None)
+                dual_sessions = [s for s in self.sessions if s.session_id]
+                session_b = active_identity.attributes.get("session_b") if active_identity and active_identity.attributes else None
+
+                if len(dual_sessions) < 2 and not session_b:
+                    verdict = HypothesisValidationStatus.SKIPPED
+                    reason = "Skipped: Missing dual test sessions to validate cross-session MFA state isolation"
+                    is_valid = False
+                elif not mfa_surface and not any(seg in h.endpoint.lower() for seg in ["mfa", "2fa"]):
+                    verdict = HypothesisValidationStatus.SKIPPED
+                    reason = "Skipped: Missing discovered MFA state transition endpoint"
+                    is_valid = False
+                else:
+                    target_ep = mfa_surface.endpoint if mfa_surface else h.endpoint
+                    second_sess = session_b or dual_sessions[1].session_id
+                    conf_res = self.executor.execute_request(
+                        target_ep,
+                        method="GET",
+                        headers={"Cookie": f"session={second_sess}"},
+                    )
+                    if conf_res.get("evidence"):
+                        evidence_chain.append(conf_res["evidence"])
+                    verdict, reason = SafeAuthenticationValidator.validate_mfa_state_confusion(
+                        endpoint=target_ep,
+                        target_status=conf_res.get("status_code", 0),
+                        target_body=conf_res.get("body", ""),
+                        cross_session_elevated=False,
+                    )
+                    is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
             elif h.family == AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY:
-                # 11. AUTHENTICATION_STATE_INCONSISTENCY: Requires observable multi-component boundaries
-                verdict = HypothesisValidationStatus.SKIPPED
-                reason = "Skipped: Missing observable cross-component authentication context"
-                is_valid = False
+                # 11. AUTHENTICATION_STATE_INCONSISTENCY: Requires multi-component check endpoint and session context
+                status_surface = next((s for s in self.surfaces if any(seg in s.endpoint.lower() for seg in ["/status", "/check", "/me", "/whoami"])), None)
+                test_sess = active_session.session_id if active_session else None
+                test_tok = active_token.token_value if active_token and getattr(active_token, "token_value", None) else None
+
+                if not status_surface:
+                    verdict = HypothesisValidationStatus.SKIPPED
+                    reason = "Skipped: Missing discovered authentication status verification endpoint (e.g. /status, /me)"
+                    is_valid = False
+                elif not test_sess and not test_tok:
+                    verdict = HypothesisValidationStatus.SKIPPED
+                    reason = "Skipped: Missing researcher test session or token to verify cross-boundary state consistency"
+                    is_valid = False
+                else:
+                    auth_headers = {}
+                    if test_tok:
+                        auth_headers["Authorization"] = f"Bearer {test_tok}"
+                    if test_sess:
+                        auth_headers["Cookie"] = f"session={test_sess}"
+
+                    status_res = self.executor.execute_request(status_surface.endpoint, method="GET", headers=auth_headers)
+                    resource_res = self.executor.execute_request(h.endpoint, method="GET", headers=auth_headers)
+                    if status_res.get("evidence"):
+                        evidence_chain.append(status_res["evidence"])
+                    if resource_res.get("evidence"):
+                        evidence_chain.append(resource_res["evidence"])
+                    verdict, reason = SafeAuthenticationValidator.validate_authentication_state_inconsistency(
+                        endpoint=h.endpoint,
+                        auth_status_code=status_res.get("status_code", 0),
+                        auth_status_body=status_res.get("body", ""),
+                        resource_status_code=resource_res.get("status_code", 0),
+                        resource_body=resource_res.get("body", ""),
+                    )
+                    is_valid = (verdict == HypothesisValidationStatus.VALIDATED)
 
             elif h.family in (
                 AuthenticationFindingFamily.SESSION_NOT_ROTATED,
@@ -505,15 +718,17 @@ class AuthenticationSecurityEngine:
 
             if verdict in (HypothesisValidationStatus.VALIDATED, HypothesisValidationStatus.INFORMATIONAL):
                 sev, cvss = AuthenticationPrioritizer.score_finding(h.family)
+                clean_ep = AuthenticationEvidenceManager.sanitize_url(h.endpoint)
+                clean_reason = AuthenticationEvidenceManager.sanitize(reason)
                 f = AuthenticationFindingCandidate(
-                    finding_id=f"FIND-AUTH-{hashlib.sha256(f'{h.hypothesis_id}|{h.endpoint}'.encode()).hexdigest()[:8]}",
-                    title=f"Authentication Flaw: {h.family} on {h.endpoint}",
+                    finding_id=f"FIND-AUTH-{hashlib.sha256(f'{h.hypothesis_id}|{clean_ep}'.encode()).hexdigest()[:8]}",
+                    title=f"Authentication Flaw: {h.family} on {clean_ep}",
                     family=h.family,
                     severity=sev,
                     confidence="CONFIRMED" if is_valid else "MEDIUM",
-                    endpoint=h.endpoint,
+                    endpoint=clean_ep,
                     identity_id=h.principal,
-                    description=reason,
+                    description=clean_reason,
                     evidence_chain=evidence_chain,
                     cvss_score=cvss,
                     remediation="Remediate authentication state or session invalidation logic.",
@@ -540,9 +755,11 @@ class AuthenticationSecurityEngine:
             if r["verdict"] == HypothesisValidationStatus.VALIDATED.value:
                 scen = LocalAuthenticationSecurityLab.SCENARIOS[r["scenario_id"]]
                 family = scen.get("expected_family") or AuthenticationFindingFamily.AUTHENTICATION_BYPASS
+                scen_id = r["scenario_id"]
+                finding_suffix = hashlib.sha256(f"lab_{scen_id}".encode()).hexdigest()[:8]
                 sev, cvss = AuthenticationPrioritizer.score_finding(family)
                 candidate = AuthenticationFindingCandidate(
-                    finding_id=f"FIND-AUTH-{uuid.uuid4().hex[:8]}",
+                    finding_id=f"FIND-AUTH-{finding_suffix}",
                     title=f"Authentication Flaw: {scen['name']}",
                     family=family,
                     severity=sev,

@@ -12,7 +12,7 @@ Enable safe, hypothesis-driven, non-destructive bug bounty security research wit
 
 ### Validated
 
-<!-- Shipped and confirmed valuable across Phases 1–14 and Phase 14.1 -->
+<!-- Shipped and confirmed valuable across Phases 1–14, Phase 14.1, and Phase 14.2 -->
 
 - ✓ [Phase 1: Asset Intelligence] Recursive subdomain discovery, asset graph modeling, TLS SAN extraction, CDN attribution — v1.1.0
 - ✓ [Phase 2: Reconnaissance Intelligence] Passive intelligence (crt.sh, subfinder) and rate-limited active probing (httpx) — v1.2.0
@@ -29,41 +29,42 @@ Enable safe, hypothesis-driven, non-destructive bug bounty security research wit
 - ✓ [Phase 13: Cloud Security Intelligence] S3/GCS bucket permissions, cloud metadata SSRF, dangling CNAME takeovers — v1.13.0
 - ✓ [Phase 14: Authentication & Identity Intelligence Baseline] Initial data models, analyzers, 14 vulnerability families, and 21 offline lab scenarios — v1.14.0
 - ✓ [Phase 14.1: Authentication Engine Hardening & Pipeline Integration] Pipeline orchestration, ScopeEngine.check integration, cross-phase state ingestion from 7 schemas, test deduplication, credential sanitization, 42 tests passing — v1.14.1
+- ✓ [Phase 14.2: Authentication Validation Integrity & Executor Safety] TLS verification restoration, destination-IP pinning, comprehensive anti-SSRF defenses, per-redirect checks, operational validation across families, evidence redaction, and multi-trial account enumeration — v1.14.2
 
 ### Active
 
-<!-- Current scope: Phase 14.2 Authentication Validation Integrity & Executor Safety -->
+<!-- All Phase 14.2 requirements validated; post-14.2 corrective pass completed -->
 
-- [ ] **VAL-01**: Purge all hardcoded synthetic comparison responses from live target execution in `engine.py`.
-- [ ] **VAL-02**: Implement genuine bounded multi-step test sequences for operational families using actual requests and researcher identities.
-- [ ] **VAL-03**: Set explicit non-validated states (`SKIPPED`, `UNVALIDATED`, `MISSING_PREREQUISITES`) when test prerequisites or credentials are not provided.
-- [ ] **VAL-04**: Enforce strict taxonomy boundaries distinguishing hypotheses, observations, candidates, and validated findings. Only assign `FindingLifecycle.VALIDATED` upon genuine differential proof.
-- [ ] **VAL-05**: Strictly preserve observation-only families (`SESSION_NOT_ROTATED`, `TOKEN_TRANSPORT_EXPOSURE`, `AUTHENTICATION_CONFIGURATION_WEAKNESS`) as informational hardening observations without escalating to vulnerabilities.
-- [ ] **EXEC-01**: Restore standard TLS certificate and hostname verification in `BoundedAuthenticationExecutor`, failing closed on certificate errors without bypassing checks.
-- [ ] **EXEC-02**: Enforce strict zero external network traffic, zero socket creation, and zero DNS resolution in `--dry-run`, `--passive-only`, and `--lab` modes.
-- [ ] **EXEC-03**: Harden anti-SSRF defenses against IPv4, IPv6 (`::1`, `fc00::/7`, `fe80::/10`), IPv4-mapped IPv6 (`::ffff:127.0.0.1`, `::ffff:169.254.169.254`), and cloud metadata destinations.
-- [ ] **EXEC-04**: Mitigate DNS rebinding and TOCTOU races by pre-resolving and pinning destination IPs during socket connection.
-- [ ] **EXEC-05**: Re-verify scope and destination safety on each redirect hop (max 5 redirects).
-- [ ] **EXEC-06**: Maintain bounded request execution: timeout capped at 10.0s, response size capped at 100KB, max 5 requests per endpoint.
-- [ ] **SCOPE-01**: Enforce strict scope evaluation via `ScopeEngine.check(target)` requiring `ScopeDecision.status == ScopeStatus.IN_SCOPE`.
-- [ ] **SCOPE-02**: Resolve scope file deterministically only from explicit `--scope` or canonical program path `<program_dir>/scope/scope.yaml` (or `<program_dir>/scope.yaml`), eliminating unsafe current working directory fallbacks.
-- [ ] **SCOPE-03**: Enforce the non-negotiable security invariant that operator approval (`--approve`) never overrides scope boundaries.
-- [ ] **SCOPE-04**: Bind approval gating to the concrete operation being planned and the specific researcher-controlled account.
-- [ ] **EVID-01**: Make hypothesis IDs deterministic and context-aware based on canonical SHA-256 hashes instead of random UUIDs.
-- [ ] **EVID-02**: Ensure test deduplication against `state/tests.json` and state recovery via `--resume` reuses identical hypotheses without suppressing legitimate re-tests.
-- [ ] **EVID-03**: Comprehensive credential sanitization across query parameters, form fields, headers (Bearer, Basic, custom API keys), cookies, OTPs, reset tokens, and nested JSON structures.
-- [ ] **EVID-04**: Document that cryptographic SHA-256 digests represent provenance and auditability metadata, never standalone proofs of vulnerability.
-- [ ] **EVID-05**: Robust state loading and persistence error handling without silent exception swallowing.
-- [ ] **STATE-01**: Resilient schema parsing for `webapps.json`, `api.json`, `javascript.json`, `assets.json`, `recon.json`, `authorization.json`, and `workflows.json`.
-- [ ] **STATE-02**: Support both list-of-dicts and dict-of-dicts serialized formats without data loss.
-- [ ] **STATE-03**: Handle missing, empty, or partial state files with graceful degradation.
-- [ ] **TEST-01**: Preserve all 21 offline lab scenarios in `LocalAuthenticationSecurityLab` with 100% deterministic accuracy.
-- [ ] **TEST-02**: Add local fixture HTTP server integration tests with negative controls for each operational family.
-- [ ] **TEST-03**: Assert zero socket creation and zero DNS resolution in all offline modes.
-- [ ] **TEST-04**: Security boundary tests for TLS errors, SSRF blocks (including IPv4-mapped IPv6), DNS rebinding, and fail-closed scope resolution.
-- [ ] **TEST-05**: Full test suite passes 100% across repository, `bb-doctor` Category 23 reports healthy, and OpenCode deployment verified.
-- [ ] **DOCS-01**: Update documentation and skill guidance.
-- [ ] **DOCS-02**: Plan and conclude work in a single consolidated commit: `fix: correct authentication validation integrity and executor safety`.
+- [x] **VAL-01**: Purge all hardcoded synthetic comparison responses from live target execution in `engine.py`.
+- [x] **VAL-02**: Implement genuine bounded multi-step test sequences for operational families using actual requests and researcher identities.
+- [x] **VAL-03**: Set explicit non-validated states (`SKIPPED`, `UNVALIDATED`, `MISSING_PREREQUISITES`) when test prerequisites or credentials are not provided.
+- [x] **VAL-04**: Enforce strict taxonomy boundaries distinguishing hypotheses, observations, candidates, and validated findings. Only assign `FindingLifecycle.VALIDATED` upon genuine differential proof.
+- [x] **VAL-05**: Strictly preserve observation-only families (`SESSION_NOT_ROTATED`, `TOKEN_TRANSPORT_EXPOSURE`, `AUTHENTICATION_CONFIGURATION_WEAKNESS`) as informational hardening observations without escalating to vulnerabilities.
+- [x] **EXEC-01**: Restore standard TLS certificate and hostname verification in `BoundedAuthenticationExecutor`, failing closed on certificate errors without bypassing checks.
+- [x] **EXEC-02**: Enforce strict zero external network traffic, zero socket creation, and zero DNS resolution in `--dry-run`, `--passive-only`, and `--lab` modes.
+- [x] **EXEC-03**: Harden anti-SSRF defenses against IPv4, IPv6 (`::1`, `fc00::/7`, `fe80::/10`), IPv4-mapped IPv6 (`::ffff:127.0.0.1`, `::ffff:169.254.169.254`), and cloud metadata destinations.
+- [x] **EXEC-04**: Mitigate DNS rebinding and TOCTOU races by pre-resolving and pinning destination IPs during socket connection.
+- [x] **EXEC-05**: Re-verify scope and destination safety on each redirect hop (max 5 redirects).
+- [x] **EXEC-06**: Maintain bounded request execution: timeout capped at 10.0s, response size capped at 100KB, max 5 requests per endpoint.
+- [x] **SCOPE-01**: Enforce strict scope evaluation via `ScopeEngine.check(target)` requiring `ScopeDecision.status == ScopeStatus.IN_SCOPE`.
+- [x] **SCOPE-02**: Resolve scope file deterministically only from explicit `--scope` or canonical program path `<program_dir>/scope/scope.yaml` (or `<program_dir>/scope.yaml`), eliminating unsafe current working directory fallbacks.
+- [x] **SCOPE-03**: Enforce the non-negotiable security invariant that operator approval (`--approve`) never overrides scope boundaries.
+- [x] **SCOPE-04**: Bind approval gating to the concrete operation being planned and the specific researcher-controlled account.
+- [x] **EVID-01**: Make hypothesis IDs deterministic and context-aware based on canonical SHA-256 hashes instead of random UUIDs.
+- [x] **EVID-02**: Ensure test deduplication against `state/tests.json` and state recovery via `--resume` reuses identical hypotheses without suppressing legitimate re-tests.
+- [x] **EVID-03**: Comprehensive credential sanitization across query parameters, form fields, headers (Bearer, Basic, custom API keys), cookies, OTPs, reset tokens, and nested JSON structures.
+- [x] **EVID-04**: Document that cryptographic SHA-256 digests represent provenance and auditability metadata, never standalone proofs of vulnerability.
+- [x] **EVID-05**: Robust state loading and persistence error handling without silent exception swallowing.
+- [x] **STATE-01**: Resilient schema parsing for `webapps.json`, `api.json`, `javascript.json`, `assets.json`, `recon.json`, `authorization.json`, and `workflows.json`.
+- [x] **STATE-02**: Support both list-of-dicts and dict-of-dicts serialized formats without data loss.
+- [x] **STATE-03**: Handle missing, empty, or partial state files with graceful degradation.
+- [x] **TEST-01**: Preserve all 21 offline lab scenarios in `LocalAuthenticationSecurityLab` with 100% deterministic accuracy.
+- [x] **TEST-02**: Add local fixture HTTP server integration tests with negative controls for each operational family.
+- [x] **TEST-03**: Assert zero socket creation and zero DNS resolution in all offline modes.
+- [x] **TEST-04**: Security boundary tests for TLS errors, SSRF blocks (including IPv4-mapped IPv6), DNS rebinding, and fail-closed scope resolution.
+- [x] **TEST-05**: Full test suite passes 100% across repository (354/354 passed), `bb-doctor` Category 23 reports healthy, and OpenCode deployment verified.
+- [x] **DOCS-01**: Update documentation and skill guidance.
+- [x] **DOCS-02**: Plan and conclude work in a single consolidated commit: `fix: correct authentication validation integrity and executor safety`.
 
 ### Out of Scope
 
@@ -79,7 +80,7 @@ Enable safe, hypothesis-driven, non-destructive bug bounty security research wit
 
 ## Context
 
-- **Brownfield Baseline**: BugBounty-Agent has 14 completed product phases, Phase 14.1 hardened pipeline, 18 modular skills, and 341 passing automated tests.
+- **Brownfield Baseline**: BugBounty-Agent has 14 completed product phases, Phase 14.1 hardened pipeline, Phase 14.2 validation integrity, 18 modular skills, and 354 passing automated tests.
 - **Operating Environments**: Windows 10/11 acts as the local development workstation; Kali Linux 2024+ acts as the target security runtime hosting OpenCode.
 - **Phase 14.2 Focus**: Correcting validation integrity and request-executor safety defects. The goal is producing defensible, reproducible, evidence-backed findings suitable for responsible disclosure.
 
@@ -98,8 +99,8 @@ Enable safe, hypothesis-driven, non-destructive bug bounty security research wit
 |----------|-----------|---------|
 | Single Global Agent (`Bug-Bounty`) | Eliminates token fragmentation, inter-agent sync lag, and subagent orchestration failures | ✓ Good |
 | 18 Modular Skills | Encapsulates specialized domain methodologies as lightweight markdown guides | ✓ Good |
-| Real Differential Validation | Purges fabricated comparison strings and hardcoded mocks from live evaluation | ✓ Planned |
-| Connection-Time SSRF / Pinning | Mitigates TOCTOU / DNS rebinding attacks against loopback, private, and metadata IP ranges | ✓ Planned |
-| Canonical Scope Enforcement | Removes unsafe cwd fallbacks to guarantee strict multi-program isolation | ✓ Planned |
-| Deterministic Hypothesis Fingerprints | SHA-256 context-aware hashing enables deterministic deduplication and resume | ✓ Planned |
-| Single Consolidated Commit | Clean git history without intermediate broken commits | ✓ Planned |
+| Real Differential Validation | Purges fabricated comparison strings and hardcoded mocks from live evaluation | ✓ Verified |
+| Connection-Time SSRF / Pinning | Mitigates TOCTOU / DNS rebinding attacks against loopback, private, and metadata IP ranges | ✓ Verified |
+| Canonical Scope Enforcement | Removes unsafe cwd fallbacks to guarantee strict multi-program isolation | ✓ Verified |
+| Deterministic Hypothesis Fingerprints | SHA-256 context-aware hashing enables deterministic deduplication and resume | ✓ Verified |
+| Single Consolidated Commit | Clean git history without intermediate broken commits | ✓ Verified |
