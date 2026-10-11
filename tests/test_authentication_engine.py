@@ -1605,6 +1605,9 @@ class _LocalAuthHandler(http.server.BaseHTTPRequestHandler):
                 if self.server.mfa_mode == "VULNERABLE" and self.server.session_b_elevated:
                     self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "settings": "active"})
                     return
+                elif self.server.mfa_mode == "ORDINARY_DENIAL":
+                    self._send_json(401, {"error": "Access Denied", "detail": "Unauthorized request"})
+                    return
                 elif self.server.mfa_mode == "GENERIC_SHELL":
                     self._send_html(200, '<!doctype html><html><body><div id="root"></div></body></html>')
                     return
@@ -1648,6 +1651,10 @@ class _LocalAuthHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(401, {"error": "MFA verification required", "challenge": "otp"})
             return
 
+        elif "/api/v1/user/public-portal" in self.path:
+            self._send_json(200, {"title": "Acme Public Portal", "version": "1.0"})
+            return
+
         elif "/api/v1/auth/status" in self.path:
             self._send_json(401, {"authenticated": False, "message": "unauthenticated"})
             return
@@ -1658,6 +1665,11 @@ class _LocalAuthHandler(http.server.BaseHTTPRequestHandler):
             is_authed = bool(cookie or auth)
             if self.server.inconsistency_mode == "INCONSISTENT":
                 self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "account_id": "acc_123"})
+            elif self.server.inconsistency_mode == "GENERIC_DATA_NO_MATCH":
+                if is_authed:
+                    self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "account_id": "acc_123"})
+                else:
+                    self._send_json(200, {"user_id": "guest_public", "email": "guest@portal.local", "account_id": "guest_999"})
             elif self.server.inconsistency_mode == "GENERIC_SHELL":
                 if is_authed:
                     self._send_json(200, {"user_id": "alice", "email": "alice@target.local", "account_id": "acc_123"})
@@ -2323,6 +2335,187 @@ def test_integration_authentication_state_inconsistency_baseline_and_negative_co
     assert h_cons.validation_status == HypothesisValidationStatus.REJECTED
     assert "consistent across system boundaries" in h_cons.rationale.lower()
     shutil.rmtree(tmp_cons, ignore_errors=True)
+
+    # Test 5: Generic user-data fields without a baseline match -> REJECTED
+    server.inconsistency_mode = "GENERIC_DATA_NO_MATCH"
+    tmp_nomatch = tempfile.mkdtemp(prefix="bb_incons_nomatch_")
+    engine_nomatch = AuthenticationSecurityEngine(workspace_dir=tmp_nomatch)
+    engine_nomatch.executor.allow_fixture_port(port)
+    engine_nomatch.policy.allowed_fixture_ports.add(port)
+    engine_nomatch.identity_mgr.register_identity(identity_id="alice", username="alice", role="USER")
+    engine_nomatch.sessions = [SessionProfile(session_id="sess_active", identity_id="alice")]
+    engine_nomatch.surfaces = [status_surf]
+
+    h_nomatch = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-INCONS-NOMATCH",
+        family=AuthenticationFindingFamily.AUTHENTICATION_STATE_INCONSISTENCY,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/resource/user-data",
+        principal="alice",
+        required_state=AuthenticationState.AUTHENTICATED,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine_nomatch.hypotheses = [h_nomatch]
+    engine_nomatch.validate_hypotheses(approve=True)
+    assert h_nomatch.validation_status == HypothesisValidationStatus.REJECTED
+    assert "did not expose matching authenticated baseline user data" in h_nomatch.rationale.lower()
+    shutil.rmtree(tmp_nomatch, ignore_errors=True)
+
+
+def test_integration_password_reset_unrelated_successful_login(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves that if an account could already authenticate with the test credential
+    BEFORE the password reset was attempted, the subsequent successful login is unrelated to the reset
+    and CANNOT validate PASSWORD_RESET_STATE_CONFUSION.
+    """
+    server, port = local_auth_fixture
+    # The fixture user already has this password before any reset:
+    server.user_passwords["alice"] = "AlreadyWorkingPassword1!"
+    server.reset_mode = "GENERIC_STATUS"  # Reset endpoint returns 200 without changing anything
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.executor.allow_fixture_port(port)
+    engine.policy.allowed_fixture_ports.add(port)
+
+    engine.identity_mgr.register_identity(
+        identity_id="alice",
+        username="alice",
+        role="USER",
+        attributes={
+            "researcher_controlled": True,
+            "credentials_available": True,
+            "test_mutation_credential": "AlreadyWorkingPassword1!",
+        },
+    )
+
+    reset_surf = AuthenticationStep(
+        step_id="step_reset_confirm",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        method="POST",
+        flow_type=AuthenticationFlowType.PASSWORD_RESET,
+        parameter_names=["username", "new_password", "token"],
+    )
+    login_surf = AuthenticationStep(
+        step_id="step_login",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/login",
+        method="POST",
+        flow_type=AuthenticationFlowType.LOGIN,
+        parameter_names=["username", "password"],
+    )
+    engine.surfaces = [reset_surf, login_surf]
+
+    h_reset = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-RESET-UNRELATED",
+        family=AuthenticationFindingFamily.PASSWORD_RESET_STATE_CONFUSION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/password-reset/confirm",
+        principal="alice",
+        required_state=AuthenticationState.ANONYMOUS,
+        observed_state=AuthenticationState.ANONYMOUS,
+        expected_behavior="400",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine.hypotheses = [h_reset]
+    engine.validate_hypotheses(approve=True)
+
+    # Invariant: Must NOT be VALIDATED; returns CANDIDATE or REJECTED because mutation was not caused by reset
+    assert h_reset.validation_status != HypothesisValidationStatus.VALIDATED
+
+
+def test_integration_mfa_bypass_public_endpoint_rejected(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves that a public endpoint that returns 200 unauthenticated cannot be selected
+    as a protected resource to validate MFA bypass.
+    """
+    server, port = local_auth_fixture
+    server.mfa_bypass_mode = "VULNERABLE"
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.executor.allow_fixture_port(port)
+    engine.policy.allowed_fixture_ports.add(port)
+    engine.identity_mgr.register_identity(identity_id="alice", username="alice", role="USER")
+    engine.sessions = [SessionProfile(session_id="sess_active", identity_id="alice", attributes={"pre_mfa_token": "pre_mfa_123"})]
+
+    mfa_surf = AuthenticationStep(
+        step_id="mfa",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/mfa/verify",
+        method="POST",
+        flow_type=AuthenticationFlowType.MFA_VERIFICATION,
+    )
+    # Discovered candidate surface is a public endpoint that returns 200 to anonymous callers
+    public_surf = AuthenticationStep(
+        step_id="public_portal",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/user/public-portal",
+        method="GET",
+        flow_type=AuthenticationFlowType.REGISTRATION,
+    )
+    engine.surfaces = [mfa_surf, public_surf]
+
+    h_mfa = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-MFA-PUB-REJECT",
+        family=AuthenticationFindingFamily.MFA_BYPASS,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/mfa/verify",
+        principal="alice",
+        required_state=AuthenticationState.MFA_REQUIRED,
+        observed_state=AuthenticationState.MFA_REQUIRED,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine.hypotheses = [h_mfa]
+    engine.validate_hypotheses(approve=True)
+
+    # Invariant: Must NOT be VALIDATED because public endpoint was rejected as a protected resource
+    assert h_mfa.validation_status != HypothesisValidationStatus.VALIDATED
+    assert h_mfa.validation_status == HypothesisValidationStatus.CANDIDATE
+
+
+def test_integration_mfa_state_confusion_ordinary_denial_rejected(temp_workspace, local_auth_fixture):
+    """
+    Integration Test: Proves that Session B receiving an ordinary 401 authorization denial without
+    MFA challenge indicators cannot be misclassified as an MFA challenge, and returns REJECTED.
+    """
+    server, port = local_auth_fixture
+    server.mfa_mode = "ORDINARY_DENIAL"
+
+    engine = AuthenticationSecurityEngine(workspace_dir=temp_workspace)
+    engine.executor.allow_fixture_port(port)
+    engine.policy.allowed_fixture_ports.add(port)
+
+    engine.sessions = [
+        SessionProfile(session_id="sess_a", identity_id="alice"),
+        SessionProfile(session_id="sess_b", identity_id="alice"),
+    ]
+    mfa_surf = AuthenticationStep(
+        step_id="step_mfa",
+        endpoint=f"http://127.0.0.1:{port}/api/v1/auth/mfa/step",
+        method="POST",
+        flow_type=AuthenticationFlowType.MFA_VERIFICATION,
+    )
+    engine.surfaces = [mfa_surf]
+
+    h_mfa = AuthenticationHypothesis(
+        hypothesis_id="HYP-INT-MFA-DENIAL",
+        family=AuthenticationFindingFamily.MFA_STATE_CONFUSION,
+        endpoint=f"http://127.0.0.1:{port}/api/v1/account/settings",
+        principal="alice",
+        required_state=AuthenticationState.MFA_REQUIRED,
+        observed_state=AuthenticationState.MFA_REQUIRED,
+        expected_behavior="401",
+        observed_behavior="200",
+        confidence=0.5,
+        impact_hint="HIGH",
+    )
+    engine.hypotheses = [h_mfa]
+    engine.validate_hypotheses(approve=True)
+
+    assert h_mfa.validation_status == HypothesisValidationStatus.REJECTED
+    assert "ordinary authorization denial rather than an mfa challenge" in h_mfa.rationale.lower()
 
 
 def test_integration_account_enumeration_trials_and_rate_limiting(temp_workspace, local_auth_fixture):

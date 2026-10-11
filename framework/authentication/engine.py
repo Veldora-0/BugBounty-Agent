@@ -603,6 +603,23 @@ class AuthenticationSecurityEngine:
                             elif any(k in p_lower for k in ["token", "code", "key", "state", "ticket"]):
                                 token_param = str(p)
 
+                    # 1. Pre-reset verification: Ensure test_mutation credential is NOT currently valid for the account
+                    # If login already works with test_mutation BEFORE reset, a subsequent login check is unrelated to a confirmed reset mutation
+                    login_surface = next((s for s in self.surfaces if s.flow_type == AuthenticationFlowType.LOGIN), None)
+                    pre_login_succeeded = False
+                    if login_surface:
+                        pre_login_payload = json.dumps({"username": active_identity.username, "password": test_mutation})
+                        pre_login_check = self.executor.execute_request(
+                            login_surface.endpoint,
+                            method="POST",
+                            data=pre_login_payload,
+                            headers={"Content-Type": "application/json"},
+                        )
+                        if pre_login_check.get("evidence"):
+                            evidence_chain.append(pre_login_check["evidence"])
+                        if pre_login_check.get("status_code") in (200, 201) and "session" in pre_login_check.get("headers", {}).get("set-cookie", "").lower():
+                            pre_login_succeeded = True
+
                     # Build probe using discovered parameter names and researcher-controlled test parameters (unverified empty token)
                     probe_dict = {
                         user_param: active_identity.username,
@@ -638,8 +655,8 @@ class AuthenticationSecurityEngine:
                         pass
 
                     # If login endpoint exists in discovered surfaces, verify if credential was actually mutated
-                    login_surface = next((s for s in self.surfaces if s.flow_type == AuthenticationFlowType.LOGIN), None)
-                    if login_surface and probe_res.get("status_code") in (200, 201, 204, 302):
+                    # Only confirm state mutation if pre_login did NOT already succeed (unrelated login)
+                    if login_surface and probe_res.get("status_code") in (200, 201, 204, 302) and not pre_login_succeeded:
                         login_payload = json.dumps({"username": active_identity.username, "password": test_mutation})
                         login_check = self.executor.execute_request(
                             login_surface.endpoint,
@@ -702,15 +719,40 @@ class AuthenticationSecurityEngine:
                     except Exception:
                         pass
 
-                    # Locate protected resource surface
-                    protected_surface = next(
-                        (s for s in self.surfaces if s.flow_type not in (AuthenticationFlowType.LOGIN, AuthenticationFlowType.MFA_VERIFICATION, AuthenticationFlowType.LOGOUT)
-                         or any(p in s.endpoint.lower() for p in ["/profile", "/settings", "/account", "/dashboard", "/user", "/me"])),
-                        None
-                    )
-                    test_resource_ep = protected_surface.endpoint if protected_surface else (
-                        h.endpoint if not any(seg in h.endpoint.lower() for seg in ["mfa", "2fa", "otp", "verify"]) else None
-                    )
+                    # Locate candidate protected resource surfaces
+                    # Exclude login, mfa, logout, and password reset endpoints.
+                    # Candidate must match known sensitive/protected resource patterns or authenticated flow types.
+                    candidate_surfaces = [
+                        s for s in self.surfaces
+                        if s.flow_type not in (
+                            AuthenticationFlowType.LOGIN,
+                            AuthenticationFlowType.MFA_VERIFICATION,
+                            AuthenticationFlowType.LOGOUT,
+                        )
+                        and any(p in s.endpoint.lower() for p in ["/profile", "/settings", "/account", "/dashboard", "/user", "/me", "/protected", "/admin", "/vault", "/secret"])
+                        and not any(r in s.endpoint.lower() for r in ["/reset", "/forgot", "/recover"])
+                    ]
+                    if not candidate_surfaces:
+                        if any(p in h.endpoint.lower() for p in ["/profile", "/settings", "/account", "/dashboard", "/user", "/me", "/protected"]) and not any(seg in h.endpoint.lower() for seg in ["mfa", "2fa", "otp", "verify"]):
+                            candidate_surfaces = [AuthenticationStep(step_id="candidate", endpoint=h.endpoint, method="GET")]
+
+                    # Establish verified protected resource by running a negative control probe:
+                    # A public endpoint returns HTTP 200 without authentication; a genuine protected resource rejects unauthenticated access.
+                    verified_protected_ep = None
+                    for cand in candidate_surfaces:
+                        neg_check = self.executor.execute_request(cand.endpoint, method="GET")
+                        if neg_check.get("evidence"):
+                            evidence_chain.append(neg_check["evidence"])
+                        nc_status = neg_check.get("status_code", 0)
+                        nc_body = neg_check.get("body", "")
+                        # If candidate returns 200 and is not a login page/prompt, it is a PUBLIC endpoint and cannot qualify
+                        if nc_status in (200, 201, 204) and not AuthenticationFalsePositiveClassifier.is_login_page_false_positive(nc_status, nc_body):
+                            continue
+                        if nc_status in (401, 403) or any(p in nc_body.lower() for p in ["enter code", "otp", "two-factor", "2fa", "login", "unauthorized"]):
+                            verified_protected_ep = cand.endpoint
+                            break
+
+                    test_resource_ep = verified_protected_ep
 
                     if test_resource_ep and mfa_res.get("status_code") in (200, 201, 302):
                         # Construct test headers using resulting credentials
@@ -802,9 +844,15 @@ class AuthenticationSecurityEngine:
                         evidence_chain.append(post_res_b["evidence"])
 
                     # Cross-session escalation occurs ONLY if Session B was challenged pre-action and gained access post-action
-                    pre_b_challenged = pre_res_b.get("status_code") in (401, 403) or any(
-                        p in pre_res_b.get("body", "").lower() for p in ["enter code", "otp", "2fa", "verify identity", "challenge"]
-                    )
+                    pre_b_body = pre_res_b.get("body", "").lower()
+                    pre_b_headers = str(pre_res_b.get("headers", {})).lower()
+                    mfa_challenge_markers = [
+                        "mfa", "2fa", "otp", "two-factor", "totp", "enter code",
+                        "verify code", "verification code", "second factor", "challenge",
+                        "verification required", "mfa_required", "two_factor_required",
+                    ]
+                    pre_b_is_mfa_challenge = any(m in pre_b_body for m in mfa_challenge_markers) or any(m in pre_b_headers for m in ["mfa", "2fa", "otp", "challenge"])
+
                     post_b_status = post_res_b.get("status_code", 0)
                     post_b_body = post_res_b.get("body", "")
                     not_generic = not AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(post_b_status, post_b_body) and \
@@ -814,7 +862,7 @@ class AuthenticationSecurityEngine:
                         k in post_b_body.lower() for k in ['"user_id"', '"account_id"', '"email"', 'user-profile', 'dashboard', 'settings', 'account balance', 'user details']
                     )
                     no_mfa_prompt = not any(p in post_b_body.lower() for p in ["enter code", "otp", "two-factor", "2fa", "verify identity", "challenge"])
-                    cross_session_elevated = pre_b_challenged and (post_b_status in (200, 201)) and not_generic and has_protected and no_mfa_prompt
+                    cross_session_elevated = pre_b_is_mfa_challenge and (post_b_status in (200, 201)) and not_generic and has_protected and no_mfa_prompt
 
                     verdict, reason = SafeAuthenticationValidator.validate_mfa_state_confusion(
                         endpoint=protected_ep,

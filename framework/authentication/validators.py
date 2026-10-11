@@ -7,6 +7,7 @@ evaluates session lifecycles, and actively eliminates non-vulnerabilities.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -634,14 +635,22 @@ class SafeAuthenticationValidator:
         if status_to_check is None:
             return HypothesisValidationStatus.REJECTED, "Missing session observations to evaluate MFA state confusion."
 
-        # If pre-observation was provided for Session B, verify Session B was initially unverified / challenged
-        if pre_status_b is not None and pre_status_b not in (401, 403):
+        # If pre-observation was provided for Session B, verify Session B was initially in an MFA-challenged state
+        if pre_status_b is not None:
             lower_pre = (pre_body_b or "").lower()
-            mfa_prompt_pre = any(p in lower_pre for p in ["enter code", "otp", "two-factor", "2fa", "verify identity", "challenge"])
+            mfa_prompt_pre = any(
+                p in lower_pre
+                for p in [
+                    "enter code", "otp", "two-factor", "2fa", "verify identity",
+                    "challenge", "mfa", "totp", "second factor", "verification required",
+                    "mfa_required", "two_factor_required",
+                ]
+            )
+            # An ordinary 401/403 authorization denial without MFA challenge markers is NOT an MFA challenge
             if not mfa_prompt_pre:
                 return (
                     HypothesisValidationStatus.REJECTED,
-                    "Session B was not in a pre-MFA challenged state prior to test; cannot verify cross-session escalation.",
+                    "Session B received ordinary authorization denial rather than an MFA challenge; pre-MFA state not established.",
                 )
 
         # Check post-test Session B state
@@ -711,13 +720,6 @@ class SafeAuthenticationValidator:
                 f"Resource endpoint '{endpoint}' returned generic status without protected data.",
             )
 
-        # Baseline verification: If authenticated baseline was provided, ensure resource is genuinely protected
-        if baseline_status_code is not None and baseline_status_code not in (200, 201):
-            return (
-                HypothesisValidationStatus.REJECTED,
-                f"Baseline access to '{endpoint}' failed (HTTP {baseline_status_code}); resource is not confirmed accessible.",
-            )
-
         # Normal access control: If the resource properly rejects unauthenticated access (401 or 403), state is consistent
         if resource_status_code in (401, 403):
             return (
@@ -725,29 +727,74 @@ class SafeAuthenticationValidator:
                 f"Authentication state is consistent across system boundaries (HTTP {auth_status_code} / HTTP {resource_status_code}).",
             )
 
+        # Baseline verification: Authenticated baseline is strictly required to establish that the resource is genuinely protected
+        if baseline_status_code is None or baseline_status_code not in (200, 201):
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Missing or failed authenticated baseline for '{endpoint}' (HTTP {baseline_status_code}); resource is not confirmed accessible and protected.",
+            )
+
+        if not baseline_body or not baseline_body.strip():
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Authenticated baseline for '{endpoint}' has empty response body; cannot establish protected data baseline.",
+            )
+
         # Component 1 (auth check) reports unauthenticated / logged out
         lower_auth = auth_status_body.lower()
         c1_unauth = auth_status_code in (401, 403) or any(
             s in lower_auth for s in ['"authenticated": false', '"authenticated":false', '"logged_in": false', '"logged_in":false', "unauthenticated", "logged out"]
         )
-
-        # Component 2 (resource) exposes protected user data
-        lower_res = resource_body.lower()
-        has_user_data = any(s in lower_res for s in ['"user_id"', '"account_id"', '"email"', "user-profile", "account balance", "user details", '"tenant"'])
-
-        if baseline_body:
-            lower_base = baseline_body.lower()
-            # Verify resource exposes the same protected data as authenticated baseline
-            has_matching_data = any(
-                token in lower_res for token in ['"user_id"', '"email"', '"account_id"'] if token in lower_base
+        if not c1_unauth:
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Auth boundary check did not confirm unauthenticated state (HTTP {auth_status_code}).",
             )
-            if not has_matching_data and not has_user_data:
-                return (
-                    HypothesisValidationStatus.REJECTED,
-                    f"Resource endpoint '{endpoint}' unauthenticated response did not expose protected baseline user data.",
-                )
 
-        if c1_unauth and resource_status_code in (200, 201) and has_user_data:
+        # Compare unauthenticated response against authenticated baseline using researcher-specific or reliable evidence
+        # Generic user-data field names alone (e.g. "user_id" without matching data) are strictly insufficient!
+        has_matching_data = False
+        base_json = None
+        res_json = None
+        try:
+            base_json = json.loads(baseline_body)
+        except Exception:
+            pass
+        try:
+            res_json = json.loads(resource_body)
+        except Exception:
+            pass
+
+        if isinstance(base_json, dict) and isinstance(res_json, dict):
+            # Check for matching user-specific identifier or data values
+            identifying_keys = ["user_id", "email", "account_id", "username", "sub", "tenant_id", "id", "user"]
+            for k in identifying_keys:
+                base_val = base_json.get(k)
+                res_val = res_json.get(k)
+                if (
+                    base_val is not None
+                    and res_val is not None
+                    and base_val == res_val
+                    and str(base_val).lower() not in ["", "null", "none", "anonymous", "guest", "undefined", "false"]
+                ):
+                    has_matching_data = True
+                    break
+
+        # Fallback comparison if not JSON or nested: check if specific non-trivial user values from baseline match
+        if not has_matching_data and isinstance(base_json, dict):
+            for k in ["user_id", "email", "account_id", "username"]:
+                val = str(base_json.get(k) or "").strip()
+                if val and len(val) >= 3 and val.lower() not in ["null", "none", "anonymous", "guest", "undefined"] and val in resource_body:
+                    has_matching_data = True
+                    break
+
+        if not has_matching_data:
+            return (
+                HypothesisValidationStatus.REJECTED,
+                f"Resource endpoint '{endpoint}' unauthenticated response did not expose matching authenticated baseline user data.",
+            )
+
+        if resource_status_code in (200, 201) and has_matching_data:
             return (
                 HypothesisValidationStatus.VALIDATED,
                 f"Authentication state inconsistency confirmed: auth boundary reports unauthenticated (HTTP {auth_status_code}) while protected resource '{endpoint}' returns active user session data (HTTP {resource_status_code}).",
