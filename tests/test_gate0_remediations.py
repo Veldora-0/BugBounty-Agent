@@ -188,6 +188,75 @@ def test_fixture_port_fails_closed_without_allow_port(temp_workspace):
         engine.check_request_scope("http://192.168.1.1:8888/admin")
 
 
+def test_fixture_request_enforces_scope_and_path_exclusions(temp_workspace):
+    """
+    Verifies that local fixture requests cannot bypass ScopeEngine or path-level exclusions:
+    A) Authorized fixture URL in scope passes.
+    B) Explicit out-of-scope path on the same fixture port is rejected.
+    C) Unauthorized port is blocked.
+    D) Fixture exception does not authorize arbitrary private or external targets.
+    E) ScopeEngine path-specific inclusions strictly block unlisted paths on the fixture.
+    """
+    scope_data = {
+        "program": {"name": "fixture-scope-test"},
+        "targets": {
+            "domains": ["localhost"],
+            "urls": [
+                "http://127.0.0.1:8888/api/public",
+                "http://127.0.0.1:8888/search",
+            ],
+        },
+        "out_of_scope": {
+            "domains": ["forbidden.example.com"],
+            "urls": [
+                "http://127.0.0.1:8888/api/public/secret",
+                "http://127.0.0.1:8888/admin",
+            ],
+        },
+    }
+    scope_engine = ScopeEngine(scope_data)
+    engine = SecurityValidationEngine(
+        program_dir=temp_workspace,
+        scope_engine=scope_engine,
+    )
+
+    # 1. Before port registration: blocked
+    with pytest.raises(ScopeViolationError):
+        engine.check_request_scope("http://127.0.0.1:8888/search")
+
+    engine.allow_fixture_port(8888)
+
+    # 2. A: Authorized fixture endpoint in scope passes
+    assert engine.check_request_scope("http://127.0.0.1:8888/search") == "127.0.0.1"
+    assert engine.check_request_scope("http://127.0.0.1:8888/api/public/users") == "127.0.0.1"
+
+    # 3. B: Out-of-scope path on the registered fixture port is rejected
+    with pytest.raises(ScopeViolationError) as exc_blocked_path:
+        engine.check_request_scope("http://127.0.0.1:8888/admin")
+    assert "OUT_OF_SCOPE" in str(exc_blocked_path.value)
+
+    with pytest.raises(ScopeViolationError) as exc_sub_path:
+        engine.check_request_scope("http://127.0.0.1:8888/api/public/secret")
+    assert "OUT_OF_SCOPE" in str(exc_sub_path.value)
+
+    # 4. C: Unauthorized port is blocked
+    with pytest.raises(ScopeViolationError):
+        engine.check_request_scope("http://127.0.0.1:9999/search")
+
+    # 5. D: Non-loopback private and cloud metadata targets remain blocked even on allowed port
+    with pytest.raises(ScopeViolationError):
+        engine.check_request_scope("http://169.254.169.254:8888/latest/meta-data/")
+    with pytest.raises(ScopeViolationError):
+        engine.check_request_scope("http://10.10.10.10:8888/search")
+    with pytest.raises(ScopeViolationError):
+        engine.check_request_scope("http://192.168.1.5:8888/api/public")
+
+    # 6. E: Unlisted path outside specific inclusions is rejected
+    with pytest.raises(ScopeViolationError) as exc_unauth:
+        engine.check_request_scope("http://127.0.0.1:8888/internal/metrics")
+    assert "OUT_OF_SCOPE" in str(exc_unauth.value)
+
+
 # ==============================================================================
 # 3. HTTP TRUST STATE SYNCHRONIZATION TESTS
 # ==============================================================================

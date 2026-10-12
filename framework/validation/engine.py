@@ -250,6 +250,39 @@ class SecurityValidationEngine:
         # Check if target is an explicitly allowed local test fixture
         is_fixture = (host in ("127.0.0.1", "localhost") and port in self.allowed_fixture_ports)
         if is_fixture:
+            # If a ScopeEngine is configured, enforce scope evaluation on the fixture URL
+            if self.scope_engine:
+                parsed_no_port = urlunparse((scheme, host, parsed.path or "/", parsed.params, parsed.query, ""))
+                root_url = f"{scheme}://{host}"
+
+                # 1. Explicit exclusions ALWAYS take precedence (check exact URL, base without port, root URL, and host)
+                for candidate in (target_url, parsed_no_port, root_url, host):
+                    cand_decision = self.scope_engine.check(candidate)
+                    if cand_decision.status == ScopeStatus.OUT_OF_SCOPE and cand_decision.rule_category in (
+                        "EXPLICIT_EXCLUSION_URL",
+                        "EXPLICIT_EXCLUSION_HOST",
+                        "EXPLICIT_EXCLUSION_CIDR",
+                    ):
+                        raise ScopeViolationError(
+                            f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: {cand_decision.reason} (matched rule: {cand_decision.matched_rule})"
+                        )
+
+                # 2. Check inclusions: exact URL, base without port, root URL, or host must be IN_SCOPE
+                in_scope = False
+                matched_reason = ""
+                for candidate in (target_url, parsed_no_port, root_url, host):
+                    cand_decision = self.scope_engine.check(candidate)
+                    if cand_decision.status == ScopeStatus.IN_SCOPE:
+                        in_scope = True
+                        matched_reason = cand_decision.reason
+                        break
+
+                if not in_scope:
+                    exact_decision = self.scope_engine.check(target_url)
+                    raise ScopeViolationError(
+                        f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: {exact_decision.reason} (matched rule: {exact_decision.matched_rule})"
+                    )
+
             return ["127.0.0.1"]
 
         # Scope authorization enforcement: fail-closed if no ScopeEngine configured
