@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""
+bb-report — Dedicated Vulnerability Disclosure Reporting CLI for BugBounty-Agent.
+
+Generates standard 17-section markdown disclosure reports from validated program findings.
+Enforces strict fail-closed security gates:
+- Only VALIDATED findings with non-empty cryptographic evidence, reproduction steps,
+  and differential validation notes can be rendered into reports.
+- Candidates, rejected, simulated/mock findings are strictly prohibited.
+- Output filenames are sanitized with strict directory-traversal protection.
+- Existing report files are preserved unless explicitly overridden with --force.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from typing import Any, Dict, List, Optional, Tuple
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+REPO_ROOT = os.environ.get(
+    "BUGBOUNTY_AGENT_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")),
+)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir
+from framework.findings.lifecycle import FindingLifecycle
+from framework.findings.schema import Finding, FindingValidationError
+from framework.state.manager import StateManager
+
+
+def sanitize_finding_id_to_filename(finding_id: str) -> str:
+    """
+    Sanitizes a finding identifier into a safe filename component.
+    Rejects directory traversal sequences and illegal characters.
+    """
+    if not finding_id or not isinstance(finding_id, str):
+        raise ValueError("Finding ID must be a non-empty string.")
+
+    if "/" in finding_id or "\\" in finding_id or ".." in finding_id:
+        raise ValueError(f"Path traversal sequence detected in finding ID: '{finding_id}'")
+
+    clean = re.sub(r"[^a-zA-Z0-9_\-]", "_", finding_id)
+    clean = clean.strip("_.-")
+    if not clean:
+        raise ValueError(f"Finding ID '{finding_id}' cannot be safely converted to a report filename.")
+    return clean
+
+
+def get_safe_report_path(output_dir: str, finding_id: str) -> str:
+    """
+    Computes absolute report path within output_dir and verifies path containment.
+    """
+    clean_id = sanitize_finding_id_to_filename(finding_id)
+    canonical_output = os.path.abspath(output_dir)
+    target_path = os.path.abspath(os.path.join(canonical_output, f"{clean_id}.md"))
+
+    common = os.path.commonpath([canonical_output, target_path])
+    if common != canonical_output or os.path.dirname(target_path) != canonical_output:
+        raise ValueError(f"Path traversal detected: {target_path} escapes output directory {canonical_output}")
+
+    return target_path
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="BugBounty-Agent Vulnerability Disclosure Reporting CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  bb-report -p acme-corp --list
+  bb-report -p acme-corp --finding-id find-idor-001
+  bb-report -p acme-corp --all
+  bb-report -p acme-corp --sync --list
+  bb-report -p acme-corp --finding-id find-idor-001 --force
+        """,
+    )
+    parser.add_argument(
+        "-p", "--program",
+        required=True,
+        help="Program name in local workspace (resolves ~/BugBounty-Workspace/programs/<name>)",
+    )
+    parser.add_argument(
+        "-i", "--finding-id",
+        help="Specific finding identifier to generate a report for",
+    )
+    parser.add_argument(
+        "-l", "--list",
+        action="store_true",
+        help="List findings in the program with their lifecycle and disclosure readiness status",
+    )
+    parser.add_argument(
+        "-a", "--all",
+        action="store_true",
+        help="Generate reports for all report-ready validated findings",
+    )
+    parser.add_argument(
+        "-o", "--output-dir",
+        help="Custom output directory for generated reports (defaults to <program_dir>/reports)",
+    )
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help="Synchronize findings from all subsystem state files before evaluation",
+    )
+    parser.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Overwrite existing report files (default: preserves existing report artifacts)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output listing or report result metadata as structured JSON",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+
+    try:
+        prog_dir = get_program_dir(args.program)
+    except Exception as e:
+        print(f"[!] Error resolving program workspace: {e}", file=sys.stderr)
+        return 1
+
+    reports_dir = args.output_dir or os.path.join(prog_dir, "reports")
+    try:
+        os.makedirs(reports_dir, exist_ok=True)
+    except Exception as e:
+        print(f"[!] Error creating reports directory '{reports_dir}': {e}", file=sys.stderr)
+        return 1
+
+    state_mgr = StateManager(prog_dir)
+
+    if args.sync:
+        synced_count = state_mgr.sync_all_engine_findings()
+        if not args.json:
+            print(f"[*] Synchronized {synced_count} findings across engine state files.")
+
+    all_findings = state_mgr.get_findings()
+    findings_by_id = {f.finding_id: f for f in all_findings}
+
+    # If no action is specified, default to --list
+    is_list = args.list or (not args.finding_id and not args.all)
+
+    if is_list:
+        summary_items: List[Dict[str, Any]] = []
+        for f in all_findings:
+            ready, reason = f.is_report_ready()
+            summary_items.append({
+                "finding_id": f.finding_id,
+                "title": f.title,
+                "severity": f.severity,
+                "lifecycle_state": f.lifecycle_state.value,
+                "report_ready": ready,
+                "readiness_reason": reason,
+            })
+
+        if args.json:
+            print(json.dumps(summary_items, indent=2))
+            return 0
+
+        print(f"\nFindings for program '{args.program}':")
+        print(f"{'Finding ID':<24} {'Severity':<10} {'Lifecycle':<16} {'Ready?':<8} {'Title'}")
+        print("-" * 80)
+        if not summary_items:
+            print("  (No findings recorded)")
+        for item in summary_items:
+            ready_str = "YES" if item["report_ready"] else "NO"
+            print(f"{item['finding_id']:<24} {item['severity']:<10} {item['lifecycle_state']:<16} {ready_str:<8} {item['title'][:25]}")
+            if not item["report_ready"]:
+                print(f"    └─ Not ready: {item['readiness_reason']}")
+        print("")
+        return 0
+
+    if args.finding_id:
+        finding = findings_by_id.get(args.finding_id)
+        if not finding:
+            print(f"[!] Finding '{args.finding_id}' not found in program '{args.program}'.", file=sys.stderr)
+            return 1
+
+        ready, reason = finding.is_report_ready()
+        if not ready:
+            print(f"[!] Finding '{args.finding_id}' is NOT report-ready (fail-closed): {reason}", file=sys.stderr)
+            return 1
+
+        try:
+            target_path = get_safe_report_path(reports_dir, finding.finding_id)
+        except Exception as e:
+            print(f"[!] Invalid report destination path: {e}", file=sys.stderr)
+            return 1
+
+        if os.path.exists(target_path) and not args.force:
+            print(f"[!] Report file already exists: {target_path}. Preserving existing artifact (use --force to overwrite).", file=sys.stderr)
+            return 1
+
+        try:
+            report_md = finding.to_markdown_report()
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(report_md)
+        except Exception as e:
+            print(f"[!] Error rendering report: {e}", file=sys.stderr)
+            return 1
+
+        if args.json:
+            print(json.dumps({
+                "status": "success",
+                "finding_id": finding.finding_id,
+                "report_file": target_path,
+                "title": finding.title,
+                "severity": finding.severity,
+            }, indent=2))
+        else:
+            print(f"[+] Disclosure report successfully generated: {target_path}")
+        return 0
+
+    if args.all:
+        ready_findings = [f for f in all_findings if f.is_report_ready()[0]]
+        if not ready_findings:
+            if args.json:
+                print(json.dumps({"status": "no_ready_findings", "count": 0, "reports": []}, indent=2))
+            else:
+                print(f"[-] No report-ready findings found for program '{args.program}'.")
+            return 0
+
+        generated_reports: List[Dict[str, str]] = []
+        skipped_count = 0
+
+        for f in ready_findings:
+            try:
+                target_path = get_safe_report_path(reports_dir, f.finding_id)
+            except Exception as e:
+                print(f"[!] Skipping finding '{f.finding_id}' due to path error: {e}", file=sys.stderr)
+                continue
+
+            if os.path.exists(target_path) and not args.force:
+                if not args.json:
+                    print(f"[-] Skipping existing report for '{f.finding_id}' (use --force to overwrite).")
+                skipped_count += 1
+                continue
+
+            try:
+                report_md = f.to_markdown_report()
+                with open(target_path, "w", encoding="utf-8") as rf:
+                    rf.write(report_md)
+                generated_reports.append({
+                    "finding_id": f.finding_id,
+                    "report_file": target_path,
+                })
+                if not args.json:
+                    print(f"[+] Generated report for '{f.finding_id}': {target_path}")
+            except Exception as e:
+                print(f"[!] Error writing report for '{f.finding_id}': {e}", file=sys.stderr)
+
+        if args.json:
+            print(json.dumps({
+                "status": "success",
+                "generated_count": len(generated_reports),
+                "skipped_count": skipped_count,
+                "reports": generated_reports,
+            }, indent=2))
+        else:
+            print(f"\n[+] Report generation completed: {len(generated_reports)} generated, {skipped_count} skipped.")
+        return 0
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

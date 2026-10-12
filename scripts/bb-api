@@ -29,7 +29,7 @@ from framework.api.engine import ApiIntelligenceEngine, ApiPolicy
 from framework.api.graph import ApiRelationType
 from framework.api.model import ApiEndpoint, ApiParameter, ApiSpecification, ApiStyle
 from framework.api.state import ApiStateManager
-from framework.common.config import get_program_dir
+from framework.common.config import get_program_dir, resolve_program_scope_file
 from framework.javascript.state import JavaScriptStateManager
 from framework.recon.state import ReconStateManager
 from framework.scope.engine import ScopeEngine
@@ -161,10 +161,10 @@ Examples:
 
     # Determine program workspace directory
     program_dir = get_program_dir(args.program) if args.program else os.getcwd()
-    scope_path = args.scope or os.path.join(program_dir, "scope", "scope.yaml")
+    scope_path = resolve_program_scope_file(program_dir, args.scope)
 
     scope_engine = None
-    if os.path.exists(scope_path):
+    if scope_path and os.path.exists(scope_path):
         try:
             with open(scope_path, "r", encoding="utf-8") as f:
                 scope_data = yaml.safe_load(f) or {}

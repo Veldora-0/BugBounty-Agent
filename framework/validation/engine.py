@@ -223,6 +223,8 @@ class SecurityValidationEngine:
 
     def allow_fixture_port(self, port: int) -> None:
         """Registers an ephemeral port for a local test fixture application during testing."""
+        if not isinstance(port, int) or port < 1024 or port > 65535:
+            raise ValueError(f"Invalid fixture port {port}: must be an unprivileged port (1024-65535)")
         self.allowed_fixture_ports.add(port)
 
     # ---------------- Scope & URL Validation ----------------

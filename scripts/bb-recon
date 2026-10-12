@@ -31,7 +31,7 @@ if REPO_ROOT not in sys.path:
 
 from framework.assets.graph import AssetGraph
 from framework.assets.model import Asset, AssetType
-from framework.common.config import get_program_dir
+from framework.common.config import get_program_dir, resolve_program_scope_file
 from framework.recon.engine import ReconnaissanceEngine
 from framework.recon.state import ReconStateManager
 from framework.scope.engine import ScopeEngine, ScopeStatus
@@ -163,20 +163,19 @@ def main() -> None:
     prog_dir: Optional[str] = None
     state: Optional[StateManager] = None
     recon_state: Optional[ReconStateManager] = None
-    scope_path: Optional[str] = args.scope
+    scope_path: Optional[str] = None
 
     if args.program:
         try:
             prog_dir = get_program_dir(args.program)
             state = StateManager(prog_dir)
             recon_state = state.get_recon_state()
-            if not scope_path:
-                candidate_scope = os.path.join(prog_dir, "scope", "scope.yaml")
-                if os.path.isfile(candidate_scope):
-                    scope_path = candidate_scope
+            scope_path = resolve_program_scope_file(prog_dir, args.scope)
         except Exception as e:
             print(f"[!] Error initializing program workspace: {e}", file=sys.stderr)
             sys.exit(1)
+    elif args.scope:
+        scope_path = resolve_program_scope_file(None, args.scope)
 
     # Initialize Scope Engine if available
     scope_engine: Optional[ScopeEngine] = None

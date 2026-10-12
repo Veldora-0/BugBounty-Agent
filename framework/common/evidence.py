@@ -71,7 +71,7 @@ class EvidenceStore:
         filename = f"{prefix}_{timestamp_str}_{digest[:8]}.txt"
         file_path = os.path.join(self.evidence_dir, filename)
 
-        with open(file_path, "w", encoding="utf-8") as f:
+        with open(file_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(combined)
 
         # Meta descriptor

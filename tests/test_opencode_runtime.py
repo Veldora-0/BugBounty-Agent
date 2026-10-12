@@ -378,7 +378,7 @@ def test_skill_frontmatter_validity():
 def test_no_shell_true_in_framework_or_scripts():
     """Verifies that neither framework nor scripts use unsafe shell=True or os.system."""
     code_files = glob.glob(os.path.join(REPO_ROOT, "framework", "**", "*.py"), recursive=True)
-    script_files = [f for f in glob.glob(os.path.join(REPO_ROOT, "scripts", "*")) if not f.endswith(".cmd")]
+    script_files = [f for f in glob.glob(os.path.join(REPO_ROOT, "scripts", "*")) if os.path.isfile(f) and not f.endswith(".cmd")]
 
     for filepath in code_files + script_files:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:

@@ -28,7 +28,7 @@ from framework.cloud_security.models import (
     HypothesisValidationStatus,
 )
 from framework.cloud_security.policy import CloudSecurityPolicy
-from framework.common.config import get_program_dir
+from framework.common.config import get_program_dir, resolve_program_scope_file
 from framework.scope.engine import ScopeEngine
 
 
@@ -152,8 +152,8 @@ Examples:
     # Real Program Workflow
     program_dir = get_program_dir(args.program)
     scope_engine = None
-    scope_path = args.scope or os.path.join(program_dir, "scope.yaml")
-    if os.path.isfile(scope_path):
+    scope_path = resolve_program_scope_file(program_dir, args.scope)
+    if scope_path and os.path.isfile(scope_path):
         scope_engine = ScopeEngine.from_file(scope_path)
 
     if args.validate and not args.dry_run and scope_engine is None:

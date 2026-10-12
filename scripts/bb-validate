@@ -26,7 +26,7 @@ REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(o
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from framework.common.config import get_program_dir
+from framework.common.config import get_program_dir, resolve_program_scope_file
 from framework.findings.lifecycle import FindingLifecycle
 from framework.scope.engine import ScopeEngine
 from framework.validation.engine import SecurityValidationEngine
@@ -102,16 +102,17 @@ Examples:
     parser.add_argument("--resume", action="store_true", help="Skip test cases previously executed")
     parser.add_argument("--json", action="store_true", help="Output execution results in JSON format")
     parser.add_argument("--tree", action="store_true", help="Render visual ASCII validation attack tree")
+    parser.add_argument("--fixture-port", type=int, default=None, help="Explicit port (1024-65535) for authorized local test fixtures on 127.0.0.1")
 
     args = parser.parse_args()
 
     program_name = args.program or os.environ.get("BB_PROGRAM", "default")
     program_dir = get_program_dir(program_name)
 
-    # Resolve scope definition
-    scope_file = args.scope or os.path.join(program_dir, "scope.yaml")
+    # Resolve scope definition using shared resolver
+    scope_file = resolve_program_scope_file(program_dir, args.scope)
     scope_engine = None
-    if os.path.isfile(scope_file):
+    if scope_file and os.path.isfile(scope_file):
         try:
             scope_engine = ScopeEngine.from_file(scope_file)
         except Exception as e:
@@ -135,6 +136,13 @@ Examples:
         scope_engine=scope_engine,
         policy=policy,
     )
+
+    # Register local test fixture port if explicitly authorized
+    if args.fixture_port is not None:
+        if args.fixture_port < 1024 or args.fixture_port > 65535:
+            print(f"[!] Error: Invalid fixture port {args.fixture_port}. Must be between 1024 and 65535.", file=sys.stderr)
+            sys.exit(1)
+        engine.allow_fixture_port(args.fixture_port)
 
     # Execute validation pipeline
     results = engine.run_validation(

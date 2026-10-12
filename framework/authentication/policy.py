@@ -18,29 +18,11 @@ from framework.scope.engine import ScopeDecision, ScopeEngine, ScopeStatus
 def resolve_scope_file(program_dir: str, scope_override: Optional[str] = None) -> Optional[str]:
     """
     Deterministically resolves scope configuration file path.
-    Precedence:
-    1. Explicit scope_override path
-    2. Canonical initialized program scope path: <program_dir>/scope/scope.yaml
-    3. Workspace program root fallback: <program_dir>/scope.yaml
+    Delegates to canonical implementation in framework.common.config.
     """
-    if scope_override:
-        norm_override = os.path.abspath(scope_override)
-        if os.path.isfile(norm_override):
-            return norm_override
-        return None
+    from framework.common.config import resolve_program_scope_file
+    return resolve_program_scope_file(program_dir, scope_override)
 
-    norm_prog = os.path.abspath(program_dir)
-    # Canonical path created by bb-init
-    canonical_path = os.path.join(norm_prog, "scope", "scope.yaml")
-    if os.path.isfile(canonical_path):
-        return canonical_path
-
-    # Secondary program root fallback
-    prog_root_path = os.path.join(norm_prog, "scope.yaml")
-    if os.path.isfile(prog_root_path):
-        return prog_root_path
-
-    return None
 
 
 class AuthenticationSecurityPolicy:

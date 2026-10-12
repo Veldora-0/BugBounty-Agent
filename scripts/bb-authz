@@ -25,7 +25,7 @@ from framework.authz.approval import HumanApprovalGate
 from framework.authz.engine import AuthorizationIntelligenceEngine
 from framework.authz.model import AuthorizationCategory, AuthorizationTestCase, ResourceAccessTarget
 from framework.authz.state import AuthorizationStateManager
-from framework.common.config import get_program_dir
+from framework.common.config import get_program_dir, resolve_program_scope_file
 from framework.scope.engine import ScopeEngine
 from framework.validation.policy import SecurityTestPolicy
 import yaml
@@ -129,8 +129,8 @@ Examples:
 
     # Scope resolution
     scope_engine: Optional[ScopeEngine] = None
-    scope_path = args.scope or os.path.join(prog_dir, "scope.yaml")
-    if os.path.exists(scope_path):
+    scope_path = resolve_program_scope_file(prog_dir, args.scope)
+    if scope_path and os.path.exists(scope_path):
         try:
             with open(scope_path, "r", encoding="utf-8") as f:
                 scope_def = yaml.safe_load(f)

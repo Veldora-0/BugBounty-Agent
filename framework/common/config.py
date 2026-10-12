@@ -83,3 +83,46 @@ def list_local_programs(workspace_root: Optional[str] = None) -> List[str]:
         d for d in os.listdir(programs_dir)
         if os.path.isdir(os.path.join(programs_dir, d))
     ]
+
+
+def resolve_program_scope_file(
+    program_dir: Optional[str] = None,
+    explicit_scope_path: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Deterministically resolves the scope configuration file path for a program workspace.
+
+    Resolution precedence:
+    1. Explicit scope path (explicit_scope_path):
+       - If explicitly specified, it is normalized. If the file exists, returns its absolute path.
+       - If it does not exist or is invalid, returns None (fails closed; never falls back).
+    2. Canonical initialized program scope path: <program_dir>/scope/scope.yaml (created by bb-init).
+    3. Legacy program root fallback: <program_dir>/scope.yaml.
+
+    Returns:
+        Absolute path to the valid scope file, or None if no valid scope file is found.
+    """
+    if explicit_scope_path:
+        norm_override = os.path.abspath(explicit_scope_path)
+        if os.path.isfile(norm_override):
+            return norm_override
+        # Explicit path provided but does not exist: fail closed (do NOT silently fall back)
+        return None
+
+    if not program_dir:
+        return None
+
+    norm_prog = os.path.abspath(program_dir)
+
+    # Precedence 2: Canonical path created by bb-init (<program_dir>/scope/scope.yaml)
+    canonical_path = os.path.join(norm_prog, "scope", "scope.yaml")
+    if os.path.isfile(canonical_path):
+        return canonical_path
+
+    # Precedence 3: Legacy program root fallback (<program_dir>/scope.yaml)
+    legacy_path = os.path.join(norm_prog, "scope.yaml")
+    if os.path.isfile(legacy_path):
+        return legacy_path
+
+    return None
+

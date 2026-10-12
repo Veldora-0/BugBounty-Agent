@@ -30,7 +30,7 @@ REPO_ROOT = os.environ.get(
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from framework.common.config import get_program_dir
+from framework.common.config import get_program_dir, resolve_program_scope_file
 from framework.javascript.engine import JavaScriptIntelligenceEngine, JavaScriptPolicy
 from framework.javascript.model import JavaScriptResource
 from framework.javascript.state import JavaScriptStateManager
@@ -196,7 +196,6 @@ def main() -> None:
     state: Optional[StateManager] = None
     webapp_state: Optional[WebAppStateManager] = None
     js_state: Optional[JavaScriptStateManager] = None
-    scope_path: Optional[str] = args.scope
 
     if args.program:
         try:
@@ -204,25 +203,23 @@ def main() -> None:
             state = StateManager(prog_dir)
             webapp_state = state.get_webapp_state()
             js_state = state.get_javascript_state()
-            if not scope_path:
-                candidate_scope = os.path.join(prog_dir, "scope", "scope.yaml")
-                if os.path.isfile(candidate_scope):
-                    scope_path = candidate_scope
         except Exception as e:
             print(f"[!] Error initializing program workspace: {e}", file=sys.stderr)
             sys.exit(1)
 
+    scope_path: Optional[str] = resolve_program_scope_file(prog_dir, args.scope)
+    if args.scope and not scope_path:
+        print(f"[!] Scope file not found: {args.scope}", file=sys.stderr)
+        sys.exit(1)
+
     # Initialize Scope Engine if available
     scope_engine: Optional[ScopeEngine] = None
-    if scope_path and os.path.isfile(scope_path):
+    if scope_path:
         try:
             scope_engine = ScopeEngine.from_file(scope_path)
         except Exception as e:
             print(f"[!] Error loading scope configuration from '{scope_path}': {e}", file=sys.stderr)
             sys.exit(1)
-    elif scope_path and not os.path.isfile(scope_path):
-        print(f"[!] Scope file not found: {scope_path}", file=sys.stderr)
-        sys.exit(1)
 
     policy = JavaScriptPolicy(
         max_files=args.max_files,

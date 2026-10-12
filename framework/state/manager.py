@@ -483,6 +483,7 @@ class StateManager:
             (os.path.join(self.state_dir, "xss.json"), "xss"),
             (os.path.join(self.state_dir, "ssrf.json"), "ssrf"),
             (os.path.join(self.state_dir, "authentication.json"), "authentication"),
+            (os.path.join(self.state_dir, "http-trust.json"), "http_trust"),
         ]
 
         indexed_count = 0
