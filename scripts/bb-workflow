@@ -124,7 +124,10 @@ Examples:
         program_dir = get_program_dir(args.program)
         program_name = args.program
         scope_path = os.path.join(program_dir, args.scope)
-        scope_engine = ScopeEngine.from_file(scope_path) if os.path.isfile(scope_path) else ScopeEngine({"targets": {"domains": ["*"], "urls": ["*"]}})
+        scope_engine = ScopeEngine.from_file(scope_path) if os.path.isfile(scope_path) else None
+        if not args.passive_only and not args.dry_run and scope_engine is None:
+            print("[!] Error: Active workflow testing requires a valid scope configuration (scope.yaml). Aborting.", file=sys.stderr)
+            sys.exit(1)
 
     # Lab Hook
     send_hook = None
@@ -143,6 +146,7 @@ Examples:
         policy=policy,
         send_request_hook=send_hook,
         auto_approve=args.approve,
+        is_simulation=args.lab,
     )
 
     workflows = engine.state_mgr.list_workflows()

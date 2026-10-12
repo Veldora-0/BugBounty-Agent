@@ -250,6 +250,12 @@ class SecurityValidationEngine:
         if is_fixture:
             return ["127.0.0.1"]
 
+        # Scope authorization enforcement: fail-closed if no ScopeEngine configured
+        if not is_fixture and self.scope_engine is None:
+            raise ScopeViolationError(
+                "Active validation requires a valid, initialized ScopeEngine. No scope engine configured."
+            )
+
         # Direct name checks and metadata hosts
         metadata_hosts = {
             "localhost",
@@ -304,7 +310,7 @@ class SecurityValidationEngine:
                 # Host may be unresolvable in offline test environments or offline scope checks
                 verified_ips = []
 
-        # Evaluate against ScopeEngine if provided
+        # Evaluate against ScopeEngine
         if self.scope_engine:
             decision = self.scope_engine.check(target_url)
             if decision.status != ScopeStatus.IN_SCOPE:
@@ -331,6 +337,16 @@ class SecurityValidationEngine:
         Reuses send_request_hook when present for deterministic offline test fixtures.
         """
         eff_url = request.build_effective_url()
+
+        # Fail-closed scope check for active requests
+        parsed_eff = urlparse(eff_url)
+        eff_host = (parsed_eff.hostname or "").lower()
+        eff_port = parsed_eff.port or (443 if parsed_eff.scheme.lower() == "https" else 80)
+        is_fixture = (eff_host in ("127.0.0.1", "localhost") and eff_port in self.allowed_fixture_ports)
+        if self.send_request_hook is None and self.scope_engine is None and not is_fixture:
+            raise ScopeViolationError(
+                "Active validation requires a valid, initialized ScopeEngine. No scope engine configured."
+            )
 
         # 1. Scope boundary verification & destination-IP pinning resolution
         pinned_ips = self.resolve_scope_ips(eff_url)

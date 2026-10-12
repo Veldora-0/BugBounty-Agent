@@ -130,6 +130,11 @@ class Finding:
         if self.lifecycle_state != FindingLifecycle.VALIDATED:
             return False, f"Lifecycle state is '{self.lifecycle_state.value}', but only VALIDATED findings can be reported."
 
+        if self.lifecycle_state == FindingLifecycle.SIMULATED or (
+            isinstance(self.provenance, dict) and (self.provenance.get("is_simulation") or self.provenance.get("simulated"))
+        ):
+            return False, "Simulated or mock observations cannot be used for disclosure reporting."
+
         if not self.evidence or len(self.evidence) == 0:
             return False, "Finding has no attached evidence items; cryptographic evidence is required for disclosure."
 
@@ -182,6 +187,12 @@ class Finding:
         """Transitions finding lifecycle state."""
         validate_transition(self.lifecycle_state, new_state)
         if new_state == FindingLifecycle.VALIDATED:
+            if self.lifecycle_state == FindingLifecycle.SIMULATED or (
+                isinstance(self.provenance, dict) and (self.provenance.get("is_simulation") or self.provenance.get("simulated"))
+            ):
+                raise InvalidLifecycleTransition(
+                    f"Cannot transition finding '{self.finding_id}' to VALIDATED: simulated or mock observations are forbidden from entering VALIDATED state."
+                )
             effective_notes = notes or self.validation_notes or (self.provenance.get("validation_notes") if isinstance(self.provenance, dict) else None)
             if not effective_notes or not str(effective_notes).strip():
                 raise InvalidLifecycleTransition(

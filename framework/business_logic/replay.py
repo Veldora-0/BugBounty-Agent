@@ -58,7 +58,7 @@ class WorkflowReplayEngine:
 
     def __init__(
         self,
-        send_request_hook: Callable[[ControlledRequest], ControlledResponse],
+        send_request_hook: Optional[Callable[[ControlledRequest], ControlledResponse]] = None,
         max_replays: int = 5,
         max_concurrency: int = 5,
     ):
@@ -73,6 +73,10 @@ class WorkflowReplayEngine:
         headers_override: Optional[Dict[str, str]] = None,
     ) -> ControlledResponse:
         """Executes a single mutated or exact replay request."""
+        if self.send_request is None:
+            raise RuntimeError(
+                "No request dispatcher configured for BusinessLogicEngine. Simulated HTTP responses are forbidden."
+            )
         url = base_request.url or base_request.build_effective_url()
         method = base_request.method
         headers = dict(base_request.headers)
@@ -114,6 +118,10 @@ class WorkflowReplayEngine:
         requests: List[ControlledRequest],
     ) -> List[ControlledResponse]:
         """Executes sequential step replay with bounds checking."""
+        if self.send_request is None:
+            raise RuntimeError(
+                "No request dispatcher configured for BusinessLogicEngine. Simulated HTTP responses are forbidden."
+            )
         responses: List[ControlledResponse] = []
         for r in requests[:self.max_replays]:
             responses.append(self.send_request(r))
@@ -128,6 +136,10 @@ class WorkflowReplayEngine:
         Executes bounded concurrent requests against deterministic local security lab.
         Enforces concurrency caps and threads.
         """
+        if self.send_request is None:
+            raise RuntimeError(
+                "No request dispatcher configured for BusinessLogicEngine. Simulated HTTP responses are forbidden."
+            )
         count = max(2, min(self.max_concurrency, concurrency))
         responses: List[ControlledResponse] = []
 

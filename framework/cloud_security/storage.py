@@ -21,6 +21,7 @@ import json
 import os
 import tempfile
 from typing import Any, Dict, List, Optional
+import time
 import uuid
 
 from framework.cloud_security.models import (
@@ -75,12 +76,26 @@ class CloudStateManager:
         clean_text = sanitize_sensitive_data(serialized)
 
         temp_path = f"{self.state_file}.tmp.{os.getpid()}_{uuid.uuid4().hex[:8]}"
-        with open(temp_path, "w", encoding="utf-8") as tf:
-            tf.write(clean_text)
-            tf.flush()
-            os.fsync(tf.fileno())
+        try:
+            with open(temp_path, "w", encoding="utf-8") as tf:
+                tf.write(clean_text)
+                tf.flush()
+                os.fsync(tf.fileno())
 
-        os.replace(temp_path, self.state_file)
+            for attempt in range(10):
+                try:
+                    os.replace(temp_path, self.state_file)
+                    break
+                except PermissionError:
+                    if attempt == 9:
+                        raise
+                    time.sleep(0.02)
+        finally:
+            if os.path.isfile(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
     def record_asset(self, asset: CloudAsset) -> None:
         """Appends or updates a CloudAsset."""

@@ -31,6 +31,7 @@ from framework.cloud_security.models import (
     CloudProvider,
     CloudServiceType,
 )
+from framework.scope.engine import ScopeEngine
 from framework.validation.request import ControlledRequest, ControlledResponse
 
 
@@ -294,3 +295,16 @@ class LocalCloudSecurityLab:
                     return sdata["mock_response"]
             return ControlledResponse(status_code=404, body_text="Not Found")
         return mock_request
+
+    @classmethod
+    def get_scope_engine(cls) -> ScopeEngine:
+        """Returns a ScopeEngine explicitly authorizing all local lab targets."""
+        domains = list(set([s["asset"] for s in cls.SCENARIOS.values()]))
+        urls = [s["endpoint"] for s in cls.SCENARIOS.values() if s.get("endpoint")]
+        return ScopeEngine({
+            "program": {"name": "local-cloud-lab"},
+            "targets": {
+                "domains": domains + ["*.amazonaws.com", "*.azurewebsites.net", "*.storage.googleapis.com", "*.google.com"],
+                "urls": urls,
+            },
+        })

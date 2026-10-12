@@ -35,6 +35,7 @@ from framework.business_logic.replay import WorkflowReplayEngine, WorkflowStateM
 from framework.business_logic.state import WorkflowStateManager
 from framework.findings.lifecycle import FindingLifecycle
 from framework.scope.engine import ScopeEngine
+from framework.validation.engine import ScopeViolationError
 from framework.validation.policy import SecurityTestPolicy
 from framework.validation.request import ControlledRequest, ControlledResponse
 
@@ -49,36 +50,29 @@ class BusinessLogicEngine:
         policy: Optional[SecurityTestPolicy] = None,
         send_request_hook: Optional[Callable[[ControlledRequest], ControlledResponse]] = None,
         auto_approve: bool = False,
+        is_simulation: bool = False,
     ):
         self.program_dir = os.path.abspath(program_dir)
         self.program_name = os.path.basename(self.program_dir)
         self.state_mgr = WorkflowStateManager(self.program_dir)
         self.policy = policy or SecurityTestPolicy()
-        self.send_request = send_request_hook or (lambda req: ControlledResponse(200, body_text="OK"))
+        self.send_request = send_request_hook
         self.replay_engine = WorkflowReplayEngine(self.send_request)
         self.approval_gate = WorkflowApprovalGate(auto_approve=auto_approve)
-
-        if scope_engine:
-            self.scope_engine = scope_engine
-        else:
-            self.scope_engine = ScopeEngine({
-                "program": {"name": self.program_name},
-                "targets": {
-                    "domains": ["lab.local", "*.local", "localhost", "127.0.0.1", "*.example.com", "example.com"],
-                    "urls": ["http://lab.local/", "https://lab.local/"],
-                },
-            })
+        self.scope_engine = scope_engine
+        self.is_simulation = is_simulation
 
     def discover_workflows(self) -> List[Workflow]:
         """
         Infers application workflows from webapps.json, api.json, and existing intelligence.
+        Returns empty list if insufficient state exists; never fabricates mock endpoints.
         """
         workflows: List[Workflow] = []
         state_dir = os.path.join(self.program_dir, "state")
 
-        # 1. Inspect api.json
+        # 1. Inspect api.json and webapps.json
+        endpoints: List[str] = []
         api_file = os.path.join(state_dir, "api.json")
-        endpoints = []
         if os.path.isfile(api_file):
             try:
                 with open(api_file, "r", encoding="utf-8") as f:
@@ -90,51 +84,86 @@ class BusinessLogicEngine:
             except Exception:
                 pass
 
-        # Synthesize standard high-risk workflows if candidates exist
-        w_id = f"wf-{uuid.uuid4().hex[:8]}"
-        steps = [
-            WorkflowStep(
-                step_id="step-1",
-                name="Cart Selection",
-                endpoint="http://lab.local/api/cart/update",
-                method="POST",
-                parameters=[WorkflowParameter(name="quantity", location="body", inferred_type="integer", is_security_sensitive=True)],
-            ),
-            WorkflowStep(
-                step_id="step-2",
-                name="Payment Authorization",
-                endpoint="http://lab.local/api/checkout/authorize",
-                method="POST",
-            ),
-            WorkflowStep(
-                step_id="step-3",
-                name="Capture & Finalize",
-                endpoint="http://lab.local/api/checkout/capture",
-                method="POST",
-                is_terminal=True,
-            ),
-        ]
-        trans = [
-            WorkflowTransition("t-1", "INITIAL", "CART_SELECTED", "step-1"),
-            WorkflowTransition("t-2", "CART_SELECTED", "AUTHORIZED", "step-2"),
-            WorkflowTransition("t-3", "AUTHORIZED", "COMPLETED", "step-3"),
-        ]
-        invariants = [
-            WorkflowInvariant("inv-1", "No Step Skipping", "Capture cannot be invoked without authorization", BusinessLogicCategory.STEP_SKIPPING),
-            WorkflowInvariant("inv-2", "Positive Quantity", "Item quantity must be strictly positive", BusinessLogicCategory.NEGATIVE_QUANTITY),
-        ]
-        wf = Workflow(
-            workflow_id=w_id,
-            program=self.program_name,
-            application="lab.local",
-            name="Checkout and Payment Flow",
-            description="Multi-step e-commerce cart, authorization, and capture workflow",
-            steps=steps,
-            transitions=trans,
-            invariants=invariants,
-        )
-        workflows.append(wf)
-        self.state_mgr.save_workflow(wf)
+        webapps_file = os.path.join(state_dir, "webapps.json")
+        if os.path.isfile(webapps_file):
+            try:
+                with open(webapps_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for app in data.get("webapps", []):
+                        for ep in app.get("endpoints", []):
+                            url = ep.get("url") or ep.get("path")
+                            if url:
+                                endpoints.append(url)
+            except Exception:
+                pass
+
+        if not endpoints:
+            return []
+
+        # Group candidate endpoints by host
+        endpoints_by_host: Dict[str, List[str]] = {}
+        for ep in endpoints:
+            parsed = urlparse(ep if "://" in ep else f"http://{ep}")
+            host = parsed.netloc or "target.local"
+            endpoints_by_host.setdefault(host, []).append(ep)
+
+        for host, host_eps in endpoints_by_host.items():
+            cart_ep = next((e for e in host_eps if any(k in e.lower() for k in ["cart", "basket", "item"])), None)
+            auth_ep = next((e for e in host_eps if any(k in e.lower() for k in ["checkout", "authorize", "payment", "order"])), None)
+            capture_ep = next((e for e in host_eps if any(k in e.lower() for k in ["capture", "finalize", "confirm", "complete"])), None)
+
+            if cart_ep or auth_ep or capture_ep:
+                w_id = f"wf-{uuid.uuid4().hex[:8]}"
+                steps = []
+                trans = []
+                prev_state = "INITIAL"
+                if cart_ep:
+                    steps.append(WorkflowStep(
+                        step_id=f"step-{len(steps)+1}",
+                        name="Cart Selection",
+                        endpoint=cart_ep,
+                        method="POST",
+                        parameters=[WorkflowParameter(name="quantity", location="body", inferred_type="integer", is_security_sensitive=True)],
+                    ))
+                    trans.append(WorkflowTransition(f"t-{len(trans)+1}", prev_state, "CART_SELECTED", steps[-1].step_id))
+                    prev_state = "CART_SELECTED"
+                if auth_ep:
+                    steps.append(WorkflowStep(
+                        step_id=f"step-{len(steps)+1}",
+                        name="Payment Authorization",
+                        endpoint=auth_ep,
+                        method="POST",
+                    ))
+                    trans.append(WorkflowTransition(f"t-{len(trans)+1}", prev_state, "AUTHORIZED", steps[-1].step_id))
+                    prev_state = "AUTHORIZED"
+                if capture_ep:
+                    steps.append(WorkflowStep(
+                        step_id=f"step-{len(steps)+1}",
+                        name="Capture & Finalize",
+                        endpoint=capture_ep,
+                        method="POST",
+                        is_terminal=True,
+                    ))
+                    trans.append(WorkflowTransition(f"t-{len(trans)+1}", prev_state, "COMPLETED", steps[-1].step_id))
+
+                if len(steps) >= 2:
+                    invariants = [
+                        WorkflowInvariant("inv-1", "No Step Skipping", "Capture cannot be invoked without authorization", BusinessLogicCategory.STEP_SKIPPING),
+                        WorkflowInvariant("inv-2", "Positive Quantity", "Item quantity must be strictly positive", BusinessLogicCategory.NEGATIVE_QUANTITY),
+                    ]
+                    wf = Workflow(
+                        workflow_id=w_id,
+                        program=self.program_name,
+                        application=host,
+                        name=f"Discovered Multi-Step Workflow ({host})",
+                        description=f"Multi-step e-commerce/authorization flow discovered for {host}",
+                        steps=steps,
+                        transitions=trans,
+                        invariants=invariants,
+                    )
+                    workflows.append(wf)
+                    self.state_mgr.save_workflow(wf)
+
         return workflows
 
     def generate_hypotheses_for_workflow(self, workflow: Workflow) -> List[WorkflowHypothesis]:
@@ -198,10 +227,21 @@ class BusinessLogicEngine:
             return None
 
         # Scope enforcement
+        if self.scope_engine is None:
+            raise ScopeViolationError(
+                "Active workflow testing requires a valid, initialized ScopeEngine. No scope engine configured."
+            )
+
         if not self.scope_engine.is_in_scope(target_step.endpoint):
             hypothesis.lifecycle = FindingLifecycle.REJECTED
             self.state_mgr.save_hypothesis(hypothesis)
             return None
+
+        # Request dispatcher enforcement
+        if self.send_request is None:
+            raise RuntimeError(
+                "No request dispatcher configured for BusinessLogicEngine. Simulated HTTP responses are forbidden."
+            )
 
         # Baseline execution
         base_req = ControlledRequest(url=target_step.endpoint, method=target_step.method, headers={"Content-Type": "application/json"})
@@ -246,6 +286,9 @@ class BusinessLogicEngine:
         )
         self.state_mgr.record_evidence(evidence)
 
+        effective_lifecycle = FindingLifecycle.SIMULATED if self.is_simulation else (FindingLifecycle.VALIDATED if inv_status == InvariantStatus.INVARIANT_VIOLATED else FindingLifecycle.OBSERVED)
+        effective_confidence = WorkflowConfidence.LOW if self.is_simulation else (WorkflowConfidence.VALIDATED if inv_status == InvariantStatus.INVARIANT_VIOLATED else WorkflowConfidence.OBSERVED)
+
         test_case = WorkflowTestCase(
             test_case_id=evidence.test_case_id,
             hypothesis_id=hypothesis.hypothesis_id,
@@ -258,14 +301,14 @@ class BusinessLogicEngine:
             mutated_parameters=tampered_params,
             result="VIOLATED" if inv_status == InvariantStatus.INVARIANT_VIOLATED else "UPHELD",
             evidence=evidence,
-            confidence=WorkflowConfidence.VALIDATED if inv_status == InvariantStatus.INVARIANT_VIOLATED else WorkflowConfidence.OBSERVED,
+            confidence=effective_confidence,
             priority=hypothesis.priority,
-            lifecycle=FindingLifecycle.VALIDATED if inv_status == InvariantStatus.INVARIANT_VIOLATED else FindingLifecycle.OBSERVED,
+            lifecycle=effective_lifecycle,
         )
         self.state_mgr.record_test_case(test_case)
 
         if inv_status == InvariantStatus.INVARIANT_VIOLATED:
-            hypothesis.lifecycle = FindingLifecycle.VALIDATED
+            hypothesis.lifecycle = effective_lifecycle
             finding = WorkflowFinding(
                 finding_id=f"wf-find-{uuid.uuid4().hex[:8]}",
                 workflow_id=wf.workflow_id,

@@ -18,6 +18,7 @@ class FindingLifecycle(str, Enum):
     CANDIDATE = "CANDIDATE"
     TESTING = "TESTING"
     OBSERVED = "OBSERVED"
+    SIMULATED = "SIMULATED"
     VALIDATED = "VALIDATED"
     REJECTED = "REJECTED"
     DUPLICATE = "DUPLICATE"
@@ -30,6 +31,7 @@ VALID_TRANSITIONS: dict[FindingLifecycle, Set[FindingLifecycle]] = {
     FindingLifecycle.OBSERVATION: {
         FindingLifecycle.HYPOTHESIS,
         FindingLifecycle.CANDIDATE,
+        FindingLifecycle.SIMULATED,
         FindingLifecycle.INFORMATIONAL,
         FindingLifecycle.REJECTED,
     },
@@ -41,6 +43,7 @@ VALID_TRANSITIONS: dict[FindingLifecycle, Set[FindingLifecycle]] = {
     FindingLifecycle.CANDIDATE: {
         FindingLifecycle.TESTING,
         FindingLifecycle.OBSERVED,
+        FindingLifecycle.SIMULATED,
         FindingLifecycle.VALIDATED,
         FindingLifecycle.REJECTED,
         FindingLifecycle.DUPLICATE,
@@ -49,6 +52,7 @@ VALID_TRANSITIONS: dict[FindingLifecycle, Set[FindingLifecycle]] = {
     },
     FindingLifecycle.TESTING: {
         FindingLifecycle.OBSERVED,
+        FindingLifecycle.SIMULATED,
         FindingLifecycle.REJECTED,
         FindingLifecycle.DUPLICATE,
         FindingLifecycle.NEEDS_MANUAL_REVIEW,
@@ -58,6 +62,10 @@ VALID_TRANSITIONS: dict[FindingLifecycle, Set[FindingLifecycle]] = {
         FindingLifecycle.REJECTED,
         FindingLifecycle.DUPLICATE,
         FindingLifecycle.NEEDS_MANUAL_REVIEW,
+    },
+    FindingLifecycle.SIMULATED: {
+        FindingLifecycle.REJECTED,
+        FindingLifecycle.INFORMATIONAL,
     },
     FindingLifecycle.VALIDATED: {
         FindingLifecycle.DUPLICATE,

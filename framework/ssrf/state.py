@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from typing import Any, Dict, List, Optional
 
 from framework.ssrf.model import (
@@ -107,7 +108,22 @@ class SsrfStateManager:
         with tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, encoding="utf-8") as tf:
             json.dump(data, tf, indent=2)
             temp_path = tf.name
-        os.replace(temp_path, self.ssrf_file)
+
+        try:
+            for attempt in range(10):
+                try:
+                    os.replace(temp_path, self.ssrf_file)
+                    break
+                except PermissionError:
+                    if attempt == 9:
+                        raise
+                    time.sleep(0.02)
+        finally:
+            if os.path.isfile(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
     # ---------------- Candidate Operations ----------------
 

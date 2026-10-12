@@ -47,14 +47,16 @@ class CloudSecurityEngine:
         policy: Optional[CloudSecurityPolicy] = None,
         request_hook: Optional[Callable[[ControlledRequest], ControlledResponse]] = None,
         evidence_store: Optional[EvidenceStore] = None,
+        is_simulation: bool = False,
     ):
         self.program_dir = os.path.abspath(program_dir)
         self.program_name = os.path.basename(self.program_dir)
         self.scope_engine = scope_engine
         self.policy = policy or CloudSecurityPolicy()
         self.state_mgr = CloudStateManager(self.program_dir)
-        self.request_hook = request_hook or (lambda req: ControlledResponse(200, body_text="OK"))
-        self.validator = SafeCloudValidator(self.request_hook, self.policy)
+        self.is_simulation = is_simulation
+        self.request_hook = request_hook
+        self.validator = SafeCloudValidator(self.request_hook, self.policy, is_simulation=is_simulation)
         self.evidence_store = evidence_store or EvidenceStore(os.path.join(self.program_dir, "evidence"))
 
     def analyze_asset(

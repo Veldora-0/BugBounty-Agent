@@ -217,11 +217,30 @@ def test_lab_race_condition_simulation(mock_lab):
 # ============================================================================
 
 def test_engine_pipeline_and_state_persistence(temp_program_dir, mock_lab):
+    scope = ScopeEngine({
+        "program": {"name": "test-bl"},
+        "targets": {"domains": ["lab.local"], "urls": ["http://lab.local/"]},
+    })
     engine = BusinessLogicEngine(
         program_dir=temp_program_dir,
+        scope_engine=scope,
         send_request_hook=mock_lab.handle_request,
         auto_approve=False,
     )
+
+    # Empty state yields no fabricated workflows
+    assert engine.discover_workflows() == []
+
+    # Discovered state in api.json yields synthesized workflows
+    api_file = os.path.join(temp_program_dir, "state", "api.json")
+    with open(api_file, "w", encoding="utf-8") as f:
+        json.dump({
+            "endpoints": [
+                {"url": "http://lab.local/api/cart/update"},
+                {"url": "http://lab.local/api/checkout/authorize"},
+                {"url": "http://lab.local/api/checkout/capture"},
+            ]
+        }, f)
 
     wfs = engine.discover_workflows()
     assert len(wfs) >= 1

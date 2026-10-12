@@ -117,6 +117,11 @@ Examples:
         except Exception as e:
             print(f"[!] Warning: Failed to load scope definition: {e}", file=sys.stderr)
 
+    # Active validation requires explicit scope authorization
+    if not args.passive_only and not args.dry_run and scope_engine is None:
+        print("[!] Error: Active validation requires a valid scope configuration (scope.yaml). Aborting.", file=sys.stderr)
+        sys.exit(1)
+
     # Configure safety policy
     policy = SecurityTestPolicy(
         max_requests_per_program=args.max_requests,

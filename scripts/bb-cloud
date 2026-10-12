@@ -117,7 +117,8 @@ Examples:
     if args.lab:
         requester = LocalCloudSecurityLab.make_mock_requester()
         program_dir = get_program_dir(f"lab_{args.program}")
-        engine = CloudSecurityEngine(program_dir, request_hook=requester)
+        lab_scope = LocalCloudSecurityLab.get_scope_engine()
+        engine = CloudSecurityEngine(program_dir, scope_engine=lab_scope, request_hook=requester, is_simulation=True)
 
         scenarios = LocalCloudSecurityLab.list_scenarios()
         for skey in scenarios:
@@ -154,6 +155,10 @@ Examples:
     scope_path = args.scope or os.path.join(program_dir, "scope.yaml")
     if os.path.isfile(scope_path):
         scope_engine = ScopeEngine.from_file(scope_path)
+
+    if args.validate and not args.dry_run and scope_engine is None:
+        print("[!] Error: Active cloud validation requires a valid scope configuration (scope.yaml). Aborting.", file=sys.stderr)
+        sys.exit(1)
 
     engine = CloudSecurityEngine(program_dir, scope_engine=scope_engine)
 

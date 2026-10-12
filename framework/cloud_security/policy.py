@@ -63,10 +63,9 @@ class CloudSecurityPolicy:
     def check_scope(cls, scope_engine: Optional[ScopeEngine], target_url: str) -> Tuple[bool, str]:
         """Ensures the target URL complies with program scope."""
         if scope_engine is None:
-            # If no scope engine is provided, default to allowing if offline/lab
-            return True, "No ScopeEngine bound; operation permitted under offline lab constraints"
+            return False, "No ScopeEngine bound: active testing forbidden without explicit scope authorization."
 
-        decision = scope_engine.evaluate(target_url)
+        decision = scope_engine.check(target_url)
         if decision.status == ScopeStatus.IN_SCOPE:
             return True, f"Target {target_url} is in-scope ({decision.reason})"
         return False, f"Target {target_url} is OUT_OF_SCOPE: {decision.reason}"

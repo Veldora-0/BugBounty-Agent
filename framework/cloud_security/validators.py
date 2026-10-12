@@ -109,11 +109,13 @@ class SafeCloudValidator:
 
     def __init__(
         self,
-        request_hook: Callable[[ControlledRequest], ControlledResponse],
+        request_hook: Optional[Callable[[ControlledRequest], ControlledResponse]] = None,
         policy: Optional[CloudSecurityPolicy] = None,
+        is_simulation: bool = False,
     ):
         self.request_hook = request_hook
         self.policy = policy or CloudSecurityPolicy()
+        self.is_simulation = is_simulation
 
     def validate_hypothesis(
         self,
@@ -151,6 +153,10 @@ class SafeCloudValidator:
         # 3. Object Storage Listing Probe
         # ----------------------------------------------------------------------
         if hypothesis.hypothesis_type == CloudHypothesisType.PUBLIC_OBJECT_LISTING:
+            if self.request_hook is None:
+                raise RuntimeError(
+                    "No live request handler or test mock configured for CloudSecurityEngine. Simulated HTTP responses are forbidden."
+                )
             req = ControlledRequest(
                 method="GET",
                 url=target_url,
@@ -175,10 +181,11 @@ class SafeCloudValidator:
                         "type": "bucket_listing",
                         "status_code": resp.status_code,
                         "snippet": body[:500],
+                        "is_simulation": self.is_simulation,
                     }],
-                    confidence=0.95,
+                    confidence=0.0 if self.is_simulation else 0.95,
                     impact_hint="HIGH",
-                    validation_state=FindingLifecycle.VALIDATED,
+                    validation_state=FindingLifecycle.SIMULATED if self.is_simulation else FindingLifecycle.VALIDATED,
                     provider=hypothesis.provider,
                     service=CloudServiceType.OBJECT_STORAGE,
                     hypothesis_id=hypothesis.id,
@@ -192,6 +199,10 @@ class SafeCloudValidator:
         # 4. Object Storage Read Probe
         # ----------------------------------------------------------------------
         if hypothesis.hypothesis_type == CloudHypothesisType.PUBLIC_OBJECT_READ:
+            if self.request_hook is None:
+                raise RuntimeError(
+                    "No live request handler or test mock configured for CloudSecurityEngine. Simulated HTTP responses are forbidden."
+                )
             # Safe HEAD request
             req = ControlledRequest(method="HEAD", url=target_url)
             resp = self.request_hook(req)
@@ -211,10 +222,11 @@ class SafeCloudValidator:
                         "type": "object_read_head",
                         "status_code": resp.status_code,
                         "headers": dict(resp.headers),
+                        "is_simulation": self.is_simulation,
                     }],
-                    confidence=0.85,
+                    confidence=0.0 if self.is_simulation else 0.85,
                     impact_hint="MEDIUM",
-                    validation_state=FindingLifecycle.VALIDATED,
+                    validation_state=FindingLifecycle.SIMULATED if self.is_simulation else FindingLifecycle.VALIDATED,
                     provider=hypothesis.provider,
                     service=CloudServiceType.OBJECT_STORAGE,
                     hypothesis_id=hypothesis.id,
@@ -228,6 +240,10 @@ class SafeCloudValidator:
         # 5. Cloud Subdomain Takeover Probe
         # ----------------------------------------------------------------------
         if hypothesis.hypothesis_type == CloudHypothesisType.POTENTIAL_CLOUD_TAKEOVER:
+            if self.request_hook is None:
+                raise RuntimeError(
+                    "No live request handler or test mock configured for CloudSecurityEngine. Simulated HTTP responses are forbidden."
+                )
             req = ControlledRequest(method="GET", url=target_url)
             resp = self.request_hook(req)
             fp_status, reason = CloudFalsePositiveClassifier.evaluate(hypothesis, resp)
@@ -249,10 +265,11 @@ class SafeCloudValidator:
                             "status_code": resp.status_code,
                             "matched_pattern": pat.pattern,
                             "snippet": (resp.body_text or "")[:400],
+                            "is_simulation": self.is_simulation,
                         }],
-                        confidence=0.90,
+                        confidence=0.0 if self.is_simulation else 0.90,
                         impact_hint="HIGH",
-                        validation_state=FindingLifecycle.VALIDATED,
+                        validation_state=FindingLifecycle.SIMULATED if self.is_simulation else FindingLifecycle.VALIDATED,
                         provider=hypothesis.provider,
                         service=CloudServiceType.DNS_ROUTING,
                         hypothesis_id=hypothesis.id,
@@ -266,6 +283,10 @@ class SafeCloudValidator:
         # 6. Admin Interface Probe
         # ----------------------------------------------------------------------
         if hypothesis.hypothesis_type == CloudHypothesisType.UNAUTHENTICATED_ADMIN_ACCESS:
+            if self.request_hook is None:
+                raise RuntimeError(
+                    "No live request handler or test mock configured for CloudSecurityEngine. Simulated HTTP responses are forbidden."
+                )
             req = ControlledRequest(method="GET", url=target_url)
             resp = self.request_hook(req)
             fp_status, reason = CloudFalsePositiveClassifier.evaluate(hypothesis, resp)
@@ -285,10 +306,11 @@ class SafeCloudValidator:
                         "type": "admin_no_auth",
                         "status_code": resp.status_code,
                         "snippet": (resp.body_text or "")[:400],
+                        "is_simulation": self.is_simulation,
                     }],
-                    confidence=0.80,
+                    confidence=0.0 if self.is_simulation else 0.80,
                     impact_hint="HIGH",
-                    validation_state=FindingLifecycle.VALIDATED,
+                    validation_state=FindingLifecycle.SIMULATED if self.is_simulation else FindingLifecycle.VALIDATED,
                     provider=hypothesis.provider,
                     service=CloudServiceType.ADMIN_INTERFACE,
                     hypothesis_id=hypothesis.id,
