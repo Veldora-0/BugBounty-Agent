@@ -14,6 +14,8 @@ import os
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
+from framework.common.evidence import sanitize_sensitive_data
+from framework.findings.lifecycle import FindingLifecycle
 from framework.findings.schema import Finding
 from framework.state.dedup import (
     FindingDeduplicator,
@@ -302,32 +304,222 @@ class StateManager:
 
     # ---------------- Finding Management & Deduplication ----------------
 
-    def save_finding(self, finding: Finding) -> Tuple[Finding, bool, Optional[str]]:
+    def record_finding(
+        self,
+        finding: Finding | Dict[str, Any],
+        engine_source: Optional[str] = None,
+    ) -> Tuple[Finding, bool, Optional[str]]:
         """
-        Saves or updates finding in local program state.
-        Performs deduplication check.
+        Canonical gateway for cross-engine finding persistence and deduplication.
+        Ensures state/findings.json is the authoritative registry across all security engines.
+        Preserves engine provenance, correlates duplicate findings, and merges supporting evidence.
         Returns (finding, is_duplicate, duplicate_of_id).
         """
+        # Convert dictionary to normalized Finding object if needed
+        if isinstance(finding, dict):
+            f_id = finding.get("finding_id") or finding.get("id") or finding.get("candidate_id")
+            title = finding.get("title") or f"Vulnerability on {finding.get('affected_endpoint') or finding.get('endpoint', '/')}"
+            summary = finding.get("summary") or (finding.get("description", "")[:200] if finding.get("description") else title)
+            asset = finding.get("affected_asset") or finding.get("asset") or "target.local"
+            endpoint = finding.get("affected_endpoint") or finding.get("endpoint") or "/"
+            vuln_type = finding.get("vulnerability_type") or finding.get("vuln_type") or finding.get("family") or "Security Flaw"
+            severity = finding.get("severity", "MEDIUM")
+            confidence = str(finding.get("confidence", "HIGH")).upper()
+            if confidence == "VALIDATED":
+                confidence = "CONFIRMED"
+            elif confidence not in {"CONFIRMED", "HIGH", "MEDIUM", "LOW"}:
+                confidence = "HIGH"
+            raw_state = finding.get("lifecycle_state") or finding.get("lifecycle", "CANDIDATE")
+            desc = finding.get("description") or summary
+            root_cause = finding.get("root_cause") or "Identified security defect."
+            prereqs = finding.get("prerequisites") or "Standard network access."
+            repro = finding.get("reproduction_steps") or ["Send verified request sequence to affected endpoint."]
+            exp = finding.get("expected_result") or "System enforces authorization and validation boundaries."
+            obs = finding.get("observed_result") or desc
+            impact = finding.get("security_impact") or "Potential integrity or confidentiality compromise."
+            remediation = finding.get("remediation") or "Apply appropriate validation and access controls."
+            scope_ref = finding.get("scope_reference") or "Target in authorized scope."
+            evidence = finding.get("evidence") or []
+            prov = finding.get("provenance") or {}
+            val_notes = finding.get("validation_notes") or finding.get("notes")
+
+            # Determine lifecycle state safely
+            try:
+                state_enum = FindingLifecycle(raw_state)
+            except Exception:
+                state_enum = FindingLifecycle.CANDIDATE
+
+            # If marked VALIDATED without evidence, safely set to NEEDS_MANUAL_REVIEW
+            if state_enum == FindingLifecycle.VALIDATED and not evidence:
+                state_enum = FindingLifecycle.NEEDS_MANUAL_REVIEW
+                if not val_notes:
+                    val_notes = "Candidate recorded without attached evidence; flagged for manual review."
+            elif state_enum == FindingLifecycle.VALIDATED and not val_notes:
+                val_notes = "Verified evidence attached from engine recording."
+
+            finding_obj = Finding(
+                finding_id=f_id,
+                title=title,
+                summary=summary,
+                affected_asset=asset,
+                affected_endpoint=endpoint,
+                vulnerability_type=vuln_type,
+                severity=severity,
+                confidence=confidence,
+                lifecycle_state=state_enum,
+                description=desc,
+                root_cause=root_cause,
+                prerequisites=prereqs,
+                reproduction_steps=repro,
+                expected_result=exp,
+                observed_result=obs,
+                security_impact=impact,
+                remediation=remediation,
+                scope_reference=scope_ref,
+                evidence=evidence,
+                provenance=prov,
+                validation_notes=val_notes,
+                parameter=finding.get("parameter"),
+                duplicate_of=finding.get("duplicate_of"),
+            )
+        else:
+            finding_obj = finding
+
+        # Record engine provenance
+        if not isinstance(finding_obj.provenance, dict):
+            finding_obj.provenance = {}
+        if engine_source:
+            finding_obj.provenance["engine_source"] = engine_source
+            corr = set(finding_obj.provenance.get("correlated_engines", []))
+            corr.add(engine_source)
+            finding_obj.provenance["correlated_engines"] = sorted(list(corr))
+
         findings = self._read_json(self.findings_file)
+        if not isinstance(findings, dict):
+            findings = {}
         existing_list = list(findings.values())
 
-        # Check duplicate if new finding
+        # Cross-engine deduplication evaluation
         is_dup = False
         dup_id = None
-        if finding.finding_id not in findings:
+        if finding_obj.finding_id not in findings:
             is_dup, dup_id = FindingDeduplicator.check_duplicate(
-                candidate_asset=finding.affected_asset,
-                candidate_endpoint=finding.affected_endpoint,
-                candidate_vuln=finding.vulnerability_type,
-                candidate_root_cause=finding.root_cause,
+                candidate_asset=finding_obj.affected_asset,
+                candidate_endpoint=finding_obj.affected_endpoint,
+                candidate_vuln=finding_obj.vulnerability_type,
+                candidate_root_cause=finding_obj.root_cause,
                 existing_findings=existing_list,
+                candidate_parameter=finding_obj.parameter,
             )
-            if is_dup:
-                finding.duplicate_of = dup_id
 
-        findings[finding.finding_id] = finding.to_dict()
+        if is_dup and dup_id:
+            finding_obj.duplicate_of = dup_id
+            # Merge supporting evidence into existing canonical finding without discarding
+            if dup_id in findings:
+                existing_entry = findings[dup_id]
+                existing_evidence = existing_entry.get("evidence", [])
+                seen_digests = {
+                    e.get("metadata", {}).get("sha256")
+                    for e in existing_evidence
+                    if isinstance(e, dict) and e.get("metadata", {}).get("sha256")
+                }
+                seen_contents = {
+                    e.get("content") for e in existing_evidence if isinstance(e, dict) and e.get("content")
+                }
+                for new_ev in finding_obj.evidence:
+                    if not isinstance(new_ev, dict):
+                        continue
+                    new_digest = new_ev.get("metadata", {}).get("sha256")
+                    new_content = new_ev.get("content")
+                    if (new_digest and new_digest in seen_digests) or (new_content and new_content in seen_contents):
+                        continue
+                    sanitized_ev = dict(new_ev)
+                    if "content" in sanitized_ev and isinstance(sanitized_ev["content"], str):
+                        sanitized_ev["content"] = sanitize_sensitive_data(sanitized_ev["content"])
+                    existing_evidence.append(sanitized_ev)
+                existing_entry["evidence"] = existing_evidence
+
+                # Correlate source engines in provenance
+                existing_prov = existing_entry.get("provenance", {})
+                if not isinstance(existing_prov, dict):
+                    existing_prov = {}
+                corr_engines = set(existing_prov.get("correlated_engines", []))
+                if engine_source:
+                    corr_engines.add(engine_source)
+                if finding_obj.provenance.get("engine_source"):
+                    corr_engines.add(finding_obj.provenance["engine_source"])
+                existing_prov["correlated_engines"] = sorted(list(corr_engines))
+                existing_entry["provenance"] = existing_prov
+                existing_entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+                findings[dup_id] = existing_entry
+                self._atomic_write_json(self.findings_file, findings)
+            return finding_obj, True, dup_id
+
+        # Persist new finding to canonical state/findings.json (Finding.to_dict ensures evidence sanitization)
+        findings[finding_obj.finding_id] = finding_obj.to_dict()
         self._atomic_write_json(self.findings_file, findings)
-        return finding, is_dup, dup_id
+        return finding_obj, False, None
+
+    def save_finding(self, finding: Finding) -> Tuple[Finding, bool, Optional[str]]:
+        """
+        Saves or updates finding in local program state with cross-engine deduplication.
+        Returns (finding, is_duplicate, duplicate_of_id).
+        """
+        return self.record_finding(finding)
+
+    def sync_all_engine_findings(self) -> int:
+        """
+        Safely inspects engine-specific state files and synchronizes any previously
+        un-indexed findings into canonical state/findings.json.
+        Preserves existing data without deleting or overwriting.
+        Returns count of newly indexed findings.
+        """
+        engine_files = [
+            (os.path.join(self.state_dir, "security.json"), "validation"),
+            (os.path.join(self.state_dir, "authorization.json"), "authorization"),
+            (os.path.join(self.state_dir, "injection.json"), "injection"),
+            (os.path.join(self.state_dir, "cloud.json"), "cloud_security"),
+            (os.path.join(self.state_dir, "business_logic.json"), "business_logic"),
+            (os.path.join(self.state_dir, "xss.json"), "xss"),
+            (os.path.join(self.state_dir, "ssrf.json"), "ssrf"),
+            (os.path.join(self.state_dir, "authentication.json"), "authentication"),
+        ]
+
+        indexed_count = 0
+        canonical_findings = self._read_json(self.findings_file)
+        if not isinstance(canonical_findings, dict):
+            canonical_findings = {}
+
+        for state_path, engine_name in engine_files:
+            if not os.path.isfile(state_path):
+                continue
+            try:
+                state_data = self._read_json(state_path)
+                if not isinstance(state_data, dict):
+                    continue
+                raw_finds = state_data.get("findings", {})
+                if not raw_finds and "candidates" in state_data:
+                    raw_finds = state_data.get("candidates", {})
+                if isinstance(raw_finds, dict):
+                    items = list(raw_finds.values())
+                elif isinstance(raw_finds, list):
+                    items = raw_finds
+                else:
+                    items = []
+
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    item_id = item.get("finding_id") or item.get("id") or item.get("candidate_id")
+                    if item_id and item_id in canonical_findings:
+                        continue
+                    self.record_finding(item, engine_source=engine_name)
+                    canonical_findings = self._read_json(self.findings_file)
+                    indexed_count += 1
+            except Exception:
+                continue
+
+        return indexed_count
 
     def get_findings(self, lifecycle_state: Optional[str] = None) -> List[Finding]:
         """Returns findings, optionally filtered by lifecycle state."""

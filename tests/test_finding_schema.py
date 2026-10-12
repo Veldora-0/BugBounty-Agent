@@ -42,13 +42,31 @@ def test_finding_valid_creation():
     assert finding.finding_id.startswith("BB-")
     assert finding.lifecycle_state == FindingLifecycle.CANDIDATE
 
-    # Test report generation
+    # Candidate finding cannot be reported as disclosure-ready
+    is_ready, reason = finding.is_report_ready()
+    assert is_ready is False
+    with pytest.raises(FindingValidationError):
+        finding.to_markdown_report()
+
+    # Add evidence and validation notes, then transition to VALIDATED
+    finding.add_evidence(
+        evidence_type="HTTP_INTERACTION",
+        content="GET /api/v1/users/102 HTTP/1.1\nHost: api.example.com\n\nHTTP/1.1 200 OK\n{\"email\": \"victim@example.com\"}",
+        metadata={"sha256": "a" * 64},
+    )
+    finding.transition_to(FindingLifecycle.VALIDATED, notes="Demonstrated tenant boundary violation on user record.")
+
+    assert finding.lifecycle_state == FindingLifecycle.VALIDATED
+    is_ready, _ = finding.is_report_ready()
+    assert is_ready is True
+
+    # Test report generation on validated finding
     report_md = finding.to_markdown_report()
     assert "## Summary" in report_md
     assert "## Reproduction Steps" in report_md
     assert "## Security Impact" in report_md
     assert "## Remediation" in report_md
-    assert "## Scope Reference" in report_md or "Scope Reference" in report_md
+    assert "Scope Reference" in report_md
 
 
 def test_finding_validation_failures():

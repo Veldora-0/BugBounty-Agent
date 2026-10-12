@@ -118,6 +118,15 @@ class XssStateManager:
         cands[candidate.candidate_id] = candidate.to_dict()
         data["candidates"] = cands
         self._atomic_write_json(data)
+
+        # Cross-engine sync into canonical state/findings.json
+        try:
+            from framework.state.manager import StateManager
+            sm = StateManager(self.program_dir)
+            sm.record_finding(candidate.to_dict(), engine_source="xss")
+        except Exception:
+            pass
+
         return candidate
 
     def get_candidate(self, candidate_id: str) -> Optional[XssCandidate]:

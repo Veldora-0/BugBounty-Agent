@@ -134,6 +134,13 @@ class InjectionStateManager:
         self._update_summary(state)
         self._atomic_write_json(state)
 
+        # Synchronize with canonical state/findings.json
+        try:
+            from framework.state.manager import StateManager
+            StateManager(self.program_dir).record_finding(finding_dict, engine_source="injection")
+        except Exception:
+            pass
+
     def list_findings(self) -> List[Dict[str, Any]]:
         state = self.load_state()
         return list(state["findings"].values())

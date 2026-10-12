@@ -100,6 +100,7 @@ class FindingDeduplicator:
         candidate_vuln: str,
         candidate_root_cause: str,
         existing_findings: List[Dict[str, Any]],
+        candidate_parameter: Optional[str] = None,
     ) -> Tuple[bool, Optional[str]]:
         """
         Determines whether candidate finding matches any existing finding.
@@ -112,6 +113,7 @@ class FindingDeduplicator:
         cand_asset_norm = candidate_asset.strip().lower()
         cand_endpoint_norm = canonicalize_url_path(candidate_endpoint)
         cand_vuln_norm = candidate_vuln.strip().lower()
+        cand_param_norm = canonicalize_parameter(candidate_parameter or "")
 
         for item in existing_findings:
             exist_id = item.get("finding_id", "unknown")
@@ -119,11 +121,13 @@ class FindingDeduplicator:
             exist_endpoint = canonicalize_url_path(item.get("affected_endpoint", ""))
             exist_vuln = item.get("vulnerability_type", "").strip().lower()
             exist_rc = item.get("root_cause", "")
+            exist_param_norm = canonicalize_parameter(item.get("parameter") or "")
 
             # Exact signature match
             exist_sig = cls.compute_finding_signature(exist_asset, exist_endpoint, exist_vuln, exist_rc)
             if cand_sig == exist_sig:
-                return True, exist_id
+                if not cand_param_norm or not exist_param_norm or cand_param_norm == exist_param_norm:
+                    return True, exist_id
 
             # Same asset, endpoint, and vulnerability class
             if (
@@ -131,6 +135,9 @@ class FindingDeduplicator:
                 and cand_endpoint_norm == exist_endpoint
                 and cand_vuln_norm == exist_vuln
             ):
+                # If both specify different parameters on the same endpoint, they are distinct
+                if cand_param_norm and exist_param_norm and cand_param_norm != exist_param_norm:
+                    continue
                 return True, exist_id
 
         return False, None

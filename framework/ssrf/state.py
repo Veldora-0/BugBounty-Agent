@@ -183,6 +183,13 @@ class SsrfStateManager:
         data["findings"] = finds
         self._atomic_write_json(data)
 
+        # Synchronize with canonical state/findings.json
+        try:
+            from framework.state.manager import StateManager
+            StateManager(self.program_dir).record_finding(finding_dict, engine_source="ssrf")
+        except Exception:
+            pass
+
     def get_summary(self) -> Dict[str, Any]:
         data = self._read_json()
         return data.get("summary", {})

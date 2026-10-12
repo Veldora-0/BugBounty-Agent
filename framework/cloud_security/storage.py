@@ -106,6 +106,13 @@ class CloudStateManager:
         state["findings"] = existing
         self.save_state(state)
 
+        # Synchronize with canonical state/findings.json
+        try:
+            from framework.state.manager import StateManager
+            StateManager(self.program_dir).record_finding(finding.to_dict(), engine_source="cloud_security")
+        except Exception:
+            pass
+
     def mark_fingerprint_tested(self, fingerprint: str) -> None:
         """Records a test fingerprint to enable resume without duplicate probes."""
         state = self.load_state()

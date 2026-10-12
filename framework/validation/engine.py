@@ -44,6 +44,13 @@ import socket
 import urllib.request
 import urllib.error
 
+from framework.common.transport import (
+    PinnedHTTPConnection,
+    PinnedHTTPSConnection,
+    PinnedHTTPHandler,
+    PinnedHTTPSHandler,
+)
+
 
 # Comprehensive IP ranges for SSRF prevention
 PRIVATE_NETWORKS = [
@@ -108,21 +115,69 @@ class ScopeViolationError(ValueError):
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     """
-    HTTP redirect handler that enforces scope and anti-SSRF policies on each redirection hop.
+    HTTP redirect handler that enforces scope, anti-SSRF policies, protocol downgrade prevention,
+    and destination-IP pinning on each redirection hop.
     """
 
-    def __init__(self, check_scope_fn: Callable[[str], None], max_redirects: int = 5):
+    def __init__(
+        self,
+        check_scope_fn: Callable[[str], Any],
+        ip_map: Optional[Dict[str, Any]] = None,
+        max_redirects: int = 5,
+        original_url: Optional[str] = None,
+    ):
         super().__init__()
         self.check_scope_fn = check_scope_fn
+        self.ip_map = ip_map if ip_map is not None else {}
         self.max_redirects = max_redirects
         self.redirect_count = 0
+        self.current_url = original_url
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         self.redirect_count += 1
         if self.redirect_count > self.max_redirects:
             raise ScopeViolationError(f"Too many redirects (exceeded maximum of {self.max_redirects})")
-        # Validate target URL against scope and anti-SSRF rules before following
-        self.check_scope_fn(newurl)
+
+        # Validate URL input
+        if not newurl or not isinstance(newurl, str):
+            raise ScopeViolationError(f"Invalid redirect target URL: {newurl}")
+
+        parsed_new = urlparse(newurl)
+        new_scheme = (parsed_new.scheme or "").lower()
+        if new_scheme not in ("http", "https"):
+            raise ScopeViolationError(f"Redirect to unsupported scheme: {new_scheme}")
+
+        # Determine original scheme for protocol downgrade verification
+        orig_url = None
+        if req is not None:
+            if hasattr(req, "get_full_url"):
+                orig_url = req.get_full_url()
+            elif isinstance(req, str):
+                orig_url = req
+            else:
+                raise ScopeViolationError(f"Unexpected request object type in redirect handler: {type(req).__name__}")
+        elif self.current_url:
+            orig_url = self.current_url
+
+        if not orig_url:
+            raise ScopeViolationError("Missing request context in redirect handler: protocol downgrade cannot be verified")
+
+        orig_scheme = urlparse(orig_url).scheme.lower()
+        if orig_scheme == "https" and new_scheme == "http":
+            raise ScopeViolationError("Protocol downgrade from HTTPS to HTTP forbidden")
+
+        # Revalidate redirect destination against scope and anti-SSRF rules; obtain pinned IP(s)
+        pinned = self.check_scope_fn(newurl)
+        new_host = (parsed_new.hostname or "").lower()
+        if new_host and pinned:
+            self.ip_map[new_host] = pinned
+
+        # Track current URL for subsequent redirect hops
+        self.current_url = newurl
+
+        if req is None or isinstance(req, str):
+            return urllib.request.Request(newurl)
+
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -138,11 +193,14 @@ class SecurityValidationEngine:
         scope_engine: Optional[ScopeEngine] = None,
         policy: Optional[SecurityTestPolicy] = None,
         send_request_hook: Optional[Callable[[ControlledRequest], ControlledResponse]] = None,
+        custom_ssl_context: Optional[ssl.SSLContext] = None,
     ):
         self.program_dir = os.path.abspath(program_dir)
         self.scope_engine = scope_engine
         self.policy = policy or SecurityTestPolicy()
         self.send_request_hook = send_request_hook
+        self.custom_ssl_context = custom_ssl_context
+        self.allowed_fixture_ports: set[int] = set()
 
         self.state_mgr = SecurityStateManager(self.program_dir)
         self.evidence_dir = os.path.join(self.program_dir, "evidence")
@@ -163,11 +221,17 @@ class SecurityValidationEngine:
             "authorization": AuthorizationValidator(),
         }
 
+    def allow_fixture_port(self, port: int) -> None:
+        """Registers an ephemeral port for a local test fixture application during testing."""
+        self.allowed_fixture_ports.add(port)
+
     # ---------------- Scope & URL Validation ----------------
 
-    def check_request_scope(self, target_url: str) -> None:
+    def resolve_scope_ips(self, target_url: str) -> List[str]:
         """
         Validates target URL against scope rules and anti-SSRF network boundaries.
+        Resolves destination IPs, verifies none are in prohibited networks, and returns
+        the verified candidate IPs in order for destination pinning and bounded fallback.
         Raises ScopeViolationError if target is unauthorized or forbidden.
         """
         parsed = urlparse(target_url)
@@ -179,7 +243,25 @@ class SecurityValidationEngine:
         if not host:
             raise ScopeViolationError(f"Target URL has no valid hostname: {target_url}")
 
-        # SSRF boundary check: prevent localhost / private IP targets unless explicitly allowed
+        port = parsed.port or (443 if scheme == "https" else 80)
+
+        # Check if target is an explicitly allowed local test fixture
+        is_fixture = (host in ("127.0.0.1", "localhost") and port in self.allowed_fixture_ports)
+        if is_fixture:
+            return ["127.0.0.1"]
+
+        # Direct name checks and metadata hosts
+        metadata_hosts = {
+            "localhost",
+            "metadata.google.internal",
+            "instance-data",
+            "169.254.169.254",
+            "169.254.169.123",
+        }
+        if host in metadata_hosts or host.endswith(".metadata.google.internal"):
+            raise ScopeViolationError(f"Target host '{host}' is forbidden.")
+
+        # SSRF boundary check: evaluate if host is directly an IP
         try:
             ip_obj = ipaddress.ip_address(host)
             is_ip = True
@@ -187,32 +269,40 @@ class SecurityValidationEngine:
             ip_obj = None
             is_ip = False
 
+        verified_ips: List[str] = []
         if is_ip and ip_obj is not None:
             prohibited, reason = is_ssrf_prohibited_ip(ip_obj)
             if prohibited:
                 raise ScopeViolationError(
                     f"Target host '{host}' is in prohibited address space ({reason}). Blocked by safe policy."
                 )
+            verified_ips = [str(ip_obj)]
         else:
-            # host is a domain name
-            if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-                raise ScopeViolationError(f"Target host '{host}' is forbidden.")
-            # DNS resolution check for private IP rebinding
+            # host is a domain name - pre-resolve destination IP to pin connection
             try:
-                addr_info = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-                for _, _, _, _, sockaddr in addr_info:
-                    ip_str = sockaddr[0]
+                addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                candidate_ips: List[str] = []
+                for _, _, _, _, sa in addr_info:
+                    c_ip = sa[0]
+                    if c_ip not in candidate_ips:
+                        candidate_ips.append(c_ip)
+
+                for c_ip in candidate_ips:
                     try:
-                        resolved_ip = ipaddress.ip_address(ip_str)
+                        resolved_ip = ipaddress.ip_address(c_ip)
                         prohibited, reason = is_ssrf_prohibited_ip(resolved_ip)
                         if prohibited:
                             raise ScopeViolationError(
-                                f"Target host '{host}' resolves to prohibited address {ip_str} ({reason}). Blocked by safe policy."
+                                f"Target host '{host}' resolves to prohibited address {c_ip} ({reason}). Blocked by safe policy."
                             )
+                        verified_ips.append(c_ip)
                     except ValueError:
                         pass
-            except socket.gaierror:
-                pass
+            except ScopeViolationError:
+                raise
+            except (socket.gaierror, OSError):
+                # Host may be unresolvable in offline test environments or offline scope checks
+                verified_ips = []
 
         # Evaluate against ScopeEngine if provided
         if self.scope_engine:
@@ -221,6 +311,17 @@ class SecurityValidationEngine:
                 raise ScopeViolationError(
                     f"Target '{target_url}' is OUT_OF_SCOPE: {decision.reason} (matched rule: {decision.matched_rule})"
                 )
+
+        return verified_ips
+
+    def check_request_scope(self, target_url: str) -> str:
+        """
+        Validates target URL against scope rules and anti-SSRF network boundaries.
+        Returns the primary verified destination IP (or first candidate IP) for destination pinning.
+        Raises ScopeViolationError if target is unauthorized or forbidden.
+        """
+        ips = self.resolve_scope_ips(target_url)
+        return ips[0] if ips else ""
 
     # ---------------- HTTP Request Dispatcher ----------------
 
@@ -231,8 +332,9 @@ class SecurityValidationEngine:
         """
         eff_url = request.build_effective_url()
 
-        # 1. Scope boundary verification
-        self.check_request_scope(eff_url)
+        # 1. Scope boundary verification & destination-IP pinning resolution
+        pinned_ips = self.resolve_scope_ips(eff_url)
+        pinned_ip = pinned_ips[0] if pinned_ips else ""
 
         # 2. Safety policy checks
         payload_bytes = request.build_body_bytes()
@@ -262,8 +364,22 @@ class SecurityValidationEngine:
             self.endpoint_request_counts[ep_key] = ep_count + 1
             return self.send_request_hook(request)
 
-        # 5. Live standard library urllib execution
+        # 5. Live standard library urllib execution with strict TLS & destination-IP pinning
+        parsed_eff = urlparse(eff_url)
+        eff_host = (parsed_eff.hostname or "").lower()
+        eff_port = parsed_eff.port or (443 if parsed_eff.scheme == "https" else 80)
+        eff_scheme = parsed_eff.scheme.lower()
+        is_fixture = (eff_host in ("127.0.0.1", "localhost") and eff_port in self.allowed_fixture_ports)
+        if not is_fixture and not pinned_ips:
+            raise ScopeViolationError(f"DNS resolution failed for '{eff_host}': destination IP could not be pinned.")
+
+        ip_map: Dict[str, Any] = {eff_host: pinned_ips} if pinned_ips else {}
+
         headers = request.build_effective_headers()
+        host_hdr = f"{eff_host}:{eff_port}" if (eff_scheme == "http" and eff_port != 80) or (eff_scheme == "https" and eff_port != 443) else eff_host
+        if "Host" not in headers and "host" not in headers:
+            headers["Host"] = host_hdr
+
         req_obj = urllib.request.Request(
             eff_url,
             data=payload_bytes,
@@ -271,18 +387,27 @@ class SecurityValidationEngine:
             method=request.method,
         )
 
-        ctx = None
-        if eff_url.startswith("https://"):
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+        ctx: Optional[ssl.SSLContext] = None
+        if eff_scheme == "https":
+            if self.custom_ssl_context:
+                ctx = self.custom_ssl_context
+            else:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = True
+                ctx.verify_mode = ssl.CERT_REQUIRED
+                ca_bundle = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
+                if ca_bundle and os.path.isfile(ca_bundle):
+                    ctx.load_verify_locations(cafile=ca_bundle)
 
-        # Safe redirect handler enforcing scope on each hop
-        redirect_handler = SafeRedirectHandler(self.check_request_scope)
-        handlers: list[Any] = [redirect_handler]
-        if ctx:
-            handlers.append(urllib.request.HTTPSHandler(context=ctx))
-        opener = urllib.request.build_opener(*handlers)
+        redirect_handler = SafeRedirectHandler(
+            self.resolve_scope_ips,
+            ip_map=ip_map,
+            max_redirects=getattr(self.policy, "max_redirects", 5),
+            original_url=eff_url,
+        )
+        http_handler = PinnedHTTPHandler(ip_map=ip_map)
+        https_handler = PinnedHTTPSHandler(ip_map=ip_map, context=ctx, check_hostname=True if ctx else None)
+        opener = urllib.request.build_opener(redirect_handler, http_handler, https_handler)
 
         # Optional delay
         if self.policy.delay_seconds > 0:
@@ -308,6 +433,10 @@ class SecurityValidationEngine:
                     elapsed_seconds=elapsed,
                     final_url=final_url,
                 )
+        except ScopeViolationError:
+            raise
+        except PolicyViolationError:
+            raise
         except urllib.error.HTTPError as e:
             elapsed = time.time() - start_time
             raw_body = e.read(self.policy.max_response_bytes)

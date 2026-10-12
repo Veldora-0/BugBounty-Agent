@@ -24,21 +24,21 @@ class AuthenticationEvidenceManager:
     # Extended sensitive patterns specific to authentication testing
     EXTRA_PATTERNS = [
         # Passwords in query parameters, form bodies, JSON
-        (re.compile(r"((?:password|passwd|pwd|pass)=)[^&\s\r\n]+", re.IGNORECASE), r"\1[REDACTED_PASSWORD]"),
-        (re.compile(r"((?:\"password\"|\"passwd\"|\"pwd\"|\"pass\")\s*:\s*\")[^\"]+(\")", re.IGNORECASE), r"\1[REDACTED_PASSWORD]\2"),
+        (re.compile(r"((?<![a-zA-Z0-9_-])(?:password|passwd|pwd|pass)=)(?!(?:true|false|null|none|undefined)\b)[^&\s\r\n]+", re.IGNORECASE), r"\1[REDACTED_PASSWORD]"),
+        (re.compile(r"((?:\"(?:password|passwd|pwd|pass)\")\s*:\s*\")(?!true\"|false\"|null\"|none\"|undefined\")[^\"]+(\")", re.IGNORECASE), r"\1[REDACTED_PASSWORD]\2"),
         # Session cookies
         (re.compile(r"((?:session|phpsessid|jsessionid|connect\.sid|sid|jwt)=)[^;\r\n\s&]+", re.IGNORECASE), r"\1[REDACTED_COOKIE]"),
         # Authorization headers
         (re.compile(r"(Authorization:\s*(?:Bearer|Basic|Token)\s+)[^\r\n\s]+", re.IGNORECASE), r"\1[REDACTED_TOKEN]"),
         # Password reset & refresh tokens & keys in query params or bodies
-        (re.compile(r"((?:reset_token|refresh_token|access_token|id_token|token|key)=)[^&\s\r\n\"'>]+", re.IGNORECASE), r"\1[REDACTED_TOKEN]"),
-        (re.compile(r"((?:\"reset_token\"|\"refresh_token\"|\"access_token\"|\"token\"|\"key\")\s*:\s*\")[^\"]+(\")", re.IGNORECASE), r"\1[REDACTED_TOKEN]\2"),
+        (re.compile(r"((?<![a-zA-Z0-9_-])(?:reset_token|refresh_token|access_token|id_token|token|key)=)(?!(?:true|false|null|none|undefined)\b)[^&\s\r\n\"'>]+", re.IGNORECASE), r"\1[REDACTED_TOKEN]"),
+        (re.compile(r"((?:\"(?:reset_token|refresh_token|access_token|token|key)\")\s*:\s*\")(?!true\"|false\"|null\"|none\"|undefined\")[^\"]+(\")", re.IGNORECASE), r"\1[REDACTED_TOKEN]\2"),
         # One-time codes / OTPs
-        (re.compile(r"((?:otp|code|totp)=)[^&\s\r\n\"'>]+", re.IGNORECASE), r"\1[REDACTED_TOKEN]"),
-        (re.compile(r"((?:\"otp\"|\"code\"|\"totp\")\s*:\s*\")[^\"]+(\")", re.IGNORECASE), r"\1[REDACTED_TOKEN]\2"),
-        # API keys
-        (re.compile(r"((?:x-api-key|apikey|api_key|client_secret)\s*[:=]\s*)[^\r\n\s,;]+", re.IGNORECASE), r"\1[REDACTED_SECRET]"),
-        (re.compile(r"((?:\"x-api-key\"|\"apikey\"|\"api_key\"|\"client_secret\")\s*:\s*\")[^\"]+(\")", re.IGNORECASE), r"\1[REDACTED_SECRET]\2"),
+        (re.compile(r"((?<![a-zA-Z0-9_-])(?:otp|code|totp)=)(?!(?:true|false|null|none|undefined)\b)[^&\s\r\n\"'>]+", re.IGNORECASE), r"\1[REDACTED_TOKEN]"),
+        (re.compile(r"((?:\"(?:otp|code|totp)\")\s*:\s*\")(?!true\"|false\"|null\"|none\"|undefined\")[^\"]+(\")", re.IGNORECASE), r"\1[REDACTED_TOKEN]\2"),
+        # API keys and secrets
+        (re.compile(r"((?<![a-zA-Z0-9_-])(?:x-api-key|apikey|api_key|client_secret|access_key)\s*[:=]\s*)(?!(?:true|false|null|none|undefined)\b)[^\r\n\s,;\"'&]+", re.IGNORECASE), r"\1[REDACTED_SECRET]"),
+        (re.compile(r"((?:\"(?:x-api-key|apikey|api_key|client_secret|access_key)\")\s*:\s*\")(?!true\"|false\"|null\"|none\"|undefined\")[^\"]+(\")", re.IGNORECASE), r"\1[REDACTED_SECRET]\2"),
         # Sensitive tokens and keys in plain identifiers or strings
         (re.compile(r"((?:user|identity|principal|id)[_-])(?:jwt|token|secret|api[_-]?key)[_-][a-zA-Z0-9_-]+", re.IGNORECASE), r"\1[REDACTED_TOKEN]"),
         (re.compile(r"\b(?:jwt|token|secret|reset_token|refresh_token|api[_-]?key)[_-][a-zA-Z0-9_-]{6,}\b", re.IGNORECASE), "[REDACTED_TOKEN]"),
@@ -110,6 +110,18 @@ class AuthenticationEvidenceManager:
             flags=re.IGNORECASE,
         )
         clean = re.sub(
+            r"((?:password|passwd|pwd|pass)\s*[:=]\s*)\[REDACTED_BY_BB_AGENT\]",
+            r"\1[REDACTED_PASSWORD]",
+            clean,
+            flags=re.IGNORECASE,
+        )
+        clean = re.sub(
+            r"((?:reset_token|refresh_token|access_token|id_token|token|key|otp)\s*[:=]\s*)\[REDACTED_BY_BB_AGENT\]",
+            r"\1[REDACTED_TOKEN]",
+            clean,
+            flags=re.IGNORECASE,
+        )
+        clean = re.sub(
             r"(Authorization:\s*(?:Bearer|Basic|Token)\s+)\[REDACTED_BY_BB_AGENT\]",
             r"\1[REDACTED_TOKEN]",
             clean,
@@ -137,6 +149,8 @@ class AuthenticationEvidenceManager:
                 k_lower = str(k).lower()
                 if isinstance(v, (dict, list)):
                     sanitized[k] = cls.sanitize_dict(v)
+                elif isinstance(v, bool) or v is None:
+                    sanitized[k] = v
                 elif k_lower in container_keys:
                     sanitized[k] = cls.sanitize_dict(v)
                 elif any(p in k_lower for p in ["password", "passwd", "pwd"]):

@@ -72,6 +72,7 @@ class SecurityTestPolicy:
         max_response_bytes: int = 100_000,
         max_payload_size: int = 512,
         max_evidence_size: int = 4096,
+        max_redirects: int = 5,
         concurrency: int = 1,
         delay_seconds: float = 0.0,
         block_destructive_actions: bool = True,
@@ -89,6 +90,7 @@ class SecurityTestPolicy:
         self.max_response_bytes = max(1024, int(max_response_bytes))
         self.max_payload_size = max(32, int(max_payload_size))
         self.max_evidence_size = max(512, int(max_evidence_size))
+        self.max_redirects = max(0, int(max_redirects))
         self.concurrency = max(1, int(concurrency))
         self.delay_seconds = max(0.0, float(delay_seconds))
         self.block_destructive_actions = bool(block_destructive_actions)

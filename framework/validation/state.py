@@ -175,6 +175,14 @@ class SecurityStateManager:
         findings[finding.finding_id] = finding.to_dict()
         data["findings"] = findings
         self._atomic_write_json(data)
+
+        # Synchronize with canonical state/findings.json
+        try:
+            from framework.state.manager import StateManager
+            StateManager(self.program_dir).record_finding(finding, engine_source="validation")
+        except Exception:
+            pass
+
         return finding, is_dup, dup_id
 
     def get_findings(self, lifecycle_state: Optional[str] = None) -> List[Finding]:

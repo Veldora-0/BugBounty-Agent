@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
+from framework.common.evidence import sanitize_sensitive_data
 from framework.findings.lifecycle import (
     FindingLifecycle,
     validate_transition,
@@ -120,19 +122,120 @@ class Finding:
         if not self.scope_reference or not self.scope_reference.strip():
             raise FindingValidationError("Scope reference is required.")
 
+    def is_report_ready(self) -> Tuple[bool, str]:
+        """
+        Evaluates whether finding satisfies all requirements for formal disclosure reporting.
+        Returns (is_ready, diagnostic_reason).
+        """
+        if self.lifecycle_state != FindingLifecycle.VALIDATED:
+            return False, f"Lifecycle state is '{self.lifecycle_state.value}', but only VALIDATED findings can be reported."
+
+        if not self.evidence or len(self.evidence) == 0:
+            return False, "Finding has no attached evidence items; cryptographic evidence is required for disclosure."
+
+        for idx, item in enumerate(self.evidence, 1):
+            if not isinstance(item, dict):
+                return False, f"Evidence item {idx} is not a valid structured dictionary."
+            content = item.get("content", "")
+            if not content or not str(content).strip():
+                return False, f"Evidence item {idx} contains empty content."
+            meta = item.get("metadata", {})
+            if isinstance(meta, dict) and "sha256" in meta and meta["sha256"]:
+                digest = str(meta["sha256"]).strip()
+                if not re.match(r"^[0-9a-fA-F]{64}$", digest):
+                    return False, f"Evidence item {idx} contains invalid SHA-256 integrity hash: '{digest}'."
+
+        if not self.reproduction_steps or len(self.reproduction_steps) == 0:
+            return False, "Reproduction steps must be a non-empty list."
+        for idx, step in enumerate(self.reproduction_steps, 1):
+            if not step or not str(step).strip() or len(str(step).strip()) < 5:
+                return False, f"Reproduction step {idx} is too short or empty."
+
+        if not self.observed_result or not self.observed_result.strip():
+            return False, "Observed result is required to document demonstrated behavior."
+        if not self.expected_result or not self.expected_result.strip():
+            return False, "Expected result is required to define the secure baseline."
+        if self.observed_result.strip().lower() == self.expected_result.strip().lower():
+            return False, "Observed result cannot be identical to expected result; differential security invariant must be demonstrated."
+
+        has_notes = bool(self.validation_notes and self.validation_notes.strip())
+        has_prov_notes = bool(isinstance(self.provenance, dict) and self.provenance.get("validation_notes"))
+        if not (has_notes or has_prov_notes):
+            return False, "Validation notes explaining the differential invariant violation rationale are required."
+
+        if not self.title or not self.title.strip():
+            return False, "Finding title is required."
+        if not self.affected_asset or not self.affected_asset.strip():
+            return False, "Affected asset is required."
+        if not self.affected_endpoint or not self.affected_endpoint.strip():
+            return False, "Affected endpoint is required."
+        if not self.vulnerability_type or not self.vulnerability_type.strip():
+            return False, "Vulnerability type is required."
+        if not self.security_impact or not self.security_impact.strip():
+            return False, "Security impact is required."
+        if not self.scope_reference or not self.scope_reference.strip():
+            return False, "Scope reference is required."
+
+        return True, "Finding is report-ready."
+
     def transition_to(self, new_state: FindingLifecycle, notes: Optional[str] = None) -> None:
         """Transitions finding lifecycle state."""
         validate_transition(self.lifecycle_state, new_state)
+        if new_state == FindingLifecycle.VALIDATED:
+            effective_notes = notes or self.validation_notes or (self.provenance.get("validation_notes") if isinstance(self.provenance, dict) else None)
+            if not effective_notes or not str(effective_notes).strip():
+                raise InvalidLifecycleTransition(
+                    f"Cannot transition finding '{self.finding_id}' to VALIDATED: validation notes explaining the differential security invariant are required."
+                )
+            if not self.evidence or len(self.evidence) == 0:
+                raise InvalidLifecycleTransition(
+                    f"Cannot transition finding '{self.finding_id}' to VALIDATED: at least one verified evidence item is required."
+                )
+            for idx, item in enumerate(self.evidence, 1):
+                if not isinstance(item, dict) or not item.get("content") or not str(item.get("content")).strip():
+                    raise InvalidLifecycleTransition(
+                        f"Cannot transition finding '{self.finding_id}' to VALIDATED: evidence item {idx} has empty content."
+                    )
+                meta = item.get("metadata", {})
+                if isinstance(meta, dict) and "sha256" in meta and meta["sha256"]:
+                    digest = str(meta["sha256"]).strip()
+                    if not re.match(r"^[0-9a-fA-F]{64}$", digest):
+                        raise InvalidLifecycleTransition(
+                            f"Cannot transition finding '{self.finding_id}' to VALIDATED: evidence item {idx} has invalid SHA-256 integrity hash: '{digest}'."
+                        )
+            if not self.reproduction_steps or len(self.reproduction_steps) == 0:
+                raise InvalidLifecycleTransition(
+                    f"Cannot transition finding '{self.finding_id}' to VALIDATED: reproduction steps must be a non-empty list."
+                )
+            for idx, step in enumerate(self.reproduction_steps, 1):
+                if not step or not str(step).strip() or len(str(step).strip()) < 5:
+                    raise InvalidLifecycleTransition(
+                        f"Cannot transition finding '{self.finding_id}' to VALIDATED: reproduction step {idx} is too short or empty."
+                    )
+            if not self.observed_result or not self.observed_result.strip():
+                raise InvalidLifecycleTransition(
+                    f"Cannot transition finding '{self.finding_id}' to VALIDATED: observed result is required."
+                )
+            if not self.expected_result or not self.expected_result.strip():
+                raise InvalidLifecycleTransition(
+                    f"Cannot transition finding '{self.finding_id}' to VALIDATED: expected result is required."
+                )
+            if self.observed_result.strip().lower() == self.expected_result.strip().lower():
+                raise InvalidLifecycleTransition(
+                    f"Cannot transition finding '{self.finding_id}' to VALIDATED: observed result cannot match expected result."
+                )
+
         self.lifecycle_state = new_state
         if notes:
             self.validation_notes = notes
         self.updated_at = datetime.now(timezone.utc).isoformat()
 
     def add_evidence(self, evidence_type: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Appends verified evidence item."""
+        """Appends verified evidence item with sensitive data sanitized."""
+        sanitized_content = sanitize_sensitive_data(str(content))
         item = {
             "type": evidence_type,
-            "content": content,
+            "content": sanitized_content,
             "metadata": metadata or {},
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -140,7 +243,17 @@ class Finding:
         self.updated_at = datetime.now(timezone.utc).isoformat()
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serializes finding to dictionary."""
+        """Serializes finding to dictionary with sanitized evidence."""
+        sanitized_evidence: List[Dict[str, Any]] = []
+        for ev in self.evidence:
+            if isinstance(ev, dict):
+                ev_copy = dict(ev)
+                if "content" in ev_copy and isinstance(ev_copy["content"], str):
+                    ev_copy["content"] = sanitize_sensitive_data(ev_copy["content"])
+                sanitized_evidence.append(ev_copy)
+            else:
+                sanitized_evidence.append(ev)
+
         return {
             "finding_id": self.finding_id,
             "title": self.title,
@@ -160,7 +273,7 @@ class Finding:
             "security_impact": self.security_impact,
             "remediation": self.remediation,
             "scope_reference": self.scope_reference,
-            "evidence": self.evidence,
+            "evidence": sanitized_evidence,
             "provenance": self.provenance,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -175,6 +288,27 @@ class Finding:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> Finding:
         """Deserializes finding from dictionary."""
+        raw_state = data.get("lifecycle_state", "CANDIDATE")
+        ev_list = data.get("evidence", [])
+        val_notes = data.get("validation_notes")
+        # Safe migration: if older serialized finding was marked VALIDATED but has no evidence or validation notes,
+        # downgrade to NEEDS_MANUAL_REVIEW to preserve state without invalid promotion
+        if raw_state == "VALIDATED" and not ev_list:
+            state = FindingLifecycle.NEEDS_MANUAL_REVIEW
+            if not val_notes:
+                val_notes = "Migrated finding lacks attached evidence; flagged for manual review."
+        elif raw_state == "VALIDATED" and not val_notes and not (data.get("provenance", {}).get("validation_notes")):
+            val_notes = "Legacy validated finding imported with attached evidence."
+            state = FindingLifecycle.VALIDATED
+        else:
+            state = FindingLifecycle(raw_state)
+
+        conf_val = data.get("confidence", "HIGH")
+        if str(conf_val).upper() == "VALIDATED":
+            conf_val = "CONFIRMED"
+        elif str(conf_val).upper() not in VALID_CONFIDENCES:
+            conf_val = "HIGH"
+
         return cls(
             finding_id=data.get("finding_id"),
             title=data.get("title", ""),
@@ -192,13 +326,13 @@ class Finding:
             security_impact=data.get("security_impact", ""),
             remediation=data.get("remediation", ""),
             scope_reference=data.get("scope_reference", ""),
-            confidence=data.get("confidence", "HIGH"),
-            lifecycle_state=FindingLifecycle(data.get("lifecycle_state", "CANDIDATE")),
-            evidence=data.get("evidence", []),
+            confidence=conf_val,
+            lifecycle_state=state,
+            evidence=ev_list,
             provenance=data.get("provenance", {}),
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
-            validation_notes=data.get("validation_notes"),
+            validation_notes=val_notes,
             duplicate_of=data.get("duplicate_of"),
             parameter=data.get("parameter"),
             test_case_id=data.get("test_case_id"),
@@ -214,15 +348,21 @@ class Finding:
         """
         Renders the finding into a professional markdown report conforming
         to the 17 standard bug bounty disclosure sections.
+        Fails closed with FindingValidationError if finding is not report-ready.
         """
+        ready, reason = self.is_report_ready()
+        if not ready:
+            raise FindingValidationError(f"Finding '{self.finding_id}' is not report-ready: {reason}")
+
         repro_steps_md = "\n".join(f"{i+1}. {step}" for i, step in enumerate(self.reproduction_steps))
 
         evidence_blocks = []
         if self.evidence:
             for idx, item in enumerate(self.evidence, 1):
                 ev_type = item.get("type", "General")
-                ev_content = item.get("content", "")
-                evidence_blocks.append(f"#### Evidence Item {idx} ({ev_type})\n\n```text\n{ev_content}\n```")
+                raw_content = item.get("content", "")
+                clean_content = sanitize_sensitive_data(str(raw_content))
+                evidence_blocks.append(f"#### Evidence Item {idx} ({ev_type})\n\n```text\n{clean_content}\n```")
             evidence_md = "\n\n".join(evidence_blocks)
         else:
             evidence_md = "_No raw HTTP captures or attachments attached._"

@@ -146,6 +146,13 @@ class WorkflowStateManager:
         self._update_summary(state)
         self._atomic_write_json(state)
 
+        # Synchronize with canonical state/findings.json
+        try:
+            from framework.state.manager import StateManager
+            StateManager(self.program_dir).record_finding(finding.to_dict(), engine_source="business_logic")
+        except Exception:
+            pass
+
     def list_findings(self) -> List[WorkflowFinding]:
         state = self.load_state()
         return [WorkflowFinding.from_dict(d) for d in state["findings"].values()]

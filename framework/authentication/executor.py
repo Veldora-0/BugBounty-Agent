@@ -111,91 +111,12 @@ def is_ssrf_prohibited_host(host: str) -> Tuple[bool, str]:
     return False, ""
 
 
-class PinnedHTTPConnection(http.client.HTTPConnection):
-    """HTTP connection with destination-IP pinning to prevent DNS rebinding."""
-
-    def __init__(self, host: str, port: Optional[int] = None, pinned_ip: Optional[str] = None, **kwargs: Any) -> None:
-        self.pinned_ip = pinned_ip
-        if ":" in host and not host.startswith("["):
-            self.original_host = host.split(":")[0]
-        else:
-            self.original_host = host
-        super().__init__(host, port, **kwargs)
-
-    def connect(self) -> None:
-        target_ip = self.pinned_ip if self.pinned_ip else self.host
-        self.sock = socket.create_connection(
-            (target_ip, self.port),
-            self.timeout,
-            self.source_address,
-        )
-
-
-class PinnedHTTPSConnection(http.client.HTTPSConnection):
-    """HTTPS connection with destination-IP pinning, retaining SNI and certificate verification."""
-
-    def __init__(self, host: str, port: Optional[int] = None, pinned_ip: Optional[str] = None, **kwargs: Any) -> None:
-        self.pinned_ip = pinned_ip
-        if ":" in host and not host.startswith("["):
-            self.original_host = host.split(":")[0]
-        else:
-            self.original_host = host
-        super().__init__(host, port, **kwargs)
-
-    def connect(self) -> None:
-        target_ip = self.pinned_ip if self.pinned_ip else self.host
-        raw_sock = socket.create_connection(
-            (target_ip, self.port),
-            self.timeout,
-            self.source_address,
-        )
-        server_hostname = self.original_host or self.host
-        if ":" in server_hostname and not server_hostname.startswith("["):
-            server_hostname = server_hostname.split(":")[0]
-
-        if self._context:
-            self.sock = self._context.wrap_socket(
-                raw_sock,
-                server_hostname=server_hostname,
-            )
-        else:
-            self.sock = raw_sock
-
-
-class PinnedHTTPHandler(urllib.request.HTTPHandler):
-    """Handler routing HTTP requests through PinnedHTTPConnection."""
-
-    def __init__(self, ip_map: Dict[str, str], debuglevel: int = 0) -> None:
-        super().__init__(debuglevel=debuglevel)
-        self.ip_map = ip_map
-
-    def http_open(self, req: urllib.request.Request) -> Any:
-        def connection_factory(host: str, **kwargs: Any) -> http.client.HTTPConnection:
-            clean_host = host.split(":")[0] if ":" in host and not host.startswith("[") else host
-            pinned_ip = self.ip_map.get(clean_host.lower())
-            return PinnedHTTPConnection(host, pinned_ip=pinned_ip, **kwargs)
-        return self.do_open(connection_factory, req)
-
-
-class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
-    """Handler routing HTTPS requests through PinnedHTTPSConnection."""
-
-    def __init__(
-        self,
-        ip_map: Dict[str, str],
-        context: Optional[ssl.SSLContext] = None,
-        debuglevel: int = 0,
-        check_hostname: Optional[bool] = None,
-    ) -> None:
-        super().__init__(debuglevel=debuglevel, context=context, check_hostname=check_hostname)
-        self.ip_map = ip_map
-
-    def https_open(self, req: urllib.request.Request) -> Any:
-        def connection_factory(host: str, **kwargs: Any) -> http.client.HTTPSConnection:
-            clean_host = host.split(":")[0] if ":" in host and not host.startswith("[") else host
-            pinned_ip = self.ip_map.get(clean_host.lower())
-            return PinnedHTTPSConnection(host, pinned_ip=pinned_ip, context=self._context, check_hostname=self._check_hostname, **kwargs)
-        return self.do_open(connection_factory, req)
+from framework.common.transport import (
+    PinnedHTTPConnection,
+    PinnedHTTPSConnection,
+    PinnedHTTPHandler,
+    PinnedHTTPSHandler,
+)
 
 
 class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -204,30 +125,54 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     and destination-IP pinning on each redirection hop.
     """
 
-    def __init__(self, scope_checker: Callable[[str], bool], ip_map: Optional[Dict[str, str]] = None, max_redirects: int = 5):
+    def __init__(
+        self,
+        scope_checker: Callable[[str], bool],
+        ip_map: Optional[Dict[str, Any]] = None,
+        max_redirects: int = 5,
+        original_url: Optional[str] = None,
+    ):
         super().__init__()
         self.scope_checker = scope_checker
         self.ip_map = ip_map if ip_map is not None else {}
         self.max_redirects = max_redirects
         self.redirect_count = 0
+        self.current_url = original_url
 
-    def redirect_request(self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Optional[urllib.request.Request]:
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Optional[urllib.request.Request]:
         self.redirect_count += 1
         if self.redirect_count > self.max_redirects:
-            raise urllib.error.HTTPError(newurl, code, f"Exceeded maximum redirects ({self.max_redirects})", headers, fp)
+            raise urllib.error.HTTPError(newurl or "", code, f"Exceeded maximum redirects ({self.max_redirects})", headers, fp)
 
-        # Validate URL scheme
+        # Validate URL input
+        if not newurl or not isinstance(newurl, str):
+            raise urllib.error.HTTPError(newurl or "", code, f"Invalid redirect URL: {newurl}", headers, fp)
+
         parsed_new = urllib.parse.urlparse(newurl)
         new_scheme = (parsed_new.scheme or "").lower()
         if new_scheme not in ("http", "https"):
             raise urllib.error.HTTPError(newurl, code, f"Redirect to unsupported scheme: {new_scheme}", headers, fp)
 
-        # Prevent protocol downgrade (HTTPS -> HTTP)
-        orig_scheme = urllib.parse.urlparse(req.get_full_url()).scheme.lower()
+        # Determine original scheme for protocol downgrade verification
+        orig_url = None
+        if req is not None:
+            if hasattr(req, "get_full_url"):
+                orig_url = req.get_full_url()
+            elif isinstance(req, str):
+                orig_url = req
+            else:
+                raise urllib.error.HTTPError(newurl, code, f"Unexpected request object type in redirect handler: {type(req).__name__}", headers, fp)
+        elif self.current_url:
+            orig_url = self.current_url
+
+        if not orig_url:
+            raise urllib.error.HTTPError(newurl, code, "Missing request context: protocol downgrade cannot be verified", headers, fp)
+
+        orig_scheme = urllib.parse.urlparse(orig_url).scheme.lower()
         if orig_scheme == "https" and new_scheme == "http":
             raise urllib.error.HTTPError(newurl, code, "Protocol downgrade from HTTPS to HTTP forbidden", headers, fp)
 
-        # Enforce anti-SSRF on redirect host and pin IP
+        # Enforce anti-SSRF on redirect host and pin IP(s)
         host = (parsed_new.hostname or "").lower()
         port = parsed_new.port or (443 if new_scheme == "https" else 80)
         prohibited, reason = is_ssrf_prohibited_host(host)
@@ -238,10 +183,14 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         if not self.scope_checker(newurl):
             raise urllib.error.HTTPError(newurl, code, f"Redirect target '{newurl}' is OUT_OF_SCOPE", headers, fp)
 
-        # Resolve redirect destination to pin IP
+        # Resolve redirect destination to pin IP(s) with fallback
         try:
             addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-            candidate_ips = [sa[0] for _, _, _, _, sa in addr_info]
+            candidate_ips: List[str] = []
+            for _, _, _, _, sa in addr_info:
+                c_ip = sa[0]
+                if c_ip not in candidate_ips:
+                    candidate_ips.append(c_ip)
             for c_ip in candidate_ips:
                 try:
                     ip_obj = ipaddress.ip_address(c_ip)
@@ -251,12 +200,17 @@ class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
                 except ValueError:
                     pass
             if candidate_ips:
-                self.ip_map[host] = candidate_ips[0]
+                self.ip_map[host] = candidate_ips
         except urllib.error.HTTPError:
             raise
         except Exception:
             # If resolution fails, let request open fail naturally
             pass
+
+        self.current_url = newurl
+
+        if req is None or isinstance(req, str):
+            return urllib.request.Request(newurl)
 
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -365,13 +319,17 @@ class BoundedAuthenticationExecutor:
                 }
 
         # Pre-resolve destination IP to pin connection and prevent DNS rebinding
-        ip_map: Dict[str, str] = {}
+        ip_map: Dict[str, Any] = {}
         if is_fixture:
-            ip_map[host] = "127.0.0.1"
+            ip_map[host] = ["127.0.0.1"]
         else:
             try:
                 addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-                candidate_ips = [sa[0] for _, _, _, _, sa in addr_info]
+                candidate_ips: List[str] = []
+                for _, _, _, _, sa in addr_info:
+                    c_ip = sa[0]
+                    if c_ip not in candidate_ips:
+                        candidate_ips.append(c_ip)
                 if not candidate_ips:
                     return {
                         "success": False,
@@ -394,7 +352,7 @@ class BoundedAuthenticationExecutor:
                             }
                     except ValueError:
                         pass
-                ip_map[host] = candidate_ips[0]
+                ip_map[host] = candidate_ips
             except (socket.gaierror, OSError) as e:
                 return {
                     "success": False,
@@ -450,7 +408,12 @@ class BoundedAuthenticationExecutor:
             if ca_bundle and os.path.isfile(ca_bundle):
                 ctx.load_verify_locations(cafile=ca_bundle)
 
-        redirect_handler = AuthSafeRedirectHandler(self.check_scope, ip_map=ip_map, max_redirects=5)
+        redirect_handler = AuthSafeRedirectHandler(
+            self.check_scope,
+            ip_map=ip_map,
+            max_redirects=5,
+            original_url=url,
+        )
         proxy_handler = urllib.request.ProxyHandler({})  # Bypass unvetted ambient environment proxies
         handlers: List[Any] = [proxy_handler, redirect_handler]
         if scheme == "https":
@@ -496,6 +459,25 @@ class BoundedAuthenticationExecutor:
                 }
         except urllib.error.HTTPError as he:
             elapsed = time.time() - start_time
+            # SEC-06: Do not convert security-blocked redirects into successful HTTP responses
+            he_msg = str(getattr(he, "msg", "") or getattr(he, "reason", "")).lower()
+            if any(term in he_msg for term in (
+                "protocol downgrade",
+                "out_of_scope",
+                "prohibited",
+                "unsupported scheme",
+                "missing request context",
+                "unexpected request object type",
+                "too many redirects",
+            )):
+                return {
+                    "success": False,
+                    "error": f"Redirect blocked: {he.msg if hasattr(he, 'msg') else he.reason}",
+                    "status_code": 0,
+                    "body": "",
+                    "evidence": None,
+                }
+
             err_body = he.read(self.max_response_bytes).decode("utf-8", errors="replace") if hasattr(he, "read") else ""
             evidence = AuthenticationEvidenceManager.record_evidence(
                 endpoint=parsed.path or "/",
