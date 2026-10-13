@@ -1197,16 +1197,38 @@ class FileUploadValidator(BaseValidator):
                     )
                     return result, None
 
-                expected_marker = test_case.preconditions.get("expected_canary") or "bb_canary"
-                if expected_marker in response.body and expected_marker not in baseline.body_sample:
+                # A reflected filename or server-supplied path is not proof of a filesystem write.
+                # Only the explicitly controlled loopback fixture may use its structured
+                # fixture signal as a deterministic positive test. Live-target responses
+                # remain candidates until independent storage/read-back verification exists.
+                import json
+                try:
+                    upload_evidence = json.loads(response.body)
+                except (TypeError, ValueError):
+                    upload_evidence = {}
+
+                target_host = (urlparse(test_case.target).hostname or "").lower()
+                is_loopback_fixture = target_host in {"127.0.0.1", "localhost", "::1"}
+                fixture_verified = (
+                    is_loopback_fixture
+                    and test_case.preconditions.get("verification_mode") == "controlled_fixture"
+                    and isinstance(upload_evidence, dict)
+                    and upload_evidence.get("verification_method") == "controlled_fixture"
+                    and upload_evidence.get("stored_outside_root") is True
+                    and isinstance(upload_evidence.get("path"), str)
+                    and ("../" in upload_evidence["path"] or "..\\" in upload_evidence["path"])
+                    and "bb_canary" in upload_evidence["path"].lower()
+                    and upload_evidence.get("marker") == "bb_canary"
+                )
+                if fixture_verified:
                     severity = "HIGH"
                     confidence = "HIGH"
                     finding_state = FindingLifecycle.OBSERVED
-                    summary = f"File upload filename traversal confirmed on '{test_case.endpoint}' via parameter '{test_case.parameter}'."
+                    summary = f"File upload filename traversal confirmed by controlled fixture on '{test_case.endpoint}' via parameter '{test_case.parameter}'."
                     result = ValidationResult(
                         test_id=test_case.test_id,
                         lifecycle_state=finding_state,
-                        signals_observed=list(comparison.signals) + ["FILENAME_TRAVERSAL_CONFIRMED"],
+                        signals_observed=list(comparison.signals) + ["FILENAME_TRAVERSAL_CONFIRMED", "CONTROLLED_FIXTURE_VERIFICATION"],
                         evidence_summary=summary,
                         confidence=confidence,
                         severity=severity,
@@ -1220,17 +1242,17 @@ class FileUploadValidator(BaseValidator):
                         severity=severity,
                         confidence=confidence,
                         lifecycle_state=finding_state,
-                        description="Uploaded file filename parameter permits directory traversal sequences, allowing placement outside intended upload storage.",
-                        root_cause="Unsanitized filename header in multipart upload processed directly in filesystem storage path.",
-                        prerequisites="Endpoint accessible over HTTP/HTTPS with file upload capability.",
+                        description="Controlled test fixture confirmed that a traversal-style filename was accepted as a path outside the intended upload directory. This is fixture evidence, not proof about unrelated live targets.",
+                        root_cause="The controlled fixture models an upload handler that uses the supplied filename without enforcing an upload-directory boundary.",
+                        prerequisites="Controlled local fixture configured for deterministic Phase 15 regression testing.",
                         reproduction_steps=[
-                            f"Send multipart upload request to '{test_case.endpoint}' with traversal filename.",
-                            "Observe server-side confirmation of write outside intended directory.",
+                            f"Send multipart upload request to '{test_case.endpoint}' with the traversal filename.",
+                            "Inspect the controlled fixture's explicit verification response.",
                         ],
-                        expected_result="Filename is stripped of traversal sequences and sanitized to a safe basename.",
-                        observed_result="Server accepted traversal sequence in uploaded file filename.",
-                        security_impact="An attacker could overwrite critical files or place files in unauthorized directories.",
-                        remediation="Sanitize all incoming filenames using secure basename extraction and generate deterministic random storage identifiers.",
+                        expected_result="Filename is reduced to a safe basename and storage remains within the configured upload directory.",
+                        observed_result="Controlled fixture returned its explicit outside-root verification signal.",
+                        security_impact="On a real target, independently verified storage outside the intended directory may enable unauthorized file placement.",
+                        remediation="Canonicalize storage paths, enforce that resolved paths remain beneath the upload root, and generate server-side storage names.",
                         scope_reference=f"Target {test_case.target} authorized in scope",
                         parameter=test_case.parameter,
                         test_case_id=test_case.test_id,
@@ -1239,12 +1261,64 @@ class FileUploadValidator(BaseValidator):
                     )
                     return result, finding
 
-                # Traversal not confirmed
+                # Without independent verification, preserve a candidate for review rather
+                # than promoting a reflected filename or untrusted response claim.
+                filename_marker = (
+                    test_case.preconditions.get("expected_canary")
+                    or "bb_canary"
+                )
+                body_lower = response.body.lower()
+                response_mentions_probe = (
+                    filename_marker.lower() in body_lower
+                    or "../" in response.body
+                    or "..\\" in response.body
+                )
+                if response_mentions_probe:
+                    summary = (
+                        f"Upload response from '{test_case.endpoint}' mentions the traversal filename or canary marker, "
+                        "but does not provide trusted independent proof of storage outside the upload root."
+                    )
+                    result = ValidationResult(
+                        test_id=test_case.test_id,
+                        lifecycle_state=FindingLifecycle.NEEDS_MANUAL_REVIEW,
+                        signals_observed=list(comparison.signals) + ["REFLECTED_FILENAME_ONLY", "NO_INDEPENDENT_STORAGE_VERIFICATION"],
+                        evidence_summary=summary,
+                        confidence="LOW",
+                        severity="INFORMATIONAL",
+                    )
+                    candidate = Finding(
+                        title=f"Candidate File Upload Filename Traversal on {test_case.endpoint}",
+                        summary=summary,
+                        affected_asset=test_case.target,
+                        affected_endpoint=test_case.endpoint,
+                        vulnerability_type="File Upload Filename Traversal",
+                        severity="INFORMATIONAL",
+                        confidence="LOW",
+                        lifecycle_state=FindingLifecycle.CANDIDATE,
+                        description="The response references a traversal-style upload filename, but response reflection or an untrusted success/path claim does not establish where the file was stored.",
+                        root_cause="Potential unsafe handling of multipart filenames; storage behavior remains unverified.",
+                        prerequisites="Endpoint accepts multipart upload requests.",
+                        reproduction_steps=[
+                            f"Send the harmless traversal-style filename to '{test_case.endpoint}' within authorized scope.",
+                            "Independently verify the resulting file location using a controlled canary/read-back mechanism before confirming a vulnerability.",
+                        ],
+                        expected_result="The server rejects traversal components or stores the file under a server-generated safe name inside the upload root.",
+                        observed_result="Response referenced the traversal probe, but no independent storage-location proof was available.",
+                        security_impact="Unconfirmed; do not infer arbitrary file placement from reflection alone.",
+                        remediation="Use server-generated filenames and enforce canonical path containment beneath the upload directory.",
+                        scope_reference=f"Target {test_case.target} authorized in scope",
+                        parameter=test_case.parameter,
+                        test_case_id=test_case.test_id,
+                        detection_method="multipart_upload",
+                        references=["CWE-434", "CWE-22"],
+                    )
+                    return result, candidate
+
                 result = ValidationResult(
                     test_id=test_case.test_id,
                     lifecycle_state=FindingLifecycle.REJECTED,
-                    signals_observed=list(comparison.signals) + ["FILENAME_TRAVERSAL_BLOCKED", "NO_CANARY_EVIDENCE"],
-                    evidence_summary="Server processed upload but did not confirm storage outside intended upload directory.",
+                    signals_observed=list(comparison.signals) + ["NO_INDEPENDENT_STORAGE_VERIFICATION"],
+                    evidence_summary="Server processed the upload but provided no independent evidence that the file was stored outside the intended upload directory.",
                     confidence="LOW",
                     severity="INFORMATIONAL",
                 )
