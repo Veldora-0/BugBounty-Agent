@@ -257,6 +257,78 @@ def test_fixture_request_enforces_scope_and_path_exclusions(temp_workspace):
     assert "OUT_OF_SCOPE" in str(exc_unauth.value)
 
 
+def test_fixture_url_scope_boundary_with_host_and_path_inclusions(temp_workspace):
+    """
+    Verifies precise fixture URL scope boundary handling:
+    - Fixture: http://localhost:8888
+    - Scope includes domain localhost AND explicitly includes http://localhost:8888/api/public
+    - Request to /api/public is allowed when the fixture port is registered.
+    - Request to /internal/metrics is rejected because scope explicitly restricts fixture to URL/path inclusions.
+    - An explicit exclusion such as /api/public/secret still blocks that path.
+    - Documents behavior when scope intentionally authorizes the entire hostname (broad authorization).
+    - Loopback-only, port gating, private-IP, and metadata protections remain enforced.
+    """
+    scope_restricted = {
+        "program": {"name": "fixture-url-boundary-test"},
+        "targets": {
+            "domains": ["localhost"],
+            "urls": ["http://localhost:8888/api/public"],
+        },
+        "out_of_scope": {
+            "urls": ["http://localhost:8888/api/public/secret"],
+        },
+    }
+    engine_restricted = SecurityValidationEngine(
+        program_dir=temp_workspace,
+        scope_engine=ScopeEngine(scope_restricted),
+    )
+
+    # 1. Port gating: unregistered port is blocked
+    with pytest.raises(ScopeViolationError):
+        engine_restricted.check_request_scope("http://localhost:8888/api/public")
+
+    engine_restricted.allow_fixture_port(8888)
+
+    # 2. Explicitly included URL path is authorized
+    assert engine_restricted.check_request_scope("http://localhost:8888/api/public") == "127.0.0.1"
+    assert engine_restricted.check_request_scope("http://localhost:8888/api/public/items") == "127.0.0.1"
+
+    # 3. Unrelated path (/internal/metrics) is rejected despite domain localhost inclusion
+    with pytest.raises(ScopeViolationError) as exc_metrics:
+        engine_restricted.check_request_scope("http://localhost:8888/internal/metrics")
+    assert "OUT_OF_SCOPE" in str(exc_metrics.value)
+    assert "fixture is restricted to explicit URL inclusions" in str(exc_metrics.value)
+
+    # 4. Explicit path exclusion (/api/public/secret) strictly takes precedence and blocks
+    with pytest.raises(ScopeViolationError) as exc_secret:
+        engine_restricted.check_request_scope("http://localhost:8888/api/public/secret")
+    assert "OUT_OF_SCOPE" in str(exc_secret.value)
+    assert "Matches explicit excluded URL" in str(exc_secret.value)
+
+    # 5. Broad hostname authorization documents behavior when scope intentionally authorizes entire hostname
+    scope_broad = {
+        "program": {"name": "fixture-broad-host-test"},
+        "targets": {
+            "domains": ["localhost"],
+        },
+    }
+    engine_broad = SecurityValidationEngine(
+        program_dir=temp_workspace,
+        scope_engine=ScopeEngine(scope_broad),
+    )
+    engine_broad.allow_fixture_port(8888)
+    assert engine_broad.check_request_scope("http://localhost:8888/internal/metrics") == "127.0.0.1"
+    assert engine_broad.check_request_scope("http://localhost:8888/api/public") == "127.0.0.1"
+
+    # 6. Anti-SSRF and private IP / metadata protections remain intact
+    with pytest.raises(ScopeViolationError):
+        engine_restricted.check_request_scope("http://10.0.0.1:8888/api/public")
+    with pytest.raises(ScopeViolationError):
+        engine_restricted.check_request_scope("http://169.254.169.254:8888/latest")
+    with pytest.raises(ScopeViolationError):
+        engine_broad.check_request_scope("http://10.0.0.1:8888/internal/metrics")
+
+
 # ==============================================================================
 # 3. HTTP TRUST STATE SYNCHRONIZATION TESTS
 # ==============================================================================

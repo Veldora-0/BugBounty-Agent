@@ -267,21 +267,56 @@ class SecurityValidationEngine:
                             f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: {cand_decision.reason} (matched rule: {cand_decision.matched_rule})"
                         )
 
-                # 2. Check inclusions: exact URL, base without port, root URL, or host must be IN_SCOPE
-                in_scope = False
-                matched_reason = ""
-                for candidate in (target_url, parsed_no_port, root_url, host):
-                    cand_decision = self.scope_engine.check(candidate)
-                    if cand_decision.status == ScopeStatus.IN_SCOPE:
-                        in_scope = True
-                        matched_reason = cand_decision.reason
-                        break
+                # 2. Check inclusions:
+                # Determine whether scope explicitly restricts this fixture (host/port) to specific URL/path inclusions.
+                has_specific_fixture_path = False
+                has_fixture_host_target = False
+                for u in getattr(self.scope_engine, "included_urls", []):
+                    try:
+                        p = urlparse(u)
+                        u_host = (p.hostname or "").lower()
+                        if u_host == host or (u_host in ("127.0.0.1", "localhost") and host in ("127.0.0.1", "localhost")):
+                            if p.port == port:
+                                path_val = p.path or "/"
+                                if path_val.rstrip("/"):
+                                    has_specific_fixture_path = True
+                                else:
+                                    has_fixture_host_target = True
+                            elif p.port is None:
+                                path_val = p.path or "/"
+                                if path_val.rstrip("/"):
+                                    has_specific_fixture_path = True
+                                else:
+                                    has_fixture_host_target = True
+                    except Exception:
+                        pass
 
-                if not in_scope:
+                fixture_is_path_restricted = has_specific_fixture_path and not has_fixture_host_target
+
+                if fixture_is_path_restricted:
+                    # When scope explicitly restricts this fixture to URL/path inclusions, an unrelated
+                    # path must not be authorized merely because a hostname candidate is in scope.
                     exact_decision = self.scope_engine.check(target_url)
-                    raise ScopeViolationError(
-                        f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: {exact_decision.reason} (matched rule: {exact_decision.matched_rule})"
-                    )
+                    if exact_decision.status != ScopeStatus.IN_SCOPE or exact_decision.rule_category != "SPECIFIC_INCLUSION_URL":
+                        raise ScopeViolationError(
+                            f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: fixture is restricted to explicit URL inclusions (matched: {exact_decision.matched_rule})"
+                        )
+                else:
+                    # Standard broad host authorization: exact URL, base without port, root URL, or host must be IN_SCOPE
+                    in_scope = False
+                    matched_reason = ""
+                    for candidate in (target_url, parsed_no_port, root_url, host):
+                        cand_decision = self.scope_engine.check(candidate)
+                        if cand_decision.status == ScopeStatus.IN_SCOPE:
+                            in_scope = True
+                            matched_reason = cand_decision.reason
+                            break
+
+                    if not in_scope:
+                        exact_decision = self.scope_engine.check(target_url)
+                        raise ScopeViolationError(
+                            f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: {exact_decision.reason} (matched rule: {exact_decision.matched_rule})"
+                        )
 
             return ["127.0.0.1"]
 
