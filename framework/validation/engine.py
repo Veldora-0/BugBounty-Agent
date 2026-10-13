@@ -30,6 +30,8 @@ from framework.validation.request import ControlledRequest, ControlledResponse, 
 from framework.validation.state import SecurityStateManager
 from framework.validation.validator import (
     BaseValidator,
+    FileUploadValidator,
+    LocalFileExposureValidator,
     OpenRedirectValidator,
     ReflectedXSSValidator,
     SqlInjectionValidator,
@@ -218,6 +220,8 @@ class SecurityValidationEngine:
             "ssrf": SsrfValidator(),
             "command-injection": CommandInjectionValidator(),
             "path-traversal": PathTraversalValidator(),
+            "local-file-exposure": LocalFileExposureValidator(),
+            "file-upload": FileUploadValidator(),
             "authorization": AuthorizationValidator(),
         }
 
@@ -580,23 +584,62 @@ class SecurityValidationEngine:
             baseline = self.state_mgr.get_baseline(ep_key)
             if not baseline:
                 base_req = RequestBuilder(full_url, test_case.method).build_baseline()
-                base_resp = self.send_request(base_req)
-                baseline = BaselineObservation.from_response(ep_key, base_resp)
-                self.state_mgr.save_baseline(baseline)
+                try:
+                    base_resp = self.send_request(base_req)
+                    baseline = BaselineObservation.from_response(ep_key, base_resp)
+                    self.state_mgr.save_baseline(baseline)
+                except PolicyViolationError as pve:
+                    if validator.validator_id == "file-upload":
+                        val_result = ValidationResult(
+                            test_id=test_case.test_id,
+                            lifecycle_state=FindingLifecycle.NEEDS_MANUAL_REVIEW,
+                            signals_observed=["POLICY_RESTRICTED_ACTIVE_UPLOAD"],
+                            evidence_summary=f"Active upload testing requires {test_case.method} which is blocked by safety policy ({str(pve)}); flagged for manual review.",
+                            confidence="LOW",
+                            severity="INFORMATIONAL",
+                        )
+                        return val_result, None
+                    raise
 
         # Obtain payload definition
         payload_def = PayloadRegistry.get_payload(test_case.payload_identifier)
-        test_value = payload_def.generate_value() if payload_def else "TEST_MARKER"
+        token = (
+            test_case.preconditions.get("token")
+            or test_case.preconditions.get("canary_token")
+            or (test_case.provenance.get("canary_token") if isinstance(test_case.provenance, dict) else None)
+        )
+        test_value = payload_def.generate_value(token=token) if payload_def else "TEST_MARKER"
 
         # Construct mutated request
         builder = RequestBuilder(full_url, test_case.method)
-        if test_case.parameter:
-            mut_req = builder.mutate_query_param(test_case.parameter, test_value)
+        if test_case.test_strategy == "multipart_upload":
+            field_name = test_case.parameter or "file"
+            filename = f"test_{test_value}.txt"
+            content = f"BB_UPLOAD_VERIFY_{test_value}"
+            mut_req = builder.mutate_multipart_upload(field_name, filename, content)
+        elif test_case.parameter:
+            if test_case.method == "POST":
+                mut_req = builder.mutate_form_param(test_case.parameter, test_value)
+            else:
+                mut_req = builder.mutate_query_param(test_case.parameter, test_value)
         else:
             mut_req = builder.build_baseline()
 
         # Send mutated request
-        mut_resp = self.send_request(mut_req)
+        try:
+            mut_resp = self.send_request(mut_req)
+        except PolicyViolationError as pve:
+            if validator.validator_id == "file-upload":
+                val_result = ValidationResult(
+                    test_id=test_case.test_id,
+                    lifecycle_state=FindingLifecycle.NEEDS_MANUAL_REVIEW,
+                    signals_observed=["POLICY_RESTRICTED_ACTIVE_UPLOAD"],
+                    evidence_summary=f"Active upload testing requires {test_case.method} which is blocked by safety policy ({str(pve)}); flagged for manual review.",
+                    confidence="LOW",
+                    severity="INFORMATIONAL",
+                )
+                return val_result, None
+            raise
 
         # Baseline comparison
         comparison = compare_with_baseline(baseline, mut_resp, test_marker=test_value)
@@ -677,6 +720,32 @@ class SecurityValidationEngine:
                                     endpoint=path,
                                     parameter=q,
                                     provenance={"source": "webapp_state", "url": url},
+                                )
+                                test_cases.extend(cases)
+
+                # Ingest forms for file uploads
+                forms_raw = wdata.get("forms", [])
+                if isinstance(forms_raw, dict):
+                    forms_list = list(forms_raw.values())
+                else:
+                    forms_list = list(forms_raw)
+                for form in forms_list:
+                    has_upload = form.get("has_file_upload", False)
+                    action = form.get("action", "") or form.get("page_url", "")
+                    parsed_act = urlparse(action)
+                    form_path = parsed_act.path or "/"
+                    form_target = parsed_act.netloc or ""
+                    input_types = form.get("input_types", {})
+                    file_inputs = [name for name, itype in input_types.items() if itype == "file"] or ["file"]
+                    if has_upload or any(itype == "file" for itype in input_types.values()):
+                        val = self.validators.get("file-upload")
+                        if val and val.is_available:
+                            for finput in file_inputs:
+                                cases = val.prepare_test_cases(
+                                    target=form_target,
+                                    endpoint=form_path,
+                                    parameter=finput,
+                                    provenance={"source": "form_observation", "action": action, "has_file_upload": True},
                                 )
                                 test_cases.extend(cases)
             except Exception:
@@ -786,7 +855,11 @@ class SecurityValidationEngine:
             val_obj = self.validators.get(validator_name)
             if val_obj:
                 fam = val_obj.vulnerability_family.value
-                candidate_tests = [c for c in candidate_tests if c.vulnerability_family.value == fam]
+                candidate_tests = [
+                    c for c in candidate_tests
+                    if (c.provenance.get("validator_id") == validator_name
+                        or (not c.provenance.get("validator_id") and c.vulnerability_family.value == fam))
+                ]
 
         # Bound total test cases
         candidate_tests = candidate_tests[:max_tests]
@@ -817,12 +890,16 @@ class SecurityValidationEngine:
                 continue
 
             # Identify validator
-            matching_vals = [v for v in self.validators.values() if v.vulnerability_family == tc.vulnerability_family]
-            if not matching_vals:
-                continue
-            val = matching_vals[0]
+            val = None
+            expected_val_id = tc.provenance.get("validator_id") if isinstance(tc.provenance, dict) else None
+            if expected_val_id and expected_val_id in self.validators:
+                val = self.validators[expected_val_id]
+            else:
+                matching_vals = [v for v in self.validators.values() if v.vulnerability_family == tc.vulnerability_family and v.is_available]
+                if matching_vals:
+                    val = matching_vals[0]
 
-            if not val.is_available:
+            if not val or not val.is_available:
                 continue
 
             # Execute test

@@ -8,6 +8,7 @@ Supports precise, deterministic mutation of a single selected parameter or compo
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -97,6 +98,8 @@ class ControlledRequest:
 
     def build_body_bytes(self) -> Optional[bytes]:
         """Encodes request body according to content type."""
+        if self._raw_body is not None:
+            return self._raw_body if isinstance(self._raw_body, bytes) else self._raw_body.encode("utf-8")
         if self.json_body is not None:
             return json.dumps(self.json_body).encode("utf-8")
         if self.form_body is not None:
@@ -327,4 +330,36 @@ class RequestBuilder:
         req.form_body[param_name] = test_value
         req.mutated_target = f"form:{param_name}"
         req.mutated_value = test_value
+        return req
+
+    def mutate_multipart_upload(
+        self,
+        field_name: str,
+        filename: str,
+        content: str | bytes,
+        content_type: str = "text/plain",
+    ) -> ControlledRequest:
+        """
+        Constructs a multipart/form-data request body uploading a harmless synthetic file.
+        Guarantees bounded content size and safe Content-Type handling.
+        """
+        req = self.build_baseline()
+        boundary = "----BugBountyAgentBoundary" + hashlib.sha256(f"{field_name}:{filename}".encode("utf-8")).hexdigest()[:16]
+        c_bytes = content.encode("utf-8") if isinstance(content, str) else content
+
+        parts = [
+            f"--{boundary}".encode("utf-8"),
+            f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"'.encode("utf-8"),
+            f"Content-Type: {content_type}".encode("utf-8"),
+            b"",
+            c_bytes,
+            f"--{boundary}--".encode("utf-8"),
+            b"",
+        ]
+        body_bytes = b"\r\n".join(parts)
+
+        req.headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        req._raw_body = body_bytes
+        req.mutated_target = f"upload:{field_name}"
+        req.mutated_value = filename
         return req

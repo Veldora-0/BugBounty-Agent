@@ -21,6 +21,8 @@ class MutationType(str, Enum):
     REDIRECT_TARGET = "REDIRECT_TARGET"
     BOUNDARY_STRING = "BOUNDARY_STRING"
     NUMERIC_MATH = "NUMERIC_MATH"
+    PATH_TRAVERSAL = "PATH_TRAVERSAL"
+    FILE_UPLOAD = "FILE_UPLOAD"
 
 
 class Payload:
@@ -127,6 +129,61 @@ class PayloadRegistry:
             risk_classification=RiskLevel.SAFE,
             expected_signals=["LOCATION_REDIRECT"],
             raw_template="https://canary.bugbounty-agent.local/redirect_{TOKEN}",
+            max_size_bytes=128,
+        ),
+        # Safe relative path traversal probe with synthetic canary
+        "PL-TRAV-REL-01": Payload(
+            payload_id="PL-TRAV-REL-01",
+            vulnerability_family=VulnerabilityFamily.PATH_TRAVERSAL,
+            purpose="Harmless relative path traversal probe seeking synthetic canary file only",
+            mutation_type=MutationType.PATH_TRAVERSAL,
+            risk_classification=RiskLevel.SAFE,
+            expected_signals=["CANARY_FILE_CONTENT", "TRAVERSAL_CONFIRMED"],
+            raw_template="../../../../bb_canary_{TOKEN}.txt",
+            max_size_bytes=128,
+        ),
+        # Safe URL-encoded relative path traversal probe with synthetic canary
+        "PL-TRAV-ENC-01": Payload(
+            payload_id="PL-TRAV-ENC-01",
+            vulnerability_family=VulnerabilityFamily.PATH_TRAVERSAL,
+            purpose="Harmless URL-encoded relative path traversal probe seeking synthetic canary file",
+            mutation_type=MutationType.PATH_TRAVERSAL,
+            risk_classification=RiskLevel.SAFE,
+            expected_signals=["CANARY_FILE_CONTENT", "TRAVERSAL_CONFIRMED"],
+            raw_template="%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fbb_canary_{TOKEN}.txt",
+            max_size_bytes=128,
+        ),
+        # Safe Windows backslash path traversal probe with synthetic canary
+        "PL-TRAV-WIN-01": Payload(
+            payload_id="PL-TRAV-WIN-01",
+            vulnerability_family=VulnerabilityFamily.PATH_TRAVERSAL,
+            purpose="Harmless Windows relative path traversal probe seeking synthetic canary file",
+            mutation_type=MutationType.PATH_TRAVERSAL,
+            risk_classification=RiskLevel.SAFE,
+            expected_signals=["CANARY_FILE_CONTENT", "TRAVERSAL_CONFIRMED"],
+            raw_template="..\\..\\..\\..\\bb_canary_{TOKEN}.txt",
+            max_size_bytes=128,
+        ),
+        # Safe Local File Exposure query probe
+        "PL-LFE-CANARY-01": Payload(
+            payload_id="PL-LFE-CANARY-01",
+            vulnerability_family=VulnerabilityFamily.PATH_TRAVERSAL,
+            purpose="Controlled retrieval check for synthetic canary file without accessing sensitive host paths",
+            mutation_type=MutationType.PATH_TRAVERSAL,
+            risk_classification=RiskLevel.SAFE,
+            expected_signals=["CANARY_FILE_CONTENT"],
+            raw_template="bb_canary_{TOKEN}.txt",
+            max_size_bytes=128,
+        ),
+        # Harmless synthetic file upload probe
+        "PL-UPLOAD-BENIGN-01": Payload(
+            payload_id="PL-UPLOAD-BENIGN-01",
+            vulnerability_family=VulnerabilityFamily.FILE_UPLOAD,
+            purpose="Harmless non-executable synthetic text file to assess upload controls and response",
+            mutation_type=MutationType.FILE_UPLOAD,
+            risk_classification=RiskLevel.SAFE,
+            expected_signals=["UPLOAD_ACCEPTED", "UPLOAD_REJECTED"],
+            raw_template="BB_VERIFY_{TOKEN}",
             max_size_bytes=128,
         ),
     }

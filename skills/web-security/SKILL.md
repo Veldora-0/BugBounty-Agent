@@ -127,3 +127,34 @@ bb-http --program <program-name> -e "https://app.example.com/login" --category h
 bb-http --lab --tree
 bb-http --lab -e "http://lab.local/auth/forgot-password" --approve
 ```
+
+---
+
+## 6. File Upload, Path Traversal & Local File Exposure (Phase 15)
+
+Phase 15 provides bounded, hypothesis-driven security validation for file handling, directory traversal, and server-side document exposure without destructive exploitation.
+
+### Distinction of Assessment Levels
+
+| Level | Definition | Handling in BugBounty-Agent |
+| :--- | :--- | :--- |
+| **Discovered Attack Surface** | Identified upload forms (`FormObservation.has_file_upload`), multipart endpoints, or parameters (`file`, `path`, `doc`, `view`, `template`). | Documented in `state/webapps.json`; **never** an indicator of vulnerability. |
+| **Candidate Vulnerability** | Structured `SecurityTestCase` planned for evaluation based on input roles or parameter semantics. | Fingerprinted and tracked in `state/tests.json` under `FindingLifecycle.CANDIDATE`. |
+| **Observed Signal** | Differential HTTP response delta (status code change, size delta, server error pattern). | Empirical signal only; **strictly rejected** as insufficient proof on its own. |
+| **Validated Vulnerability** | Unambiguous proof demonstrating retrieval of a synthetic canary token (`bb_canary_<token>.txt`) or verified write traversal. | Attaches SHA-256 evidence, progresses through `OBSERVED` → `VALIDATED` lifecycle. |
+| **Inconclusive Result** | Server returns generic 500 error, ambiguous status change, or no canary reflection. | Classified as `REJECTED` or flagged for manual review with `NEEDS_MANUAL_REVIEW`. |
+| **Capability Unavailable** | Advanced injection categories without bounded validator implementations (`sql-injection`, `ssrf`, `command-injection`, `authorization`). | Explicitly return `CAPABILITY_UNAVAILABLE` stub. |
+
+### Strict Safety & Operational Boundaries
+
+1. **Path Traversal & Local File Exposure**:
+   - **Synthetic Canaries Only**: Probes look exclusively for controlled synthetic canary files (`bb_canary_<token>.txt`).
+   - **NEVER Target System Files**: Traversal probes **never** request `/etc/passwd`, `win.ini`, `.env`, private keys, or cloud metadata (`169.254.169.254`).
+   - **Weak Signal Rejection**: Status code changes (e.g., 200 → 500) or generic database/server error messages without synthetic canary content are strictly rejected as unvalidated weak signals.
+   - **Variant Coverage**: Evaluates relative directory traversals (`../../`), URL-encoded variants (`%2e%2e%2f`), and Windows path separators (`..\`).
+2. **File Upload Security**:
+   - **Harmless Content**: Only plain-text synthetic files with unique tokens (`test_<token>.txt`) are submitted during active upload checks.
+   - **Distinguish Benign Uploads**: An upload endpoint functioning as intended is classified as `INFORMATIONAL`, **never** as a vulnerability.
+   - **No Executables or Webshells**: Testing never submits executable files (`.php`, `.jsp`, `.exe`, `.sh`, `.asp`), web shells, or destructive payloads.
+   - **No Overwrite or Deletion**: File deletion or overwrite operations are strictly forbidden.
+   - **Policy Gating**: When safety policy restricts state-changing `POST` requests, the engine produces a safe `NEEDS_MANUAL_REVIEW` observation instead of violating policy.

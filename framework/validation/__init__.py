@@ -48,7 +48,10 @@ from framework.validation.state import (
 )
 from framework.validation.validator import (
     BaseValidator,
+    FileUploadValidator,
+    LocalFileExposureValidator,
     OpenRedirectValidator,
+    PathTraversalValidator,
     ReflectedXSSValidator,
 )
 
@@ -60,8 +63,11 @@ __all__ = [
     "ControlledRequest",
     "ControlledResponse",
     "ExpectedAccessPolicy",
+    "FileUploadValidator",
+    "LocalFileExposureValidator",
     "MutationType",
     "OpenRedirectValidator",
+    "PathTraversalValidator",
     "Payload",
     "PayloadRegistry",
     "PolicyViolationError",

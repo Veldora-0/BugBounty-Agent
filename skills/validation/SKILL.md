@@ -75,7 +75,7 @@ Before mutating an endpoint, the engine executes an untouched request to establi
 
 ## 5. Payloads & Validator Architecture
 * **`PayloadRegistry`**: Manages bounded, deterministic, and benign verification markers. Large payload wordlists or untrusted executable code are strictly forbidden.
-* **Proof-of-Concept Validators**:
+* **Available Bounded Validators**:
   1. **`ReflectedXSSValidator` (`reflected-xss`)**:
      * Harmless alphanumeric marker: `XSHIELD_TEST_<token>`
      * Analyzes reflection context in HTML/JSON responses.
@@ -85,7 +85,24 @@ Before mutating an endpoint, the engine executes an untouched request to establi
      * Benign canary destination: `https://canary.bugbounty-agent.local/redirect_<token>`
      * Inspects 3xx status codes and `Location` header.
      * **NEVER** navigates victim browsers. Disregards relative or same-domain redirects.
-* **Unavailable Capability Stubs**: `sql-injection`, `ssrf`, `command-injection`, `path-traversal` explicitly declare unavailable capability status.
+  3. **`PathTraversalValidator` (`path-traversal`)**:
+     * Safe, bounded relative path traversal verification using synthetic canaries (`bb_canary_<token>.txt`).
+     * Supports relative traversal, URL-encoded (`%2e%2e%2f`), and Windows path separator (`..\`) variations.
+     * **NEVER** accesses `/etc/passwd`, `win.ini`, host files, or cloud metadata.
+     * **Weak Signal Rejection**: Status code changes (e.g., 500 Internal Server Error) or generic error signatures without explicit verification of synthetic canary content are strictly rejected as insufficient proof.
+  4. **`LocalFileExposureValidator` (`local-file-exposure`)**:
+     * Safe assessment for parameters directly retrieving or serving local documents/resources.
+     * Requires reproducible retrieval of synthetic canary content in controlled fixtures.
+     * **NEVER** retrieves host credentials or arbitrary system files.
+     * Rejects generic 500 errors and unverified status deltas.
+  5. **`FileUploadValidator` (`file-upload`)**:
+     * Assesses observable upload controls and validation behaviors using harmless, non-executable synthetic files (`test_<token>.txt`).
+     * Integrates with `FormObservation.has_file_upload`, multipart form boundaries, and file parameters.
+     * **Distinguishes Upload Forms from Vulnerabilities**: Benign file uploads that process normally are reported as `INFORMATIONAL`, **NEVER** as security vulnerabilities.
+     * **NEVER** uploads executable code (`.php`, `.jsp`, `.exe`, `.sh`), webshells, or destructive payloads.
+     * **NEVER** overwrites or deletes files.
+     * Produces `NEEDS_MANUAL_REVIEW` when policy restricts active `POST` requests.
+* **Unavailable Capability Stubs**: `sql-injection`, `ssrf`, `command-injection`, and `authorization` explicitly declare unavailable capability status.
 
 ---
 
