@@ -50,7 +50,7 @@ def test_scope_engine(temp_workspace):
         "program": {"name": "test-program"},
         "targets": {
             "domains": ["example.com", "*.example.com"],
-            "urls": ["http://127.0.0.1"],
+            "urls": ["http://127.0.0.1", "https://127.0.0.1"],
         },
         "out_of_scope": {
             "domains": ["forbidden.example.com"],
@@ -177,10 +177,11 @@ def test_redirect_to_out_of_scope_is_rejected(temp_workspace, test_scope_engine)
         server.server_close()
 
 
-def test_https_strict_tls_rejection_of_invalid_cert(temp_workspace):
+def test_https_strict_tls_rejection_of_invalid_cert(temp_workspace, test_scope_engine):
     """Verifies that production HTTPS fails closed and rejects untrusted / self-signed certificates."""
     engine = SecurityValidationEngine(
         program_dir=temp_workspace,
+        scope_engine=test_scope_engine,
     )
 
     # Requests to badssl.com self-signed / expired or local invalid cert fail closed

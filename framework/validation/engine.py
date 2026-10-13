@@ -247,84 +247,82 @@ class SecurityValidationEngine:
 
         port = parsed.port or (443 if scheme == "https" else 80)
 
-        # Check if target is an explicitly allowed local test fixture
-        is_fixture = (host in ("127.0.0.1", "localhost") and port in self.allowed_fixture_ports)
-        if is_fixture:
-            # If a ScopeEngine is configured, enforce scope evaluation on the fixture URL
-            if self.scope_engine:
-                parsed_no_port = urlunparse((scheme, host, parsed.path or "/", parsed.params, parsed.query, ""))
-                root_url = f"{scheme}://{host}"
-
-                # 1. Explicit exclusions ALWAYS take precedence (check exact URL, base without port, root URL, and host)
-                for candidate in (target_url, parsed_no_port, root_url, host):
-                    cand_decision = self.scope_engine.check(candidate)
-                    if cand_decision.status == ScopeStatus.OUT_OF_SCOPE and cand_decision.rule_category in (
-                        "EXPLICIT_EXCLUSION_URL",
-                        "EXPLICIT_EXCLUSION_HOST",
-                        "EXPLICIT_EXCLUSION_CIDR",
-                    ):
-                        raise ScopeViolationError(
-                            f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: {cand_decision.reason} (matched rule: {cand_decision.matched_rule})"
-                        )
-
-                # 2. Check inclusions:
-                # Determine whether scope explicitly restricts this fixture (host/port) to specific URL/path inclusions.
-                has_specific_fixture_path = False
-                has_fixture_host_target = False
-                for u in getattr(self.scope_engine, "included_urls", []):
-                    try:
-                        p = urlparse(u)
-                        u_host = (p.hostname or "").lower()
-                        if u_host == host or (u_host in ("127.0.0.1", "localhost") and host in ("127.0.0.1", "localhost")):
-                            if p.port == port:
-                                path_val = p.path or "/"
-                                if path_val.rstrip("/"):
-                                    has_specific_fixture_path = True
-                                else:
-                                    has_fixture_host_target = True
-                            elif p.port is None:
-                                path_val = p.path or "/"
-                                if path_val.rstrip("/"):
-                                    has_specific_fixture_path = True
-                                else:
-                                    has_fixture_host_target = True
-                    except Exception:
-                        pass
-
-                fixture_is_path_restricted = has_specific_fixture_path and not has_fixture_host_target
-
-                if fixture_is_path_restricted:
-                    # When scope explicitly restricts this fixture to URL/path inclusions, an unrelated
-                    # path must not be authorized merely because a hostname candidate is in scope.
-                    exact_decision = self.scope_engine.check(target_url)
-                    if exact_decision.status != ScopeStatus.IN_SCOPE or exact_decision.rule_category != "SPECIFIC_INCLUSION_URL":
-                        raise ScopeViolationError(
-                            f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: fixture is restricted to explicit URL inclusions (matched: {exact_decision.matched_rule})"
-                        )
-                else:
-                    # Standard broad host authorization: exact URL, base without port, root URL, or host must be IN_SCOPE
-                    in_scope = False
-                    matched_reason = ""
-                    for candidate in (target_url, parsed_no_port, root_url, host):
-                        cand_decision = self.scope_engine.check(candidate)
-                        if cand_decision.status == ScopeStatus.IN_SCOPE:
-                            in_scope = True
-                            matched_reason = cand_decision.reason
-                            break
-
-                    if not in_scope:
-                        exact_decision = self.scope_engine.check(target_url)
-                        raise ScopeViolationError(
-                            f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: {exact_decision.reason} (matched rule: {exact_decision.matched_rule})"
-                        )
-
-            return ["127.0.0.1"]
-
         # Scope authorization enforcement: fail-closed if no ScopeEngine configured
-        if not is_fixture and self.scope_engine is None:
+        if self.scope_engine is None:
             raise ScopeViolationError(
                 "Active validation requires a valid, initialized ScopeEngine. No scope engine configured."
             )
+
+        # Check if target is an explicitly allowed local test fixture
+        is_fixture = (host in ("127.0.0.1", "localhost") and port in self.allowed_fixture_ports)
+        if is_fixture:
+            parsed_no_port = urlunparse((scheme, host, parsed.path or "/", parsed.params, parsed.query, ""))
+            root_url = f"{scheme}://{host}"
+
+            # 1. Explicit exclusions ALWAYS take precedence (check exact URL, base without port, root URL, and host)
+            for candidate in (target_url, parsed_no_port, root_url, host):
+                cand_decision = self.scope_engine.check(candidate)
+                if cand_decision.status == ScopeStatus.OUT_OF_SCOPE and cand_decision.rule_category in (
+                    "EXPLICIT_EXCLUSION_URL",
+                    "EXPLICIT_EXCLUSION_HOST",
+                    "EXPLICIT_EXCLUSION_CIDR",
+                ):
+                    raise ScopeViolationError(
+                        f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: {cand_decision.reason} (matched rule: {cand_decision.matched_rule})"
+                    )
+
+            # 2. Check inclusions:
+            # Determine whether scope explicitly restricts this fixture (host/port) to specific URL/path inclusions.
+            has_specific_fixture_path = False
+            has_fixture_host_target = False
+            for u in getattr(self.scope_engine, "included_urls", []):
+                try:
+                    p = urlparse(u)
+                    u_host = (p.hostname or "").lower()
+                    if u_host == host or (u_host in ("127.0.0.1", "localhost") and host in ("127.0.0.1", "localhost")):
+                        if p.port == port:
+                            path_val = p.path or "/"
+                            if path_val.rstrip("/"):
+                                has_specific_fixture_path = True
+                            else:
+                                has_fixture_host_target = True
+                        elif p.port is None:
+                            path_val = p.path or "/"
+                            if path_val.rstrip("/"):
+                                has_specific_fixture_path = True
+                            else:
+                                has_fixture_host_target = True
+                except Exception:
+                    pass
+
+            fixture_is_path_restricted = has_specific_fixture_path and not has_fixture_host_target
+
+            if fixture_is_path_restricted:
+                # When scope explicitly restricts this fixture to URL/path inclusions, an unrelated
+                # path must not be authorized merely because a hostname candidate is in scope.
+                exact_decision = self.scope_engine.check(target_url)
+                if exact_decision.status != ScopeStatus.IN_SCOPE or exact_decision.rule_category != "SPECIFIC_INCLUSION_URL":
+                    raise ScopeViolationError(
+                        f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: fixture is restricted to explicit URL inclusions (matched: {exact_decision.matched_rule})"
+                    )
+            else:
+                # Standard broad host authorization: exact URL, base without port, root URL, or host must be IN_SCOPE
+                in_scope = False
+                matched_reason = ""
+                for candidate in (target_url, parsed_no_port, root_url, host):
+                    cand_decision = self.scope_engine.check(candidate)
+                    if cand_decision.status == ScopeStatus.IN_SCOPE:
+                        in_scope = True
+                        matched_reason = cand_decision.reason
+                        break
+
+                if not in_scope:
+                    exact_decision = self.scope_engine.check(target_url)
+                    raise ScopeViolationError(
+                        f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: {exact_decision.reason} (matched rule: {exact_decision.matched_rule})"
+                    )
+
+            return ["127.0.0.1"]
 
         # Direct name checks and metadata hosts
         metadata_hosts = {

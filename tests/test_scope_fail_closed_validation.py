@@ -173,10 +173,26 @@ def test_out_of_scope_targets_rejected_before_dispatch(temp_dir, authorized_scop
 # ------------------------------------------------------------------------------
 def test_explicit_offline_fixtures_work_properly(temp_dir, authorized_scope):
     """Verifies that allowed fixture ports and mock hooks work without network connection."""
-    # Local fixture port with no ScopeEngine required
-    engine_fixture = SecurityValidationEngine(
+    # 1. Unscoped engine cannot authorize a fixture (must fail closed)
+    engine_unscoped = SecurityValidationEngine(
         program_dir=temp_dir,
         scope_engine=None,
+    )
+    engine_unscoped.allow_fixture_port(8989)
+    with pytest.raises(ScopeViolationError) as exc_unscoped:
+        engine_unscoped.resolve_scope_ips("http://127.0.0.1:8989/local-test")
+    assert "No scope engine configured" in str(exc_unscoped.value)
+
+    # 2. Local fixture port with authorized fixture scope initialized
+    fixture_scope = ScopeEngine({
+        "program": {"name": "fixture-program"},
+        "targets": {
+            "urls": ["http://127.0.0.1"],
+        },
+    })
+    engine_fixture = SecurityValidationEngine(
+        program_dir=temp_dir,
+        scope_engine=fixture_scope,
     )
     engine_fixture.allow_fixture_port(8989)
     ips = engine_fixture.resolve_scope_ips("http://127.0.0.1:8989/local-test")
@@ -507,8 +523,18 @@ def test_fixture_mode_cannot_authorize_arbitrary_targets(temp_dir):
         engine.resolve_scope_ips("http://127.0.0.1:9090/test")
     assert "Active validation requires a valid, initialized ScopeEngine" in str(exc_unapproved.value)
 
-    # 4. Localhost on approved fixture port succeeds
-    assert engine.resolve_scope_ips("http://127.0.0.1:8080/test") == ["127.0.0.1"]
+    # 4. Localhost on approved fixture port fails closed without ScopeEngine
+    with pytest.raises(ScopeViolationError) as exc_fixture_unscoped:
+        engine.resolve_scope_ips("http://127.0.0.1:8080/test")
+    assert "Active validation requires a valid, initialized ScopeEngine" in str(exc_fixture_unscoped.value)
+
+    # 5. Localhost on approved fixture port succeeds when ScopeEngine is initialized
+    scoped_engine = SecurityValidationEngine(
+        program_dir=temp_dir,
+        scope_engine=ScopeEngine({"targets": {"urls": ["http://127.0.0.1"]}}),
+    )
+    scoped_engine.allow_fixture_port(8080)
+    assert scoped_engine.resolve_scope_ips("http://127.0.0.1:8080/test") == ["127.0.0.1"]
 
 
 # ------------------------------------------------------------------------------

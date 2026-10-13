@@ -168,14 +168,32 @@ def test_fixture_port_range_validation(temp_workspace):
 
 
 def test_fixture_port_fails_closed_without_allow_port(temp_workspace):
-    """Verifies unapproved loopback ports, internal IPs, and metadata targets fail closed."""
-    engine = SecurityValidationEngine(program_dir=temp_workspace)
+    """Verifies missing scope fails closed, unapproved loopback ports fail closed, and internal IPs remain blocked."""
+    # 1. Active validation without ScopeEngine fails closed unconditionally even if port is allowed
+    engine_unscoped = SecurityValidationEngine(program_dir=temp_workspace, scope_engine=None)
+    with pytest.raises(ScopeViolationError) as exc_missing_scope:
+        engine_unscoped.check_request_scope("http://127.0.0.1:8888/test")
+    assert "No scope engine configured" in str(exc_missing_scope.value)
+
+    engine_unscoped.allow_fixture_port(8888)
+    with pytest.raises(ScopeViolationError) as exc_unscoped_fixture:
+        engine_unscoped.check_request_scope("http://127.0.0.1:8888/test")
+    assert "No scope engine configured" in str(exc_unscoped_fixture.value)
+
+    # 2. Configured scope with fixture port gating
+    scope_data = {
+        "program": {"name": "fixture-gate-test"},
+        "targets": {
+            "urls": ["http://127.0.0.1"],
+        },
+    }
+    engine = SecurityValidationEngine(program_dir=temp_workspace, scope_engine=ScopeEngine(scope_data))
 
     # Port not allowed: blocked as SSRF
     with pytest.raises(ScopeViolationError):
         engine.check_request_scope("http://127.0.0.1:8888/test")
 
-    # Allowed port permits local loopback fixture
+    # Allowed port permits local loopback fixture when scope engine is initialized
     engine.allow_fixture_port(8888)
     assert engine.check_request_scope("http://127.0.0.1:8888/test") == "127.0.0.1"
 
