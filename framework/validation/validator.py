@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import html
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from framework.findings.lifecycle import FindingLifecycle
 from framework.findings.schema import Finding
@@ -391,6 +392,51 @@ class AuthorizationValidator(UnavailableValidator):
         super().__init__("authorization", VulnerabilityFamily.AUTHORIZATION)
 
 
+def _extract_reflected_input_tokens(
+    injected_token: Optional[str],
+    parameter_value: Optional[str] = None,
+    canary_token: Optional[str] = None,
+) -> List[str]:
+    """
+    Extracts tokens representing user-supplied input, paths, and filenames to distinguish
+    reflection from independent file content disclosure.
+    """
+    tokens: List[str] = []
+    if injected_token:
+        tokens.append(injected_token)
+        try:
+            dec = unquote(injected_token)
+            if dec != injected_token:
+                tokens.append(dec)
+        except Exception:
+            pass
+        norm_path = injected_token.replace("\\", "/")
+        base_fn = os.path.basename(norm_path)
+        if base_fn:
+            tokens.append(base_fn)
+            root_name, _ = os.path.splitext(base_fn)
+            if root_name:
+                tokens.append(root_name)
+    if parameter_value and len(parameter_value) >= 3:
+        tokens.append(parameter_value)
+    if canary_token:
+        tokens.extend([
+            f"bb_canary_{canary_token}.txt",
+            f"bb_canary_{canary_token}",
+            f"BB_CANARY_{canary_token}",
+            f"canary_{canary_token}",
+        ])
+        if len(canary_token) >= 4:
+            tokens.append(canary_token)
+    seen = set()
+    deduped = []
+    for t in tokens:
+        if t and t not in seen:
+            seen.add(t)
+            deduped.append(t)
+    return deduped
+
+
 class PathTraversalValidator(BaseValidator):
     """
     Non-destructive Path Traversal Candidate Validator.
@@ -461,36 +507,58 @@ class PathTraversalValidator(BaseValidator):
         response: ControlledResponse,
         test_case: SecurityTestCase,
     ) -> Tuple[ValidationResult, Optional[Finding]]:
-        expected_canary = (
-            test_case.preconditions.get("expected_canary")
-            or (test_case.provenance.get("expected_canary") if isinstance(test_case.provenance, dict) else None)
-        )
+        injected_input = comparison.injected_token or ""
         token = (
             test_case.preconditions.get("canary_token")
             or (test_case.provenance.get("canary_token") if isinstance(test_case.provenance, dict) else None)
+            or ""
+        )
+        reflected_input_tokens = _extract_reflected_input_tokens(
+            injected_token=injected_input,
+            parameter_value=test_case.parameter,
+            canary_token=token,
         )
 
-        canary_markers = []
-        if expected_canary:
-            canary_markers.append(expected_canary)
-        if token:
-            canary_markers.extend([f"bb_canary_{token}", f"BB_CANARY_{token}", f"canary_{token}"])
+        expected_canary = (
+            test_case.preconditions.get("expected_canary_content")
+            or test_case.preconditions.get("expected_canary")
+            or (test_case.provenance.get("expected_canary_content") if isinstance(test_case.provenance, dict) else None)
+            or (test_case.provenance.get("expected_canary") if isinstance(test_case.provenance, dict) else None)
+        )
 
-        if comparison.injected_token:
-            m = re.search(r"bb_canary_([a-zA-Z0-9_-]+)\.txt", comparison.injected_token)
-            if m:
-                tok_val = m.group(1)
-                canary_markers.extend([f"bb_canary_{tok_val}", f"BB_CANARY_{tok_val}", f"canary_{tok_val}"])
+        # Independent canary content must NOT be equal to any injected input/filename/path token
+        is_independent_canary = bool(
+            expected_canary and expected_canary not in reflected_input_tokens
+        )
 
-        canary_found = False
-        matched_marker = ""
-        for marker in canary_markers:
-            if marker in response.body and marker not in baseline.body_sample:
-                canary_found = True
-                matched_marker = marker
+        # Check for input/filename reflection in response body
+        input_reflected = False
+        matched_reflection = ""
+        for tok in reflected_input_tokens:
+            if tok and len(tok) >= 4 and tok in response.body:
+                input_reflected = True
+                matched_reflection = tok
                 break
 
-        if canary_found and response.status_code in (200, 201, 203):
+        # Check for independent canary file content
+        canary_found = False
+        matched_marker = ""
+        if is_independent_canary and expected_canary in response.body:
+            if expected_canary not in baseline.body_sample:
+                canary_found = True
+                matched_marker = expected_canary
+
+        # Common error / lookup failure phrases
+        is_lookup_failure = any(
+            phrase in response.body.lower()
+            for phrase in (
+                "not found", "does not exist", "no such file", "cannot find",
+                "failed to open", "invalid file", "access denied", "forbidden", "traversal detected",
+            )
+        )
+
+        # CASE 1: Verified independent canary content disclosure
+        if canary_found and response.status_code in (200, 201, 203) and not (is_lookup_failure and response.status_code != 200):
             severity = "HIGH"
             confidence = "HIGH"
             finding_state = FindingLifecycle.OBSERVED
@@ -541,22 +609,143 @@ class PathTraversalValidator(BaseValidator):
             )
             return result, finding
 
-        # Reject weak signals: generic status codes or server errors without canary content
-        if comparison.status_changed or comparison.error_pattern_detected:
-            signals = list(comparison.signals) + ["WEAK_SIGNAL_STATUS_CHANGE_OR_ERROR", "NO_CANARY_EVIDENCE"]
+        # CASE 2: Error, rejection, or status code failure (400, 401, 403, 404, 500, error pattern)
+        if response.status_code in (400, 401, 403, 404, 500) or comparison.error_pattern_detected:
+            signals = list(comparison.signals)
+            if input_reflected:
+                signals.append("REFLECTED_PARAMETER_ONLY")
             if response.status_code in (403, 404):
                 signals.append("TRAVERSAL_BLOCKED")
+            if response.status_code == 500 or comparison.error_pattern_detected or comparison.status_changed:
+                signals.append("WEAK_SIGNAL_STATUS_CHANGE_OR_ERROR")
+            signals.append("NO_CANARY_CONTENT")
+            evidence = (
+                f"Server reflected injected path/filename '{matched_reflection}' in error or lookup failure (HTTP {response.status_code}) without returning independent canary content; rejected as input reflection (insufficient proof of path traversal)."
+                if input_reflected
+                else f"Generic error or status code change without verified canary content is insufficient proof of path traversal; rejected as weak signal."
+            )
             result = ValidationResult(
                 test_id=test_case.test_id,
                 lifecycle_state=FindingLifecycle.REJECTED,
                 signals_observed=signals,
-                evidence_summary="Generic error or status code change without verified canary content is insufficient proof of path traversal; rejected as weak signal.",
+                evidence_summary=evidence,
+                confidence="HIGH" if input_reflected else "LOW",
+                severity="INFORMATIONAL",
+            )
+            return result, None
+
+        # CASE 3: Injected input / filename reflected in 200 response without independent canary content
+        if input_reflected:
+            if is_lookup_failure:
+                result = ValidationResult(
+                    test_id=test_case.test_id,
+                    lifecycle_state=FindingLifecycle.REJECTED,
+                    signals_observed=list(comparison.signals) + ["REFLECTED_PARAMETER_ONLY", "TRAVERSAL_BLOCKED", "NO_CANARY_CONTENT"],
+                    evidence_summary=f"Server returned lookup failure or error reflecting input '{matched_reflection}' in HTTP {response.status_code} response; rejected as input reflection.",
+                    confidence="HIGH",
+                    severity="INFORMATIONAL",
+                )
+                return result, None
+
+            signals = list(comparison.signals) + ["REFLECTED_PARAMETER_ONLY", "NO_CANARY_CONTENT"]
+            summary = (
+                f"Injected parameter/path token '{matched_reflection}' was reflected in response body on '{test_case.endpoint}', "
+                f"but no independent canary file content was observed. Parameter reflection alone does not prove file disclosure; flagged for manual review."
+            )
+            result = ValidationResult(
+                test_id=test_case.test_id,
+                lifecycle_state=FindingLifecycle.NEEDS_MANUAL_REVIEW,
+                signals_observed=signals,
+                evidence_summary=summary,
+                confidence="LOW",
+                severity="INFORMATIONAL",
+            )
+            candidate_finding = Finding(
+                title=f"Reflected Path Parameter on {test_case.endpoint} ({test_case.parameter or 'parameter'})",
+                summary=summary,
+                affected_asset=test_case.target,
+                affected_endpoint=test_case.endpoint,
+                vulnerability_type="Path Traversal",
+                severity="INFORMATIONAL",
+                confidence="LOW",
+                lifecycle_state=FindingLifecycle.CANDIDATE,
+                description=(
+                    f"Parameter '{test_case.parameter}' reflected the injected path/filename sequence in the response body. "
+                    f"However, independent file body content was not retrieved. This indicates parameter reflection or template echoing rather than file disclosure."
+                ),
+                root_cause="Input parameter is reflected in response without verified retrieval of files outside the directory.",
+                prerequisites="Endpoint accessible over HTTP/HTTPS.",
+                reproduction_steps=[
+                    f"Send request to '{test_case.endpoint}' with parameter '{test_case.parameter}' containing test path.",
+                    f"Observe reflection of parameter '{matched_reflection}' in response body without independent file content.",
+                ],
+                expected_result="Application either sanitizes path input or returns file content only when authorized.",
+                observed_result=f"Parameter reflected in response: '{matched_reflection}'.",
+                security_impact="Parameter reflection without file disclosure does not grant access to server files, but warrants review.",
+                remediation="Ensure path parameters are validated and sanitized; do not echo unsanitized file paths in responses.",
+                scope_reference=f"Target {test_case.target} authorized in scope",
+                parameter=test_case.parameter,
+                test_case_id=test_case.test_id,
+                detection_method="canary_path_traversal",
+                references=["CWE-22", "CWE-20"],
+            )
+            return result, candidate_finding
+
+        # CASE 4: Live target assessment without pre-planted canary resource
+        if not expected_canary or not is_independent_canary:
+            if response.status_code in (200, 201, 203) and (comparison.status_changed or abs(comparison.size_delta) > 50 or comparison.body_similarity < 0.9):
+                signals = list(comparison.signals) + ["NO_CANARY_CONFIGURED", "CANDIDATE_UNVERIFIED"]
+                summary = (
+                    f"Candidate path parameter on '{test_case.endpoint}' produced differential response on live target, "
+                    f"but synthetic canary is not configured. Preserving as CANDIDATE / NEEDS_MANUAL_REVIEW without claiming arbitrary file disclosure."
+                )
+                result = ValidationResult(
+                    test_id=test_case.test_id,
+                    lifecycle_state=FindingLifecycle.NEEDS_MANUAL_REVIEW,
+                    signals_observed=signals,
+                    evidence_summary=summary,
+                    confidence="LOW",
+                    severity="INFORMATIONAL",
+                )
+                candidate_finding = Finding(
+                    title=f"Candidate Path Parameter on {test_case.endpoint} ({test_case.parameter or 'parameter'})",
+                    summary=summary,
+                    affected_asset=test_case.target,
+                    affected_endpoint=test_case.endpoint,
+                    vulnerability_type="Path Traversal",
+                    severity="INFORMATIONAL",
+                    confidence="LOW",
+                    lifecycle_state=FindingLifecycle.CANDIDATE,
+                    description="Candidate path traversal parameter identified during live assessment without pre-planted canary resource. Controlled test file required for verification.",
+                    root_cause="Potential unvalidated file retrieval parameter on live target.",
+                    prerequisites="Endpoint accessible over HTTP/HTTPS.",
+                    reproduction_steps=[
+                        f"Submit test traversal probe to '{test_case.endpoint}'.",
+                        "Differential response observed; requires controlled test file to verify disclosure.",
+                    ],
+                    expected_result="Endpoint validates input and restricts file retrieval.",
+                    observed_result="Differential response observed on live target.",
+                    security_impact="Unconfirmed potential path traversal.",
+                    remediation="Validate and canonicalize all file path parameters against a whitelist.",
+                    scope_reference=f"Target {test_case.target} authorized in scope",
+                    parameter=test_case.parameter,
+                    test_case_id=test_case.test_id,
+                    detection_method="canary_path_traversal",
+                    references=["CWE-22"],
+                )
+                return result, candidate_finding
+
+            result = ValidationResult(
+                test_id=test_case.test_id,
+                lifecycle_state=FindingLifecycle.REJECTED,
+                signals_observed=list(comparison.signals) + ["TRAVERSAL_BLOCKED", "NO_CANARY_CONFIGURED"],
+                evidence_summary="Path traversal sequence produced no differential response on live target without pre-planted canary.",
                 confidence="LOW",
                 severity="INFORMATIONAL",
             )
             return result, None
 
-        # Negative / blocked traversal
+        # CASE 5: Traversal blocked or no signals
         result = ValidationResult(
             test_id=test_case.test_id,
             lifecycle_state=FindingLifecycle.REJECTED,
@@ -631,36 +820,58 @@ class LocalFileExposureValidator(BaseValidator):
         response: ControlledResponse,
         test_case: SecurityTestCase,
     ) -> Tuple[ValidationResult, Optional[Finding]]:
-        expected_canary = (
-            test_case.preconditions.get("expected_canary")
-            or (test_case.provenance.get("expected_canary") if isinstance(test_case.provenance, dict) else None)
-        )
+        injected_input = comparison.injected_token or ""
         token = (
             test_case.preconditions.get("canary_token")
             or (test_case.provenance.get("canary_token") if isinstance(test_case.provenance, dict) else None)
+            or ""
+        )
+        reflected_input_tokens = _extract_reflected_input_tokens(
+            injected_token=injected_input,
+            parameter_value=test_case.parameter,
+            canary_token=token,
         )
 
-        canary_markers = []
-        if expected_canary:
-            canary_markers.append(expected_canary)
-        if token:
-            canary_markers.extend([f"bb_canary_{token}", f"BB_CANARY_{token}", f"canary_{token}"])
+        expected_canary = (
+            test_case.preconditions.get("expected_canary_content")
+            or test_case.preconditions.get("expected_canary")
+            or (test_case.provenance.get("expected_canary_content") if isinstance(test_case.provenance, dict) else None)
+            or (test_case.provenance.get("expected_canary") if isinstance(test_case.provenance, dict) else None)
+        )
 
-        if comparison.injected_token:
-            m = re.search(r"bb_canary_([a-zA-Z0-9_-]+)\.txt", comparison.injected_token)
-            if m:
-                tok_val = m.group(1)
-                canary_markers.extend([f"bb_canary_{tok_val}", f"BB_CANARY_{tok_val}", f"canary_{tok_val}"])
+        # Independent canary content must NOT be equal to any injected input/filename/path token
+        is_independent_canary = bool(
+            expected_canary and expected_canary not in reflected_input_tokens
+        )
 
-        canary_found = False
-        matched_marker = ""
-        for marker in canary_markers:
-            if marker in response.body and marker not in baseline.body_sample:
-                canary_found = True
-                matched_marker = marker
+        # Check for input/filename reflection in response body
+        input_reflected = False
+        matched_reflection = ""
+        for tok in reflected_input_tokens:
+            if tok and len(tok) >= 4 and tok in response.body:
+                input_reflected = True
+                matched_reflection = tok
                 break
 
-        if canary_found and response.status_code in (200, 201, 203):
+        # Check for independent canary file content
+        canary_found = False
+        matched_marker = ""
+        if is_independent_canary and expected_canary in response.body:
+            if expected_canary not in baseline.body_sample:
+                canary_found = True
+                matched_marker = expected_canary
+
+        # Common error / lookup failure phrases
+        is_lookup_failure = any(
+            phrase in response.body.lower()
+            for phrase in (
+                "not found", "does not exist", "no such file", "cannot find",
+                "failed to open", "invalid file", "access denied", "forbidden",
+            )
+        )
+
+        # CASE 1: Verified independent canary content disclosure
+        if canary_found and response.status_code in (200, 201, 203) and not (is_lookup_failure and response.status_code != 200):
             severity = "HIGH"
             confidence = "HIGH"
             finding_state = FindingLifecycle.OBSERVED
@@ -711,23 +922,147 @@ class LocalFileExposureValidator(BaseValidator):
             )
             return result, finding
 
-        # Reject weak signals: generic status codes or server errors
-        if comparison.status_changed or comparison.error_pattern_detected:
+        # CASE 2: Error, rejection, or status code failure (400, 401, 403, 404, 500, error pattern)
+        if response.status_code in (400, 401, 403, 404, 500) or comparison.error_pattern_detected:
+            signals = list(comparison.signals)
+            if input_reflected:
+                signals.append("REFLECTED_PARAMETER_ONLY")
+            if response.status_code in (403, 404):
+                signals.append("LOCAL_FILE_EXPOSURE_BLOCKED")
+            if response.status_code == 500 or comparison.error_pattern_detected or comparison.status_changed:
+                signals.append("WEAK_SIGNAL_STATUS_CHANGE_OR_ERROR")
+            signals.append("NO_CANARY_CONTENT")
+            evidence = (
+                f"Server reflected injected path/filename '{matched_reflection}' in error or lookup failure (HTTP {response.status_code}) without returning independent canary content; rejected as input reflection (insufficient proof)."
+                if input_reflected
+                else f"Generic error or status change without verified canary content is insufficient proof; rejected as weak signal."
+            )
             result = ValidationResult(
                 test_id=test_case.test_id,
                 lifecycle_state=FindingLifecycle.REJECTED,
-                signals_observed=list(comparison.signals) + ["WEAK_SIGNAL_STATUS_CHANGE_OR_ERROR", "NO_CANARY_EVIDENCE"],
-                evidence_summary="Generic error or status change without verified canary content is insufficient proof; rejected as weak signal.",
+                signals_observed=signals,
+                evidence_summary=evidence,
+                confidence="HIGH" if input_reflected else "LOW",
+                severity="INFORMATIONAL",
+            )
+            return result, None
+
+        # CASE 3: Input / filename reflected in 200 response without independent canary content
+        if input_reflected:
+            if is_lookup_failure:
+                result = ValidationResult(
+                    test_id=test_case.test_id,
+                    lifecycle_state=FindingLifecycle.REJECTED,
+                    signals_observed=list(comparison.signals) + ["REFLECTED_PARAMETER_ONLY", "LOCAL_FILE_EXPOSURE_BLOCKED", "NO_CANARY_CONTENT"],
+                    evidence_summary=f"Server returned lookup failure or error reflecting input '{matched_reflection}' in HTTP {response.status_code} response; rejected as input reflection.",
+                    confidence="HIGH",
+                    severity="INFORMATIONAL",
+                )
+                return result, None
+
+            signals = list(comparison.signals) + ["REFLECTED_PARAMETER_ONLY", "NO_CANARY_CONTENT"]
+            summary = (
+                f"Injected parameter token '{matched_reflection}' was reflected in response body on '{test_case.endpoint}', "
+                f"but no independent canary file content was observed. Parameter reflection alone does not prove file disclosure; flagged for manual review."
+            )
+            result = ValidationResult(
+                test_id=test_case.test_id,
+                lifecycle_state=FindingLifecycle.NEEDS_MANUAL_REVIEW,
+                signals_observed=signals,
+                evidence_summary=summary,
+                confidence="LOW",
+                severity="INFORMATIONAL",
+            )
+            candidate_finding = Finding(
+                title=f"Reflected File Parameter on {test_case.endpoint} ({test_case.parameter or 'parameter'})",
+                summary=summary,
+                affected_asset=test_case.target,
+                affected_endpoint=test_case.endpoint,
+                vulnerability_type="Local File Exposure",
+                severity="INFORMATIONAL",
+                confidence="LOW",
+                lifecycle_state=FindingLifecycle.CANDIDATE,
+                description=(
+                    f"Parameter '{test_case.parameter}' reflected the injected file identifier in the response body. "
+                    f"However, independent file body content was not retrieved. This indicates parameter reflection rather than file disclosure."
+                ),
+                root_cause="Input parameter is reflected in response without verified retrieval of files.",
+                prerequisites="Endpoint accessible over HTTP/HTTPS.",
+                reproduction_steps=[
+                    f"Send request to '{test_case.endpoint}' with parameter '{test_case.parameter}' set to probe name.",
+                    f"Observe reflection of parameter '{matched_reflection}' in response body without independent file content.",
+                ],
+                expected_result="Application either sanitizes parameter input or returns document content only when authorized.",
+                observed_result=f"Parameter reflected in response: '{matched_reflection}'.",
+                security_impact="Parameter reflection without file disclosure does not grant access to server files, but warrants review.",
+                remediation="Ensure document parameters are validated and sanitized; do not echo unsanitized file paths in responses.",
+                scope_reference=f"Target {test_case.target} authorized in scope",
+                parameter=test_case.parameter,
+                test_case_id=test_case.test_id,
+                detection_method="local_file_exposure_canary",
+                references=["CWE-200", "CWE-73"],
+            )
+            return result, candidate_finding
+
+        # CASE 4: Live target assessment without pre-planted canary resource
+        if not expected_canary or not is_independent_canary:
+            if response.status_code in (200, 201, 203) and (comparison.status_changed or abs(comparison.size_delta) > 50 or comparison.body_similarity < 0.9):
+                signals = list(comparison.signals) + ["NO_CANARY_CONFIGURED", "CANDIDATE_UNVERIFIED"]
+                summary = (
+                    f"Candidate file parameter on '{test_case.endpoint}' produced differential response on live target, "
+                    f"but synthetic canary is not configured. Preserving as CANDIDATE / NEEDS_MANUAL_REVIEW without claiming arbitrary file disclosure."
+                )
+                result = ValidationResult(
+                    test_id=test_case.test_id,
+                    lifecycle_state=FindingLifecycle.NEEDS_MANUAL_REVIEW,
+                    signals_observed=signals,
+                    evidence_summary=summary,
+                    confidence="LOW",
+                    severity="INFORMATIONAL",
+                )
+                candidate_finding = Finding(
+                    title=f"Candidate File Parameter on {test_case.endpoint} ({test_case.parameter or 'parameter'})",
+                    summary=summary,
+                    affected_asset=test_case.target,
+                    affected_endpoint=test_case.endpoint,
+                    vulnerability_type="Local File Exposure",
+                    severity="INFORMATIONAL",
+                    confidence="LOW",
+                    lifecycle_state=FindingLifecycle.CANDIDATE,
+                    description="Candidate local file parameter identified during live assessment without pre-planted canary resource. Controlled test file required for verification.",
+                    root_cause="Potential unvalidated file retrieval parameter on live target.",
+                    prerequisites="Endpoint accessible over HTTP/HTTPS.",
+                    reproduction_steps=[
+                        f"Submit test file probe to '{test_case.endpoint}'.",
+                        "Differential response observed; requires controlled test file to verify disclosure.",
+                    ],
+                    expected_result="Endpoint validates input and restricts file retrieval.",
+                    observed_result="Differential response observed on live target.",
+                    security_impact="Unconfirmed potential local file exposure.",
+                    remediation="Validate and restrict all file parameters against a whitelist of permissible documents.",
+                    scope_reference=f"Target {test_case.target} authorized in scope",
+                    parameter=test_case.parameter,
+                    test_case_id=test_case.test_id,
+                    detection_method="local_file_exposure_canary",
+                    references=["CWE-200", "CWE-73"],
+                )
+                return result, candidate_finding
+
+            result = ValidationResult(
+                test_id=test_case.test_id,
+                lifecycle_state=FindingLifecycle.REJECTED,
+                signals_observed=list(comparison.signals) + ["LOCAL_FILE_EXPOSURE_BLOCKED", "NO_CANARY_CONFIGURED"],
+                evidence_summary="Local file exposure probe produced no differential response on live target without pre-planted canary.",
                 confidence="LOW",
                 severity="INFORMATIONAL",
             )
             return result, None
 
-        # Negative / blocked
+        # CASE 5: Negative / blocked
         result = ValidationResult(
             test_id=test_case.test_id,
             lifecycle_state=FindingLifecycle.REJECTED,
-            signals_observed=list(comparison.signals) + ["LOCAL_FILE_EXPOSURE_BLOCKED"],
+            signals_observed=list(comparison.signals) + ["LOCAL_FILE_EXPOSURE_BLOCKED", "NO_CANARY_CONTENT"],
             evidence_summary="Local file exposure probe did not retrieve synthetic canary content.",
             confidence="LOW",
             severity="INFORMATIONAL",
@@ -773,26 +1108,45 @@ class FileUploadValidator(BaseValidator):
         parameter: Optional[str] = None,
         provenance: Optional[Dict[str, Any]] = None,
     ) -> List[SecurityTestCase]:
+        cases = []
         payload = PayloadRegistry.get_payload("PL-UPLOAD-BENIGN-01")
-        if not payload:
-            return []
         prov = dict(provenance or {})
         prov["validator_id"] = self.validator_id
-        return [
-            SecurityTestCase(
-                vulnerability_family=self.vulnerability_family,
-                target=target,
-                endpoint=endpoint,
-                method="POST",
-                parameter=parameter or "file",
-                payload_identifier=payload.payload_id,
-                test_strategy="multipart_upload",
-                risk_level=RiskLevel.SAFE,
-                request_budget=2,
-                expected_signals=["UPLOAD_ACCEPTED", "UPLOAD_REJECTED"],
-                provenance=prov,
+        if payload:
+            cases.append(
+                SecurityTestCase(
+                    vulnerability_family=self.vulnerability_family,
+                    target=target,
+                    endpoint=endpoint,
+                    method="POST",
+                    parameter=parameter or "file",
+                    payload_identifier=payload.payload_id,
+                    test_strategy="multipart_upload",
+                    risk_level=RiskLevel.SAFE,
+                    request_budget=2,
+                    expected_signals=["UPLOAD_ACCEPTED", "UPLOAD_REJECTED"],
+                    provenance=prov,
+                )
             )
-        ]
+        trav_payload = PayloadRegistry.get_payload("PL-TRAV-REL-01")
+        if trav_payload:
+            cases.append(
+                SecurityTestCase(
+                    vulnerability_family=self.vulnerability_family,
+                    target=target,
+                    endpoint=endpoint,
+                    method="POST",
+                    parameter=parameter or "file",
+                    payload_identifier=trav_payload.payload_id,
+                    test_strategy="filename_traversal",
+                    risk_level=RiskLevel.SAFE,
+                    request_budget=2,
+                    expected_signals=["FILENAME_TRAVERSAL_CONFIRMED", "UPLOAD_REJECTED"],
+                    provenance=dict(prov, test_type="filename_traversal"),
+                    preconditions={"test_type": "filename_traversal"},
+                )
+            )
+        return cases
 
     def analyze(
         self,
@@ -819,8 +1173,30 @@ class FileUploadValidator(BaseValidator):
         # Case 2: Server processed benign file upload normally (2xx / 3xx)
         # Core Rule: A benign upload working as intended is NOT a vulnerability.
         if response.status_code in (200, 201, 204, 302):
-            test_type = test_case.preconditions.get("test_type")
-            if test_type == "filename_traversal":
+            test_type = (
+                test_case.preconditions.get("test_type")
+                or (test_case.provenance.get("test_type") if isinstance(test_case.provenance, dict) else None)
+            )
+            is_traversal_test = (
+                test_type == "filename_traversal"
+                or test_case.test_strategy == "filename_traversal"
+            )
+            if is_traversal_test:
+                # Check for explicit server-side error or rejection in response body
+                if any(
+                    phrase in response.body.lower()
+                    for phrase in ("error", "invalid filename", "traversal rejected", "rejected", "forbidden", "disallowed", "not allowed")
+                ):
+                    result = ValidationResult(
+                        test_id=test_case.test_id,
+                        lifecycle_state=FindingLifecycle.REJECTED,
+                        signals_observed=list(comparison.signals) + ["UPLOAD_REJECTED_BY_SERVER", "FILENAME_TRAVERSAL_BLOCKED"],
+                        evidence_summary=f"Upload with traversal filename was safely rejected by server controls (HTTP {response.status_code}).",
+                        confidence="HIGH",
+                        severity="INFORMATIONAL",
+                    )
+                    return result, None
+
                 expected_marker = test_case.preconditions.get("expected_canary") or "bb_canary"
                 if expected_marker in response.body and expected_marker not in baseline.body_sample:
                     severity = "HIGH"
@@ -862,6 +1238,17 @@ class FileUploadValidator(BaseValidator):
                         references=["CWE-434", "CWE-22"],
                     )
                     return result, finding
+
+                # Traversal not confirmed
+                result = ValidationResult(
+                    test_id=test_case.test_id,
+                    lifecycle_state=FindingLifecycle.REJECTED,
+                    signals_observed=list(comparison.signals) + ["FILENAME_TRAVERSAL_BLOCKED", "NO_CANARY_EVIDENCE"],
+                    evidence_summary="Server processed upload but did not confirm storage outside intended upload directory.",
+                    confidence="LOW",
+                    severity="INFORMATIONAL",
+                )
+                return result, None
 
             # Normal benign upload: Informational result, NO vulnerability finding
             result = ValidationResult(

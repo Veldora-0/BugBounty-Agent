@@ -612,10 +612,22 @@ class SecurityValidationEngine:
 
         # Construct mutated request
         builder = RequestBuilder(full_url, test_case.method)
-        if test_case.test_strategy == "multipart_upload":
+        test_type = (
+            test_case.preconditions.get("test_type")
+            or (test_case.provenance.get("test_type") if isinstance(test_case.provenance, dict) else None)
+        )
+        if test_case.test_strategy in ("multipart_upload", "filename_traversal") or test_type == "filename_traversal":
             field_name = test_case.parameter or "file"
-            filename = f"test_{test_value}.txt"
-            content = f"BB_UPLOAD_VERIFY_{test_value}"
+            if test_case.test_strategy == "filename_traversal" or test_type == "filename_traversal":
+                if any(seq in test_value for seq in ("../", "..\\", "%2e%2e")):
+                    filename = test_value
+                else:
+                    tok = token or test_value
+                    filename = f"../../storage/bb_canary_{tok}.txt"
+                content = f"BB_UPLOAD_CANARY_{token or test_value}"
+            else:
+                filename = f"test_{test_value}.txt"
+                content = f"BB_UPLOAD_VERIFY_{test_value}"
             mut_req = builder.mutate_multipart_upload(field_name, filename, content)
         elif test_case.parameter:
             if test_case.method == "POST":

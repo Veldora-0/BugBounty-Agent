@@ -37,6 +37,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -145,20 +146,31 @@ class Phase15MockServerHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(b'{"error": "Multipart form required"}')
                 return
 
-            # Check for disallowed extension
-            if '.exe"' in raw_body or '.sh"' in raw_body:
+            # Check for disallowed extension in raw body or headers
+            if '.exe"' in raw_body or '.sh"' in raw_body or '.php"' in raw_body:
                 self.send_response(415)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(b'{"error": "Unsupported media type: file extension rejected"}')
                 return
 
-            # Check for filename directory traversal
-            if "../../" in raw_body and "bb_canary" in raw_body:
+            # Inspect multipart Content-Disposition for filename
+            fn_match = re.search(r'filename="([^"]+)"', raw_body)
+            filename_attr = fn_match.group(1) if fn_match else ""
+
+            # Check for filename directory traversal strictly within filename attribute
+            if ("../" in filename_attr or "..\\" in filename_attr) and "bb_canary" in filename_attr:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(b'{"status": "saved", "path": "../../storage/bb_canary.txt"}')
+                self.wfile.write(
+                    json.dumps({
+                        "status": "saved",
+                        "path": filename_attr,
+                        "stored_outside_root": True,
+                        "marker": "bb_canary",
+                    }).encode("utf-8")
+                )
                 return
 
             # Normal benign file upload processed cleanly
@@ -611,7 +623,7 @@ def test_file_upload_rejected_by_server_controls(mock_server, test_workspace):
 
 
 def test_file_upload_filename_traversal_detected(mock_server, test_workspace):
-    """Filename directory traversal with synthetic canary is detected and reported."""
+    """Filename directory traversal with synthetic canary is detected and reported via real multipart request."""
     server, port = mock_server
     scope = create_scope_engine(test_workspace, port)
     policy = SecurityTestPolicy(allowed_methods={"GET", "POST", "HEAD"}, block_destructive_actions=False)
@@ -625,21 +637,29 @@ def test_file_upload_filename_traversal_detected(mock_server, test_workspace):
         endpoint="/upload",
         method="POST",
         parameter="file",
-        payload_identifier="PL-UPLOAD-BENIGN-01",
-        test_strategy="multipart_upload",
-        preconditions={"test_type": "filename_traversal", "expected_canary": "bb_canary"},
+        payload_identifier="PL-TRAV-REL-01",
+        test_strategy="filename_traversal",
+        preconditions={"test_type": "filename_traversal", "expected_canary": "bb_canary", "canary_token": "9999"},
     )
 
-    # Using send_request_hook to inject traversal filename safely
-    def upload_hook(req: ControlledRequest) -> ControlledResponse:
-        # Baseline request
-        if not req.mutated_target:
-            return ControlledResponse(status_code=200, body='{"status": "ok"}')
-        # Simulate server writing outside storage on mutated traversal filename
-        return ControlledResponse(status_code=200, body='{"status": "saved", "path": "../../storage/bb_canary.txt"}')
+    # Track that the actual HTTP request sent across the wire contained the mutated traversal filename
+    sent_requests: list[ControlledRequest] = []
+    real_sender = engine.send_request
+    def intercepting_sender(req: ControlledRequest) -> ControlledResponse:
+        sent_requests.append(req)
+        return real_sender(req)
 
-    engine.send_request_hook = upload_hook
+    engine.send_request = intercepting_sender
     res, finding = engine.execute_test_case(tc, validator)
+
+    # Verify that the mutated request actually contained the traversal path in filename
+    mutated_requests = [r for r in sent_requests if r.mutated_target]
+    assert len(mutated_requests) >= 1
+    mut_req = mutated_requests[0]
+    raw_body = mut_req.build_body_bytes().decode("utf-8")
+    assert 'filename="' in raw_body
+    assert "../" in raw_body
+    assert "bb_canary" in raw_body
 
     assert res.lifecycle_state == FindingLifecycle.OBSERVED
     assert "FILENAME_TRAVERSAL_CONFIRMED" in res.signals_observed
@@ -846,3 +866,207 @@ def test_deduplication_across_validation_findings(test_workspace):
     saved_2, is_dup_2, orig_id = mgr.save_finding(f2)
     assert is_dup_2 is True
     assert orig_id == saved_1.finding_id
+
+
+# ==============================================================================
+# 7. PHASE 15 REGRESSION TESTS: ISSUES A, B, AND C
+# ==============================================================================
+
+
+def test_path_traversal_reflection_false_positive_rejection():
+    """
+    Issue A Regression: Reflected input/filename in 200/400/404/500 responses
+    must NOT produce an OBSERVED path traversal finding.
+    """
+    validator = PathTraversalValidator()
+    tc = SecurityTestCase(
+        vulnerability_family=VulnerabilityFamily.PATH_TRAVERSAL,
+        target="http://127.0.0.1:8080",
+        endpoint="/download",
+        method="GET",
+        parameter="path",
+        payload_identifier="PL-TRAV-REL-01",
+        preconditions={"canary_token": "tok777"},
+    )
+    base_obs = BaselineObservation(
+        endpoint_key="GET /download",
+        status_code=200,
+        content_type="text/html",
+        response_size=100,
+        headers_snapshot={},
+        body_hash="hash",
+        body_sample="<html><body>Download page</body></html>",
+    )
+    injected_probe = "../../../../bb_canary_tok777.txt"
+
+    # 1. Server 404 echoing filename
+    resp_404 = ControlledResponse(status_code=404, body=f"Error: file {injected_probe} not found on server")
+    comp_404 = compare_with_baseline(base_obs, resp_404, test_marker=injected_probe)
+    res_404, f_404 = validator.analyze(comp_404, base_obs, resp_404, tc)
+    assert res_404.lifecycle_state == FindingLifecycle.REJECTED
+    assert "REFLECTED_PARAMETER_ONLY" in res_404.signals_observed
+    assert f_404 is None
+
+    # 2. Server 400 echoing filename
+    resp_400 = ControlledResponse(status_code=400, body=f"Bad Request: parameter path={injected_probe} invalid")
+    comp_400 = compare_with_baseline(base_obs, resp_400, test_marker=injected_probe)
+    res_400, f_400 = validator.analyze(comp_400, base_obs, resp_400, tc)
+    assert res_400.lifecycle_state == FindingLifecycle.REJECTED
+    assert "REFLECTED_PARAMETER_ONLY" in res_400.signals_observed
+    assert f_400 is None
+
+    # 3. Server 500 echoing filename in trace
+    resp_500 = ControlledResponse(status_code=500, body=f"Internal Server Error: failed opening {injected_probe}")
+    comp_500 = compare_with_baseline(base_obs, resp_500, test_marker=injected_probe)
+    res_500, f_500 = validator.analyze(comp_500, base_obs, resp_500, tc)
+    assert res_500.lifecycle_state == FindingLifecycle.REJECTED
+    assert "REFLECTED_PARAMETER_ONLY" in res_500.signals_observed
+    assert f_500 is None
+
+    # 4. Server 200 echoing filename in error message (soft 404 inside 200)
+    resp_200_err = ControlledResponse(status_code=200, body=f"<div>Notice: file {injected_probe} does not exist.</div>")
+    comp_200_err = compare_with_baseline(base_obs, resp_200_err, test_marker=injected_probe)
+    res_200_err, f_200_err = validator.analyze(comp_200_err, base_obs, resp_200_err, tc)
+    assert res_200_err.lifecycle_state == FindingLifecycle.REJECTED
+    assert "REFLECTED_PARAMETER_ONLY" in res_200_err.signals_observed
+    assert f_200_err is None
+
+    # 5. Server 200 echoing parameter without failure message, but lacking independent canary content
+    resp_200_echo = ControlledResponse(status_code=200, body=f"<html><body>Search query: {injected_probe}</body></html>")
+    comp_200_echo = compare_with_baseline(base_obs, resp_200_echo, test_marker=injected_probe)
+    res_200_echo, f_200_echo = validator.analyze(comp_200_echo, base_obs, resp_200_echo, tc)
+    assert res_200_echo.lifecycle_state != FindingLifecycle.OBSERVED
+    assert res_200_echo.lifecycle_state == FindingLifecycle.NEEDS_MANUAL_REVIEW
+    assert "REFLECTED_PARAMETER_ONLY" in res_200_echo.signals_observed
+    assert f_200_echo is not None
+    assert f_200_echo.lifecycle_state == FindingLifecycle.CANDIDATE
+
+
+def test_path_traversal_requires_independent_canary_content():
+    """
+    Issue A Regression: True positive traversal requires independent canary file content,
+    distinct from the requested filename or parameter.
+    """
+    validator = PathTraversalValidator()
+    base_obs = BaselineObservation(
+        endpoint_key="GET /download",
+        status_code=200,
+        content_type="text/plain",
+        response_size=50,
+        headers_snapshot={},
+        body_hash="hash",
+        body_sample="Baseline file content",
+    )
+    injected_probe = "../../../../bb_canary_abc123.txt"
+
+    # Positive case: response contains independent canary secret
+    independent_secret = "BB_INDEPENDENT_SECRET_CONTENT_987654"
+    tc_valid = SecurityTestCase(
+        vulnerability_family=VulnerabilityFamily.PATH_TRAVERSAL,
+        target="http://127.0.0.1:8080",
+        endpoint="/download",
+        method="GET",
+        parameter="path",
+        payload_identifier="PL-TRAV-REL-01",
+        preconditions={"expected_canary": independent_secret, "canary_token": "abc123"},
+    )
+    resp_valid = ControlledResponse(status_code=200, body=f"Content: {independent_secret}\nFile retrieved.")
+    comp_valid = compare_with_baseline(base_obs, resp_valid, test_marker=injected_probe)
+    res_valid, f_valid = validator.analyze(comp_valid, base_obs, resp_valid, tc_valid)
+
+    assert res_valid.lifecycle_state == FindingLifecycle.OBSERVED
+    assert "CANARY_FILE_CONTENT" in res_valid.signals_observed
+    assert f_valid is not None
+    assert f_valid.lifecycle_state == FindingLifecycle.OBSERVED
+
+
+def test_file_upload_rejection_of_filename_traversal():
+    """
+    Issue B Regression: When server rejects traversal filename, FileUploadValidator
+    records REJECTED with UPLOAD_REJECTED_BY_SERVER and FILENAME_TRAVERSAL_BLOCKED.
+    """
+    validator = FileUploadValidator()
+    tc = SecurityTestCase(
+        vulnerability_family=VulnerabilityFamily.FILE_UPLOAD,
+        target="http://127.0.0.1:8080",
+        endpoint="/upload",
+        method="POST",
+        parameter="file",
+        payload_identifier="PL-TRAV-REL-01",
+        test_strategy="filename_traversal",
+        preconditions={"test_type": "filename_traversal"},
+    )
+    base_obs = BaselineObservation(
+        endpoint_key="POST /upload",
+        status_code=200,
+        content_type="application/json",
+        response_size=20,
+        headers_snapshot={},
+        body_hash="hash",
+        body_sample="{}",
+    )
+
+    # Server explicitly rejects traversal in 400
+    resp_rej_400 = ControlledResponse(status_code=400, body='{"error": "Filename contains directory traversal"}')
+    comp_400 = compare_with_baseline(base_obs, resp_rej_400, test_marker="bb_canary.txt")
+    res_400, f_400 = validator.analyze(comp_400, base_obs, resp_rej_400, tc)
+    assert res_400.lifecycle_state == FindingLifecycle.REJECTED
+    assert "UPLOAD_REJECTED_BY_SERVER" in res_400.signals_observed
+    assert f_400 is None
+
+    # Server rejects traversal with 200 error message
+    resp_rej_200 = ControlledResponse(status_code=200, body='{"status": "error", "message": "traversal rejected"}')
+    comp_200 = compare_with_baseline(base_obs, resp_rej_200, test_marker="bb_canary.txt")
+    res_200, f_200 = validator.analyze(comp_200, base_obs, resp_rej_200, tc)
+    assert res_200.lifecycle_state == FindingLifecycle.REJECTED
+    assert "FILENAME_TRAVERSAL_BLOCKED" in res_200.signals_observed
+    assert f_200 is None
+
+
+def test_local_file_exposure_live_target_without_canary():
+    """
+    Issue C Regression: Live target assessment without pre-planted canary files
+    preserves CANDIDATE / NEEDS_MANUAL_REVIEW and NEVER claims arbitrary file disclosure.
+    """
+    validator = LocalFileExposureValidator()
+    # Test case without expected_canary in preconditions (live target assessment)
+    tc_live = SecurityTestCase(
+        vulnerability_family=VulnerabilityFamily.PATH_TRAVERSAL,
+        target="https://target.example.com",
+        endpoint="/view-doc",
+        method="GET",
+        parameter="doc",
+        payload_identifier="PL-LFE-CANARY-01",
+        preconditions={},  # No synthetic canary exists on live target
+    )
+    base_obs = BaselineObservation(
+        endpoint_key="GET /view-doc",
+        status_code=200,
+        content_type="text/html",
+        response_size=500,
+        headers_snapshot={},
+        body_hash="hash_base",
+        body_sample="<html><body>Document viewer</body></html>",
+    )
+
+    # 1. Server returns 404 for non-existent test file -> REJECTED
+    resp_404 = ControlledResponse(status_code=404, body="Document not found")
+    comp_404 = compare_with_baseline(base_obs, resp_404, test_marker="bb_canary_01.txt")
+    res_404, f_404 = validator.analyze(comp_404, base_obs, resp_404, tc_live)
+    assert res_404.lifecycle_state == FindingLifecycle.REJECTED
+    assert f_404 is None
+
+    # 2. Server returns 200 with differential response on live target -> CANDIDATE, NOT OBSERVED
+    resp_200 = ControlledResponse(
+        status_code=200,
+        body="<html><body><h1>Document Viewer</h1><p>Parameter processed</p><div>Different view</div></body></html>",
+        size_bytes=800,
+    )
+    comp_200 = compare_with_baseline(base_obs, resp_200, test_marker="bb_canary_01.txt")
+    res_200, f_200 = validator.analyze(comp_200, base_obs, resp_200, tc_live)
+    assert res_200.lifecycle_state == FindingLifecycle.NEEDS_MANUAL_REVIEW
+    assert "NO_CANARY_CONFIGURED" in res_200.signals_observed
+    assert f_200 is not None
+    assert f_200.lifecycle_state == FindingLifecycle.CANDIDATE
+    assert f_200.lifecycle_state != FindingLifecycle.OBSERVED
+

@@ -185,8 +185,20 @@ class ToolInstaller:
         Executes an installation plan with pre-checks, execution, verification,
         and provenance logging.
         """
-        # 1. Check if already installed
+        # Handle dry-run requests before checking installed state
         info = self.detector.inspect_tool(self.registry.get_tool(tool_name))
+        if dry_run:
+            plan = self.plan_install(tool_name)
+            return {
+                "success": True,
+                "dry_run": True,
+                "plan": plan.to_dict(),
+                "already_installed": bool(info["installed"] and info["version_ok"]),
+                "version": info.get("version"),
+                "path": info.get("path"),
+            }
+
+        # 1. Check if already installed
         if info["installed"] and info["version_ok"]:
             return {
                 "success": True,
@@ -194,6 +206,7 @@ class ToolInstaller:
                 "already_installed": True,
                 "version": info["version"],
                 "path": info["path"],
+                "dry_run": False,
             }
 
         # 2. Check and install prerequisites first
