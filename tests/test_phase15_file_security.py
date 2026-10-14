@@ -168,6 +168,7 @@ class Phase15MockServerHandler(http.server.BaseHTTPRequestHandler):
                         "status": "saved",
                         "path": filename_attr,
                         "stored_outside_root": True,
+                        "verification_method": "controlled_fixture",
                         "marker": "bb_canary",
                     }).encode("utf-8")
                 )
@@ -639,7 +640,7 @@ def test_file_upload_filename_traversal_detected(mock_server, test_workspace):
         parameter="file",
         payload_identifier="PL-TRAV-REL-01",
         test_strategy="filename_traversal",
-        preconditions={"test_type": "filename_traversal", "expected_canary": "bb_canary", "canary_token": "9999"},
+        preconditions={"test_type": "filename_traversal", "expected_canary": "bb_canary", "canary_token": "9999", "verification_mode": "controlled_fixture"},
     )
 
     # Track that the actual HTTP request sent across the wire contained the mutated traversal filename
@@ -661,11 +662,13 @@ def test_file_upload_filename_traversal_detected(mock_server, test_workspace):
     assert "../" in raw_body
     assert "bb_canary" in raw_body
 
-    assert res.lifecycle_state == FindingLifecycle.OBSERVED
-    assert "FILENAME_TRAVERSAL_CONFIRMED" in res.signals_observed
+    assert res.lifecycle_state == FindingLifecycle.SIMULATED
+    assert "FILENAME_TRAVERSAL_SIMULATED" in res.signals_observed
     assert finding is not None
     assert finding.vulnerability_type == "File Upload Filename Traversal"
-    assert finding.severity == "HIGH"
+    assert finding.lifecycle_state == FindingLifecycle.SIMULATED
+    assert finding.severity == "INFORMATIONAL"
+    assert finding.is_report_ready()[0] is False
 
 
 def test_file_upload_policy_restriction_produces_manual_review(test_workspace):
@@ -1070,3 +1073,92 @@ def test_local_file_exposure_live_target_without_canary():
     assert f_200.lifecycle_state == FindingLifecycle.CANDIDATE
     assert f_200.lifecycle_state != FindingLifecycle.OBSERVED
 
+
+
+
+def test_file_upload_filename_reflection_is_not_verified_traversal():
+    """A live response echoing the traversal filename must remain a candidate, not OBSERVED."""
+    validator = FileUploadValidator()
+    tc = SecurityTestCase(
+        vulnerability_family=VulnerabilityFamily.FILE_UPLOAD,
+        target="https://target.example.com",
+        endpoint="/upload",
+        method="POST",
+        parameter="file",
+        payload_identifier="PL-TRAV-REL-01",
+        test_strategy="filename_traversal",
+        preconditions={"test_type": "filename_traversal", "expected_canary": "bb_canary"},
+    )
+    baseline = BaselineObservation(
+        endpoint_key="POST /upload",
+        status_code=200,
+        content_type="application/json",
+        response_size=20,
+        headers_snapshot={},
+        body_hash="baseline",
+        body_sample='{"status":"success"}',
+    )
+    # The server only echoes the submitted filename; it does not establish where a file was stored.
+    response = ControlledResponse(
+        status_code=200,
+        body=json.dumps({
+            "status": "saved",
+            "message": "Received filename ../../storage/bb_canary_12345.txt",
+            "path": "../../storage/bb_canary_12345.txt",
+            "stored_outside_root": True,
+            "marker": "bb_canary",
+        }),
+    )
+    comparison = compare_with_baseline(
+        baseline, response, test_marker="../../storage/bb_canary_12345.txt"
+    )
+
+    result, finding = validator.analyze(comparison, baseline, response, tc)
+
+    assert result.lifecycle_state == FindingLifecycle.NEEDS_MANUAL_REVIEW
+    assert "NO_INDEPENDENT_STORAGE_VERIFICATION" in result.signals_observed
+    assert finding is not None
+    assert finding.lifecycle_state == FindingLifecycle.CANDIDATE
+    assert finding.confidence == "LOW"
+    assert finding.severity == "INFORMATIONAL"
+
+
+def test_file_upload_response_claim_is_not_trusted_without_fixture_verification():
+    """Even a JSON outside-root claim on a live target is not sufficient proof."""
+    validator = FileUploadValidator()
+    tc = SecurityTestCase(
+        vulnerability_family=VulnerabilityFamily.FILE_UPLOAD,
+        target="https://target.example.com",
+        endpoint="/upload",
+        method="POST",
+        parameter="file",
+        payload_identifier="PL-TRAV-REL-01",
+        test_strategy="filename_traversal",
+        preconditions={"test_type": "filename_traversal", "expected_canary": "bb_canary"},
+    )
+    baseline = BaselineObservation(
+        endpoint_key="POST /upload",
+        status_code=201,
+        content_type="application/json",
+        response_size=20,
+        headers_snapshot={},
+        body_hash="baseline",
+        body_sample="{}",
+    )
+    response = ControlledResponse(
+        status_code=201,
+        body=json.dumps({
+            "status": "saved",
+            "path": "../../storage/bb_canary_12345.txt",
+            "stored_outside_root": True,
+            "verification_method": "controlled_fixture",
+            "marker": "bb_canary",
+        }),
+    )
+    comparison = compare_with_baseline(baseline, response, test_marker="bb_canary")
+
+    result, finding = validator.analyze(comparison, baseline, response, tc)
+
+    assert result.lifecycle_state == FindingLifecycle.NEEDS_MANUAL_REVIEW
+    assert finding is not None
+    assert finding.lifecycle_state == FindingLifecycle.CANDIDATE
