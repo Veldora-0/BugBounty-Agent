@@ -1221,20 +1221,23 @@ class FileUploadValidator(BaseValidator):
                     and upload_evidence.get("marker") == "bb_canary"
                 )
                 if fixture_verified:
-                    severity = "HIGH"
+                    # The fixture response is a test oracle, not independent evidence from
+                    # a real filesystem. Keep this result explicitly simulated so it can
+                    # never be mistaken for a verified live-target vulnerability.
+                    severity = "INFORMATIONAL"
                     confidence = "HIGH"
-                    finding_state = FindingLifecycle.OBSERVED
-                    summary = f"File upload filename traversal confirmed by controlled fixture on '{test_case.endpoint}' via parameter '{test_case.parameter}'."
+                    finding_state = FindingLifecycle.SIMULATED
+                    summary = f"Simulated file upload filename traversal behavior in controlled fixture for '{test_case.endpoint}'."
                     result = ValidationResult(
                         test_id=test_case.test_id,
                         lifecycle_state=finding_state,
-                        signals_observed=list(comparison.signals) + ["FILENAME_TRAVERSAL_CONFIRMED", "CONTROLLED_FIXTURE_VERIFICATION"],
+                        signals_observed=list(comparison.signals) + ["FILENAME_TRAVERSAL_SIMULATED", "CONTROLLED_FIXTURE_VERIFICATION"],
                         evidence_summary=summary,
                         confidence=confidence,
                         severity=severity,
                     )
                     finding = Finding(
-                        title=f"Arbitrary File Upload Filename Traversal on {test_case.endpoint}",
+                        title=f"Simulated File Upload Filename Traversal on {test_case.endpoint}",
                         summary=summary,
                         affected_asset=test_case.target,
                         affected_endpoint=test_case.endpoint,
@@ -1242,16 +1245,17 @@ class FileUploadValidator(BaseValidator):
                         severity=severity,
                         confidence=confidence,
                         lifecycle_state=finding_state,
-                        description="Controlled test fixture confirmed that a traversal-style filename was accepted as a path outside the intended upload directory. This is fixture evidence, not proof about unrelated live targets.",
-                        root_cause="The controlled fixture models an upload handler that uses the supplied filename without enforcing an upload-directory boundary.",
+                        provenance={"is_simulation": True, "verification_mode": "controlled_fixture"},
+                        description="The controlled fixture models acceptance of a traversal-style filename. This simulated result does not establish a real filesystem write or a vulnerability on a live target.",
+                        root_cause="The controlled fixture models an upload handler that does not enforce an upload-directory boundary.",
                         prerequisites="Controlled local fixture configured for deterministic Phase 15 regression testing.",
                         reproduction_steps=[
                             f"Send multipart upload request to '{test_case.endpoint}' with the traversal filename.",
-                            "Inspect the controlled fixture's explicit verification response.",
+                            "Observe the fixture's simulated outside-root response.",
                         ],
                         expected_result="Filename is reduced to a safe basename and storage remains within the configured upload directory.",
-                        observed_result="Controlled fixture returned its explicit outside-root verification signal.",
-                        security_impact="On a real target, independently verified storage outside the intended directory may enable unauthorized file placement.",
+                        observed_result="The controlled fixture emitted its configured simulated outside-root signal.",
+                        security_impact="No live-target impact is established by this simulated result.",
                         remediation="Canonicalize storage paths, enforce that resolved paths remain beneath the upload root, and generate server-side storage names.",
                         scope_reference=f"Target {test_case.target} authorized in scope",
                         parameter=test_case.parameter,
