@@ -2,8 +2,8 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Repository baseline:** `73056c329d440dc51f1485fccfbfad25bf1c4927`  
-> **Current next phase:** Phase 15 — File Upload, Path Traversal & Local File Exposure  
+> **Repository baseline:** `d1f7df8f1f17811d9e49484c202cb950edfc582f`  
+> **Current next phase:** Phase 16 — Browser Runtime & Client-Side Security  
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
 ## 1. Roadmap at a glance
@@ -11,8 +11,8 @@
 | Phase | Name | Priority | Status |
 |---|---|---:|---|
 | 1–14 | Existing core and intelligence engines | — | Complete; do not reopen without concrete evidence |
-| 15 | File Upload, Path Traversal & Local File Exposure | Critical | **Next** |
-| 16 | Browser Runtime & Client-Side Security | High | Planned |
+| 15 | File Upload, Path Traversal & Local File Exposure | Critical | Complete (acceptance report supplied) |
+| 16 | Browser Runtime & Client-Side Security | High | **Next** |
 | 17 | Advanced API Security | High | Planned |
 | 18 | SSRF, XXE & Server-Side Parser Expansion | High | Planned |
 | 19 | Infrastructure & Configuration Exposure | Medium–High | Planned |
@@ -26,7 +26,7 @@ Priorities are provisional and must be refined by evidence from the repository a
 
 ## 2. Repository-informed planning notes
 
-A targeted inspection at the accepted baseline found useful foundations, but not a complete Phase 15 engine:
+A targeted inspection at the earlier planning baseline found useful foundations, but not a complete Phase 15 engine. Phase 15 was subsequently accepted by the supplied acceptance report at `d1f7df8f1f17811d9e49484c202cb950edfc582f`; its reported test results have not been independently rerun in this synchronization step:
 
 - Web application parsing already records HTML forms and whether a form contains a file input.
 - API parameter classification already recognizes file-related parameter names.
