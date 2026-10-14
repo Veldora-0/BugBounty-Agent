@@ -73,6 +73,7 @@ class SystemDoctor:
     def check_browser(self) -> Dict[str, Any]:
         """Category 5: Browser automation environment."""
         playwright_installed = find_executable("playwright") is not None
+        from framework.common.evidence import sanitize_sensitive_data
         from framework.xss.browser import BrowserCapabilityDetector
 
         cap = BrowserCapabilityDetector().detect()
@@ -82,7 +83,7 @@ class SystemDoctor:
             "browser_executable": cap.browser_executable_available,
             "can_launch": cap.can_launch,
             "status": cap.state,
-            "details": cap.details,
+            "details": sanitize_sensitive_data(cap.details),
         }
 
     def check_wordlists(self) -> Dict[str, Any]:

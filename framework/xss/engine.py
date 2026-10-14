@@ -18,7 +18,7 @@ from framework.scope.engine import ScopeEngine
 from framework.validation.engine import SecurityValidationEngine
 from framework.validation.policy import SecurityTestPolicy
 from framework.validation.request import ControlledRequest, ControlledResponse
-from framework.xss.browser import BrowserXssAssistant
+from framework.xss.browser import BrowserConfirmationResult, BrowserXssAssistant
 from framework.xss.context import HtmlContextAnalyzer
 from framework.xss.dom import DomXssEngine
 from framework.xss.model import (
@@ -202,6 +202,48 @@ class XssIntelligenceEngine:
         )
 
         return cand, finding
+
+    def confirm_candidate_with_browser(
+        self,
+        candidate: XssCandidate,
+        observe_spa: bool = False,
+    ) -> BrowserConfirmationResult:
+        """
+        Attempts browser-assisted verification of an observed XSS candidate.
+        Strictly opt-in; requires browser_assistant to be enabled.
+        Does not escalate candidate confidence without verified canary execution.
+        """
+        if not self.browser_assistant.enabled:
+            return BrowserConfirmationResult(
+                success=False,
+                is_confirmed=False,
+                outcome="UNAVAILABLE",
+                evidence_summary="Browser confirmation is disabled by default.",
+            )
+
+        target_url = candidate.endpoint
+        canary = candidate.canary_token or ""
+        if candidate.parameter and canary:
+            parsed = urlparse(target_url)
+            query_dict = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            query_dict[candidate.parameter] = canary
+            new_query = urlencode(query_dict)
+            target_url = urlunparse(parsed._replace(query=new_query))
+
+        result = self.browser_assistant.confirm_candidate(
+            target_url=target_url,
+            canary_token=canary,
+            observe_spa=observe_spa,
+        )
+
+        # Only update candidate state if execution was explicitly confirmed by canary
+        if result.is_confirmed:
+            candidate.confidence = XssConfidence.VALIDATED
+            candidate.lifecycle_state = "VALIDATED"
+            candidate.notes = f"{candidate.notes} Browser execution confirmed: {result.evidence_summary}".strip()
+            self.state_mgr.save_candidate(candidate)
+
+        return result
 
     # ---------------- DOM XSS Intelligence Pipeline ----------------
 

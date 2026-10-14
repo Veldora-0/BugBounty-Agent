@@ -5,7 +5,16 @@ Provides context-aware Reflected XSS validation, DOM XSS source-to-sink intellig
 stored candidate retrieval correlation, and false-positive elimination.
 """
 
-from framework.xss.browser import BrowserConfirmationResult, BrowserXssAssistant
+from framework.xss.browser import (
+    BrowserCapability,
+    BrowserCapabilityDetector,
+    BrowserConfirmationResult,
+    BrowserExecutionBudget,
+    BrowserNetworkPolicy,
+    BrowserSessionManager,
+    BrowserSpaObserver,
+    BrowserXssAssistant,
+)
 from framework.xss.context import ContextAnalysisResult, HtmlContextAnalyzer
 from framework.xss.dom import DomXssEngine
 from framework.xss.engine import XssIntelligenceEngine
@@ -27,7 +36,13 @@ from framework.xss.validator import (
 )
 
 __all__ = [
+    "BrowserCapability",
+    "BrowserCapabilityDetector",
     "BrowserConfirmationResult",
+    "BrowserExecutionBudget",
+    "BrowserNetworkPolicy",
+    "BrowserSessionManager",
+    "BrowserSpaObserver",
     "BrowserXssAssistant",
     "ContextAnalysisResult",
     "DomXssEngine",

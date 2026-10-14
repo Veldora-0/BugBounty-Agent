@@ -13,6 +13,14 @@ from typing import Dict, List, Optional, Set
 from framework.tools.registry import ToolDef, ToolRegistry
 
 
+def _check_playwright_browsers() -> bool:
+    try:
+        from framework.xss.browser import BrowserCapabilityDetector
+        return BrowserCapabilityDetector().detect().browser_executable_available
+    except Exception:
+        return False
+
+
 # Runtime prerequisites mapped to verification checks
 SYSTEM_DEPENDENCY_CHECKS = {
     "go": lambda: shutil.which("go") is not None,
@@ -21,6 +29,7 @@ SYSTEM_DEPENDENCY_CHECKS = {
     "git": lambda: shutil.which("git") is not None,
     "cargo": lambda: shutil.which("cargo") is not None,
     "docker": lambda: shutil.which("docker") is not None,
+    "playwright-browsers": lambda: _check_playwright_browsers(),
 }
 
 
