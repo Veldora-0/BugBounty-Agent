@@ -73,18 +73,16 @@ class SystemDoctor:
     def check_browser(self) -> Dict[str, Any]:
         """Category 5: Browser automation environment."""
         playwright_installed = find_executable("playwright") is not None
-        # Check if playwright python library is installed
-        pw_lib = False
-        try:
-            import playwright
-            pw_lib = True
-        except ImportError:
-            pw_lib = False
+        from framework.xss.browser import BrowserCapabilityDetector
 
+        cap = BrowserCapabilityDetector().detect()
         return {
             "playwright_cli": playwright_installed,
-            "playwright_python_lib": pw_lib,
-            "status": "READY" if (playwright_installed or pw_lib) else "NOT_INSTALLED",
+            "playwright_python_lib": cap.package_available,
+            "browser_executable": cap.browser_executable_available,
+            "can_launch": cap.can_launch,
+            "status": cap.state,
+            "details": cap.details,
         }
 
     def check_wordlists(self) -> Dict[str, Any]:

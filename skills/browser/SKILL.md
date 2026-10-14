@@ -6,30 +6,35 @@ description: Browser-based security investigation using headless automation, DOM
 # Browser Security Investigation Methodology
 
 ## Core Objective
-Analyze modern single-page applications (SPAs) and dynamic web interfaces that require full JavaScript execution, DOM evaluation, and browser event simulation to expose attack surfaces and vulnerabilities.
+Analyze modern single-page applications (SPAs) and dynamic web interfaces that require full JavaScript execution, DOM evaluation, and browser event simulation to expose attack surfaces and vulnerabilities while strictly enforcing privacy, data redaction, and scope constraints.
 
 ## 1. Dynamic Application & SPA Analysis
 * **Client-Side Rendering**: Headless browser automation (Playwright/Chromium) loads and executes client-side JavaScript, rendering virtual DOM structures that static crawlers miss.
-* **Route & Event Discovery**:
-  * Emulate user interactions: button clicks, dropdown expansions, form submissions.
-  * Monitor client-side navigation (HTML5 History API: `pushState`, `replaceState`, hashchange).
-  * Capture DOM mutations and dynamically inserted script tags.
+* **Bounded Route & Event Discovery**:
+  * Emulate bounded user interactions: button clicks, dropdown expansions, form submissions.
+  * Monitor client-side navigation (HTML5 History API: `pushState`, `replaceState`, hashchange) within strict caps (max 10 routes).
+  * Capture DOM mutation summaries (mutation count, script count) and dynamically inserted script tag metadata without unbounded content dumps.
 
-## 2. Network & Traffic Observation
-* **XHR / Fetch Interception**: Log all background AJAX and Fetch API calls, capturing request headers, POST bodies, and authentication tokens (`Authorization: Bearer ...`).
-* **WebSocket Monitoring**: Intercept WebSocket handshakes and log bi-directional message frames (`wss://`).
-* **Third-Party Request Auditing**: Track third-party analytics and tracking scripts that might receive sensitive customer data or session tokens.
+## 2. Network & Traffic Observation (Safe & Redacted)
+* **XHR / Fetch Interception**: Log background AJAX and Fetch API call metadata (methods, endpoints) with mandatory redaction.
+* **Strict Privacy Redaction**:
+  * Never persist plaintext credentials, API secrets, session tokens, or `Authorization: Bearer ...` headers.
+  * All sensitive headers (`Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`) are automatically replaced with `[REDACTED]`.
+  * Sensitive query parameters (`token`, `access_token`, `api_key`, `secret`, `password`) are redacted before storage.
+  * Never persist raw request/response bodies or WebSocket message frames.
+* **Subresource Policy & Scope Enforcement**: Apply scope checks and anti-SSRF protections to every background request and frame before transmission; abort out-of-scope or prohibited IP traffic immediately.
 
-## 3. Browser Storage & State Inspection
-* **Local & Session Storage**: Inspect `localStorage` and `sessionStorage` keys for insecure persistence of JWTs, API secrets, or personally identifiable information (PII).
-* **IndexedDB**: Review client databases for unencrypted sensitive business records.
-* **Cookie States**: Monitor cookie creation and modification during authentication flows, noting `SameSite` flags and lack of `HttpOnly`.
+## 3. Browser Storage & State Inspection (Metadata Only)
+* **Local & Session Storage**: Inspect storage key names only to evaluate state management patterns; never extract, log, or persist raw storage values containing tokens, JWTs, or PII.
+* **IndexedDB & Cache**: Inspect database names and store schemas; avoid persisting customer records or operational data.
+* **Cookie Flags**: Review observable cookie attribute flags (`Secure`, `HttpOnly`, `SameSite`) without persisting cookie value payloads.
 
 ## 4. DOM-Based Vulnerability Detection
-* **DOM XSS Observation**: Inject traceable canary strings into URL fragments and monitor whether execution occurs in sensitive DOM sinks (`eval`, `innerHTML`, `document.write`).
-* **Window PostMessage Auditing**: Inject controlled cross-origin messages into `window.postMessage` listeners to identify insecure message handling.
+* **Canary-Correlated Proof**: Inject traceable canary strings into candidate parameters and require verified presence of the canary token in dialogs (`alert`, `confirm`, `prompt`) before confirming execution.
+* **False-Positive Elimination**: Unrelated application alerts, console errors, or static source-to-sink flows alone remain `OBSERVED` or `INCONCLUSIVE`, never confirmed vulnerabilities.
+* **Window PostMessage Auditing**: Observe cross-origin `window.postMessage` listener registrations with bounded event capture.
 
-## 5. Tool Integration & Safeguards
-* Employ Playwright scripts in headless, sandboxed environments.
-* Keep browser profiles, cookies, and cache files strictly in local workspace directories (`~/BugBounty-Workspace/programs/<name>/browser/`).
-* Never commit browser profiles or session states to Git.
+## 5. Tool Integration & Safety Boundaries
+* Operate Playwright strictly in headless, sandboxed mode with bounded timeouts (default 5.0s, hard ceiling 15.0s).
+* Guarantee exception-safe resource cleanup: pages, browser contexts, and browser instances are closed in `finally` blocks during errors, timeouts, or crashes.
+* Never commit browser profiles, cache directories, or runtime session state to Git.

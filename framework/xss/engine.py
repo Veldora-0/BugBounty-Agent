@@ -61,6 +61,7 @@ class XssIntelligenceEngine:
         self.browser_assistant = BrowserXssAssistant(
             enabled=browser_enabled,
             scope_validator=self.validation_engine.check_request_scope if self.validation_engine else None,
+            scope_engine=self.scope_engine,
         )
 
     # ---------------- Active Reflected XSS Evaluation ----------------
