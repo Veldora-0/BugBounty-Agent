@@ -662,11 +662,13 @@ def test_file_upload_filename_traversal_detected(mock_server, test_workspace):
     assert "../" in raw_body
     assert "bb_canary" in raw_body
 
-    assert res.lifecycle_state == FindingLifecycle.OBSERVED
-    assert "FILENAME_TRAVERSAL_CONFIRMED" in res.signals_observed
+    assert res.lifecycle_state == FindingLifecycle.SIMULATED
+    assert "FILENAME_TRAVERSAL_SIMULATED" in res.signals_observed
     assert finding is not None
     assert finding.vulnerability_type == "File Upload Filename Traversal"
-    assert finding.severity == "HIGH"
+    assert finding.lifecycle_state == FindingLifecycle.SIMULATED
+    assert finding.severity == "INFORMATIONAL"
+    assert finding.is_report_ready()[0] is False
 
 
 def test_file_upload_policy_restriction_produces_manual_review(test_workspace):
