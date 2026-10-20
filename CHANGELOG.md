@@ -5,6 +5,26 @@ All notable changes to the BugBounty-Agent project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Phase 16: Browser Runtime & Client-Side Security (Accepted with Documented Limitations)
+
+#### Added & Hardened
+* **Local Validating Egress Proxy (`ValidatingEgressProxy`)**:
+  * Implemented an ephemeral loopback HTTP/CONNECT forward proxy with direct numeric IP pinning (`_connect_upstream`), closing the DNS TOCTOU rebinding window.
+  * Enforced `--proxy-bypass-list=<-loopback>` to prevent Chromium from bypassing loopback proxying.
+  * Pre-connection destination, SSRF, literal IP, DNS resolution, and scope checks across all HTTP, HTTPS, WS, and WSS requests before upstream connections can be created.
+* **WebSocket Pre-Handshake & Pre-Connection Enforcement**:
+  * Integrated Playwright's `BrowserContext.route_web_socket` to intercept `ws://` and `wss://` at the browser engine level; when `allow_websockets=False`, connections are closed with code 1008 without calling `connect_to_server()`, strictly preventing the WebSocket handshake from reaching the server.
+  * Intercepted `Upgrade: websocket` and `CONNECT` requests at the transport proxy layer (`ValidatingEgressProxy`), validating destinations and pinning IPs before connection.
+  * Configurable `allow_websockets` policy gating across proxy and browser contexts.
+  * Retained `context.on("websocket")` as secondary post-handshake defense-in-depth audit/cleanup hook.
+* **Execution Budgets & Safe Deadlines**:
+  * Bounded browser session initialization with monotonic wall-clock deadlines.
+  * Enforced multi-byte Unicode evidence byte limits (`truncate_to_max_bytes`) preserving evidence markers without memory growth.
+* **Deterministic Test Suite (`tests/test_phase16_browser_runtime.py`)**:
+  * Added 101 comprehensive unit and integration tests across Sections 15–19 verifying proxy fail-closed startup, anti-SSRF IP pinning, pre-handshake WebSocket routing, and Unicode truncation.
+
 ---
 
 ## [1.14.2] - 2026-10-10

@@ -3,7 +3,7 @@
 
 **Accepted Baseline**: `d1f7df8f1f17811d9e49484c202cb950edfc582f`  
 **Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 16)  
-**Status**: Implementation attempted; staged for independent acceptance review. (Not marked accepted or complete).
+**Status**: Accepted (with documented limitations). Next planned phase: Phase 17 (Advanced API Security).
 
 ---
 
@@ -208,11 +208,11 @@ Implement these tests before changing production code.
 
 ## 7. Acceptance Gate & Checklist
 
-Phase 16 is not complete until:
-- [ ] Browser capability status reflects actual launchability across environments.
-- [ ] Doctor check Category 5 performs zero downloads and reports truthfully.
-- [ ] Redirects and browser-generated requests cannot bypass scope or anti-SSRF policy.
-- [ ] All browser resources close on every exit path (success, timeout, exception).
-- [ ] Browser evidence is bounded, redacted, and canary-aware; unrelated dialogs are rejected as false positives.
-- [ ] Missing capability is explicitly surfaced without silent failure.
-- [ ] All existing regression tests continue to pass with zero regressions.
+Phase 16 acceptance criteria satisfied:
+- [x] Browser capability status reflects actual launchability across environments.
+- [x] Doctor check Category 5 performs zero downloads and reports truthfully.
+- [x] Redirects and browser-generated requests cannot bypass scope or anti-SSRF policy.
+- [x] All browser resources close on every exit path (success, timeout, exception).
+- [x] Browser evidence is bounded, redacted, and canary-aware; unrelated dialogs are rejected as false positives.
+- [x] Missing capability is explicitly surfaced without silent failure.
+- [x] All existing regression tests continue to pass with zero regressions.

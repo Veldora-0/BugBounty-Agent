@@ -44,3 +44,26 @@ The framework code enforces the following non-negotiable architectural boundarie
 4. **Credential Redaction Invariant**:
    * Passwords, live session cookies, refresh tokens, and bearer tokens are never persisted in state files or reports; only cryptographic SHA-256 fingerprint references (`sess_sha256_...`) are tracked.
 
+---
+
+## 4. Browser Runtime & Client-Side Security Safeguards (Phase 16)
+
+1. **Opt-In Headless Automation**:
+   * Browser execution is strictly disabled by default (`browser_enabled=False`). It is only activated for canary-correlated proof confirmation and bounded SPA analysis.
+2. **Local Validating Egress Proxy (`ValidatingEgressProxy`)**:
+   * Egress traffic is directed to an ephemeral loopback proxy (`127.0.0.1:<port>`) with `--proxy-bypass-list=<-loopback>` to prevent Chromium from bypassing loopback proxying.
+   * Eliminates the DNS TOCTOU rebinding window by resolving destination hostnames pre-flight, verifying all resolved IPs against private/metadata SSRF prohibitions, and connecting upstream sockets directly to the pinned numeric IP tuple.
+3. **Pre-Handshake WebSocket & Transport Enforcement**:
+   * Pre-handshake WebSocket routing (`BrowserContext.route_web_socket`) intercepts all `ws://` and `wss://` connections at the browser engine level. When `allow_websockets=False`, connections are closed with code 1008 without calling `ws_route.connect_to_server()`, strictly preventing the WebSocket handshake from reaching the server.
+   * At the transport layer, `ValidatingEgressProxy` validates destination host/IP, enforces anti-SSRF literal and DNS checks, and pins the connection to the validated numeric IP tuple before establishing any upstream socket, blocking unauthorized destinations pre-connection.
+   * `BrowserNetworkPolicy.handle_websocket` operates as secondary post-handshake defense-in-depth across child pages and unrouted contexts.
+4. **Multi-Vector Routing & Service Worker Blocking**:
+   * Centralized route interception covers main navigation, HTTP redirects, child iframes, background subresources, and popups.
+   * Browser contexts block Service Workers (`service_workers="block"`) to prevent unintercepted background cache network requests.
+5. **Bounded Deadlines & Unicode-Safe Evidence**:
+   * Enforces monotonic wall-clock execution deadlines and strict caps on requests, redirects, and SPA route transitions.
+   * Evidence summaries enforce UTF-8 encoded byte ceilings (`truncate_to_max_bytes`) to prevent multi-byte Unicode memory leaks while preserving evidence markers.
+6. **Application-Level vs. OS-Level Network Isolation**:
+   * Proxy routing and Chromium isolation flags enforce strict application-level boundaries against web-tier SSRF and XSS callbacks.
+   * Operating system network isolation (e.g., Linux network namespaces `ip netns`) should be deployed in production environments requiring protection against native browser escape vulnerabilities.
+

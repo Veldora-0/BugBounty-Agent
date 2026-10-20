@@ -6,7 +6,7 @@ This document details the configuration, operational responsibilities, and behav
 
 ## Architecture Overview
 
-BugBounty-Agent employs a **single unified OpenCode agent** named `Bug-Bounty`. All specialized security research domains are implemented as **17 modular skills** (`skills/`).
+BugBounty-Agent employs a **single unified OpenCode agent** named `Bug-Bounty`. All specialized security research domains are implemented as **18 modular skills** (`skills/`).
 
 > [!NOTE]
 > *Global Deployment Model*: `Bug-Bounty` is deployed globally to `~/.config/opencode/agents/Bug-Bounty.md` and `~/.config/opencode/skills/` via `bb-deploy`. This allows the agent to be launched from any directory on the research workstation (`cd ~`, `cd /tmp`, `cd ~/Desktop/BugBounty-Agent`). The Git repository remains the source-controlled canonical source of truth.
@@ -20,7 +20,7 @@ BugBounty-Agent employs a **single unified OpenCode agent** named `Bug-Bounty`. 
 * **Agent Name**: `Bug-Bounty`
 * **Mode**: `primary`
 * **Subagent Depth**: `1` (Direct skill orchestration; no subagent delegation)
-* **Skills Active**: All 17 framework skills:
+* **Skills Active**: All 18 framework skills:
   1. `scope-management`
   2. `asset-intelligence`
   3. `reconnaissance`
@@ -38,6 +38,7 @@ BugBounty-Agent employs a **single unified OpenCode agent** named `Bug-Bounty`. 
   15. `evidence`
   16. `reporting`
   17. `knowledge-research`
+  18. `authentication`
 
 ---
 

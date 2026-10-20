@@ -3,7 +3,7 @@
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
 > **Repository baseline:** `d1f7df8f1f17811d9e49484c202cb950edfc582f`  
-> **Current next phase:** Phase 16 — Browser Runtime & Client-Side Security  
+> **Current next phase:** Phase 17 — Advanced API Security
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
 ## 1. Roadmap at a glance
@@ -12,8 +12,8 @@
 |---|---|---:|---|
 | 1–14 | Existing core and intelligence engines | — | Complete; do not reopen without concrete evidence |
 | 15 | File Upload, Path Traversal & Local File Exposure | Critical | Complete (acceptance report supplied) |
-| 16 | Browser Runtime & Client-Side Security | High | **Next** |
-| 17 | Advanced API Security | High | Planned |
+| 16 | Browser Runtime & Client-Side Security | High | Complete (accepted with documented limitations) |
+| 17 | Advanced API Security | High | **Next** |
 | 18 | SSRF, XXE & Server-Side Parser Expansion | High | Planned |
 | 19 | Infrastructure & Configuration Exposure | Medium–High | Planned |
 | 20 | Race Conditions & Distributed Workflows | Medium–High | Planned |

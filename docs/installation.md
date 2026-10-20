@@ -91,7 +91,7 @@ python3 -m pytest -v
 BugBounty-Agent deploys globally into your OpenCode environment:
 
 * `agents/Bug-Bounty.md`: Canonical `Bug-Bounty` orchestrator agent definition.
-* `skills/`: 17 modular methodology skills.
+* `skills/`: 18 modular methodology skills.
 * `scripts/bb-deploy`: Automated synchronization utility that links `~/.config/opencode/` and `~/.local/bin/`.
 
 Deploy globally on Kali/Linux:

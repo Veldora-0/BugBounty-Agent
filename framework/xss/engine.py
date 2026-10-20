@@ -213,6 +213,25 @@ class XssIntelligenceEngine:
         Strictly opt-in; requires browser_assistant to be enabled.
         Does not escalate candidate confidence without verified canary execution.
         """
+        if candidate is None:
+            return BrowserConfirmationResult(
+                success=False,
+                is_confirmed=False,
+                outcome="INVALID_INPUT",
+                errors=["Cannot confirm null candidate."],
+                evidence_summary="Candidate validation failure: candidate is None.",
+            )
+
+        target_url = getattr(candidate, "endpoint", None) or ""
+        if not target_url:
+            return BrowserConfirmationResult(
+                success=False,
+                is_confirmed=False,
+                outcome="INVALID_INPUT",
+                errors=["Candidate endpoint is missing or empty."],
+                evidence_summary="Candidate validation failure: candidate endpoint is empty.",
+            )
+
         if not self.browser_assistant.enabled:
             return BrowserConfirmationResult(
                 success=False,
@@ -221,7 +240,6 @@ class XssIntelligenceEngine:
                 evidence_summary="Browser confirmation is disabled by default.",
             )
 
-        target_url = candidate.endpoint
         canary = candidate.canary_token or ""
         if candidate.parameter and canary:
             parsed = urlparse(target_url)

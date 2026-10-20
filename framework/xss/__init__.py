@@ -11,9 +11,13 @@ from framework.xss.browser import (
     BrowserConfirmationResult,
     BrowserExecutionBudget,
     BrowserNetworkPolicy,
+    BrowserSecurityPolicyError,
     BrowserSessionManager,
     BrowserSpaObserver,
     BrowserXssAssistant,
+    MANDATORY_CHROMIUM_ISOLATION_FLAGS,
+    ValidatingEgressProxy,
+    truncate_to_max_bytes,
 )
 from framework.xss.context import ContextAnalysisResult, HtmlContextAnalyzer
 from framework.xss.dom import DomXssEngine
@@ -41,6 +45,7 @@ __all__ = [
     "BrowserConfirmationResult",
     "BrowserExecutionBudget",
     "BrowserNetworkPolicy",
+    "BrowserSecurityPolicyError",
     "BrowserSessionManager",
     "BrowserSpaObserver",
     "BrowserXssAssistant",
@@ -48,9 +53,11 @@ __all__ = [
     "DomXssEngine",
     "DomXssValidator",
     "HtmlContextAnalyzer",
+    "MANDATORY_CHROMIUM_ISOLATION_FLAGS",
     "ReflectionState",
     "ReflectedXssContextValidator",
     "StoredXssEngine",
+    "ValidatingEgressProxy",
     "XssCandidate",
     "XssCategory",
     "XssConfidence",
@@ -60,4 +67,5 @@ __all__ = [
     "XssSink",
     "XssSource",
     "XssStateManager",
+    "truncate_to_max_bytes",
 ]

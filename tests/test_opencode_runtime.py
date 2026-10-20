@@ -12,9 +12,9 @@ Validates:
    - Denied subagent invocation to enforce single-agent architecture
 3. Agent discovery and frontmatter validation for single agent Bug-Bounty:
    - Bug-Bounty configured as mode: primary
-   - References all 17 specialized skills
+   - References all 18 specialized skills
    - Previous 14 multi-agent definitions are removed/inactive
-4. Project-local skills discovery and frontmatter validation across all 17 skills.
+4. Project-local skills discovery and frontmatter validation across all 18 skills.
 5. Absence of shell injection vectors (no shell=True) in framework and scripts.
 """
 
