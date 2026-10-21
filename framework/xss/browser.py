@@ -80,8 +80,8 @@ class BrowserCapabilityDetector:
         except ImportError:
             return None
 
-    def detect(self) -> BrowserCapability:
-        """Inspects package, executable, driver, and launchability."""
+    def detect(self, browser_type: str = "chromium") -> BrowserCapability:
+        """Inspects package, executable, driver, and launchability for chromium or firefox."""
         api = self._get_sync_playwright()
         if api is None:
             return BrowserCapability(
@@ -92,17 +92,29 @@ class BrowserCapabilityDetector:
                 details="Playwright Python package is not installed.",
             )
 
+        btype = (browser_type or "chromium").lower().strip()
+        if btype not in ("chromium", "firefox"):
+            return BrowserCapability(
+                package_available=True,
+                browser_executable_available=False,
+                can_launch=False,
+                state="UNSUPPORTED_BROWSER",
+                details=f"Unsupported browser type: {btype}. Supported types: chromium, firefox.",
+            )
+
         try:
             with api.sync_playwright() as p:
+                b_driver = p.firefox if btype == "firefox" else p.chromium
+                b_name = "Firefox" if btype == "firefox" else "Chromium"
                 try:
-                    exec_path = p.chromium.executable_path
+                    exec_path = b_driver.executable_path
                     if not exec_path or not os.path.exists(exec_path):
                         return BrowserCapability(
                             package_available=True,
                             browser_executable_available=False,
                             can_launch=False,
                             state="MISSING_BROWSER",
-                            details="Chromium browser binary is not installed.",
+                            details=f"{b_name} browser binary is not installed.",
                         )
                 except Exception as e:
                     return BrowserCapability(
@@ -110,19 +122,19 @@ class BrowserCapabilityDetector:
                         browser_executable_available=False,
                         can_launch=False,
                         state="MISSING_BROWSER",
-                        details=f"Chromium executable check failed: {type(e).__name__}",
+                        details=f"{b_name} executable check failed: {type(e).__name__}",
                     )
 
                 # Dry-launch headless browser to verify shared libraries and sandbox
                 try:
-                    browser = p.chromium.launch(headless=True, timeout=5000)
+                    browser = b_driver.launch(headless=True, timeout=5000)
                     browser.close()
                     return BrowserCapability(
                         package_available=True,
                         browser_executable_available=True,
                         can_launch=True,
                         state="READY",
-                        details="Headless Chromium verified and ready.",
+                        details=f"Headless {b_name} verified and ready.",
                     )
                 except Exception as launch_err:
                     return BrowserCapability(
@@ -1004,6 +1016,7 @@ class BrowserSessionManager:
         enable_egress_proxy: bool = True,
         allow_websockets: bool = True,
         network_policy: Optional[BrowserNetworkPolicy] = None,
+        browser_type: str = "chromium",
     ):
         self.pw = playwright_instance
         self.timeout = max(1.0, min(15.0, float(timeout)))
@@ -1012,6 +1025,7 @@ class BrowserSessionManager:
         self.enable_egress_proxy = bool(enable_egress_proxy)
         self.allow_websockets = bool(allow_websockets)
         self.network_policy = network_policy
+        self.browser_type = (browser_type or "chromium").lower().strip()
         self.browser = None
         self.context = None
         self.page = None
@@ -1072,18 +1086,26 @@ class BrowserSessionManager:
                         "server": f"http://127.0.0.1:{proxy_port}",
                         "bypass": "<-loopback>",
                     }
-                    launch_args.extend(MANDATORY_CHROMIUM_ISOLATION_FLAGS)
+                    if self.browser_type != "firefox":
+                        launch_args.extend(MANDATORY_CHROMIUM_ISOLATION_FLAGS)
                 except Exception as e:
                     raise BrowserSecurityPolicyError(
                         f"Failed to initialize mandatory validating egress proxy: {type(e).__name__}: {e}"
                     ) from e
 
             launch_timeout_ms = max(500, int(self.timeout * 1000))
-            self.browser = self.pw.chromium.launch(
-                headless=True,
-                timeout=launch_timeout_ms,
-                args=launch_args if launch_args else None,
-            )
+            if self.browser_type == "firefox":
+                self.browser = self.pw.firefox.launch(
+                    headless=True,
+                    timeout=launch_timeout_ms,
+                    proxy=proxy_config,
+                )
+            else:
+                self.browser = self.pw.chromium.launch(
+                    headless=True,
+                    timeout=launch_timeout_ms,
+                    args=launch_args if launch_args else None,
+                )
             context_kwargs: Dict[str, Any] = {
                 "ignore_https_errors": True,
                 "java_script_enabled": True,
@@ -1305,6 +1327,7 @@ class BrowserXssAssistant:
         route_fulfill_handler: Optional[Callable[[Any, Any], bool]] = None,
         enable_egress_proxy: bool = True,
         allow_websockets: bool = True,
+        browser_type: str = "chromium",
     ):
         self.enabled = bool(enabled)
         self.timeout = max(1.0, min(15.0, float(timeout)))
@@ -1314,15 +1337,16 @@ class BrowserXssAssistant:
         self.route_fulfill_handler = route_fulfill_handler
         self.enable_egress_proxy = bool(enable_egress_proxy)
         self.allow_websockets = bool(allow_websockets)
+        self.browser_type = (browser_type or "chromium").lower().strip()
 
     def is_available(self) -> bool:
         """Verifies if headless browser is executable and ready."""
-        cap = self.detector.detect()
+        cap = self.detector.detect(self.browser_type)
         return cap.can_launch
 
     def is_playwright_available(self) -> bool:
         """Backwards compatibility check for package presence."""
-        cap = self.detector.detect()
+        cap = self.detector.detect(self.browser_type)
         return cap.package_available
 
     def verify_url_safety(self, url: str) -> None:
@@ -1496,6 +1520,7 @@ class BrowserXssAssistant:
                     enable_egress_proxy=self.enable_egress_proxy,
                     allow_websockets=self.allow_websockets,
                     network_policy=policy,
+                    browser_type=self.browser_type,
                 ) as session:
                     context = session.context
                     page = session.page

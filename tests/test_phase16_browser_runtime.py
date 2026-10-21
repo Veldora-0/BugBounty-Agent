@@ -851,6 +851,7 @@ def test_real_browser_local_spa_integration():
 
     assistant = BrowserXssAssistant(
         enabled=True,
+        timeout=15.0,
         scope_engine=mock_scope,
         route_fulfill_handler=handle_fixture_route,
     )
@@ -863,6 +864,83 @@ def test_real_browser_local_spa_integration():
         )
 
     # Assert real-browser observation succeeded
+    assert res.outcome == "OBSERVED"
+    assert res.success is True
+    assert res.is_confirmed is False
+    assert "/spa/route1" in res.spa_summary.get("routes_observed", [])
+    assert res.spa_summary.get("dom_mutation_count", 0) >= 1
+
+@pytest.mark.skipif(
+    not BrowserCapabilityDetector().detect(browser_type="firefox").can_launch,
+    reason="Headless Firefox runtime not available in current environment",
+)
+def test_real_browser_firefox_local_spa_integration():
+    """
+    Real-browser integration test exercising actual headless Firefox execution
+    and SPA observer hooks via Playwright in-memory route fulfillment.
+
+    Safety and Determinism Guarantees:
+    1. Authorized In-Scope Destination: Uses 'https://spa-fixture.example.com/app'.
+    2. Zero External Traffic: Mocked DNS returns public IP; Playwright route handler
+       fulfills the request in-memory with local fixture HTML.
+    3. Production SSRF active: No bypasses for loopback or private ranges.
+    4. Real Firefox JS execution: Executes history.pushState and DOM mutations in real Firefox.
+    5. Non-vacuous assertions: Asserts outcome is OBSERVED, route transitions are captured,
+       and DOM mutation counts are recorded.
+    """
+    mock_scope = MagicMock(spec=ScopeEngine)
+    mock_scope.check.return_value = ScopeDecision(
+        status=ScopeStatus.IN_SCOPE,
+        reason="Authorized test target",
+        target="https://spa-fixture.example.com/app",
+        normalized_target="https://spa-fixture.example.com/app",
+        matched_rule=None,
+        rule_category="TARGET_DOMAIN",
+    )
+
+    fixture_html = """<!DOCTYPE html>
+    <html>
+    <head><title>SPA Live Test Firefox</title></head>
+    <body>
+        <div id="content">Initial View Firefox</div>
+        <script>
+            // Client-side route transition
+            history.pushState({}, '', '/spa/route1');
+            // DOM mutation
+            const d = document.createElement('div');
+            d.id = 'dynamic-element';
+            d.textContent = 'Dynamic Content Added in Firefox';
+            document.body.appendChild(d);
+        </script>
+    </body>
+    </html>"""
+
+    def handle_fixture_route(route, request):
+        if "spa-fixture.example.com" in request.url:
+            route.fulfill(
+                status=200,
+                content_type="text/html",
+                body=fixture_html,
+            )
+            return True
+        return False
+
+    assistant = BrowserXssAssistant(
+        enabled=True,
+        timeout=15.0,
+        scope_engine=mock_scope,
+        route_fulfill_handler=handle_fixture_route,
+        browser_type="firefox",
+    )
+
+    with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]):
+        res = assistant.confirm_candidate(
+            target_url="https://spa-fixture.example.com/app",
+            canary_token="canary_token_spa_firefox",
+            observe_spa=True,
+        )
+
+    # Assert real Firefox observation succeeded
     assert res.outcome == "OBSERVED"
     assert res.success is True
     assert res.is_confirmed is False
