@@ -2,8 +2,8 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Repository baseline:** `d1f7df8f1f17811d9e49484c202cb950edfc582f`  
-> **Current next phase:** Phase 17 — Advanced API Security
+> **Repository baseline:** `5502633bf4828e1c3a7493f36cdccbf435a1ebbf`  
+> **Current phase:** Phase 18 — SSRF, XXE & Server-Side Parser Expansion
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
 ## 1. Roadmap at a glance
@@ -13,8 +13,8 @@
 | 1–14 | Existing core and intelligence engines | — | Complete; do not reopen without concrete evidence |
 | 15 | File Upload, Path Traversal & Local File Exposure | Critical | Complete (acceptance report supplied) |
 | 16 | Browser Runtime & Client-Side Security | High | Complete (accepted with documented limitations) |
-| 17 | Advanced API Security | High | **Next** |
-| 18 | SSRF, XXE & Server-Side Parser Expansion | High | Planned |
+| 17 | Advanced API Security | High | Complete (accepted at `5502633bf4828e1c3a7493f36cdccbf435a1ebbf` with documented limitations) |
+| 18 | SSRF, XXE & Server-Side Parser Expansion | High | In Progress (Current Phase) |
 | 19 | Infrastructure & Configuration Exposure | Medium–High | Planned |
 | 20 | Race Conditions & Distributed Workflows | Medium–High | Planned |
 | 21 | Authentication & Authorization Correlation | Medium | Planned |
@@ -36,6 +36,22 @@ A targeted inspection at the earlier planning baseline found useful foundations,
 - A browser skill and Playwright tool registration exist, but that alone does not prove the runtime, browser dependencies, headless operation, or browser-driven security workflow are reliable.
 - API security and SSRF already have dedicated engines. Phases 17 and 18 must extend those capabilities where evidence shows gaps, not create competing duplicate engines.
 - Authentication, authorization, shared finding lifecycle, evidence handling, scope enforcement, and reporting already exist and should be reused.
+
+### Phase 17 Acceptance & Verification Record
+Phase 17 (Advanced API Security) was accepted at baseline commit `5502633bf4828e1c3a7493f36cdccbf435a1ebbf`.
+- **Test execution results reported by environments**:
+  - Windows 11 (Python 3.14.7): 87 passed in `tests/test_api_engine.py`; 628 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py` when browser binaries are not installed) in full test suite.
+  - Kali Linux (Python 3.14.8): 87 passed in `tests/test_api_engine.py`; 630 passed, 0 skipped in full test suite.
+- **Review and acceptance status**:
+  - Independent code and diff review conducted against baseline `5502633bf4828e1c3a7493f36cdccbf435a1ebbf`.
+  - Continuous response-byte budget accounting (Finding A) and fixture-port exact-port gating with exclusion precedence (Finding B) verified.
+- **Documented Phase 17 limitations**:
+  - Active GraphQL introspection is strictly opt-in (`allow_graphql_introspection=True`, default `False`) and bounded to 5,000 parameters and max schema depth.
+  - Continuous response-byte accounting (`total_bytes_transferred`) depletes the global network budget (`max_bytes`) even on malformed, oversized, truncated, or rejected responses.
+  - OpenAPI 3.0/3.1 and Swagger 2.0 reference resolution supports local and relative file/URL references up to depth 10; remote references outside authorized scope fail closed.
+  - Ephemeral loopback fixture ports strictly require explicit unprivileged integer registration (`1024-65535`) and scope authorization; production targets strictly forbid loopback/RFC 1918/cloud metadata.
+  - Explicit scope exclusions take strict precedence over fixture port allowances and target inclusions.
+  - Automated exploitation and automatic report submission are strictly prohibited.
 
 These notes are a preliminary inspection, not a complete coverage audit. Before implementing each phase, inspect the relevant current code and tests at the then-current HEAD.
 
@@ -62,10 +78,18 @@ Safety boundaries:
 **Goal:** Make browser-dependent analysis reproducible in headless Kali/CLI environments, including capability detection, lifecycle/cleanup, bounded navigation, client-side route and DOM behavior analysis, and correlation with existing JavaScript/XSS findings. Gracefully report unavailable browser capability rather than silently skipping it.
 
 ### Phase 17 — Advanced API Security
-**Goal:** Extend the existing API engine only where coverage gaps justify it. Candidate areas include deeper schema/operation relationships, authorization-aware API flows, GraphQL-specific analysis, content-type/parser edge cases, and safe method/parameter behavior. Preserve strict request budgets, scope checks, and non-destructive defaults.
+**Status:** Complete (accepted at `5502633bf4828e1c3a7493f36cdccbf435a1ebbf`).
+**Delivered:** Bounded OpenAPI 2.0/3.0/3.1 and GraphQL schema parsing, continuous byte accounting (`total_bytes_transferred`), fail-closed transport and scope controls, strict loopback fixture port gating with exclusion precedence, state management (`api.json`), and downstream injection engine integration.
 
 ### Phase 18 — SSRF, XXE & Server-Side Parser Expansion
-**Goal:** Extend the existing SSRF engine and add evidence-based, safe server-side parser analysis—especially XXE and relevant structured document formats—without duplicating Phase 9 SSRF functionality. Prefer non-egress canaries and isolated local fixtures; no cloud metadata access or uncontrolled out-of-band callbacks.
+**Status:** In Progress (Current Phase).
+**Goal:** Extend the existing SSRF engine (`framework/ssrf/`) and add evidence-based, safe server-side parser analysis—especially XXE and structured document parsing—without duplicating existing SSRF functionality.
+**Key Requirements & Acceptance Criteria:**
+- **Agent-Side XML Hardening**: Secure all XML parsing entry points (including sitemap parsing in `framework/webapp/engine.py`) against XML bombs (Billion Laughs / entity expansion denial of service) and unauthorized external entity resolution using portable Python standard library APIs (no undeclared dependencies).
+- **SSRF Transport Hardening**: Ensure mixed public/private DNS answers fail closed, evaluate alternative IP encodings safely, enforce continuous response-byte accounting during stream reads, and verify redirects to unauthorized destinations receive zero hits.
+- **SSRF Request Mutation**: Extend `_build_mutated_request()` to support Query, Path, JSON body, Form-encoded body, and XML body parameters.
+- **Conservative XXE Intelligence**: Support safe non-destructive entity reflection and parameter entity checks using harmless synthetic canaries; strictly forbid reading sensitive local files (`/etc/passwd`, `win.ini`) or probing cloud metadata (`169.254.169.254`); distinguish parser errors, candidates, suspected behavior, and validated findings.
+- **Shared Lifecycle & Safety**: Maintain single-agent 18-skill catalog, fail-closed scope enforcement, FindingLifecycle, evidence hashing, and deduplication.
 
 ### Phase 19 — Infrastructure & Configuration Exposure
 **Goal:** Correlate service and configuration observations with safe checks for exposed administrative surfaces, accidental configuration/backup exposure, unsafe defaults, and deployment mistakes. Distinguish informational observations from demonstrable vulnerabilities and avoid broad or disruptive scanning.
