@@ -10,6 +10,9 @@ from __future__ import annotations
 from enum import Enum
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
+
+from framework.common.transport import parse_alternate_ip
 
 
 class EndpointSafetyClass(str, Enum):
@@ -50,6 +53,20 @@ SENSITIVE_HEADER_KEYS = {
     "csrf-token",
 }
 
+# Default trusted out-of-band callback provider domains
+DEFAULT_TRUSTED_OOB_DOMAINS: Set[str] = {
+    "oob.local",
+    "bugbounty-agent.local",
+    "oast.pro",
+    "oast.live",
+    "oast.site",
+    "oast.online",
+    "oast.fun",
+    "oast.me",
+    "burpcollaborator.net",
+    "oastify.com",
+}
+
 
 class PolicyViolationError(ValueError):
     """Raised when a security validation action violates the safe testing policy."""
@@ -80,6 +97,7 @@ class SecurityTestPolicy:
         block_state_changing_get: bool = True,
         block_unknown_endpoints: bool = False,
         endpoint_classifications: Optional[Dict[str, EndpointSafetyClass | str]] = None,
+        trusted_oob_domains: Optional[Set[str]] = None,
     ):
         self.allowed_methods: Set[str] = {
             m.strip().upper() for m in (allowed_methods or {"GET", "HEAD", "OPTIONS"})
@@ -104,6 +122,9 @@ class SecurityTestPolicy:
                 self.endpoint_classifications[k] = (
                     v if isinstance(v, EndpointSafetyClass) else EndpointSafetyClass(str(v).upper())
                 )
+        self.trusted_oob_domains: Set[str] = {
+            d.strip().lower() for d in (trusted_oob_domains or DEFAULT_TRUSTED_OOB_DOMAINS)
+        }
 
     def is_method_allowed(self, method: str) -> bool:
         """Verifies if HTTP method is permitted under this policy."""
@@ -196,10 +217,114 @@ class SecurityTestPolicy:
                 f"Payload size {payload_size} bytes exceeds maximum policy bound of {self.max_payload_size} bytes."
             )
 
+    def is_trusted_oob_host(self, host: str) -> bool:
+        """
+        Evaluates whether a host matches the configured trusted OOB domain list
+        (either as an exact domain match or as a valid subdomain).
+        """
+        clean_host = host.strip().lower()
+        if clean_host.startswith("[") and clean_host.endswith("]"):
+            clean_host = clean_host[1:-1]
+        for trusted in self.trusted_oob_domains:
+            trusted_clean = trusted.strip().lower()
+            if clean_host == trusted_clean or clean_host.endswith("." + trusted_clean):
+                return True
+        return False
+
+    def validate_oob_destination(self, canary_url: str) -> None:
+        """
+        Validates that an Out-of-Band canary callback destination adheres to strict safety boundaries.
+        Enforces:
+        1. Non-empty string and valid URL structure.
+        2. Permitted scheme: only http and https are allowed.
+        3. Prohibits credentials (user:password in URL).
+        4. Prohibits IP literals: loopback, private RFC 1918, link-local, carrier-grade NAT, or cloud metadata.
+        5. Prohibits prohibited hostnames (e.g. metadata.google.internal, localhost).
+        6. Hostname MUST match the configured trusted OOB provider domains (exact or subdomain).
+        Raises PolicyViolationError on any violation.
+        """
+        if not canary_url or not isinstance(canary_url, str):
+            raise PolicyViolationError("OOB destination URL cannot be empty or non-string.")
+
+        clean_url = canary_url.strip()
+        parsed = urlparse(clean_url)
+
+        # 1. Permitted scheme
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in ("http", "https"):
+            raise PolicyViolationError(
+                f"Unsupported OOB scheme '{scheme}': only http and https are permitted."
+            )
+
+        # 2. Hostname presence
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            raise PolicyViolationError(f"OOB canary destination '{clean_url}' has no valid hostname.")
+
+        # 3. Prohibit credentials in URL
+        if parsed.username or parsed.password:
+            raise PolicyViolationError(
+                "OOB canary destination must not contain embedded user credentials."
+            )
+
+        # 4. Prohibit prohibited hostnames
+        prohibited_hostnames = {
+            "localhost",
+            "metadata.google.internal",
+            "metadata",
+            "instance-data",
+        }
+        if host in prohibited_hostnames:
+            raise PolicyViolationError(
+                f"Prohibited host '{host}' cannot be used as an OOB canary destination."
+            )
+
+        # 5. Prohibit IP literals (including alternate IP encodings and trailing IP literals)
+        alt_ip = parse_alternate_ip(host)
+        if alt_ip is None and len(host.split(".")) >= 4:
+            trailing_four = ".".join(host.split(".")[-4:])
+            alt_ip = parse_alternate_ip(trailing_four)
+
+        if alt_ip is not None:
+            # IP literal detected - check if prohibited
+            if (
+                alt_ip.is_loopback
+                or alt_ip.is_private
+                or alt_ip.is_link_local
+                or alt_ip.is_reserved
+                or alt_ip.is_multicast
+                or alt_ip.is_unspecified
+            ):
+                raise PolicyViolationError(
+                    f"Prohibited IP address '{host}' ({alt_ip}) in OOB canary destination: "
+                    f"loopback, private, and metadata IP addresses are strictly forbidden."
+                )
+            # Even if public IP literal, OOB destinations must use registered domain names
+            # matching trusted OOB provider policy, not raw IP literals
+            raise PolicyViolationError(
+                f"Raw IP literal '{host}' is not permitted as an OOB canary destination. "
+                f"Must use a trusted OOB domain name."
+            )
+
+        # 6. Validate port if present
+        if parsed.port is not None:
+            if parsed.port < 1 or parsed.port > 65535:
+                raise PolicyViolationError(
+                    f"Invalid port {parsed.port} in OOB canary destination."
+                )
+
+        # 7. Check trusted OOB domain whitelist
+        if not self.is_trusted_oob_host(host):
+            raise PolicyViolationError(
+                f"Untrusted OOB destination host '{host}'. "
+                f"Domain is not in the trusted OOB provider policy: {sorted(list(self.trusted_oob_domains))}"
+            )
+
     def to_dict(self) -> Dict[str, Any]:
         """Serializes policy configuration to dictionary."""
         return {
             "allowed_methods": sorted(list(self.allowed_methods)),
+            "trusted_oob_domains": sorted(list(self.trusted_oob_domains)),
             "max_requests_per_test": self.max_requests_per_test,
             "max_requests_per_endpoint": self.max_requests_per_endpoint,
             "max_requests_per_program": self.max_requests_per_program,

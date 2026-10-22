@@ -82,20 +82,28 @@ Safety boundaries:
 **Delivered:** Bounded OpenAPI 2.0/3.0/3.1 and GraphQL schema parsing, continuous byte accounting (`total_bytes_transferred`), fail-closed transport and scope controls, strict loopback fixture port gating with exclusion precedence, state management (`api.json`), and downstream injection engine integration.
 
 ### Phase 18 — SSRF, XXE & Server-Side Parser Expansion
-**Status:** In Review (Security correction pass delivered across commits `ae80d9f`, `1c3a3f5`, `96feb7c`, `062e107`, `76de1b6`, `da78090`, `af4cf6f`; awaiting independent acceptance review).
+**Status:** In Review (Security & OOB trust correction pass delivered; awaiting independent acceptance review).
 **Delivered:**
 - **Agent-Side XML Hardening**: Implemented portable stdlib XML security in `framework/common/xml_safe.py` (`safe_parse_xml`, `safe_extract_sitemap_urls`, `XmlBombSecurityError`, `ProhibitedDtdSecurityError`, `ExternalEntitySecurityError`) with strict cumulative expanded-character budgets (`max_expanded_chars`), Expat amplification factor defense, input byte limits, and Billion Laughs protection. Hardened sitemap parser in `framework/webapp/engine.py` to fail closed immediately on XML security errors with zero regex fallback.
 - **SSRF Transport Hardening**: Added `parse_alternate_ip` in `framework/common/transport.py` supporting dotted decimal, decimal scalars, hex scalars, octal scalars, dotted octal/hex, and inet_aton multi-part formats; hardened destination IP resolution in `framework/validation/engine.py` to fail closed if any DNS answer resolves to loopback, private, or metadata IP addresses; implemented continuous streaming byte accounting (`total_bytes_transferred`) across partial reads, redirects, and HTTP errors; added `max_total_bytes` policy control to `SecurityTestPolicy`.
 - **SSRF Request Mutation**: Expanded `_build_mutated_request()` in `framework/ssrf/engine.py` to support Query parameters, Path template parameters (`{param}`, `:param`, `<param>`), JSON bodies (flat and nested dotted keys), Form-encoded bodies, and XML bodies (DOM text replacement with XML entity escaping and safe parse error handling). Added `headers` and `body` fields to `SsrfCandidate`.
 - **Conservative XXE Intelligence Subsystem**: Created `framework/xxe/` orchestrating non-destructive synthetic entity reflection, signal classification, deterministic local simulation harness (`LocalXxeLab`), state management (`xxe.json`), and deduplication. Added `XXE = "XXE"` to `VulnerabilityFamily`, safe payloads `PL-XXE-REFL-01` and `PL-SSRF-CANARY-01`, and `XxeValidator` / `SsrfValidator` plugins in `SecurityValidationEngine`.
-- **Evidence Semantics & OOB Reconciliation**:
+- **Evidence Semantics & Truthful OOB Availability**:
   - Distinguishes XML candidacy, parser errors, observed internal DTD/entity processing, and external entity resolution.
   - Internal entity reflection alone emits an `OBSERVATION` (`INFORMATIONAL`, `MEDIUM` confidence), never a false `HIGH`-severity `VALIDATED` XXE finding.
   - Parser errors and secure rejections emit zero findings (no false positives).
-  - Out-of-band correlation (`validate_oob_candidate`) differentiates mock test harness interactions (`SIMULATED`, `INFORMATIONAL`) from live external target callbacks (`VALIDATED`, `HIGH`).
-  - Clarified OOB provider status: Live Interactsh / Collaborator adapters require external credentials/configuration (`CONFIG_REQUIRED`); mock providers verify only the local integration contract.
+  - Out-of-band correlation (`validate_oob_candidate`) differentiates mock test harness interactions (`SIMULATED`, `INFORMATIONAL`, `LOW` confidence) from live external target callbacks (`VALIDATED`, `HIGH`). Mock interactions can never produce live validated findings.
+  - Truthful OOB Provider Availability: `InteractshOobProvider` and `CollaboratorOobProvider` report `CONFIG_REQUIRED` when unconfigured and `UNAVAILABLE` when configured (because live wire polling over network protocols is not implemented; storage is local in-memory only). A configured token or hostname alone does not establish operational live polling.
+- **Enforced OOB Destination Trust Boundary**:
+  - Added `DEFAULT_TRUSTED_OOB_DOMAINS` and `validate_oob_destination()` in `SecurityTestPolicy` (`framework/validation/policy.py`).
+  - Prior to dispatching an OOB payload, `validate_oob_candidate()` (and `SsrfIntelligenceEngine.validate_candidate`):
+    1. Requires candidate approval gate (`approval_status == 'APPROVED'`).
+    2. Validates target endpoint against authorized program scope.
+    3. Verifies provider availability (halts with `TESTED` if provider reports `UNAVAILABLE` or `CONFIG_REQUIRED`).
+    4. Explicitly validates the generated canary destination against the dedicated trusted-provider policy before dispatch.
+    5. Rejects unsupported schemes (only `http`/`https` allowed), embedded credentials, IP literals (loopback, private, carrier-grade NAT, or metadata IP addresses, including alternate hex/octal/dword encodings and trailing IP suffixes like `169.254.169.254`), prohibited hostnames (`metadata.google.internal`, `localhost`), and untrusted domains before any request is dispatched, preventing arbitrary environment variables from silently redirecting callbacks. Candidate is marked `POLICY_VIOLATION` with zero network egress.
 - **Cross-Platform Verification Results**:
-  - Windows 11 (Python 3.14.7): 701 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py`) in 85s; 100% pass across all 72 Phase 18 tests.
+  - Windows 11 (Python 3.14.7): 719 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py`) in 74s; 100% pass across all 90 Phase 18 tests.
   - Kali Linux (Python 3.14.8): Synchronized and verified across all Phase 18 suites and full regression suites.
 - **Documented Phase 18 Limitations**:
   - Zero sensitive local file extraction (`file://`, `/etc/passwd`, `/etc/shadow`, `win.ini`) or cloud metadata probing (`169.254.169.254`, `metadata.google.internal`) is permitted; any matching target fails closed immediately.

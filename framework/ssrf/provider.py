@@ -83,6 +83,11 @@ class MockOobProvider(OobProvider):
         # active canaries
         self._canaries: Dict[str, str] = {}
 
+    @property
+    def is_simulation(self) -> bool:
+        """Indicates this provider runs strictly in-memory simulation for local testing."""
+        return True
+
     def name(self) -> str:
         return "mock"
 
@@ -155,7 +160,9 @@ class MockOobProvider(OobProvider):
 class InteractshOobProvider(OobProvider):
     """
     ProjectDiscovery Interactsh protocol client adapter.
-    Activated when INTERACTSH_TOKEN or PDCP_API_KEY is configured.
+    Reports CONFIG_REQUIRED when tokens are missing.
+    Reports UNAVAILABLE when configured because live wire polling over the Interactsh
+    protocol is not implemented in this adapter (storage is local in-memory only).
     """
 
     def __init__(
@@ -174,7 +181,11 @@ class InteractshOobProvider(OobProvider):
     def registration_status(self) -> OobProviderStatus:
         if not self.token:
             return OobProviderStatus.CONFIG_REQUIRED
-        return OobProviderStatus.AVAILABLE
+        # Live wire registration and interaction polling over the network
+        # are not implemented in this adapter (storage is in-memory only).
+        # A configured token or hostname must not, by itself, establish that
+        # live polling is operational. Truthfully report UNAVAILABLE.
+        return OobProviderStatus.UNAVAILABLE
 
     def generate_canary(self, prefix: str = "bb9", test_id: str = "") -> Tuple[str, str]:
         rand_id = uuid.uuid4().hex[:8]
@@ -201,6 +212,9 @@ class InteractshOobProvider(OobProvider):
 class CollaboratorOobProvider(OobProvider):
     """
     Burp Collaborator polling client adapter.
+    Reports CONFIG_REQUIRED when collaborator host is missing.
+    Reports UNAVAILABLE when configured because live polling over the Burp Collaborator
+    protocol is not implemented in this adapter (storage is local in-memory only).
     """
 
     def __init__(self, collab_host: Optional[str] = None):
@@ -213,7 +227,10 @@ class CollaboratorOobProvider(OobProvider):
     def registration_status(self) -> OobProviderStatus:
         if not self.collab_host:
             return OobProviderStatus.CONFIG_REQUIRED
-        return OobProviderStatus.AVAILABLE
+        # Live Burp Collaborator polling protocol is not implemented in this adapter
+        # (storage is in-memory only). A configured host alone does not establish
+        # operational live polling. Truthfully report UNAVAILABLE.
+        return OobProviderStatus.UNAVAILABLE
 
     def generate_canary(self, prefix: str = "bb9", test_id: str = "") -> Tuple[str, str]:
         rand_id = uuid.uuid4().hex[:8]

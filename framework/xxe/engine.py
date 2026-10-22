@@ -24,7 +24,7 @@ from framework.ssrf.model import OobProviderStatus
 from framework.ssrf.provider import MockOobProvider, OobProvider, OobProviderFactory
 from framework.state.dedup import FindingDeduplicator
 from framework.validation.engine import SecurityValidationEngine
-from framework.validation.policy import SecurityTestPolicy
+from framework.validation.policy import PolicyViolationError, SecurityTestPolicy
 from framework.validation.request import ControlledRequest, ControlledResponse
 from framework.xxe.model import (
     XxeCandidate,
@@ -477,9 +477,12 @@ class XxeIntelligenceEngine:
         prov_status = self.oob_provider.registration_status()
         prov_name = self.oob_provider.name()
 
-        # If provider requires configuration (e.g. unconfigured interactsh or collaborator stub)
+        # If provider requires configuration or is unavailable (e.g. live wire polling not operational)
         if prov_status != OobProviderStatus.AVAILABLE:
-            candidate.notes = f"OOB external entity verification unavailable: provider '{prov_name}' requires external credentials or configuration."
+            candidate.notes = (
+                f"OOB external entity verification unavailable: provider '{prov_name}' status is {prov_status.value} "
+                f"(live polling not operational)."
+            )
             candidate.lifecycle_state = "TESTED"
             self.state_mgr.save_candidate(candidate)
             return candidate, None
@@ -489,6 +492,15 @@ class XxeIntelligenceEngine:
             prefix="bb-xxe",
             test_id=candidate.candidate_id,
         )
+
+        # Explicitly validate generated canary destination against dedicated trusted-provider policy before dispatch
+        try:
+            self.policy.validate_oob_destination(canary_url)
+        except (PolicyViolationError, ValueError) as e:
+            candidate.lifecycle_state = "POLICY_VIOLATION"
+            candidate.notes = f"OOB canary destination rejected by policy: {e}"
+            self.state_mgr.save_candidate(candidate)
+            return candidate, None
 
         headers = dict(candidate.headers) if candidate.headers else {}
         if "Content-Type" not in headers and "content-type" not in headers:
@@ -503,6 +515,7 @@ class XxeIntelligenceEngine:
             f']>\n'
             f'<test><canary>probe</canary></test>'
         )
+        self._validate_payload_safety(test_payload)
 
         test_req = ControlledRequest(
             url=candidate.endpoint,
@@ -519,7 +532,11 @@ class XxeIntelligenceEngine:
         finding: Optional[Finding] = None
 
         if interactions:
-            is_mock = prov_name == "mock"
+            is_mock = (
+                prov_name == "mock"
+                or isinstance(self.oob_provider, MockOobProvider)
+                or getattr(self.oob_provider, "is_simulation", False)
+            )
             if is_mock:
                 # Mock harness verification: MUST NOT claim live target callback
                 candidate.confidence = XxeConfidence.SIMULATED

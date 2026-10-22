@@ -37,7 +37,7 @@ from framework.ssrf.provider import (
 from framework.ssrf.state import SsrfStateManager
 from framework.state.dedup import FindingDeduplicator
 from framework.validation.engine import SecurityValidationEngine
-from framework.validation.policy import SecurityTestPolicy
+from framework.validation.policy import PolicyViolationError, SecurityTestPolicy
 from framework.validation.request import ControlledRequest, ControlledResponse
 
 
@@ -386,6 +386,16 @@ class SsrfIntelligenceEngine:
         # 4. Canary Issuance
         canary_token, canary_url = self.canary_mgr.issue_canary(candidate.candidate_id)
         candidate.callback_token = canary_token
+
+        # Explicitly validate generated canary destination against policy before dispatch
+        if hasattr(self.policy, "validate_oob_destination"):
+            try:
+                self.policy.validate_oob_destination(canary_url)
+            except (PolicyViolationError, ValueError) as e:
+                candidate.lifecycle_state = "POLICY_VIOLATION"
+                candidate.notes = f"OOB canary destination rejected by policy: {e}"
+                self.state_mgr.save_candidate(candidate)
+                return candidate, None
 
         # 5. Baseline Capture (Normal input / Benign control)
         baseline_resp: Optional[ControlledResponse] = None

@@ -27,11 +27,16 @@ import pytest
 from framework.findings.lifecycle import FindingLifecycle
 from framework.scope.engine import ScopeEngine
 from framework.ssrf.model import OobProviderStatus
-from framework.ssrf.provider import MockOobProvider
+from framework.ssrf.provider import (
+    CollaboratorOobProvider,
+    InteractshOobProvider,
+    MockOobProvider,
+    OobProvider,
+)
 from framework.validation.baseline import BaselineComparison, BaselineObservation, compare_with_baseline
 from framework.validation.engine import SecurityValidationEngine
 from framework.validation.model import RiskLevel, SecurityTestCase, VulnerabilityFamily
-from framework.validation.policy import SecurityTestPolicy
+from framework.validation.policy import PolicyViolationError, SecurityTestPolicy
 from framework.validation.request import ControlledRequest, ControlledResponse
 from framework.validation.validator import XxeValidator, SsrfValidator
 from framework.xxe.engine import XxeIntelligenceEngine
@@ -337,6 +342,314 @@ class TestXxeActiveValidation:
         assert finding_res.severity != "HIGH"
         assert "[LOCAL HARNESS SIMULATION]" in finding_res.summary
         assert "does NOT prove an attributable remote target callback" in finding_res.summary
+
+
+# ============================================================================
+# 3b. OOB Provider Availability & Destination Trust Boundary
+# ============================================================================
+
+class TestOobProviderAvailabilityTruthfulness:
+    """Verifies that OOB providers report operational status truthfully without overclaiming."""
+
+    def test_interactsh_unconfigured_reports_config_required(self):
+        prov = InteractshOobProvider(token="")
+        prov.token = None
+        assert prov.registration_status() == OobProviderStatus.CONFIG_REQUIRED
+
+    def test_interactsh_configured_token_truthfully_reports_unavailable(self):
+        """
+        A configured token or hostname alone must not establish that live polling is operational.
+        Since live network polling is not implemented, the provider reports UNAVAILABLE.
+        """
+        prov = InteractshOobProvider(server_url="oast.pro", token="fake_pdcp_token_123")
+        assert prov.registration_status() == OobProviderStatus.UNAVAILABLE
+        assert prov.registration_status() != OobProviderStatus.AVAILABLE
+
+    def test_collaborator_unconfigured_reports_config_required(self):
+        prov = CollaboratorOobProvider(collab_host=None)
+        assert prov.registration_status() == OobProviderStatus.CONFIG_REQUIRED
+
+    def test_collaborator_configured_host_truthfully_reports_unavailable(self):
+        """
+        A configured collaborator host alone must not establish live polling.
+        Must truthfully report UNAVAILABLE.
+        """
+        prov = CollaboratorOobProvider(collab_host="burpcollaborator.net")
+        assert prov.registration_status() == OobProviderStatus.UNAVAILABLE
+        assert prov.registration_status() != OobProviderStatus.AVAILABLE
+
+    def test_mock_provider_reports_available_and_simulation_flag(self):
+        mock = MockOobProvider(base_domain="oob.local")
+        assert mock.registration_status() == OobProviderStatus.AVAILABLE
+        assert getattr(mock, "is_simulation", False) is True
+
+
+class TestOobDestinationTrustPolicy:
+    """Verifies that SecurityTestPolicy enforces strict boundaries on OOB canary destinations."""
+
+    def test_trusted_default_domains_permitted(self):
+        policy = SecurityTestPolicy()
+        valid_urls = [
+            "http://bb-xxe-01-abc.oob.local",
+            "https://test-token.bugbounty-agent.local/path",
+            "http://sub.oast.pro",
+            "https://sub.oast.live",
+            "http://sub.oast.site",
+            "http://sub.oast.online",
+            "http://sub.oast.fun",
+            "http://sub.oast.me",
+            "http://canary123.burpcollaborator.net",
+            "https://canary123.oastify.com",
+        ]
+        for url in valid_urls:
+            policy.validate_oob_destination(url)
+
+    def test_untrusted_domain_rejected(self):
+        policy = SecurityTestPolicy()
+        untrusted = [
+            "http://attacker.com/canary",
+            "http://evil.org",
+            "http://malicious-oob.xyz",
+            "https://my-unapproved-server.net/callback",
+        ]
+        for url in untrusted:
+            with pytest.raises(PolicyViolationError, match="Untrusted OOB destination host"):
+                policy.validate_oob_destination(url)
+
+    def test_unsupported_schemes_rejected(self):
+        policy = SecurityTestPolicy()
+        bad_schemes = [
+            "file:///etc/passwd",
+            "ftp://sub.oob.local/file",
+            "gopher://sub.oob.local:70/_test",
+            "dict://sub.oob.local/info",
+        ]
+        for url in bad_schemes:
+            with pytest.raises(PolicyViolationError, match="Unsupported OOB scheme"):
+                policy.validate_oob_destination(url)
+
+    def test_credentials_in_url_rejected(self):
+        policy = SecurityTestPolicy()
+        with pytest.raises(PolicyViolationError, match="embedded user credentials"):
+            policy.validate_oob_destination("http://admin:secret@sub.oob.local/canary")
+
+    def test_prohibited_ip_literals_rejected(self):
+        policy = SecurityTestPolicy()
+        prohibited_ips = [
+            "http://127.0.0.1/canary",
+            "http://127.0.0.2:8080/canary",
+            "http://169.254.169.254/latest/meta-data",
+            "http://10.0.0.1/test",
+            "http://192.168.1.1/test",
+            "http://172.16.0.1/test",
+            "http://[::1]/test",
+        ]
+        for url in prohibited_ips:
+            with pytest.raises(PolicyViolationError, match="Prohibited IP address"):
+                policy.validate_oob_destination(url)
+
+    def test_alternate_ip_encodings_rejected(self):
+        """Alternate IP encodings (octal, hex, dword) must also be rejected."""
+        policy = SecurityTestPolicy()
+        alternate_ips = [
+            "http://0x7f000001/canary",
+            "http://2130706433/canary",
+            "http://017700000001/canary",
+            "http://0xa9fea9fe/canary",
+            "http://2852039166/canary",
+            "http://0251.0376.0251.0376/canary",
+        ]
+        for url in alternate_ips:
+            with pytest.raises(PolicyViolationError, match="Prohibited IP address"):
+                policy.validate_oob_destination(url)
+
+    def test_cloud_metadata_hostnames_rejected(self):
+        policy = SecurityTestPolicy()
+        with pytest.raises(PolicyViolationError, match="Prohibited host"):
+            policy.validate_oob_destination("http://metadata.google.internal/computeMetadata/v1")
+        with pytest.raises(PolicyViolationError, match="Prohibited host"):
+            policy.validate_oob_destination("http://localhost/callback")
+
+    def test_custom_trusted_oob_domains_policy(self):
+        custom_policy = SecurityTestPolicy(trusted_oob_domains={"internal-canary.company.com"})
+        custom_policy.validate_oob_destination("http://tok123.internal-canary.company.com/hit")
+        with pytest.raises(PolicyViolationError, match="Untrusted OOB destination host"):
+            custom_policy.validate_oob_destination("http://tok123.oast.pro/hit")
+
+
+class TestXxeOobDispatchBoundary:
+    """Verifies that XxeIntelligenceEngine enforces the OOB destination trust boundary before dispatch."""
+
+    def test_oob_dispatch_rejects_untrusted_destination_before_network_call(self):
+        """
+        If the provider generates an untrusted destination (e.g. from an unvetted environment variable),
+        the engine must reject it with POLICY_VIOLATION without sending any HTTP request.
+        """
+        tmp_dir = tempfile.mkdtemp()
+        scope = make_scope()
+        policy = SecurityTestPolicy(allowed_methods={"GET", "HEAD", "OPTIONS", "POST"}, block_destructive_actions=False)
+
+        evil_provider = MockOobProvider(base_domain="attacker-controlled.net")
+
+        dispatched_requests: List[ControlledRequest] = []
+        def spy_hook(req: ControlledRequest) -> ControlledResponse:
+            dispatched_requests.append(req)
+            return ControlledResponse(status_code=200, headers={}, body="ok", size_bytes=2, elapsed_seconds=0.01)
+
+        engine = XxeIntelligenceEngine(
+            program_dir=tmp_dir,
+            scope_engine=scope,
+            policy=policy,
+            send_request_hook=spy_hook,
+            oob_provider=evil_provider,
+        )
+        engine.validation_engine.allow_fixture_port(8080)
+
+        cand = XxeCandidate(
+            application="OobApp",
+            endpoint="http://127.0.0.1:8080/xml",
+            parameter="doc",
+            category=XxeCategory.BLIND_OOB,
+            approval_status="APPROVED",
+        )
+
+        cand_res, finding = engine.validate_oob_candidate(cand, force_approved=True)
+
+        assert finding is None
+        assert cand_res.lifecycle_state == "POLICY_VIOLATION"
+        assert "OOB canary destination rejected by policy" in cand_res.notes
+        assert "Untrusted OOB destination host" in cand_res.notes
+        assert len(dispatched_requests) == 0
+
+    def test_oob_dispatch_rejects_metadata_ip_destination_before_network_call(self):
+        """
+        If canary destination targets cloud metadata IP (e.g. 169.254.169.254),
+        must fail closed without dispatching.
+        """
+        tmp_dir = tempfile.mkdtemp()
+        scope = make_scope()
+        policy = SecurityTestPolicy(allowed_methods={"GET", "HEAD", "OPTIONS", "POST"}, block_destructive_actions=False)
+
+        metadata_provider = MockOobProvider(base_domain="169.254.169.254")
+
+        dispatched_requests: List[ControlledRequest] = []
+        def spy_hook(req: ControlledRequest) -> ControlledResponse:
+            dispatched_requests.append(req)
+            return ControlledResponse(status_code=200, headers={}, body="ok", size_bytes=2, elapsed_seconds=0.01)
+
+        engine = XxeIntelligenceEngine(
+            program_dir=tmp_dir,
+            scope_engine=scope,
+            policy=policy,
+            send_request_hook=spy_hook,
+            oob_provider=metadata_provider,
+        )
+        engine.validation_engine.allow_fixture_port(8080)
+
+        cand = XxeCandidate(
+            application="OobApp",
+            endpoint="http://127.0.0.1:8080/xml",
+            parameter="doc",
+            category=XxeCategory.BLIND_OOB,
+            approval_status="APPROVED",
+        )
+
+        cand_res, finding = engine.validate_oob_candidate(cand, force_approved=True)
+
+        assert finding is None
+        assert cand_res.lifecycle_state == "POLICY_VIOLATION"
+        assert "Prohibited IP address" in cand_res.notes
+        assert len(dispatched_requests) == 0
+
+    def test_oob_dispatch_halts_safely_when_provider_unavailable(self):
+        """
+        When provider is UNAVAILABLE (e.g. Interactsh adapter without live polling),
+        engine halts safely with TESTED status, emits no finding, and dispatches zero requests.
+        """
+        tmp_dir = tempfile.mkdtemp()
+        scope = make_scope()
+        policy = SecurityTestPolicy(allowed_methods={"GET", "HEAD", "OPTIONS", "POST"}, block_destructive_actions=False)
+
+        interactsh_provider = InteractshOobProvider(server_url="oast.pro", token="tok123")
+        assert interactsh_provider.registration_status() == OobProviderStatus.UNAVAILABLE
+
+        dispatched_requests: List[ControlledRequest] = []
+        def spy_hook(req: ControlledRequest) -> ControlledResponse:
+            dispatched_requests.append(req)
+            return ControlledResponse(status_code=200, headers={}, body="ok", size_bytes=2, elapsed_seconds=0.01)
+
+        engine = XxeIntelligenceEngine(
+            program_dir=tmp_dir,
+            scope_engine=scope,
+            policy=policy,
+            send_request_hook=spy_hook,
+            oob_provider=interactsh_provider,
+        )
+        engine.validation_engine.allow_fixture_port(8080)
+
+        cand = XxeCandidate(
+            application="OobApp",
+            endpoint="http://127.0.0.1:8080/xml",
+            parameter="doc",
+            category=XxeCategory.BLIND_OOB,
+            approval_status="APPROVED",
+        )
+
+        cand_res, finding = engine.validate_oob_candidate(cand, force_approved=True)
+
+        assert finding is None
+        assert cand_res.lifecycle_state == "TESTED"
+        assert "OOB external entity verification unavailable" in cand_res.notes
+        assert "live polling not operational" in cand_res.notes
+        assert len(dispatched_requests) == 0
+
+    def test_oob_dispatch_scope_rejection_before_destination_check(self):
+        """Target endpoint outside authorized scope halts before provider check or probe dispatch."""
+        tmp_dir = tempfile.mkdtemp()
+        scope = make_scope()
+        policy = SecurityTestPolicy(allowed_methods={"GET", "HEAD", "OPTIONS", "POST"}, block_destructive_actions=False)
+
+        dispatched_requests: List[ControlledRequest] = []
+        def spy_hook(req: ControlledRequest) -> ControlledResponse:
+            dispatched_requests.append(req)
+            return ControlledResponse(status_code=200, headers={}, body="ok", size_bytes=2, elapsed_seconds=0.01)
+
+        engine = XxeIntelligenceEngine(
+            program_dir=tmp_dir,
+            scope_engine=scope,
+            policy=policy,
+            send_request_hook=spy_hook,
+            oob_provider=MockOobProvider(),
+        )
+
+        cand = XxeCandidate(
+            application="OutOfScopeApp",
+            endpoint="https://unauthorized-thirdparty.com/xml",
+            parameter="doc",
+            category=XxeCategory.BLIND_OOB,
+            approval_status="APPROVED",
+        )
+
+        cand_res, finding = engine.validate_oob_candidate(cand, force_approved=True)
+
+        assert finding is None
+        assert cand_res.lifecycle_state == "OUT_OF_SCOPE"
+        assert "is out of authorized scope" in cand_res.notes
+        assert len(dispatched_requests) == 0
+
+    def test_oob_dispatch_unapproved_halts_before_scope_or_destination_check(self):
+        """Unapproved candidate halts immediately awaiting approval gate."""
+        tmp_dir = tempfile.mkdtemp()
+        engine = XxeIntelligenceEngine(program_dir=tmp_dir, scope_engine=make_scope())
+        cand = XxeCandidate(
+            application="App",
+            endpoint="http://127.0.0.1:8080/xml",
+            parameter="body",
+            approval_status="PENDING",
+        )
+        cand_res, finding = engine.validate_oob_candidate(cand, force_approved=False)
+        assert finding is None
+        assert "awaiting explicit human approval gate" in cand_res.notes
 
 
 # ============================================================================
