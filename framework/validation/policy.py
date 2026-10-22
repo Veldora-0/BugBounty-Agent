@@ -70,6 +70,7 @@ class SecurityTestPolicy:
         max_requests_per_program: int = 200,
         timeout: float = 5.0,
         max_response_bytes: int = 100_000,
+        max_total_bytes: int = 10 * 1024 * 1024,
         max_payload_size: int = 512,
         max_evidence_size: int = 4096,
         max_redirects: int = 5,
@@ -88,6 +89,7 @@ class SecurityTestPolicy:
         self.max_requests_per_program = max(1, int(max_requests_per_program))
         self.timeout = max(0.5, float(timeout))
         self.max_response_bytes = max(1024, int(max_response_bytes))
+        self.max_total_bytes = max(1, int(max_total_bytes))
         self.max_payload_size = max(32, int(max_payload_size))
         self.max_evidence_size = max(512, int(max_evidence_size))
         self.max_redirects = max(0, int(max_redirects))
@@ -203,6 +205,7 @@ class SecurityTestPolicy:
             "max_requests_per_program": self.max_requests_per_program,
             "timeout": self.timeout,
             "max_response_bytes": self.max_response_bytes,
+            "max_total_bytes": self.max_total_bytes,
             "max_payload_size": self.max_payload_size,
             "max_evidence_size": self.max_evidence_size,
             "concurrency": self.concurrency,

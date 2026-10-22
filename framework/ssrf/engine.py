@@ -81,6 +81,16 @@ class SsrfIntelligenceEngine:
         # Scanner / client host IPs to exclude from server-side callback correlation
         self.excluded_source_ips: Set[str] = {"127.0.0.1", "::1", "192.168.1.50"}
 
+    @property
+    def total_bytes(self) -> int:
+        """Global accepted response bytes accounted for during validation."""
+        return getattr(self.validation_engine, "total_bytes", 0)
+
+    @property
+    def total_bytes_transferred(self) -> int:
+        """Total network bytes transferred across all requests including partial and failed reads."""
+        return getattr(self.validation_engine, "total_bytes_transferred", 0)
+
     # ---------------- Passive Discovery Pipeline ----------------
 
     def discover_candidates(
@@ -403,5 +413,6 @@ class SsrfIntelligenceEngine:
             "executed_tests": len(executed),
             "verified_findings": len(verified_findings),
             "findings": [f.to_dict() for f in verified_findings],
+            "total_bytes_transferred": self.total_bytes_transferred,
             "summary": self.state_mgr.get_summary(),
         }

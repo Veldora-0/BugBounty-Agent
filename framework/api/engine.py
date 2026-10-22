@@ -49,7 +49,11 @@ from framework.api.parser import (
 )
 from framework.api.state import ApiStateManager
 from framework.assets.provenance import ObservationProvenance
-from framework.common.transport import PinnedHTTPHandler, PinnedHTTPSConnection
+from framework.common.transport import (
+    PinnedHTTPHandler,
+    PinnedHTTPSConnection,
+    parse_alternate_ip,
+)
 from framework.javascript.state import JavaScriptStateManager
 from framework.recon.state import ReconStateManager
 from framework.scope.engine import ScopeEngine, ScopeStatus
@@ -313,8 +317,12 @@ class ApiIntelligenceEngine:
 
         port = parts.port or (443 if parts.scheme == "https" else 80)
 
+        # Check if target is loopback (standard or alternate notation)
+        alt_ip = parse_alternate_ip(host)
+        is_loopback = (host in ("localhost", "127.0.0.1") or (alt_ip is not None and alt_ip.is_loopback))
+
         # Allow explicitly registered local test fixture
-        if host in ("localhost", "127.0.0.1"):
+        if is_loopback:
             if port in self.allowed_fixture_ports:
                 if self.scope_engine is None or not self._is_in_scope(url, is_active=True):
                     raise ScopeViolationError(f"Target fixture URL '{url}' is OUT_OF_SCOPE")
@@ -331,19 +339,12 @@ class ApiIntelligenceEngine:
         if host in metadata_hosts or host.endswith(".metadata.google.internal"):
             raise ScopeViolationError(f"Target host '{host}' is in prohibited metadata address space")
 
-        # Check if host is direct IP literal
-        try:
-            ip_obj = ipaddress.ip_address(host)
-            is_ip = True
-        except ValueError:
-            ip_obj = None
-            is_ip = False
-
-        if is_ip and ip_obj is not None:
-            prohibited, reason = is_ssrf_prohibited_ip(ip_obj)
+        # Check if host is direct or alternate IP literal
+        if alt_ip is not None:
+            prohibited, reason = is_ssrf_prohibited_ip(alt_ip)
             if prohibited:
                 raise ScopeViolationError(f"Target host '{host}' is in prohibited address space ({reason})")
-            return [str(ip_obj)]
+            return [str(alt_ip)]
 
         # Domain name: resolve candidate destination IPs
         try:
@@ -359,16 +360,13 @@ class ApiIntelligenceEngine:
 
             verified_ips: List[str] = []
             for c_ip in candidate_ips:
-                try:
-                    resolved_ip = ipaddress.ip_address(c_ip)
-                    prohibited, reason = is_ssrf_prohibited_ip(resolved_ip)
-                    if prohibited:
-                        raise ScopeViolationError(
-                            f"Target host '{host}' resolves to prohibited address {c_ip} ({reason})"
-                        )
-                    verified_ips.append(c_ip)
-                except ValueError:
-                    pass
+                cand_obj = parse_alternate_ip(c_ip) or ipaddress.ip_address(c_ip)
+                prohibited, reason = is_ssrf_prohibited_ip(cand_obj)
+                if prohibited:
+                    raise ScopeViolationError(
+                        f"Target host '{host}' resolves to prohibited address {c_ip} ({reason})"
+                    )
+                verified_ips.append(c_ip)
 
             if not verified_ips:
                 raise ScopeViolationError(f"All resolved addresses for '{host}' are prohibited")

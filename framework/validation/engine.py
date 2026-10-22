@@ -51,6 +51,7 @@ from framework.common.transport import (
     PinnedHTTPSConnection,
     PinnedHTTPHandler,
     PinnedHTTPSHandler,
+    parse_alternate_ip,
 )
 
 
@@ -80,10 +81,19 @@ def is_ssrf_prohibited_ip(ip_input: str | ipaddress.IPv4Address | ipaddress.IPv6
     Evaluates whether an IP address belongs to private, loopback, link-local,
     reserved, or IPv4-mapped private address space.
     """
-    try:
-        ip_obj = ipaddress.ip_address(ip_input) if isinstance(ip_input, str) else ip_input
-    except ValueError:
-        return False, ""
+    if isinstance(ip_input, str):
+        ip_obj = parse_alternate_ip(ip_input)
+        if ip_obj is None:
+            try:
+                ip_obj = ipaddress.ip_address(ip_input)
+            except ValueError:
+                return False, ""
+    else:
+        ip_obj = ip_input
+
+    # Check unspecified address (0.0.0.0 or ::)
+    if ip_obj.is_unspecified:
+        return True, "Unspecified address range"
 
     # Check IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:169.254.169.254)
     if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
@@ -118,7 +128,7 @@ class ScopeViolationError(ValueError):
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     """
     HTTP redirect handler that enforces scope, anti-SSRF policies, protocol downgrade prevention,
-    and destination-IP pinning on each redirection hop.
+    request limits, global byte budget ceilings, and destination-IP pinning on each redirection hop.
     """
 
     def __init__(
@@ -127,6 +137,7 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         ip_map: Optional[Dict[str, Any]] = None,
         max_redirects: int = 5,
         original_url: Optional[str] = None,
+        engine: Optional[Any] = None,
     ):
         super().__init__()
         self.check_scope_fn = check_scope_fn
@@ -134,6 +145,7 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         self.max_redirects = max_redirects
         self.redirect_count = 0
         self.current_url = original_url
+        self.engine = engine
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         self.redirect_count += 1
@@ -167,6 +179,27 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         orig_scheme = urlparse(orig_url).scheme.lower()
         if orig_scheme == "https" and new_scheme == "http":
             raise ScopeViolationError("Protocol downgrade from HTTPS to HTTP forbidden")
+
+        # Request count and byte budget enforcement during redirect hop
+        if self.engine is not None:
+            if hasattr(self.engine, "request_count") and hasattr(self.engine, "policy"):
+                max_reqs = getattr(self.engine.policy, "max_requests_per_program", 200)
+                if self.engine.request_count >= max_reqs:
+                    raise ScopeViolationError(
+                        f"Program request budget exhausted during redirect ({self.engine.request_count}/{max_reqs})"
+                    )
+                self.engine.request_count += 1
+
+            if hasattr(self.engine, "total_bytes_transferred") and hasattr(self.engine, "policy"):
+                max_bytes = getattr(self.engine.policy, "max_total_bytes", 10 * 1024 * 1024)
+                effective_transferred = max(
+                    getattr(self.engine, "total_bytes_transferred", 0),
+                    getattr(self.engine, "total_bytes", 0),
+                )
+                if effective_transferred >= max_bytes:
+                    raise ScopeViolationError(
+                        f"Global byte budget exhausted during redirect ({effective_transferred}/{max_bytes})"
+                    )
 
         # Revalidate redirect destination against scope and anti-SSRF rules; obtain pinned IP(s)
         pinned = self.check_scope_fn(newurl)
@@ -208,9 +241,11 @@ class SecurityValidationEngine:
         self.evidence_dir = os.path.join(self.program_dir, "evidence")
         self.evidence_store = EvidenceStore(self.evidence_dir)
 
-        # Total active requests issued during this engine lifecycle
+        # Total active requests and network byte counters issued during this engine lifecycle
         self.request_count = 0
         self.endpoint_request_counts: Dict[str, int] = {}
+        self.total_bytes = 0
+        self.total_bytes_transferred = 0
 
         # Register standard validators
         self.validators: Dict[str, BaseValidator] = {
@@ -257,14 +292,33 @@ class SecurityValidationEngine:
                 "Active validation requires a valid, initialized ScopeEngine. No scope engine configured."
             )
 
+        # Check if target is loopback (standard or alternate notation)
+        alt_ip = parse_alternate_ip(host)
+        is_loopback = (host in ("127.0.0.1", "localhost") or (alt_ip is not None and alt_ip.is_loopback))
+
         # Check if target is an explicitly allowed local test fixture
-        is_fixture = (host in ("127.0.0.1", "localhost") and port in self.allowed_fixture_ports)
+        is_fixture = (is_loopback and port in self.allowed_fixture_ports)
         if is_fixture:
             parsed_no_port = urlunparse((scheme, host, parsed.path or "/", parsed.params, parsed.query, ""))
             root_url = f"{scheme}://{host}"
+            norm_port_str = f":{port}" if (scheme == "http" and port != 80) or (scheme == "https" and port != 443) else ""
+            norm_target_url = f"{scheme}://127.0.0.1{norm_port_str}{parsed.path or '/'}"
+            norm_root_url = f"{scheme}://127.0.0.1"
+            norm_parsed_no_port = f"{scheme}://127.0.0.1{parsed.path or '/'}"
+
+            exclusion_candidates = [
+                target_url,
+                norm_target_url,
+                parsed_no_port,
+                norm_parsed_no_port,
+                root_url,
+                norm_root_url,
+                host,
+                "127.0.0.1",
+            ]
 
             # 1. Explicit exclusions ALWAYS take precedence (check exact URL, base without port, root URL, and host)
-            for candidate in (target_url, parsed_no_port, root_url, host):
+            for candidate in exclusion_candidates:
                 cand_decision = self.scope_engine.check(candidate)
                 if cand_decision.status == ScopeStatus.OUT_OF_SCOPE and cand_decision.rule_category in (
                     "EXPLICIT_EXCLUSION_URL",
@@ -283,7 +337,9 @@ class SecurityValidationEngine:
                 try:
                     p = urlparse(u)
                     u_host = (p.hostname or "").lower()
-                    if u_host == host or (u_host in ("127.0.0.1", "localhost") and host in ("127.0.0.1", "localhost")):
+                    u_alt = parse_alternate_ip(u_host)
+                    u_is_loopback = (u_host in ("127.0.0.1", "localhost") or (u_alt is not None and u_alt.is_loopback))
+                    if u_host == host or (u_is_loopback and is_loopback):
                         if p.port == port:
                             path_val = p.path or "/"
                             if path_val.rstrip("/"):
@@ -306,14 +362,25 @@ class SecurityValidationEngine:
                 # path must not be authorized merely because a hostname candidate is in scope.
                 exact_decision = self.scope_engine.check(target_url)
                 if exact_decision.status != ScopeStatus.IN_SCOPE or exact_decision.rule_category != "SPECIFIC_INCLUSION_URL":
-                    raise ScopeViolationError(
-                        f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: fixture is restricted to explicit URL inclusions (matched: {exact_decision.matched_rule})"
-                    )
+                    norm_decision = self.scope_engine.check(norm_target_url)
+                    if norm_decision.status != ScopeStatus.IN_SCOPE or norm_decision.rule_category != "SPECIFIC_INCLUSION_URL":
+                        raise ScopeViolationError(
+                            f"Target fixture URL '{target_url}' is OUT_OF_SCOPE: fixture is restricted to explicit URL inclusions (matched: {exact_decision.matched_rule})"
+                        )
             else:
                 # Standard broad host authorization: exact URL, base without port, root URL, or host must be IN_SCOPE
                 in_scope = False
                 matched_reason = ""
-                for candidate in (target_url, parsed_no_port, root_url, host):
+                for candidate in (
+                    target_url,
+                    norm_target_url,
+                    parsed_no_port,
+                    norm_parsed_no_port,
+                    root_url,
+                    norm_root_url,
+                    host,
+                    "127.0.0.1",
+                ):
                     cand_decision = self.scope_engine.check(candidate)
                     if cand_decision.status == ScopeStatus.IN_SCOPE:
                         in_scope = True
@@ -328,6 +395,10 @@ class SecurityValidationEngine:
 
             return ["127.0.0.1"]
 
+        # Loopback target with unauthorized port fails closed immediately
+        if is_loopback:
+            raise ScopeViolationError(f"Target host '{host}:{port}' is not an authorized local fixture port")
+
         # Direct name checks and metadata hosts
         metadata_hosts = {
             "localhost",
@@ -339,22 +410,15 @@ class SecurityValidationEngine:
         if host in metadata_hosts or host.endswith(".metadata.google.internal"):
             raise ScopeViolationError(f"Target host '{host}' is forbidden.")
 
-        # SSRF boundary check: evaluate if host is directly an IP
-        try:
-            ip_obj = ipaddress.ip_address(host)
-            is_ip = True
-        except ValueError:
-            ip_obj = None
-            is_ip = False
-
+        # SSRF boundary check: evaluate if host is directly an IP or alternate IP notation
         verified_ips: List[str] = []
-        if is_ip and ip_obj is not None:
-            prohibited, reason = is_ssrf_prohibited_ip(ip_obj)
+        if alt_ip is not None:
+            prohibited, reason = is_ssrf_prohibited_ip(alt_ip)
             if prohibited:
                 raise ScopeViolationError(
                     f"Target host '{host}' is in prohibited address space ({reason}). Blocked by safe policy."
                 )
-            verified_ips = [str(ip_obj)]
+            verified_ips = [str(alt_ip)]
         else:
             # host is a domain name - pre-resolve destination IP to pin connection
             try:
@@ -366,16 +430,14 @@ class SecurityValidationEngine:
                         candidate_ips.append(c_ip)
 
                 for c_ip in candidate_ips:
-                    try:
-                        resolved_ip = ipaddress.ip_address(c_ip)
-                        prohibited, reason = is_ssrf_prohibited_ip(resolved_ip)
-                        if prohibited:
-                            raise ScopeViolationError(
-                                f"Target host '{host}' resolves to prohibited address {c_ip} ({reason}). Blocked by safe policy."
-                            )
-                        verified_ips.append(c_ip)
-                    except ValueError:
-                        pass
+                    cand_obj = parse_alternate_ip(c_ip) or ipaddress.ip_address(c_ip)
+                    prohibited, reason = is_ssrf_prohibited_ip(cand_obj)
+                    if prohibited:
+                        # Fail closed: ANY prohibited candidate IP blocks the host
+                        raise ScopeViolationError(
+                            f"Target host '{host}' resolves to prohibited address {c_ip} ({reason}). Blocked by safe policy."
+                        )
+                    verified_ips.append(c_ip)
             except ScopeViolationError:
                 raise
             except (socket.gaierror, OSError):
@@ -434,6 +496,12 @@ class SecurityValidationEngine:
         )
 
         # 3. Budget enforcement
+        effective_transferred = max(self.total_bytes_transferred, self.total_bytes)
+        if effective_transferred >= self.policy.max_total_bytes:
+            raise PolicyViolationError(
+                f"Program network byte budget exhausted ({effective_transferred}/{self.policy.max_total_bytes})."
+            )
+
         if self.request_count >= self.policy.max_requests_per_program:
             raise PolicyViolationError(
                 f"Program request budget exhausted ({self.request_count}/{self.policy.max_requests_per_program})."
@@ -450,7 +518,14 @@ class SecurityValidationEngine:
         if self.send_request_hook:
             self.request_count += 1
             self.endpoint_request_counts[ep_key] = ep_count + 1
-            return self.send_request_hook(request)
+            resp = self.send_request_hook(request)
+            if resp is not None:
+                resp_size = getattr(resp, "size_bytes", 0)
+                if not resp_size and hasattr(resp, "body") and resp.body:
+                    resp_size = len(resp.body.encode("utf-8", errors="replace"))
+                self.total_bytes_transferred += resp_size
+                self.total_bytes += resp_size
+            return resp
 
         # 5. Live standard library urllib execution with strict TLS & destination-IP pinning
         parsed_eff = urlparse(eff_url)
@@ -492,6 +567,7 @@ class SecurityValidationEngine:
             ip_map=ip_map,
             max_redirects=getattr(self.policy, "max_redirects", 5),
             original_url=eff_url,
+            engine=self,
         )
         http_handler = PinnedHTTPHandler(ip_map=ip_map)
         https_handler = PinnedHTTPSHandler(ip_map=ip_map, context=ctx, check_hostname=True if ctx else None)
@@ -505,12 +581,35 @@ class SecurityValidationEngine:
         self.request_count += 1
         self.endpoint_request_counts[ep_key] = ep_count + 1
 
+        def _read_bounded(resp_stream: Any) -> bytes:
+            chunk_size = 8192
+            chunks: List[bytes] = []
+            bytes_read = 0
+            effective_xfer = max(self.total_bytes_transferred, self.total_bytes)
+            remaining_global = max(0, self.policy.max_total_bytes - effective_xfer)
+            allowed_to_read = min(self.policy.max_response_bytes, remaining_global)
+
+            while bytes_read < allowed_to_read:
+                to_read = min(chunk_size, allowed_to_read - bytes_read)
+                try:
+                    chunk = resp_stream.read(to_read)
+                except Exception:
+                    raise
+                if not chunk:
+                    break
+                self.total_bytes_transferred += len(chunk)
+                bytes_read += len(chunk)
+                chunks.append(chunk)
+
+            self.total_bytes += bytes_read
+            return b"".join(chunks)
+
         try:
             with opener.open(req_obj, timeout=self.policy.timeout) as resp:
                 elapsed = time.time() - start_time
                 status = resp.status
                 resp_headers = dict(resp.headers)
-                raw_body = resp.read(self.policy.max_response_bytes)
+                raw_body = _read_bounded(resp)
                 body_text = raw_body.decode("utf-8", errors="replace")
                 final_url = resp.geturl()
                 return ControlledResponse(
@@ -527,7 +626,7 @@ class SecurityValidationEngine:
             raise
         except urllib.error.HTTPError as e:
             elapsed = time.time() - start_time
-            raw_body = e.read(self.policy.max_response_bytes)
+            raw_body = _read_bounded(e)
             body_text = raw_body.decode("utf-8", errors="replace")
             resp_headers = dict(e.headers)
             return ControlledResponse(
