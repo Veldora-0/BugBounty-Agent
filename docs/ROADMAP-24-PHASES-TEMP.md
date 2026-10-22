@@ -14,7 +14,7 @@
 | 15 | File Upload, Path Traversal & Local File Exposure | Critical | Complete (acceptance report supplied) |
 | 16 | Browser Runtime & Client-Side Security | High | Complete (accepted with documented limitations) |
 | 17 | Advanced API Security | High | Complete (accepted at `5502633bf4828e1c3a7493f36cdccbf435a1ebbf` with documented limitations) |
-| 18 | SSRF, XXE & Server-Side Parser Expansion | High | In Progress (Current Phase) |
+| 18 | SSRF, XXE & Server-Side Parser Expansion | High | Complete (awaiting independent review) |
 | 19 | Infrastructure & Configuration Exposure | Medium–High | Planned |
 | 20 | Race Conditions & Distributed Workflows | Medium–High | Planned |
 | 21 | Authentication & Authorization Correlation | Medium | Planned |
@@ -82,14 +82,20 @@ Safety boundaries:
 **Delivered:** Bounded OpenAPI 2.0/3.0/3.1 and GraphQL schema parsing, continuous byte accounting (`total_bytes_transferred`), fail-closed transport and scope controls, strict loopback fixture port gating with exclusion precedence, state management (`api.json`), and downstream injection engine integration.
 
 ### Phase 18 — SSRF, XXE & Server-Side Parser Expansion
-**Status:** In Progress (Current Phase).
-**Goal:** Extend the existing SSRF engine (`framework/ssrf/`) and add evidence-based, safe server-side parser analysis—especially XXE and structured document parsing—without duplicating existing SSRF functionality.
-**Key Requirements & Acceptance Criteria:**
-- **Agent-Side XML Hardening**: Secure all XML parsing entry points (including sitemap parsing in `framework/webapp/engine.py`) against XML bombs (Billion Laughs / entity expansion denial of service) and unauthorized external entity resolution using portable Python standard library APIs (no undeclared dependencies).
-- **SSRF Transport Hardening**: Ensure mixed public/private DNS answers fail closed, evaluate alternative IP encodings safely, enforce continuous response-byte accounting during stream reads, and verify redirects to unauthorized destinations receive zero hits.
-- **SSRF Request Mutation**: Extend `_build_mutated_request()` to support Query, Path, JSON body, Form-encoded body, and XML body parameters.
-- **Conservative XXE Intelligence**: Support safe non-destructive entity reflection and parameter entity checks using harmless synthetic canaries; strictly forbid reading sensitive local files (`/etc/passwd`, `win.ini`) or probing cloud metadata (`169.254.169.254`); distinguish parser errors, candidates, suspected behavior, and validated findings.
-- **Shared Lifecycle & Safety**: Maintain single-agent 18-skill catalog, fail-closed scope enforcement, FindingLifecycle, evidence hashing, and deduplication.
+**Status:** Complete (implementation delivered across commits `ae80d9f`, `1c3a3f5`, `96feb7c`, `062e107`, `76de1b6`; awaiting independent review).
+**Delivered:**
+- **Agent-Side XML Hardening**: Implemented portable stdlib XML security in `framework/common/xml_safe.py` (`safe_parse_xml`, `safe_extract_xml_urls`, `XmlBombSecurityError`) with strict entity expansion count bounding, input byte limits, and Billion Laughs defense; hardened sitemap parser in `framework/webapp/engine.py` to fail closed on unvetted DOCTYPE/ENTITY declarations.
+- **SSRF Transport Hardening**: Added `parse_alternate_ip` in `framework/common/transport.py` supporting dotted decimal, decimal scalars, hex scalars, octal scalars, dotted octal/hex, and inet_aton multi-part formats; hardened destination IP resolution in `framework/validation/engine.py` to fail closed if any DNS answer resolves to loopback, private, or metadata IP addresses; implemented continuous streaming byte accounting (`total_bytes_transferred`) across partial reads, redirects, and HTTP errors; added `max_total_bytes` policy control to `SecurityTestPolicy`.
+- **SSRF Request Mutation**: Expanded `_build_mutated_request()` in `framework/ssrf/engine.py` to support Query parameters, Path template parameters (`{param}`, `:param`, `<param>`), JSON bodies (flat and nested dotted keys), Form-encoded bodies, and XML bodies (DOM text replacement with XML entity escaping). Added `headers` and `body` fields to `SsrfCandidate`.
+- **Conservative XXE Intelligence Subsystem**: Created `framework/xxe/` orchestrating non-destructive synthetic entity reflection, signal classification (distinguishing parser/syntax errors from verified entity expansion), deterministic local simulation harness (`LocalXxeLab`), state management (`xxe.json`), and deduplication. Added `XXE = "XXE"` to `VulnerabilityFamily`, safe payload `PL-XXE-REFL-01`, and `XxeValidator` / `SsrfValidator` plugins into `SecurityValidationEngine`.
+- **Cross-Platform Verification Results**:
+  - Windows 11 (Python 3.14.7): 695 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py`) in 83s; 100% pass across all 66 Phase 18 tests.
+  - Kali Linux (Python 3.14.8): 697 passed, 0 skipped in 154s; 100% pass across all 66 Phase 18 tests.
+- **Documented Phase 18 Limitations**:
+  - Zero sensitive local file extraction (`file://`, `/etc/passwd`, `/etc/shadow`, `win.ini`) or cloud metadata probing (`169.254.169.254`, `metadata.google.internal`) is permitted; any matching target fails closed immediately.
+  - XXE active validation uses strictly harmless synthetic canary entities (`BB_XXE_{token}`) to verify internal entity resolution; recursive expansion bombs and external system entity exfiltration are strictly prohibited.
+  - All active XXE validation requires explicit human approval gate (`approval_status == 'APPROVED'`) before dispatch.
+  - Parser errors without reflection are conservatively classified as `SUSPECTED` or `CANDIDATE` and do not emit false positive findings.
 
 ### Phase 19 — Infrastructure & Configuration Exposure
 **Goal:** Correlate service and configuration observations with safe checks for exposed administrative surfaces, accidental configuration/backup exposure, unsafe defaults, and deployment mistakes. Distinguish informational observations from demonstrable vulnerabilities and avoid broad or disruptive scanning.
