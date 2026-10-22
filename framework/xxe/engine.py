@@ -20,6 +20,7 @@ from framework.findings.lifecycle import FindingLifecycle
 from framework.findings.schema import Finding
 from framework.scope.engine import ScopeEngine
 from framework.ssrf.canary import CanaryManager
+from framework.ssrf.model import OobProviderStatus
 from framework.ssrf.provider import MockOobProvider, OobProvider, OobProviderFactory
 from framework.state.dedup import FindingDeduplicator
 from framework.validation.engine import SecurityValidationEngine
@@ -332,20 +333,20 @@ class XxeIntelligenceEngine:
         evidence: Optional[XxeEvidence] = None
 
         if canary_marker in resp_body:
-            # Confirmed In-Band Entity Reflection!
-            candidate.confidence = XxeConfidence.VALIDATED
-            candidate.lifecycle_state = "VALIDATED"
+            # Internal entity reflection confirmed: proves internal DTD processing, NOT external entity resolution (XXE)
+            candidate.confidence = XxeConfidence.OBSERVED
+            candidate.lifecycle_state = "OBSERVED"
             candidate.callback_token = canary_token
             summary = (
-                f"Verified XML External Entity (XXE) vulnerability via harmless synthetic entity expansion. "
+                f"Observed internal XML entity processing via harmless synthetic entity expansion on '{candidate.endpoint}'. "
                 f"Defined internal entity '&{entity_name};' which resolved and reflected marker '{canary_marker}' "
-                f"in HTTP {test_status} response from '{candidate.endpoint}'. Zero sensitive files accessed."
+                f"in HTTP {test_status} response. External entity resolution (XXE) was NOT established; zero sensitive files accessed."
             )
             evidence = XxeEvidence(
                 test_id=f"xxe-test-{canary_token}",
                 canary_token=canary_token,
-                category=XxeCategory.SYNTHETIC_REFLECTION,
-                interaction_type=XxeInteractionType.SYNTHETIC_REFLECTION,
+                category=XxeCategory.INTERNAL_ENTITY_REFLECTION,
+                interaction_type=XxeInteractionType.INTERNAL_ENTITY_REFLECTED,
                 status_code=test_status,
                 reflected_marker=canary_marker,
                 evidence_summary=summary,
@@ -354,21 +355,22 @@ class XxeIntelligenceEngine:
             candidate.notes = summary
 
             finding = Finding(
-                title=f"XML External Entity (XXE) Vulnerability on {candidate.endpoint}",
+                title=f"Internal XML Entity Processing Observation on {candidate.endpoint}",
                 summary=summary,
                 affected_asset=urlparse(candidate.endpoint).netloc or candidate.application,
                 affected_endpoint=candidate.endpoint,
-                vulnerability_type="XML External Entity (XXE)",
-                severity="HIGH",
-                confidence="HIGH",
-                lifecycle_state=FindingLifecycle.VALIDATED,
+                vulnerability_type="XML Entity Processing Observation",
+                severity="INFORMATIONAL",
+                confidence="MEDIUM",
+                lifecycle_state=FindingLifecycle.OBSERVATION,
                 description=(
                     f"The endpoint '{candidate.endpoint}' parses XML documents with internal DTD and entity "
                     f"expansion enabled. Controlled security testing confirmed that internal entities are resolved "
-                    f"and reflected back in the HTTP response. A harmless synthetic canary marker was injected and "
-                    f"observed in the server response body without file extraction or network disruption."
+                    f"and reflected back in the HTTP response. External entity resolution (XXE) was NOT established. "
+                    f"A harmless synthetic canary marker was injected and observed in the server response body "
+                    f"without file extraction or network disruption."
                 ),
-                root_cause="XML parser is configured without disabling DTD processing or external entity resolution.",
+                root_cause="XML parser is configured to allow internal DTD entity definitions.",
                 prerequisites="Endpoint accepts XML requests or parses XML input bodies.",
                 reproduction_steps=[
                     f"1. Send {candidate.method} request to '{candidate.endpoint}' with XML payload containing DOCTYPE entity declaration.",
@@ -376,13 +378,13 @@ class XxeIntelligenceEngine:
                     f"3. Observe resolved entity marker in HTTP response body.",
                 ],
                 expected_result="Endpoint disallows DOCTYPE declarations or parses XML in strict secure mode.",
-                observed_result=f"Server resolved and reflected synthetic entity marker '{canary_marker}'.",
+                observed_result=f"Server resolved and reflected synthetic internal entity marker '{canary_marker}'. External entity resolution unconfirmed.",
                 security_impact=(
-                    "An attacker could potentially read sensitive local files, access internal network services, "
-                    "or cause denial-of-service through recursive entity expansion (Billion Laughs)."
+                    "Internal entity expansion is enabled. While this does not prove external entity resolution (XXE), "
+                    "allowing DTD processing may indicate insufficient XML parser hardening."
                 ),
                 remediation=(
-                    "Disable DTD (Document Type Definitions) and external entity resolution completely in the XML parser: "
+                    "Disable DTD (Document Type Definitions) completely in the XML parser if not strictly required: "
                     "In Python defusedxml or disallow_dtd=True, in Java setFeature 'http://apache.org/xml/features/disallow-doctype-decl' to true."
                 ),
                 scope_reference=f"Target {candidate.endpoint} in authorized scope.",
@@ -425,6 +427,192 @@ class XxeIntelligenceEngine:
                 candidate.notes = f"No entity expansion observed; endpoint responded with HTTP {test_status}."
 
         # 6. Finding Deduplication and Persistence
+        if finding:
+            existing_findings = list(self.state_mgr._read_json().get("findings", {}).values())
+            is_dup, _ = FindingDeduplicator.check_duplicate(
+                candidate_asset=finding.affected_asset,
+                candidate_endpoint=finding.affected_endpoint,
+                candidate_vuln=finding.vulnerability_type,
+                candidate_root_cause=finding.root_cause,
+                existing_findings=existing_findings,
+                candidate_parameter=finding.parameter,
+            )
+            if not is_dup:
+                self.state_mgr.save_finding(finding.finding_id, finding.to_dict())
+
+        self.state_mgr.save_candidate(candidate)
+        return candidate, finding
+
+    def validate_oob_candidate(
+        self,
+        candidate: XxeCandidate,
+        force_approved: bool = False,
+    ) -> Tuple[XxeCandidate, Optional[Finding]]:
+        """
+        Executes controlled out-of-band (OOB) external entity verification if provider is available.
+        Strictly distinguishes test harness mock callbacks from live target external callbacks:
+        - Mock provider interactions yield SIMULATED (INFORMATIONAL) observations.
+        - Only live, configured external providers with attributable interaction yield VALIDATED findings.
+        """
+        if not candidate.is_approved_for_execution() and not force_approved:
+            candidate.notes = "Execution halted: awaiting explicit human approval gate."
+            self.state_mgr.save_candidate(candidate)
+            return candidate, None
+
+        if self.validation_engine:
+            try:
+                self.validation_engine.check_request_scope(candidate.endpoint)
+            except Exception as e:
+                candidate.lifecycle_state = "OUT_OF_SCOPE"
+                candidate.notes = f"Target endpoint {candidate.endpoint} is out of authorized scope: {e}"
+                self.state_mgr.save_candidate(candidate)
+                return candidate, None
+
+        # Verify OOB provider availability
+        if not self.oob_provider:
+            candidate.notes = "OOB probe skipped: no OOB provider available."
+            self.state_mgr.save_candidate(candidate)
+            return candidate, None
+
+        prov_status = self.oob_provider.registration_status()
+        prov_name = self.oob_provider.name()
+
+        # If provider requires configuration (e.g. unconfigured interactsh or collaborator stub)
+        if prov_status != OobProviderStatus.AVAILABLE:
+            candidate.notes = f"OOB external entity verification unavailable: provider '{prov_name}' requires external credentials or configuration."
+            candidate.lifecycle_state = "TESTED"
+            self.state_mgr.save_candidate(candidate)
+            return candidate, None
+
+        # Generate unique canary token and URL
+        canary_token, canary_url = self.oob_provider.generate_canary(
+            prefix="bb-xxe",
+            test_id=candidate.candidate_id,
+        )
+
+        headers = dict(candidate.headers) if candidate.headers else {}
+        if "Content-Type" not in headers and "content-type" not in headers:
+            headers["Content-Type"] = "application/xml"
+
+        # Build safe non-destructive external entity canary payload
+        test_payload = (
+            f'<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<!DOCTYPE test [\n'
+            f'  <!ENTITY % oob SYSTEM "{canary_url}">\n'
+            f'  %oob;\n'
+            f']>\n'
+            f'<test><canary>probe</canary></test>'
+        )
+
+        test_req = ControlledRequest(
+            url=candidate.endpoint,
+            method=candidate.method,
+            headers=headers,
+            body=test_payload,
+            mutated_target="oob_system_entity",
+            mutated_value=canary_url,
+        )
+        test_resp = self.validation_engine.send_request(test_req)
+
+        # Poll for attributable OOB callback
+        interactions = self.oob_provider.poll(token=canary_token, timeout=2.0)
+        finding: Optional[Finding] = None
+
+        if interactions:
+            is_mock = prov_name == "mock"
+            if is_mock:
+                # Mock harness verification: MUST NOT claim live target callback
+                candidate.confidence = XxeConfidence.SIMULATED
+                candidate.lifecycle_state = "SIMULATED"
+                candidate.callback_token = canary_token
+                summary = (
+                    f"[LOCAL HARNESS SIMULATION] Out-of-band external entity callback correlated via Mock provider "
+                    f"for endpoint '{candidate.endpoint}'. This confirms integration flow in local test harness "
+                    f"and does NOT prove an attributable remote target callback."
+                )
+                evidence = XxeEvidence(
+                    test_id=f"xxe-oob-{canary_token}",
+                    canary_token=canary_token,
+                    category=XxeCategory.BLIND_OOB,
+                    interaction_type=XxeInteractionType.SIMULATED_CALLBACK,
+                    status_code=test_resp.status_code,
+                    evidence_summary=summary,
+                )
+                candidate.evidence = evidence
+                candidate.notes = summary
+
+                finding = Finding(
+                    title=f"Simulated Out-of-Band XML External Entity Interaction on {candidate.endpoint}",
+                    summary=summary,
+                    affected_asset=urlparse(candidate.endpoint).netloc or candidate.application,
+                    affected_endpoint=candidate.endpoint,
+                    vulnerability_type="Simulated XML External Entity Interaction",
+                    severity="INFORMATIONAL",
+                    confidence="LOW",
+                    lifecycle_state=FindingLifecycle.SIMULATED,
+                    description=summary,
+                    root_cause="Local test harness simulation.",
+                    prerequisites="Local test environment with MockOobProvider.",
+                    reproduction_steps=["Simulated harness test."],
+                    expected_result="Mock provider callback received in simulation.",
+                    observed_result=f"Mock callback correlated for token '{canary_token}'.",
+                    security_impact="Informational simulation only.",
+                    remediation="None required for simulated test.",
+                    scope_reference=f"Target {candidate.endpoint} in authorized scope.",
+                    parameter="oob_system_entity",
+                )
+            else:
+                # Genuine live attributable external entity callback
+                candidate.confidence = XxeConfidence.VALIDATED
+                candidate.lifecycle_state = "VALIDATED"
+                candidate.callback_token = canary_token
+                summary = (
+                    f"Verified out-of-band XML External Entity (XXE) vulnerability on '{candidate.endpoint}'. "
+                    f"Server resolved external SYSTEM entity and dispatched callback to authorized canary '{canary_url}'."
+                )
+                evidence = XxeEvidence(
+                    test_id=f"xxe-oob-{canary_token}",
+                    canary_token=canary_token,
+                    category=XxeCategory.BLIND_OOB,
+                    interaction_type=XxeInteractionType.HTTP_CALLBACK,
+                    status_code=test_resp.status_code,
+                    evidence_summary=summary,
+                )
+                candidate.evidence = evidence
+                candidate.notes = summary
+
+                finding = Finding(
+                    title=f"Blind XML External Entity (XXE) Vulnerability on {candidate.endpoint}",
+                    summary=summary,
+                    affected_asset=urlparse(candidate.endpoint).netloc or candidate.application,
+                    affected_endpoint=candidate.endpoint,
+                    vulnerability_type="XML External Entity (XXE)",
+                    severity="HIGH",
+                    confidence="HIGH",
+                    lifecycle_state=FindingLifecycle.VALIDATED,
+                    description=(
+                        f"Controlled security testing confirmed that the XML parser on '{candidate.endpoint}' "
+                        f"fetches external DTD SYSTEM entities over the network. An attributable out-of-band "
+                        f"HTTP interaction was received by the authorized canary listener with matching token."
+                    ),
+                    root_cause="XML parser is configured without disabling external entity resolution or external DTD fetching.",
+                    prerequisites="Endpoint accepts XML input and parses external DTD references.",
+                    reproduction_steps=[
+                        f"1. Send {candidate.method} request to '{candidate.endpoint}' with XML containing external parameter entity.",
+                        f"2. Observe server HTTP/DNS callback to canary listener.",
+                    ],
+                    expected_result="Endpoint disallows external DTD entities.",
+                    observed_result=f"Server fetched external entity from canary '{canary_url}'.",
+                    security_impact="Server can be induced to initiate network requests (SSRF) or exfiltrate data via external DTDs.",
+                    remediation="Disable external DTD and entity resolution (e.g. disallow_dtd=True).",
+                    scope_reference=f"Target {candidate.endpoint} in authorized scope.",
+                    parameter="oob_system_entity",
+                )
+        else:
+            candidate.confidence = XxeConfidence.CANDIDATE
+            candidate.lifecycle_state = "TESTED"
+            candidate.notes = "No out-of-band interaction observed for external entity probe."
+
         if finding:
             existing_findings = list(self.state_mgr._read_json().get("findings", {}).values())
             is_dup, _ = FindingDeduplicator.check_duplicate(

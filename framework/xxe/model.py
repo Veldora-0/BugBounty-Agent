@@ -20,27 +20,31 @@ from framework.common.evidence import sanitize_sensitive_data
 
 class XxeCategory(str, Enum):
     """Taxonomy of XML External Entity & parser vulnerability classes."""
-    SYNTHETIC_REFLECTION = "synthetic_reflection"  # In-band reflection of harmless synthetic internal entity
-    PARAMETER_ENTITY = "parameter_entity"          # Non-egress parameter entity expansion evaluation
-    ERROR_BASED = "error_based"                    # Safe syntax / parser error revealing XML parsing mechanism
-    BLIND_OOB = "blind_oob"                        # Out-of-band canary interaction without file disclosure
+    INTERNAL_ENTITY_REFLECTION = "internal_entity_reflection"  # In-band reflection of internal DTD entity (proves DTD processing, not XXE)
+    SYNTHETIC_REFLECTION = "synthetic_reflection"              # Alias for internal entity reflection
+    PARAMETER_ENTITY = "parameter_entity"                      # Non-egress parameter entity expansion evaluation
+    ERROR_BASED = "error_based"                                # Safe syntax / parser error revealing XML parsing mechanism
+    BLIND_OOB = "blind_oob"                                    # Out-of-band canary interaction
 
 
 class XxeConfidence(str, Enum):
     """Confidence level assigned to an XXE candidate or finding."""
     CANDIDATE = "CANDIDATE"    # Endpoint accepts XML or has XML parameter (heuristic)
     SUSPECTED = "SUSPECTED"    # Parser error or syntax anomaly suggests active XML parser
-    OBSERVED = "OBSERVED"      # Safe interaction or DNS resolution observed
-    VALIDATED = "VALIDATED"    # Verifiable synthetic entity reflection or matching OOB HTTP canary
+    OBSERVED = "OBSERVED"      # Safe internal entity reflection or DNS interaction observed (XXE unconfirmed)
+    SIMULATED = "SIMULATED"    # Local test harness or mock OOB verification
+    VALIDATED = "VALIDATED"    # Direct, attributable external entity resolution (live OOB callback)
 
 
 class XxeInteractionType(str, Enum):
     """Type of signal observed during XML validation."""
     NO_INTERACTION = "NO_INTERACTION"
     PARSER_ERROR = "PARSER_ERROR"
+    INTERNAL_ENTITY_REFLECTED = "INTERNAL_ENTITY_REFLECTED"
     SYNTHETIC_REFLECTION = "SYNTHETIC_REFLECTION"
     DNS_CALLBACK = "DNS_CALLBACK"
     HTTP_CALLBACK = "HTTP_CALLBACK"
+    SIMULATED_CALLBACK = "SIMULATED_CALLBACK"
     UNKNOWN = "UNKNOWN"
 
 

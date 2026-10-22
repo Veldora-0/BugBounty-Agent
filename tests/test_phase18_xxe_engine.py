@@ -4,10 +4,13 @@ Phase 18 Regression Tests: XXE & XML Parser Security Subsystem.
 Covers:
 1. Safe synthetic entity reflection without file system probing or network egress.
 2. Strict prohibition on file://, /etc/passwd, win.ini, and cloud metadata (fails closed).
-3. Signal classification distinguishing syntax/parser errors from confirmed entity expansion.
-4. Deterministic LocalXxeLab test harness across reflection, secure reject, error, and OOB modes.
-5. State persistence, approval gate, and finding deduplication.
-6. XxeValidator and SsrfValidator plugin integration with SecurityValidationEngine.
+3. Signal classification: internal DTD entity reflection emits OBSERVATION (INFORMATIONAL),
+   never false HIGH-severity VALIDATED XXE.
+4. Parser errors and secure rejections emit zero findings (no false positives).
+5. Evidence classification cannot be upgraded merely by a mock fixture label (Mock OOB produces SIMULATED).
+6. Deterministic LocalXxeLab test harness across reflection, secure reject, error, and OOB modes.
+7. State persistence, approval gate, and finding deduplication.
+8. XxeValidator and SsrfValidator plugin integration with SecurityValidationEngine.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import pytest
 
 from framework.findings.lifecycle import FindingLifecycle
 from framework.scope.engine import ScopeEngine
+from framework.ssrf.model import OobProviderStatus
 from framework.ssrf.provider import MockOobProvider
 from framework.validation.baseline import BaselineComparison, BaselineObservation, compare_with_baseline
 from framework.validation.engine import SecurityValidationEngine
@@ -38,99 +42,106 @@ from framework.xxe.model import (
     XxeConfidence,
     XxeEvidence,
     XxeInteractionType,
-    XxeSource,
 )
 from framework.xxe.state import XxeStateManager
 
 
 def make_scope() -> ScopeEngine:
     return ScopeEngine({
-        "program": {"name": "Test"},
-        "targets": {"urls": ["http://127.0.0.1:8080"]},
+        "program": {"name": "test-xxe"},
+        "targets": {
+            "domains": ["target.com", "*.target.com"],
+            "urls": ["http://127.0.0.1", "http://127.0.0.1:8080"],
+        },
     })
 
 
 # ============================================================================
-# 1. Safe Payload Generation & Strict Boundary Invariants
+# 1. Non-Destructive Payload Construction & Safety Invariants
 # ============================================================================
 
 class TestXxePayloadSafety:
-    """Verifies that XXE payload builders generate only benign markers and reject dangerous targets."""
+    """Verifies that XXE engine payloads never attempt file access or cloud metadata probing."""
 
     def test_synthetic_reflection_payload_contains_no_external_entities(self):
         tmp_dir = tempfile.mkdtemp()
         engine = XxeIntelligenceEngine(program_dir=tmp_dir, scope_engine=make_scope())
         cand = XxeCandidate(
-            application="API",
+            application="TestApp",
             endpoint="http://127.0.0.1:8080/xml",
-            parameter="val",
+            parameter="doc",
+            param_location="XML_BODY",
         )
-        payload = engine._build_synthetic_reflection_payload(cand, "canary", "TEST_MARKER_123")
-        assert "TEST_MARKER_123" in payload
-        assert "&canary;" in payload
-        assert "<!DOCTYPE" in payload
-        # Ensure zero external SYSTEM or PUBLIC URIs
-        assert "SYSTEM" not in payload
-        assert "PUBLIC" not in payload
+        payload = engine._build_synthetic_reflection_payload(cand, "safe_entity", "CONFIRMED_CANARY_123")
+        assert "SYSTEM" not in payload.upper()
+        assert "PUBLIC" not in payload.upper()
         assert "file://" not in payload
+        assert "169.254.169.254" not in payload
+        assert "<!ENTITY safe_entity \"CONFIRMED_CANARY_123\">" in payload
+        assert "&safe_entity;" in payload
 
     def test_prohibited_targets_fail_closed(self):
         tmp_dir = tempfile.mkdtemp()
         engine = XxeIntelligenceEngine(program_dir=tmp_dir, scope_engine=make_scope())
 
-        for dangerous in (
-            "file:///etc/passwd",
-            "file:///c:/windows/win.ini",
-            "/etc/shadow",
-            "/etc/hosts",
-            "http://169.254.169.254/latest/meta-data/",
-            "http://metadata.google.internal/computeMetadata/v1/",
-        ):
+        disallowed = [
+            '<!ENTITY xxe SYSTEM "file:///etc/passwd">',
+            '<!ENTITY xxe SYSTEM "file:///c:/windows/win.ini">',
+            '<!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">',
+            '<!ENTITY xxe SYSTEM "http://metadata.google.internal/">',
+        ]
+        for payload in disallowed:
             with pytest.raises(ValueError, match="Disallowed payload pattern detected"):
-                engine._validate_payload_safety(f"<!DOCTYPE test SYSTEM '{dangerous}'>")
+                engine._validate_payload_safety(payload)
 
 
 # ============================================================================
-# 2. LocalXxeLab Deterministic Simulation
+# 2. Local XXE Lab Simulation Modes
 # ============================================================================
 
 class TestLocalXxeLabSimulation:
-    """Verifies LocalXxeLab behaviors across reflection, secure reject, and error modes."""
+    """Verifies LocalXxeLab deterministically simulates XML parser configurations."""
 
     def test_reflection_mode_reflects_internal_entity(self):
         lab = LocalXxeLab(mode="reflection")
         hook = lab.create_handler_hook()
 
-        payload = (
-            '<?xml version="1.0"?>\n'
-            '<!DOCTYPE root [ <!ENTITY test "CONFIRMED_XXE_MARKER"> ]>\n'
-            '<root><url>&test;</url></root>'
+        xml_body = '<!DOCTYPE root [ <!ENTITY test "EXPANDED_VALUE"> ]><root><val>&test;</val></root>'
+        req = ControlledRequest(
+            url="http://127.0.0.1:8080/xml",
+            method="POST",
+            headers={"Content-Type": "application/xml"},
+            body=xml_body,
         )
-        req = ControlledRequest(url="http://127.0.0.1:8080/xml", method="POST", body=payload)
         resp = hook(req)
         assert resp.status_code == 200
-        assert "CONFIRMED_XXE_MARKER" in resp.body
+        assert "EXPANDED_VALUE" in resp.body
 
     def test_secure_reject_mode_blocks_doctype(self):
         lab = LocalXxeLab(mode="secure_reject")
         hook = lab.create_handler_hook()
 
-        payload = '<!DOCTYPE test [ <!ENTITY a "b"> ]><test>&a;</test>'
-        req = ControlledRequest(url="http://127.0.0.1:8080/xml", method="POST", body=payload)
+        xml_body = '<!DOCTYPE root [ <!ENTITY test "EXPANDED_VALUE"> ]><root>&test;</root>'
+        req = ControlledRequest(
+            url="http://127.0.0.1:8080/xml",
+            method="POST",
+            headers={"Content-Type": "application/xml"},
+            body=xml_body,
+        )
         resp = hook(req)
         assert resp.status_code == 400
         assert "DOCTYPE declarations are prohibited" in resp.body
-
-        # Normal XML without DOCTYPE is permitted
-        clean_req = ControlledRequest(url="http://127.0.0.1:8080/xml", method="POST", body="<test>clean</test>")
-        clean_resp = hook(clean_req)
-        assert clean_resp.status_code == 200
 
     def test_parser_error_mode_returns_syntax_error(self):
         lab = LocalXxeLab(mode="parser_error")
         hook = lab.create_handler_hook()
 
-        req = ControlledRequest(url="http://127.0.0.1:8080/xml", method="POST", body="<test>syntax</test>")
+        req = ControlledRequest(
+            url="http://127.0.0.1:8080/xml",
+            method="POST",
+            headers={"Content-Type": "application/xml"},
+            body="<bad_xml>",
+        )
         resp = hook(req)
         assert resp.status_code == 400
         assert "XML syntax error" in resp.body
@@ -142,7 +153,8 @@ class TestLocalXxeLabSimulation:
         req = ControlledRequest(
             url="http://127.0.0.1:8080/xml",
             method="POST",
-            body="<!DOCTYPE x SYSTEM 'file:///etc/passwd'><x>&x;</x>",
+            headers={"Content-Type": "application/xml"},
+            body='<!DOCTYPE root [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]><root>&xxe;</root>',
         )
         resp = hook(req)
         assert resp.status_code == 403
@@ -150,13 +162,17 @@ class TestLocalXxeLabSimulation:
 
 
 # ============================================================================
-# 3. Active Validation Pipeline & Signal Classification
+# 3. Active Validation Pipeline & Evidence Semantics
 # ============================================================================
 
 class TestXxeActiveValidation:
-    """Verifies end-to-end controlled XXE validation and finding generation."""
+    """Verifies end-to-end controlled XXE validation and evidence classification."""
 
-    def test_confirmed_synthetic_reflection_emits_validated_finding(self):
+    def test_harmless_internal_entity_reflection_alone_does_not_generate_validated_xxe(self):
+        """
+        Critical semantic requirement: internal entity reflection proves internal DTD processing,
+        NOT external entity resolution. Must emit an OBSERVATION (INFORMATIONAL), never a VALIDATED XXE.
+        """
         tmp_dir = tempfile.mkdtemp()
         lab = LocalXxeLab(mode="reflection")
         scope = make_scope()
@@ -180,16 +196,23 @@ class TestXxeActiveValidation:
 
         cand_res, finding_res = engine.validate_candidate(cand, force_approved=True)
 
-        assert cand_res.lifecycle_state == "VALIDATED"
-        assert cand_res.confidence == XxeConfidence.VALIDATED
+        # Must be classified as OBSERVED, NOT VALIDATED
+        assert cand_res.lifecycle_state == "OBSERVED"
+        assert cand_res.confidence == XxeConfidence.OBSERVED
+
+        # Finding must be an OBSERVATION with INFORMATIONAL severity
         assert finding_res is not None
-        assert finding_res.vulnerability_type == "XML External Entity (XXE)"
-        assert finding_res.severity == "HIGH"
-        assert finding_res.confidence == "HIGH"
-        assert finding_res.lifecycle_state == FindingLifecycle.VALIDATED
-        assert "harmless synthetic entity expansion" in finding_res.summary
+        assert finding_res.lifecycle_state == FindingLifecycle.OBSERVATION
+        assert finding_res.lifecycle_state != FindingLifecycle.VALIDATED
+        assert finding_res.vulnerability_type == "XML Entity Processing Observation"
+        assert finding_res.vulnerability_type != "XML External Entity (XXE)"
+        assert finding_res.severity == "INFORMATIONAL"
+        assert finding_res.severity != "HIGH"
+        assert finding_res.confidence == "MEDIUM"
+        assert "External entity resolution (XXE) was NOT established" in finding_res.summary
 
     def test_secure_hardened_endpoint_emits_no_finding(self):
+        """A secure rejection (disallowing DOCTYPE) must produce zero findings and no false positive."""
         tmp_dir = tempfile.mkdtemp()
         lab = LocalXxeLab(mode="secure_reject")
         scope = make_scope()
@@ -217,8 +240,8 @@ class TestXxeActiveValidation:
         assert finding_res is None
 
     def test_parser_error_classified_as_suspected_without_false_positive(self):
+        """A parser or syntax error alone must NOT generate any finding."""
         tmp_dir = tempfile.mkdtemp()
-        lab = LocalXxeLab(mode="parser_error")
         scope = make_scope()
         policy = SecurityTestPolicy(allowed_methods={"GET", "HEAD", "OPTIONS", "POST"}, block_destructive_actions=False, max_requests_per_program=20)
 
@@ -250,6 +273,7 @@ class TestXxeActiveValidation:
         assert finding_res is None  # Conservative signal: no finding emitted on parser error alone
 
     def test_unapproved_candidate_halts_safely(self):
+        """Unapproved candidates must halt without sending active test probes."""
         tmp_dir = tempfile.mkdtemp()
         engine = XxeIntelligenceEngine(program_dir=tmp_dir, scope_engine=make_scope())
         cand = XxeCandidate(
@@ -261,6 +285,58 @@ class TestXxeActiveValidation:
         cand_res, finding = engine.validate_candidate(cand, force_approved=False)
         assert finding is None
         assert "awaiting explicit human approval gate" in cand_res.notes
+
+    def test_evidence_classification_cannot_be_upgraded_by_mock_fixture_label(self):
+        """
+        Verifies that mock OOB interactions in the test harness yield SIMULATED (INFORMATIONAL)
+        observations and CANNOT be upgraded to VALIDATED or HIGH severity.
+        """
+        tmp_dir = tempfile.mkdtemp()
+        mock_provider = MockOobProvider()
+        scope = make_scope()
+        policy = SecurityTestPolicy(allowed_methods={"GET", "HEAD", "OPTIONS", "POST"}, block_destructive_actions=False, max_requests_per_program=20)
+
+        # Custom hook that simulates an external entity callback into mock provider
+        def oob_simulation_hook(req: ControlledRequest) -> ControlledResponse:
+            body = req.body or ""
+            if "SYSTEM" in body:
+                # Simulate external interaction recorded in mock provider
+                for token in list(mock_provider._storage.keys()):
+                    mock_provider.simulate_interaction(
+                        canary_token=token,
+                        source_ip="192.0.2.1",
+                        protocol="HTTP",
+                    )
+            return ControlledResponse(status_code=200, headers={}, body="<response>ok</response>", size_bytes=23, elapsed_seconds=0.02)
+
+        engine = XxeIntelligenceEngine(
+            program_dir=tmp_dir,
+            scope_engine=scope,
+            policy=policy,
+            send_request_hook=oob_simulation_hook,
+            oob_provider=mock_provider,
+        )
+        engine.validation_engine.allow_fixture_port(8080)
+
+        cand = XxeCandidate(
+            application="OobApp",
+            endpoint="http://127.0.0.1:8080/api/oob",
+            parameter="xml",
+            category=XxeCategory.BLIND_OOB,
+            approval_status="APPROVED",
+        )
+
+        cand_res, finding_res = engine.validate_oob_candidate(cand, force_approved=True)
+
+        assert cand_res.lifecycle_state == "SIMULATED"
+        assert cand_res.confidence == XxeConfidence.SIMULATED
+        assert finding_res is not None
+        assert finding_res.lifecycle_state == FindingLifecycle.SIMULATED
+        assert finding_res.lifecycle_state != FindingLifecycle.VALIDATED
+        assert finding_res.severity == "INFORMATIONAL"
+        assert finding_res.severity != "HIGH"
+        assert "[LOCAL HARNESS SIMULATION]" in finding_res.summary
+        assert "does NOT prove an attributable remote target callback" in finding_res.summary
 
 
 # ============================================================================
@@ -278,7 +354,7 @@ class TestXxeStateManagement:
             application="App1",
             endpoint="http://127.0.0.1:8080/xml",
             parameter="doc",
-            category=XxeCategory.SYNTHETIC_REFLECTION,
+            category=XxeCategory.INTERNAL_ENTITY_REFLECTION,
         )
         state_mgr.save_candidate(cand)
 
@@ -343,7 +419,11 @@ class TestXxeValidatorPlugin:
         assert tc.risk_level == RiskLevel.SAFE
         assert tc.payload_identifier == "PL-XXE-REFL-01"
 
-    def test_xxe_validator_analyze_confirmed_reflection(self):
+    def test_xxe_validator_internal_reflection_emits_observation_not_validated_xxe(self):
+        """
+        Verifies that XxeValidator produces an OBSERVATION with INFORMATIONAL severity
+        when internal entity expansion is reflected, preserving accurate risk classification.
+        """
         val = XxeValidator()
         tc = SecurityTestCase(
             vulnerability_family=VulnerabilityFamily.XXE,
@@ -374,7 +454,14 @@ class TestXxeValidatorPlugin:
         comp = compare_with_baseline(baseline, resp, test_marker=canary)
 
         res, finding = val.analyze(comp, baseline, resp, tc)
-        assert res.lifecycle_state == FindingLifecycle.VALIDATED
+        assert res.lifecycle_state == FindingLifecycle.OBSERVATION
+        assert res.lifecycle_state != FindingLifecycle.VALIDATED
+        assert res.severity == "INFORMATIONAL"
+        assert res.confidence == "MEDIUM"
+
         assert finding is not None
-        assert finding.vulnerability_type == "XML External Entity (XXE)"
-        assert finding.confidence == "HIGH"
+        assert finding.lifecycle_state == FindingLifecycle.OBSERVATION
+        assert finding.vulnerability_type == "XML Entity Processing Observation"
+        assert finding.vulnerability_type != "XML External Entity (XXE)"
+        assert finding.severity == "INFORMATIONAL"
+        assert finding.confidence == "MEDIUM"

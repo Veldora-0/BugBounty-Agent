@@ -567,35 +567,41 @@ class XxeValidator(BaseValidator):
         is_reflected = canary_marker in resp_body or comparison.marker_reflected
 
         if is_reflected:
-            severity = "HIGH"
-            confidence = "HIGH"
-            finding_state = FindingLifecycle.VALIDATED
-            summary = f"Verified XXE vulnerability: synthetic internal entity expanded and reflected in HTTP response on {test_case.endpoint}."
+            # Internal entity reflection establishes internal DTD processing, NOT external entity resolution (XXE).
+            # Therefore, this is an OBSERVATION (Informational, Medium confidence), NOT a validated HIGH XXE vulnerability.
+            severity = "INFORMATIONAL"
+            confidence = "MEDIUM"
+            finding_state = FindingLifecycle.OBSERVATION
+            summary = (
+                f"Internal XML entity expansion observed on {test_case.endpoint}; "
+                f"external entity resolution (XXE) remains unconfirmed."
+            )
 
             result = ValidationResult(
                 test_id=test_case.test_id,
                 lifecycle_state=finding_state,
-                signals_observed=["SYNTHETIC_ENTITY_REFLECTED", "DTD_ENABLED"],
+                signals_observed=["INTERNAL_ENTITY_REFLECTED", "INTERNAL_DTD_PROCESSING"],
                 evidence_summary=summary,
                 confidence=confidence,
                 severity=severity,
             )
 
             finding = Finding(
-                title=f"XML External Entity (XXE) Vulnerability on {test_case.endpoint}",
+                title=f"Internal XML Entity Processing Observation on {test_case.endpoint}",
                 summary=summary,
                 affected_asset=test_case.target,
                 affected_endpoint=test_case.endpoint,
-                vulnerability_type="XML External Entity (XXE)",
+                vulnerability_type="XML Entity Processing Observation",
                 severity=severity,
                 confidence=confidence,
                 lifecycle_state=finding_state,
                 description=(
                     f"Controlled security testing confirmed that the XML parser on '{test_case.endpoint}' "
                     f"resolves internal DTD entities. A harmless synthetic canary marker was injected and "
-                    f"observed in the response. Zero sensitive files or external network resources were accessed."
+                    f"observed in the response. External entity resolution (XXE) was NOT established. "
+                    f"Zero sensitive files or external network resources were accessed."
                 ),
-                root_cause="XML parser is configured without disabling DTD processing or external entity resolution.",
+                root_cause="XML parser is configured to allow internal DTD entity definitions.",
                 prerequisites="Endpoint accepts and parses XML input.",
                 reproduction_steps=[
                     f"1. Send POST request to '{test_case.endpoint}' with XML containing DOCTYPE internal entity declaration.",
@@ -603,9 +609,9 @@ class XxeValidator(BaseValidator):
                     "3. Observe resolved entity marker in HTTP response body.",
                 ],
                 expected_result="Endpoint disallows DOCTYPE declarations or parses XML in strict secure mode.",
-                observed_result=f"Synthetic entity marker reflected in HTTP {response.status_code} response.",
-                security_impact="Attackers could potentially read local files, probe internal networks, or trigger denial-of-service.",
-                remediation="Disable DTD (Document Type Definitions) and external entity processing completely in the XML parser.",
+                observed_result=f"Synthetic internal entity marker reflected in HTTP {response.status_code} response; external entity resolution unconfirmed.",
+                security_impact="Internal entity processing is enabled. While this does not prove external entity resolution (XXE), allowing DTD processing may indicate insufficient XML parser hardening.",
+                remediation="Disable DTD (Document Type Definitions) completely in the XML parser if not strictly required.",
                 scope_reference=f"Target {test_case.endpoint} in authorized scope.",
                 parameter=test_case.parameter,
             )

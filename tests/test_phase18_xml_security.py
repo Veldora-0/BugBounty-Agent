@@ -5,10 +5,11 @@ Validates:
 1. Standard valid XML parsing and namespace preservation.
 2. DOCTYPE and ENTITY declaration rejection in strict mode (disallow_dtd=True).
 3. Immediate interception and blocking of external entities (SYSTEM and PUBLIC references).
-4. Entity expansion / Billion Laughs defense via bounded entity declaration counts.
+4. Entity expansion / Billion Laughs defense via cumulative expanded character budget and declaration limits.
 5. Hard maximum input size bound enforcement.
-6. Graceful fail-closed handling of malformed XML syntax.
-7. WebAppIntelligenceEngine sitemap parsing safety (zero entity execution, fails closed).
+6. Graceful fail-closed handling of malformed and truncated XML syntax.
+7. WebAppIntelligenceEngine sitemap parsing safety (zero entity execution, fails closed without regex fallback).
+8. Resilient error handling preventing crashes or disclosure of sensitive local data.
 """
 
 from __future__ import annotations
@@ -19,7 +20,10 @@ import tempfile
 import pytest
 
 from framework.common.xml_safe import (
+    ExternalEntitySecurityError,
+    ProhibitedDtdSecurityError,
     SafeXMLParseError,
+    XmlBombSecurityError,
     safe_extract_sitemap_urls,
     safe_parse_xml,
 )
@@ -67,8 +71,20 @@ def test_safe_parse_xml_rejects_doctype_in_strict_mode():
     ]>
     <sitemap>&internal;</sitemap>
     """
-    with pytest.raises(SafeXMLParseError, match="DOCTYPE and ENTITY declarations are forbidden"):
+    with pytest.raises(ProhibitedDtdSecurityError, match="DOCTYPE and ENTITY declarations are forbidden in strict XML mode"):
         safe_parse_xml(xml_doctype, disallow_dtd=True)
+
+
+def test_safe_parse_xml_strict_mode_rejects_doctype_with_whitespace_and_comments():
+    """Verifies strict mode rejects DOCTYPE even when obfuscated with leading comments or whitespace."""
+    obfuscated_xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <!-- leading harmless comment -->
+    <!DOCTYPE   test
+    SYSTEM "http://internal.service/test.dtd">
+    <test><val>1</val></test>
+    """
+    with pytest.raises(ProhibitedDtdSecurityError):
+        safe_parse_xml(obfuscated_xml, disallow_dtd=True)
 
 
 def test_safe_parse_xml_blocks_external_system_entity():
@@ -82,7 +98,7 @@ def test_safe_parse_xml_blocks_external_system_entity():
     ]>
     <root>&ext;</root>
     """
-    with pytest.raises(SafeXMLParseError, match="External entity 'ext' is forbidden"):
+    with pytest.raises(ExternalEntitySecurityError, match="External entity 'ext' is forbidden"):
         safe_parse_xml(xml_xxe, disallow_dtd=False)
 
 
@@ -94,24 +110,58 @@ def test_safe_parse_xml_blocks_external_public_entity():
     ]>
     <root>&ext;</root>
     """
-    with pytest.raises(SafeXMLParseError, match="External entity 'ext' is forbidden"):
+    with pytest.raises(ExternalEntitySecurityError, match="External entity 'ext' is forbidden"):
         safe_parse_xml(xml_public, disallow_dtd=False)
 
 
 def test_safe_parse_xml_entity_expansion_count_limit():
     """
-    Verifies protection against entity expansion bombs (Billion Laughs / quadratic blowup)
-    by strictly bounding the number of allowed entity declarations.
+    Verifies protection against entity expansion bombs by strictly bounding
+    the number of allowed entity declarations.
     """
-    declarations = "\n".join(f'<!ENTITY entity_{i} "val_{i}">' for i in range(60))
+    declarations = "\n".join(f'<!ENTITY entity_{i} "val_{i}">' for i in range(30))
     xml_bomb = f"""<?xml version="1.0"?>
     <!DOCTYPE root [
         {declarations}
     ]>
     <root>content</root>
     """
-    with pytest.raises(SafeXMLParseError, match="Exceeded maximum entity declaration limit"):
-        safe_parse_xml(xml_bomb, disallow_dtd=False, max_entity_declarations=50)
+    with pytest.raises(XmlBombSecurityError, match="Exceeded maximum entity declaration limit"):
+        safe_parse_xml(xml_bomb, disallow_dtd=False, max_entity_declarations=20)
+
+
+def test_safe_parse_xml_nested_entity_expansion_cumulative_budget():
+    """
+    Verifies defense against Billion Laughs nested expansion using a strict
+    cumulative expanded character budget (preventing quadratic/exponential CPU/memory blowup).
+    """
+    # 5 levels of 10x expansion: 10 bytes -> 100,000 bytes
+    nested_bomb = """<?xml version="1.0"?>
+    <!DOCTYPE test [
+        <!ENTITY a "1234567890">
+        <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+        <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+        <!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">
+        <!ENTITY e "&d;&d;&d;&d;&d;&d;&d;&d;&d;&d;">
+    ]>
+    <test>&e;</test>
+    """
+    with pytest.raises(XmlBombSecurityError):
+        safe_parse_xml(nested_bomb, disallow_dtd=False, max_expanded_chars=2000)
+
+
+def test_safe_parse_xml_attribute_entity_expansion_cumulative_budget():
+    """Verifies that nested entity expansion inside element attributes also triggers character budget limits."""
+    attr_bomb = """<?xml version="1.0"?>
+    <!DOCTYPE test [
+        <!ENTITY a "1234567890">
+        <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+        <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+    ]>
+    <test payload="&c;"/>
+    """
+    with pytest.raises(XmlBombSecurityError):
+        safe_parse_xml(attr_bomb, disallow_dtd=False, max_expanded_chars=500)
 
 
 def test_safe_parse_xml_oversized_input_rejection():
@@ -129,6 +179,10 @@ def test_safe_parse_xml_malformed_syntax_fails_closed():
 
     with pytest.raises(SafeXMLParseError, match="Empty XML document"):
         safe_parse_xml("   ")
+
+    # Invalid type
+    with pytest.raises(SafeXMLParseError, match="must be a string or bytes"):
+        safe_parse_xml(None)  # type: ignore
 
 
 def test_safe_extract_sitemap_urls_helper():
@@ -202,3 +256,52 @@ def test_webapp_sitemap_parsing_rejects_xxe_payload():
     urls = engine.parse_sitemap_xml("https://app.target.com/sitemap.xml")
     # Must fail closed: returns zero URLs
     assert urls == []
+
+
+def test_webapp_sitemap_parsing_malicious_doctype_does_not_fall_back_to_regex():
+    """
+    Verifies that a malicious sitemap with DOCTYPE/entity injections does NOT fall back
+    to regex parsing to extract URLs; it fails closed completely.
+    """
+    scope_engine = ScopeEngine({
+        "program": {"name": "test"},
+        "targets": {"domains": ["app.target.com"]},
+    })
+    engine = WebApplicationIntelligenceEngine(
+        scope_engine=scope_engine,
+        policy=CrawlPolicy(include_sitemaps=True, passive_only=False),
+    )
+
+    # Malicious sitemap containing DTD entity injection alongside valid <loc> tags
+    malicious_sitemap = """<?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE urlset [
+        <!ENTITY payload "malicious_content">
+    ]>
+    <urlset>
+        <url><loc>https://app.target.com/should-not-be-parsed</loc></url>
+    </urlset>
+    """
+    engine.fetch_hook = lambda url, method: {"status_code": 200, "body": malicious_sitemap, "headers": {}}
+
+    urls = engine.parse_sitemap_xml("https://app.target.com/sitemap.xml")
+    # Must fail closed: regex fallback must NOT extract the loc tag
+    assert urls == []
+
+
+def test_xml_parsing_failures_never_crash_or_disclose_sensitive_data():
+    """
+    Verifies that adversarial or pathological XML inputs (null bytes, binary blobs,
+    deeply nested tags, unclosed entities) fail safely with SafeXMLParseError and
+    never crash or disclose sensitive system paths.
+    """
+    adversarial_inputs = [
+        b"\x00\x01\x02\x03<test>garbage",
+        b"<?xml version='1.0'?><test>&undefined;</test>",
+        b"<" * 500,
+        b"</unopened>",
+        b"<!DOCTYPE [ <!-- unclosed doctype",
+    ]
+
+    for bad_input in adversarial_inputs:
+        with pytest.raises(SafeXMLParseError):
+            safe_parse_xml(bad_input)

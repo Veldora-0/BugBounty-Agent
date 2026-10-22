@@ -273,8 +273,8 @@ class SsrfIntelligenceEngine:
             if orig_body and isinstance(orig_body, str) and orig_body.strip():
                 try:
                     import xml.etree.ElementTree as ET
-                    from framework.common.xml_safe import safe_parse_xml
-                    root = safe_parse_xml(orig_body.encode("utf-8"), disallow_dtd=False)
+                    from framework.common.xml_safe import SafeXMLParseError, safe_parse_xml
+                    root = safe_parse_xml(orig_body.encode("utf-8"), disallow_dtd=False, max_expanded_chars=20_000)
                     found = False
                     for el in root.iter():
                         tag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
@@ -286,6 +286,9 @@ class SsrfIntelligenceEngine:
                         sub = ET.SubElement(root, param)
                         sub.text = injected_value
                     new_body = ET.tostring(root, encoding="utf-8").decode("utf-8")
+                except SafeXMLParseError:
+                    # Input violates XML security bounds; do not regex-substitute into dangerous body
+                    new_body = f'<?xml version="1.0" encoding="UTF-8"?><root><{param}>{escaped_val}</{param}></root>'
                 except Exception:
                     import re
                     pattern = re.compile(rf"(<{re.escape(param)}[^>]*>)(.*?)(</{re.escape(param)}>)", re.IGNORECASE | re.DOTALL)

@@ -282,13 +282,10 @@ class WebApplicationIntelligenceEngine:
                     if url and self._is_in_scope(url):
                         discovered.append(canonicalize_url(url))
         except SafeXMLParseError:
-            # Fallback regex for loc tags only in clean, non-DTD malformed XML
-            for match in re.finditer(r"<loc>(https?://[^<]+)</loc>", body, re.IGNORECASE):
-                url = match.group(1).strip()
-                if url and self._is_in_scope(url):
-                    discovered.append(canonicalize_url(url))
+            # Fail closed on XML security violations or malformed sitemap documents
+            return []
         except Exception:
-            pass
+            return []
         return discovered
 
     # ==========================================================================
