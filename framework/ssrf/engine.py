@@ -141,21 +141,171 @@ class SsrfIntelligenceEngine:
         """Constructs a request with parameter mutated to the canary or baseline value."""
         endpoint = candidate.endpoint
         param = candidate.parameter
-        loc = candidate.param_location
+        loc = (candidate.param_location or "QUERY").upper().strip()
 
+        # Build base headers preserving candidate custom headers
+        headers: Dict[str, str] = {
+            "User-Agent": "BugBounty-Agent/1.0 (SSRF-Intelligence)",
+        }
+        if getattr(candidate, "headers", None):
+            headers.update(candidate.headers)
+        elif candidate.provenance and isinstance(candidate.provenance.get("headers"), dict):
+            headers.update(candidate.provenance["headers"])
+
+        def _get_header(hdr_dict: Dict[str, str], name: str) -> Optional[str]:
+            for k, v in hdr_dict.items():
+                if k.lower() == name.lower():
+                    return v
+            return None
+
+        def _set_header(hdr_dict: Dict[str, str], name: str, val: str) -> None:
+            for k in list(hdr_dict.keys()):
+                if k.lower() == name.lower():
+                    hdr_dict[k] = val
+                    return
+            hdr_dict[name] = val
+
+        # 1. PATH mutation
         if loc == "PATH":
-            # Direct path parameter substitution
             mutated_path = endpoint
+            replaced = False
             for tpl in (f"{{{param}}}", f":{param}", f"<{param}>"):
                 if tpl in mutated_path:
                     mutated_path = mutated_path.replace(tpl, quote(injected_value, safe=""))
+                    replaced = True
+            if not replaced and endpoint.rstrip("/").endswith(f"/{param}"):
+                mutated_path = endpoint.rstrip("/")[:-len(param)] + quote(injected_value, safe="")
+
             return ControlledRequest(
                 url=mutated_path,
                 method=candidate.method,
-                headers={"User-Agent": "BugBounty-Agent/1.0 (SSRF-Intelligence)"},
+                headers=headers,
+                mutated_target=param,
+                mutated_value=injected_value,
             )
 
-        # Default QUERY parameter mutation
+        # 2. JSON_BODY mutation
+        if loc in ("JSON_BODY", "JSON"):
+            _set_header(headers, "Content-Type", _get_header(headers, "Content-Type") or "application/json")
+            orig_body = getattr(candidate, "body", None) or (
+                candidate.provenance.get("body") if candidate.provenance else None
+            )
+
+            parsed_json: Dict[str, Any] = {}
+            if orig_body:
+                try:
+                    loaded = json.loads(orig_body) if isinstance(orig_body, str) else orig_body
+                    if isinstance(loaded, dict):
+                        parsed_json = loaded
+                except Exception:
+                    parsed_json = {}
+
+            # Handle dotted path keys e.g. "config.webhook_url"
+            parts = param.split(".")
+            curr = parsed_json
+            for p in parts[:-1]:
+                if p not in curr or not isinstance(curr[p], dict):
+                    curr[p] = {}
+                curr = curr[p]
+
+            curr[parts[-1]] = injected_value
+            new_body = json.dumps(parsed_json)
+
+            return ControlledRequest(
+                url=endpoint,
+                method=candidate.method,
+                headers=headers,
+                body=new_body,
+                mutated_target=param,
+                mutated_value=injected_value,
+            )
+
+        # 3. FORM_BODY mutation
+        if loc in ("FORM_BODY", "FORM", "FORM_DATA", "URLENCODED"):
+            _set_header(headers, "Content-Type", _get_header(headers, "Content-Type") or "application/x-www-form-urlencoded")
+            orig_body = getattr(candidate, "body", None) or (
+                candidate.provenance.get("body") if candidate.provenance else None
+            )
+
+            new_qsl: List[Tuple[str, str]] = []
+            replaced = False
+            if orig_body and isinstance(orig_body, str):
+                try:
+                    qsl = parse_qsl(orig_body, keep_blank_values=True)
+                    for k, v in qsl:
+                        if k == param:
+                            new_qsl.append((k, injected_value))
+                            replaced = True
+                        else:
+                            new_qsl.append((k, v))
+                except Exception:
+                    new_qsl = []
+
+            if not replaced:
+                new_qsl.append((param, injected_value))
+
+            new_body = urlencode(new_qsl)
+            return ControlledRequest(
+                url=endpoint,
+                method=candidate.method,
+                headers=headers,
+                body=new_body,
+                mutated_target=param,
+                mutated_value=injected_value,
+            )
+
+        # 4. XML_BODY mutation
+        if loc in ("XML_BODY", "XML", "XML_ENTITY"):
+            _set_header(headers, "Content-Type", _get_header(headers, "Content-Type") or "application/xml")
+            orig_body = getattr(candidate, "body", None) or (
+                candidate.provenance.get("body") if candidate.provenance else None
+            )
+
+            escaped_val = (
+                injected_value.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+                .replace("'", "&apos;")
+            )
+
+            new_body = ""
+            if orig_body and isinstance(orig_body, str) and orig_body.strip():
+                try:
+                    import xml.etree.ElementTree as ET
+                    from framework.common.xml_safe import safe_parse_xml
+                    root = safe_parse_xml(orig_body.encode("utf-8"), disallow_dtd=False)
+                    found = False
+                    for el in root.iter():
+                        tag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+                        if tag.lower() == param.lower():
+                            el.text = injected_value
+                            found = True
+                            break
+                    if not found:
+                        sub = ET.SubElement(root, param)
+                        sub.text = injected_value
+                    new_body = ET.tostring(root, encoding="utf-8").decode("utf-8")
+                except Exception:
+                    import re
+                    pattern = re.compile(rf"(<{re.escape(param)}[^>]*>)(.*?)(</{re.escape(param)}>)", re.IGNORECASE | re.DOTALL)
+                    if pattern.search(orig_body):
+                        new_body = pattern.sub(rf"\g<1>{escaped_val}\g<3>", orig_body)
+                    else:
+                        new_body = f'<?xml version="1.0" encoding="UTF-8"?><root><{param}>{escaped_val}</{param}></root>'
+            else:
+                new_body = f'<?xml version="1.0" encoding="UTF-8"?><root><{param}>{escaped_val}</{param}></root>'
+
+            return ControlledRequest(
+                url=endpoint,
+                method=candidate.method,
+                headers=headers,
+                body=new_body,
+                mutated_target=param,
+                mutated_value=injected_value,
+            )
+
+        # 5. Default QUERY parameter mutation
         parsed = urlparse(endpoint)
         qsl = parse_qsl(parsed.query, keep_blank_values=True)
         new_qsl = []
@@ -182,7 +332,9 @@ class SsrfIntelligenceEngine:
         return ControlledRequest(
             url=mutated_url,
             method=candidate.method,
-            headers={"User-Agent": "BugBounty-Agent/1.0 (SSRF-Intelligence)"},
+            headers=headers,
+            mutated_target=param,
+            mutated_value=injected_value,
         )
 
     # ---------------- Active Controlled Validation ----------------

@@ -306,6 +306,8 @@ class SsrfCandidate:
         evidence: Optional[SsrfEvidence] = None,
         provenance: Optional[Dict[str, Any]] = None,
         notes: str = "",
+        headers: Optional[Dict[str, str]] = None,
+        body: Optional[str] = None,
         created_at: Optional[str] = None,
         updated_at: Optional[str] = None,
     ):
@@ -335,6 +337,10 @@ class SsrfCandidate:
         self.evidence = evidence
         self.provenance = provenance or {}
         self.notes = notes
+        self.headers: Dict[str, str] = dict(headers or {}) if headers is not None else dict(self.provenance.get("headers", {}))
+        self.body: Optional[str] = body if body is not None else (
+            self.provenance.get("body") or self.provenance.get("sample_body") or self.provenance.get("original_body")
+        )
         now = datetime.now(timezone.utc).isoformat()
         self.created_at = created_at or now
         self.updated_at = updated_at or now
@@ -368,6 +374,8 @@ class SsrfCandidate:
             "evidence": self.evidence.to_dict() if self.evidence else None,
             "provenance": self.provenance,
             "notes": self.notes,
+            "headers": self.headers,
+            "body": self.body,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -395,8 +403,10 @@ class SsrfCandidate:
             lifecycle_state=data.get("lifecycle_state", "CANDIDATE"),
             approval_status=data.get("approval_status", "PENDING"),
             evidence=ev,
-            provenance=data.get("provenance", {}),
+            provenance=data.get("provenance"),
             notes=data.get("notes", ""),
+            headers=data.get("headers"),
+            body=data.get("body"),
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
         )
