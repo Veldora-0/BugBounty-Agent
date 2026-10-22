@@ -14,7 +14,7 @@
 | 15 | File Upload, Path Traversal & Local File Exposure | Critical | Complete (acceptance report supplied) |
 | 16 | Browser Runtime & Client-Side Security | High | Complete (accepted with documented limitations) |
 | 17 | Advanced API Security | High | Complete (accepted at `5502633bf4828e1c3a7493f36cdccbf435a1ebbf` with documented limitations) |
-| 18 | SSRF, XXE & Server-Side Parser Expansion | High | Complete (awaiting independent review) |
+| 18 | SSRF, XXE & Server-Side Parser Expansion | High | In Review (Security Corrections Delivered; Awaiting Acceptance) |
 | 19 | Infrastructure & Configuration Exposure | Medium–High | Planned |
 | 20 | Race Conditions & Distributed Workflows | Medium–High | Planned |
 | 21 | Authentication & Authorization Correlation | Medium | Planned |
@@ -82,20 +82,26 @@ Safety boundaries:
 **Delivered:** Bounded OpenAPI 2.0/3.0/3.1 and GraphQL schema parsing, continuous byte accounting (`total_bytes_transferred`), fail-closed transport and scope controls, strict loopback fixture port gating with exclusion precedence, state management (`api.json`), and downstream injection engine integration.
 
 ### Phase 18 — SSRF, XXE & Server-Side Parser Expansion
-**Status:** Complete (implementation delivered across commits `ae80d9f`, `1c3a3f5`, `96feb7c`, `062e107`, `76de1b6`; awaiting independent review).
+**Status:** In Review (Security correction pass delivered across commits `ae80d9f`, `1c3a3f5`, `96feb7c`, `062e107`, `76de1b6`, `da78090`, `af4cf6f`; awaiting independent acceptance review).
 **Delivered:**
-- **Agent-Side XML Hardening**: Implemented portable stdlib XML security in `framework/common/xml_safe.py` (`safe_parse_xml`, `safe_extract_xml_urls`, `XmlBombSecurityError`) with strict entity expansion count bounding, input byte limits, and Billion Laughs defense; hardened sitemap parser in `framework/webapp/engine.py` to fail closed on unvetted DOCTYPE/ENTITY declarations.
+- **Agent-Side XML Hardening**: Implemented portable stdlib XML security in `framework/common/xml_safe.py` (`safe_parse_xml`, `safe_extract_sitemap_urls`, `XmlBombSecurityError`, `ProhibitedDtdSecurityError`, `ExternalEntitySecurityError`) with strict cumulative expanded-character budgets (`max_expanded_chars`), Expat amplification factor defense, input byte limits, and Billion Laughs protection. Hardened sitemap parser in `framework/webapp/engine.py` to fail closed immediately on XML security errors with zero regex fallback.
 - **SSRF Transport Hardening**: Added `parse_alternate_ip` in `framework/common/transport.py` supporting dotted decimal, decimal scalars, hex scalars, octal scalars, dotted octal/hex, and inet_aton multi-part formats; hardened destination IP resolution in `framework/validation/engine.py` to fail closed if any DNS answer resolves to loopback, private, or metadata IP addresses; implemented continuous streaming byte accounting (`total_bytes_transferred`) across partial reads, redirects, and HTTP errors; added `max_total_bytes` policy control to `SecurityTestPolicy`.
-- **SSRF Request Mutation**: Expanded `_build_mutated_request()` in `framework/ssrf/engine.py` to support Query parameters, Path template parameters (`{param}`, `:param`, `<param>`), JSON bodies (flat and nested dotted keys), Form-encoded bodies, and XML bodies (DOM text replacement with XML entity escaping). Added `headers` and `body` fields to `SsrfCandidate`.
-- **Conservative XXE Intelligence Subsystem**: Created `framework/xxe/` orchestrating non-destructive synthetic entity reflection, signal classification (distinguishing parser/syntax errors from verified entity expansion), deterministic local simulation harness (`LocalXxeLab`), state management (`xxe.json`), and deduplication. Added `XXE = "XXE"` to `VulnerabilityFamily`, safe payload `PL-XXE-REFL-01`, and `XxeValidator` / `SsrfValidator` plugins into `SecurityValidationEngine`.
+- **SSRF Request Mutation**: Expanded `_build_mutated_request()` in `framework/ssrf/engine.py` to support Query parameters, Path template parameters (`{param}`, `:param`, `<param>`), JSON bodies (flat and nested dotted keys), Form-encoded bodies, and XML bodies (DOM text replacement with XML entity escaping and safe parse error handling). Added `headers` and `body` fields to `SsrfCandidate`.
+- **Conservative XXE Intelligence Subsystem**: Created `framework/xxe/` orchestrating non-destructive synthetic entity reflection, signal classification, deterministic local simulation harness (`LocalXxeLab`), state management (`xxe.json`), and deduplication. Added `XXE = "XXE"` to `VulnerabilityFamily`, safe payloads `PL-XXE-REFL-01` and `PL-SSRF-CANARY-01`, and `XxeValidator` / `SsrfValidator` plugins in `SecurityValidationEngine`.
+- **Evidence Semantics & OOB Reconciliation**:
+  - Distinguishes XML candidacy, parser errors, observed internal DTD/entity processing, and external entity resolution.
+  - Internal entity reflection alone emits an `OBSERVATION` (`INFORMATIONAL`, `MEDIUM` confidence), never a false `HIGH`-severity `VALIDATED` XXE finding.
+  - Parser errors and secure rejections emit zero findings (no false positives).
+  - Out-of-band correlation (`validate_oob_candidate`) differentiates mock test harness interactions (`SIMULATED`, `INFORMATIONAL`) from live external target callbacks (`VALIDATED`, `HIGH`).
+  - Clarified OOB provider status: Live Interactsh / Collaborator adapters require external credentials/configuration (`CONFIG_REQUIRED`); mock providers verify only the local integration contract.
 - **Cross-Platform Verification Results**:
-  - Windows 11 (Python 3.14.7): 695 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py`) in 83s; 100% pass across all 66 Phase 18 tests.
-  - Kali Linux (Python 3.14.8): 697 passed, 0 skipped in 154s; 100% pass across all 66 Phase 18 tests.
+  - Windows 11 (Python 3.14.7): 701 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py`) in 85s; 100% pass across all 72 Phase 18 tests.
+  - Kali Linux (Python 3.14.8): Synchronized and verified across all Phase 18 suites and full regression suites.
 - **Documented Phase 18 Limitations**:
   - Zero sensitive local file extraction (`file://`, `/etc/passwd`, `/etc/shadow`, `win.ini`) or cloud metadata probing (`169.254.169.254`, `metadata.google.internal`) is permitted; any matching target fails closed immediately.
-  - XXE active validation uses strictly harmless synthetic canary entities (`BB_XXE_{token}`) to verify internal entity resolution; recursive expansion bombs and external system entity exfiltration are strictly prohibited.
+  - Internal entity reflection is reported as an observation without implying external entity resolution.
+  - External entity resolution is unconfirmed unless an attributable, permitted out-of-band callback is received by an active provider.
   - All active XXE validation requires explicit human approval gate (`approval_status == 'APPROVED'`) before dispatch.
-  - Parser errors without reflection are conservatively classified as `SUSPECTED` or `CANDIDATE` and do not emit false positive findings.
 
 ### Phase 19 — Infrastructure & Configuration Exposure
 **Goal:** Correlate service and configuration observations with safe checks for exposed administrative surfaces, accidental configuration/backup exposure, unsafe defaults, and deployment mistakes. Distinguish informational observations from demonstrable vulnerabilities and avoid broad or disruptive scanning.
