@@ -262,41 +262,40 @@ class ApiIntelligenceEngine:
         host = (parts.hostname or "").strip().lower()
         port = parts.port or (443 if parts.scheme == "https" else 80)
 
-        # 1. Check exact URL
-        decision = self.scope_engine.check(url)
-        if decision.status == ScopeStatus.OUT_OF_SCOPE and decision.rule_category in (
-            "EXPLICIT_EXCLUSION_URL",
-            "EXPLICIT_EXCLUSION_HOST",
-            "EXPLICIT_EXCLUSION_CIDR",
-        ):
-            return False
-        if decision.status == ScopeStatus.IN_SCOPE:
-            return True
+        # Active network operations targeting loopback (localhost / 127.0.0.1)
+        # strictly require an authorized fixture port (1024-65535)
+        if is_active and host in ("localhost", "127.0.0.1"):
+            if port not in self.allowed_fixture_ports:
+                return False
+
+        # 1. Check explicit exclusions across exact URL, base with port, base root, and host
+        # Explicit exclusions ALWAYS take strict precedence over any inclusion
+        for cand in (url, f"{parts.scheme}://{host}:{port}", f"{parts.scheme}://{host}", host):
+            cand_dec = self.scope_engine.check(cand)
+            if cand_dec.status == ScopeStatus.OUT_OF_SCOPE and (
+                cand_dec.rule_category in (
+                    "EXPLICIT_EXCLUSION_URL",
+                    "EXPLICIT_EXCLUSION_HOST",
+                    "EXPLICIT_EXCLUSION_DOMAIN",
+                    "EXPLICIT_EXCLUSION_CIDR",
+                )
+                or (cand_dec.rule_category or "").startswith("EXPLICIT_EXCLUSION_")
+            ):
+                return False
 
         # 2. Check local test fixture port allowance
         if host in ("localhost", "127.0.0.1") and port in self.allowed_fixture_ports:
             cand_base = self.scope_engine.check(f"{parts.scheme}://{host}:{port}")
-            if cand_base.status == ScopeStatus.OUT_OF_SCOPE and cand_base.rule_category in (
-                "EXPLICIT_EXCLUSION_URL",
-                "EXPLICIT_EXCLUSION_HOST",
-                "EXPLICIT_EXCLUSION_CIDR",
-            ):
-                return False
             if cand_base.status == ScopeStatus.IN_SCOPE:
                 return True
             cand_host = self.scope_engine.check(host)
-            if cand_host.status == ScopeStatus.OUT_OF_SCOPE and cand_host.rule_category in (
-                "EXPLICIT_EXCLUSION_URL",
-                "EXPLICIT_EXCLUSION_HOST",
-                "EXPLICIT_EXCLUSION_CIDR",
-            ):
-                return False
             if cand_host.status == ScopeStatus.IN_SCOPE:
                 return True
 
-        # Active operations targeting loopback must have port registered in allowed_fixture_ports
-        if is_active and host in ("localhost", "127.0.0.1") and port not in self.allowed_fixture_ports:
-            return False
+        # 3. Check standard target inclusions
+        decision = self.scope_engine.check(url)
+        if decision.status == ScopeStatus.IN_SCOPE:
+            return True
 
         decision_host = self.scope_engine.check(host or url)
         return decision_host.status == ScopeStatus.IN_SCOPE
@@ -317,7 +316,7 @@ class ApiIntelligenceEngine:
         # Allow explicitly registered local test fixture
         if host in ("localhost", "127.0.0.1"):
             if port in self.allowed_fixture_ports:
-                if self.scope_engine is not None and not self._is_in_scope(url, is_active=True):
+                if self.scope_engine is None or not self._is_in_scope(url, is_active=True):
                     raise ScopeViolationError(f"Target fixture URL '{url}' is OUT_OF_SCOPE")
                 return ["127.0.0.1"]
             raise ScopeViolationError(f"Target host '{host}:{port}' is not an authorized local fixture port")

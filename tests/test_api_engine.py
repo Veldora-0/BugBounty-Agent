@@ -2524,6 +2524,170 @@ class TestFindingBFixturePortSecurity:
         with pytest.raises(ScopeViolationError, match="OUT_OF_SCOPE"):
             engine._resolve_and_verify_destination("http://127.0.0.1:8080/admin")
 
+    def test_in_scope_loopback_with_unregistered_port_fails_closed(self):
+        """
+        Adversarial test: Proves an in-scope loopback host/CIDR with an unregistered port
+        fails closed for all active operations before scope inclusion can take effect.
+        """
+        scope_engine = ScopeEngine({
+            "program": {"name": "unregistered-port-test"},
+            "targets": {
+                "domains": ["127.0.0.1", "localhost"],
+                "cidrs": ["127.0.0.0/8"],
+                "urls": ["http://127.0.0.1:9999/api/v1"],
+            },
+        })
+        engine = ApiIntelligenceEngine(scope_engine=scope_engine)
+        # Port 9999 is NOT registered in allowed_fixture_ports
+        assert 9999 not in engine.allowed_fixture_ports
+
+        # Active network checks must return False
+        assert engine._is_in_scope("http://127.0.0.1:9999/api/v1", is_active=True) is False
+        assert engine._is_in_scope("http://localhost:9999/api/v1", is_active=True) is False
+
+        # Destination resolution must fail closed
+        with pytest.raises(ScopeViolationError, match="not an authorized local fixture port"):
+            engine._resolve_and_verify_destination("http://127.0.0.1:9999/api/v1")
+        with pytest.raises(ScopeViolationError, match="not an authorized local fixture port"):
+            engine._resolve_and_verify_destination("http://localhost:9999/api/v1")
+
+        # Active operations must fail closed without attempting network dispatch
+        assert engine.acquire_spec_content("http://127.0.0.1:9999/api/v1") is None
+        assert engine.probe_graphql_introspection("http://127.0.0.1:9999/graphql") is None
+
+        # Passive checks remain True for safe offline inspection of existing data
+        assert engine._is_in_scope("http://127.0.0.1:9999/api/v1", is_active=False) is True
+
+    def test_in_scope_loopback_with_registered_fixture_port_allowed(self):
+        """
+        Verifies that an in-scope loopback host with a registered fixture port is permitted.
+        """
+        scope_engine = ScopeEngine({
+            "program": {"name": "registered-port-test"},
+            "targets": {
+                "domains": ["127.0.0.1"],
+                "urls": ["http://127.0.0.1:8080"],
+            },
+        })
+        engine = ApiIntelligenceEngine(scope_engine=scope_engine)
+        engine.allow_fixture_port(8080)
+
+        assert engine._is_in_scope("http://127.0.0.1:8080/api/v1", is_active=True) is True
+        assert engine._resolve_and_verify_destination("http://127.0.0.1:8080/api/v1") == ["127.0.0.1"]
+
+    def test_in_scope_loopback_with_excluded_host_or_cidr_fails_closed(self):
+        """
+        Adversarial test: Proves that explicit host/domain/CIDR exclusions take strict
+        precedence over registered fixture ports.
+        """
+        # Excluded domain/host
+        scope_engine_host = ScopeEngine({
+            "program": {"name": "excluded-host-test"},
+            "targets": {"domains": ["localhost"], "cidrs": ["127.0.0.1/32"]},
+            "out_of_scope": {"domains": ["localhost"]},
+        })
+        engine = ApiIntelligenceEngine(scope_engine=scope_engine_host)
+        engine.allow_fixture_port(8080)
+
+        assert engine._is_in_scope("http://127.0.0.1:8080/api", is_active=True) is True
+        assert engine._is_in_scope("http://localhost:8080/api", is_active=True) is False
+        with pytest.raises(ScopeViolationError, match="OUT_OF_SCOPE"):
+            engine._resolve_and_verify_destination("http://localhost:8080/api")
+
+        # Excluded CIDR
+        scope_engine_cidr = ScopeEngine({
+            "program": {"name": "excluded-cidr-test"},
+            "targets": {"cidrs": ["127.0.0.0/8"]},
+            "out_of_scope": {"cidrs": ["127.0.0.1/32"]},
+        })
+        engine_cidr = ApiIntelligenceEngine(scope_engine=scope_engine_cidr)
+        engine_cidr.allow_fixture_port(8080)
+
+        assert engine_cidr._is_in_scope("http://127.0.0.1:8080/api", is_active=True) is False
+        with pytest.raises(ScopeViolationError, match="OUT_OF_SCOPE"):
+            engine_cidr._resolve_and_verify_destination("http://127.0.0.1:8080/api")
+
+    def test_redirect_to_unauthorized_loopback_port_aborted_and_never_reaches_server(self):
+        """
+        Adversarial test: Proves an HTTP redirect to an unauthorized loopback port
+        is aborted by ApiSafeRedirectHandler, raising ScopeViolationError, and that
+        the prohibited request NEVER reaches the unauthorized loopback server.
+        """
+        import http.server
+        import threading
+
+        unauthorized_hits = []
+        authorized_hits = []
+
+        class UnauthorizedServerHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                unauthorized_hits.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"secret": "leaked"}')
+
+            def log_message(self, *args):
+                pass
+
+        class AuthorizedServerHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                authorized_hits.append(self.path)
+                unauth_port = self.server.unauth_port
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{unauth_port}/forbidden-target")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server_unauth = http.server.HTTPServer(("127.0.0.1", 0), UnauthorizedServerHandler)
+        unauth_port = server_unauth.server_port
+        t_unauth = threading.Thread(target=server_unauth.serve_forever, daemon=True)
+        t_unauth.start()
+
+        server_auth = http.server.HTTPServer(("127.0.0.1", 0), AuthorizedServerHandler)
+        server_auth.unauth_port = unauth_port
+        auth_port = server_auth.server_port
+        t_auth = threading.Thread(target=server_auth.serve_forever, daemon=True)
+        t_auth.start()
+
+        try:
+            scope_engine = ScopeEngine({
+                "program": {"name": "loopback-redirect-test"},
+                "targets": {
+                    "domains": ["127.0.0.1"],
+                    "urls": [f"http://127.0.0.1:{auth_port}", f"http://127.0.0.1:{unauth_port}"],
+                },
+            })
+            engine = ApiIntelligenceEngine(scope_engine=scope_engine)
+            # ONLY auth_port is registered in allowed_fixture_ports
+            engine.allow_fixture_port(auth_port)
+
+            # Direct handler check
+            redirect_handler = ApiSafeRedirectHandler(
+                engine=engine,
+                ip_map={"127.0.0.1": ["127.0.0.1"]},
+                original_url=f"http://127.0.0.1:{auth_port}/start",
+            )
+            dummy_req = urllib.request.Request(f"http://127.0.0.1:{auth_port}/start")
+            with pytest.raises(ScopeViolationError, match="out of scope"):
+                redirect_handler.redirect_request(
+                    dummy_req, None, 302, "Found", {}, f"http://127.0.0.1:{unauth_port}/forbidden-target"
+                )
+
+            # Live network dispatch: acquire_spec_content follows redirect using opener with redirect_handler
+            result = engine.acquire_spec_content(f"http://127.0.0.1:{auth_port}/start")
+            assert result is None
+            assert len(authorized_hits) == 1
+            # CRITICAL ASSERTION: The unauthorized loopback port must have received ZERO requests!
+            assert len(unauthorized_hits) == 0, f"Prohibited request reached unauthorized loopback server: {unauthorized_hits}"
+        finally:
+            server_auth.shutdown()
+            server_auth.server_close()
+            server_unauth.shutdown()
+            server_unauth.server_close()
+
     def test_bb_validate_cli_rejects_fixture_port_when_scope_lacks_loopback(self):
         """Verifies bb-validate CLI rejects --fixture-port when target scope has no loopback authorization."""
         script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "bb-validate"))
