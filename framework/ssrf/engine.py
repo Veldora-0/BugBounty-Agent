@@ -383,21 +383,43 @@ class SsrfIntelligenceEngine:
             self.state_mgr.save_candidate(candidate)
             return candidate, None
 
-        # 4. Canary Issuance
+        # 4. OOB Provider Availability Verification (Fail closed before canary issuance and any request dispatch)
+        if not self.oob_provider:
+            candidate.lifecycle_state = "UNAVAILABLE"
+            candidate.notes = "SSRF OOB probe skipped: no OOB provider configured. Zero network requests dispatched."
+            self.state_mgr.save_candidate(candidate)
+            return candidate, None
+
+        prov_status = self.oob_provider.registration_status()
+        prov_name = self.oob_provider.name()
+
+        if prov_status != OobProviderStatus.AVAILABLE:
+            candidate.lifecycle_state = prov_status.value
+            candidate.notes = (
+                f"SSRF OOB verification unavailable: provider '{prov_name}' status is {prov_status.value} "
+                f"(live polling not operational). Zero network requests dispatched."
+            )
+            self.state_mgr.save_candidate(candidate)
+            return candidate, None
+
+        # 5. Canary Issuance
         canary_token, canary_url = self.canary_mgr.issue_canary(candidate.candidate_id)
         candidate.callback_token = canary_token
 
-        # Explicitly validate generated canary destination against policy before dispatch
-        if hasattr(self.policy, "validate_oob_destination"):
-            try:
-                self.policy.validate_oob_destination(canary_url)
-            except (PolicyViolationError, ValueError) as e:
-                candidate.lifecycle_state = "POLICY_VIOLATION"
-                candidate.notes = f"OOB canary destination rejected by policy: {e}"
-                self.state_mgr.save_candidate(candidate)
-                return candidate, None
+        # 6. Explicit OOB Destination Trust Validation (Must not silently skip)
+        if not hasattr(self.policy, "validate_oob_destination"):
+            raise PolicyViolationError(
+                "SecurityTestPolicy is missing required validate_oob_destination method."
+            )
+        try:
+            self.policy.validate_oob_destination(canary_url)
+        except (PolicyViolationError, ValueError) as e:
+            candidate.lifecycle_state = "POLICY_VIOLATION"
+            candidate.notes = f"OOB canary destination rejected by policy: {e}"
+            self.state_mgr.save_candidate(candidate)
+            return candidate, None
 
-        # 5. Baseline Capture (Normal input / Benign control)
+        # 7. Baseline Capture (Normal input / Benign control)
         baseline_resp: Optional[ControlledResponse] = None
         try:
             baseline_req = self._build_mutated_request(candidate, injected_value="https://example.com/favicon.ico")
@@ -405,11 +427,11 @@ class SsrfIntelligenceEngine:
         except Exception:
             pass
 
-        # 6. Canary Probe Dispatch
+        # 8. Canary Probe Dispatch
         probe_req = self._build_mutated_request(candidate, injected_value=canary_url)
         test_resp = self.validation_engine.send_request(probe_req)
 
-        # 7. OOB Interaction Polling & Correlation
+        # 9. OOB Interaction Polling & Correlation
         time.sleep(poll_wait_seconds)
         interactions = self.canary_mgr.correlate_interactions(
             canary_token=canary_token,
@@ -421,7 +443,7 @@ class SsrfIntelligenceEngine:
         for inter in interactions:
             self.state_mgr.save_interaction(inter)
 
-        # 8. Comparison & False-Positive Elimination
+        # 10. Comparison & False-Positive Elimination
         comp = SsrfComparator.evaluate(
             candidate=candidate,
             canary_token=canary_token,
@@ -434,15 +456,84 @@ class SsrfIntelligenceEngine:
         candidate.evidence = comp.evidence
         candidate.notes = comp.summary
 
-        # 9. Finding Generation & Deduplication
+        # 11. Finding Generation & Deduplication
+        is_mock = (
+            prov_name == "mock"
+            or isinstance(self.oob_provider, MockOobProvider)
+            or getattr(self.oob_provider, "is_simulation", False)
+        )
+
         finding: Optional[Finding] = None
         if comp.is_confirmed:
-            if comp.interaction_type == OobInteractionType.DNS_ONLY:
+            if is_mock:
+                # Mock harness verification: MUST NOT claim live target callback
+                candidate.confidence = SsrfConfidence.SIMULATED
+                candidate.lifecycle_state = "SIMULATED"
+                summary = (
+                    f"[LOCAL HARNESS SIMULATION] Out-of-band SSRF interaction correlated via Mock provider "
+                    f"for endpoint '{candidate.endpoint}'. This confirms integration flow in local test harness "
+                    f"and does NOT prove an attributable remote target callback."
+                )
+                if candidate.evidence:
+                    candidate.evidence.evidence_summary = summary
+                candidate.notes = summary
+
+                finding = Finding(
+                    title=f"Simulated Server-Side Request Forgery on {candidate.endpoint} ({candidate.parameter})",
+                    summary=summary,
+                    affected_asset=urlparse(candidate.endpoint).netloc or candidate.application,
+                    affected_endpoint=candidate.endpoint,
+                    vulnerability_type="Simulated Server-Side Request Forgery (SSRF)",
+                    severity="INFORMATIONAL",
+                    confidence="LOW",
+                    lifecycle_state=FindingLifecycle.SIMULATED,
+                    description=summary,
+                    root_cause="Local test harness simulation.",
+                    prerequisites="Local test environment with MockOobProvider.",
+                    reproduction_steps=["Local test harness simulation."],
+                    expected_result="Mock provider callback received in simulation.",
+                    observed_result=f"Mock callback correlated for token '{canary_token}'.",
+                    security_impact="Informational simulation only; does not represent a validated vulnerability.",
+                    remediation="None required for simulated test.",
+                    scope_reference=f"Target {candidate.endpoint} in authorized scope.",
+                    parameter=candidate.parameter,
+                )
+            elif comp.interaction_type == OobInteractionType.DNS_ONLY:
                 candidate.lifecycle_state = "OBSERVED"
                 candidate.confidence = SsrfConfidence.OBSERVED
                 vuln_type = "Server-Side DNS Resolution (Blind SSRF Primitive)"
                 title = f"Server-Side DNS Resolution on {candidate.endpoint} ({candidate.parameter})"
                 root_cause = "Application resolves remote hostnames supplied in user-controlled parameter."
+
+                finding = Finding(
+                    title=title,
+                    summary=comp.summary,
+                    affected_asset=urlparse(candidate.endpoint).netloc or candidate.application,
+                    affected_endpoint=candidate.endpoint,
+                    vulnerability_type=vuln_type,
+                    severity=candidate.severity,
+                    confidence="MEDIUM",
+                    lifecycle_state=FindingLifecycle.OBSERVATION,
+                    description=(
+                        f"Controlled out-of-band verification confirmed server-side DNS resolution. "
+                        f"Injected canary URL '{canary_url}' into parameter '{candidate.parameter}' at '{candidate.endpoint}'. "
+                        f"The OOB callback provider '{self.oob_provider.name()}' recorded a DNS query without an HTTP connection. "
+                        f"No internal network probing or cloud metadata was accessed."
+                    ),
+                    root_cause=root_cause,
+                    prerequisites="Endpoint accessible over HTTP/HTTPS with URL parameter acceptance.",
+                    reproduction_steps=[
+                        f"1. Generate a unique canary identifier.",
+                        f"2. Send {candidate.method} request to '{candidate.endpoint}' with parameter '{candidate.parameter}' set to canary URL.",
+                        f"3. Observe asynchronous DNS callback on OOB provider.",
+                    ],
+                    expected_result="Endpoint validates and rejects arbitrary remote destination URLs.",
+                    observed_result=f"Server initiated DNS resolution to external canary.",
+                    security_impact="Server resolves arbitrary remote hostnames; may be chained for blind SSRF or DNS exfiltration.",
+                    remediation="Implement strict domain whitelisting and disable resolution of user-supplied hostnames.",
+                    scope_reference=f"Target {candidate.endpoint} in authorized scope.",
+                    parameter=candidate.parameter,
+                )
             else:
                 candidate.lifecycle_state = "VALIDATED"
                 candidate.confidence = SsrfConfidence.VALIDATED
@@ -450,35 +541,35 @@ class SsrfIntelligenceEngine:
                 title = f"Blind Server-Side Request Forgery on {candidate.endpoint} ({candidate.parameter})"
                 root_cause = "Application initiates outbound server-side HTTP connections to user-controlled URLs."
 
-            finding = Finding(
-                title=title,
-                summary=comp.summary,
-                affected_asset=urlparse(candidate.endpoint).netloc or candidate.application,
-                affected_endpoint=candidate.endpoint,
-                vulnerability_type=vuln_type,
-                severity=candidate.severity,
-                confidence="HIGH" if comp.confidence == SsrfConfidence.VALIDATED else "MEDIUM",
-                lifecycle_state=FindingLifecycle.VALIDATED if comp.confidence == SsrfConfidence.VALIDATED else FindingLifecycle.OBSERVED,
-                description=(
-                    f"Controlled out-of-band verification confirmed server-side network interaction. "
-                    f"Injected canary URL '{canary_url}' into parameter '{candidate.parameter}' at '{candidate.endpoint}'. "
-                    f"The OOB callback provider '{self.oob_provider.name()}' recorded a matching {comp.interaction_type.value} interaction. "
-                    f"No internal network probing or cloud metadata was accessed."
-                ),
-                root_cause=root_cause,
-                prerequisites="Endpoint accessible over HTTP/HTTPS with URL parameter acceptance.",
-                reproduction_steps=[
-                    f"1. Generate a unique canary identifier.",
-                    f"2. Send {candidate.method} request to '{candidate.endpoint}' with parameter '{candidate.parameter}' set to canary URL.",
-                    f"3. Observe asynchronous {comp.interaction_type.value} callback on OOB provider.",
-                ],
-                expected_result="Endpoint validates and rejects arbitrary remote destination URLs.",
-                observed_result=f"Server initiated {comp.interaction_type.value} interaction to external canary.",
-                security_impact="Unauthorized outbound network requests may allow internal reconnaissance or protocol abuse.",
-                remediation="Implement strict domain whitelisting, disable HTTP redirects to external hosts, and enforce egress firewall rules.",
-                scope_reference=f"Target {candidate.endpoint} in authorized scope.",
-                parameter=candidate.parameter,
-            )
+                finding = Finding(
+                    title=title,
+                    summary=comp.summary,
+                    affected_asset=urlparse(candidate.endpoint).netloc or candidate.application,
+                    affected_endpoint=candidate.endpoint,
+                    vulnerability_type=vuln_type,
+                    severity=candidate.severity,
+                    confidence="HIGH",
+                    lifecycle_state=FindingLifecycle.VALIDATED,
+                    description=(
+                        f"Controlled out-of-band verification confirmed server-side network interaction. "
+                        f"Injected canary URL '{canary_url}' into parameter '{candidate.parameter}' at '{candidate.endpoint}'. "
+                        f"The OOB callback provider '{self.oob_provider.name()}' recorded a matching {comp.interaction_type.value} interaction. "
+                        f"No internal network probing or cloud metadata was accessed."
+                    ),
+                    root_cause=root_cause,
+                    prerequisites="Endpoint accessible over HTTP/HTTPS with URL parameter acceptance.",
+                    reproduction_steps=[
+                        f"1. Generate a unique canary identifier.",
+                        f"2. Send {candidate.method} request to '{candidate.endpoint}' with parameter '{candidate.parameter}' set to canary URL.",
+                        f"3. Observe asynchronous {comp.interaction_type.value} callback on OOB provider.",
+                    ],
+                    expected_result="Endpoint validates and rejects arbitrary remote destination URLs.",
+                    observed_result=f"Server initiated {comp.interaction_type.value} interaction to external canary.",
+                    security_impact="Unauthorized outbound network requests may allow internal reconnaissance or protocol abuse.",
+                    remediation="Implement strict domain whitelisting, disable HTTP redirects to external hosts, and enforce egress firewall rules.",
+                    scope_reference=f"Target {candidate.endpoint} in authorized scope.",
+                    parameter=candidate.parameter,
+                )
 
             # Deduplication
             existing_findings_list = list(self.state_mgr._read_json().get("findings", {}).values())
@@ -553,7 +644,17 @@ class SsrfIntelligenceEngine:
             if count >= max_tests:
                 break
 
-            if resume and c.lifecycle_state in ("VALIDATED", "OBSERVED", "TESTED"):
+            if resume and c.lifecycle_state in (
+                "VALIDATED",
+                "OBSERVED",
+                "TESTED",
+                "SIMULATED",
+                "UNAVAILABLE",
+                "CONFIG_REQUIRED",
+                "ERROR",
+                "OUT_OF_SCOPE",
+                "POLICY_VIOLATION",
+            ):
                 continue
 
             if not c.is_approved_for_execution() and not approve_all:

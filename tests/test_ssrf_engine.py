@@ -52,10 +52,11 @@ from framework.ssrf.provider import (
     CollaboratorOobProvider,
     InteractshOobProvider,
     MockOobProvider,
+    OobProvider,
     OobProviderFactory,
 )
 from framework.ssrf.state import SsrfStateManager
-from framework.validation.policy import SecurityTestPolicy
+from framework.validation.policy import PolicyViolationError, SecurityTestPolicy
 from framework.validation.request import ControlledRequest, ControlledResponse
 
 
@@ -419,14 +420,287 @@ def test_ssrf_engine_live_validation(temp_program_dir):
     assert "awaiting explicit human approval" in c_res.notes
     assert finding_res is None
 
-    # 2. With force_approved=True -> executes and validates SSRF
+    # 2. With force_approved=True -> executes and correlates simulated SSRF via Mock provider
     c_res, finding_res = engine.validate_candidate(cand, force_approved=True, poll_wait_seconds=0.1)
+    assert c_res.lifecycle_state == "SIMULATED"
+    assert c_res.confidence == SsrfConfidence.SIMULATED
+    assert finding_res is not None
+    assert finding_res.vulnerability_type == "Simulated Server-Side Request Forgery (SSRF)"
+    assert finding_res.lifecycle_state == FindingLifecycle.SIMULATED
+    assert finding_res.severity == "INFORMATIONAL"
+    assert finding_res.confidence == "LOW"
+    assert "[LOCAL HARNESS SIMULATION]" in finding_res.summary
+    assert c_res.evidence is not None
+
+
+def test_ssrf_engine_live_provider_validation(temp_program_dir):
+    """Verifies that only genuine, non-mock providers can emit live VALIDATED findings."""
+    class LiveOobProviderStub(OobProvider):
+        def name(self) -> str:
+            return "live_interactsh"
+
+        def registration_status(self) -> OobProviderStatus:
+            return OobProviderStatus.AVAILABLE
+
+        @property
+        def is_simulation(self) -> bool:
+            return False
+
+        def generate_canary(self, prefix: str = "bb9", test_id: str = "") -> Tuple[str, str]:
+            return "live-tok-123", "http://canary-live.oast.pro"
+
+        def poll(self, token: Optional[str] = None, timeout: float = 5.0) -> List[SsrfInteraction]:
+            return [
+                SsrfInteraction(
+                    interaction_id="int-live-1",
+                    canary_token=token or "live-tok-123",
+                    protocol="HTTP",
+                    source_ip_metadata="203.0.113.88",
+                )
+            ]
+
+        def consume_interactions(self, token: str) -> List[SsrfInteraction]:
+            return self.poll(token)
+
+        def close(self) -> None:
+            pass
+
+    live_prov = LiveOobProviderStub()
+    scope = ScopeEngine({
+        "program": {"name": "test-live"},
+        "targets": {"domains": ["api.local"], "recursive_subdomains": {"enabled": True}},
+    })
+
+    def live_hook(req: ControlledRequest) -> ControlledResponse:
+        return ControlledResponse(status_code=200, headers={}, body="OK", size_bytes=2, elapsed_seconds=0.01)
+
+    engine = SsrfIntelligenceEngine(
+        program_dir=temp_program_dir,
+        scope_engine=scope,
+        send_request_hook=live_hook,
+        oob_provider=live_prov,
+    )
+
+    cand = SsrfCandidate(
+        application="api.local",
+        endpoint="https://api.local/api/v1/fetch",
+        parameter="url",
+    )
+
+    c_res, finding_res = engine.validate_candidate(cand, force_approved=True, poll_wait_seconds=0.01)
     assert c_res.lifecycle_state == "VALIDATED"
     assert c_res.confidence == SsrfConfidence.VALIDATED
     assert finding_res is not None
     assert finding_res.vulnerability_type == "Server-Side Request Forgery (SSRF)"
     assert finding_res.lifecycle_state == FindingLifecycle.VALIDATED
-    assert c_res.evidence is not None
+    assert finding_res.confidence == "HIGH"
+
+
+def test_ssrf_engine_unavailable_provider_fails_closed_zero_dispatch(temp_program_dir):
+    """
+    When provider reports UNAVAILABLE (e.g. configured Interactsh adapter without live polling),
+    engine must fail closed before canary issuance or any baseline/probe dispatch.
+    """
+    scope = ScopeEngine({
+        "program": {"name": "test-unavail"},
+        "targets": {"domains": ["api.local"], "recursive_subdomains": {"enabled": True}},
+    })
+
+    interactsh_prov = InteractshOobProvider(server_url="oast.pro", token="fake_pdcp_token_123")
+    assert interactsh_prov.registration_status() == OobProviderStatus.UNAVAILABLE
+
+    dispatched: List[ControlledRequest] = []
+    def spy_hook(req: ControlledRequest) -> ControlledResponse:
+        dispatched.append(req)
+        return ControlledResponse(status_code=200, headers={}, body="OK", size_bytes=2)
+
+    engine = SsrfIntelligenceEngine(
+        program_dir=temp_program_dir,
+        scope_engine=scope,
+        send_request_hook=spy_hook,
+        oob_provider=interactsh_prov,
+    )
+
+    cand = SsrfCandidate(
+        application="api.local",
+        endpoint="https://api.local/api/v1/fetch",
+        parameter="url",
+    )
+
+    c_res, finding_res = engine.validate_candidate(cand, force_approved=True)
+    assert finding_res is None
+    assert c_res.lifecycle_state == "UNAVAILABLE"
+    assert "SSRF OOB verification unavailable" in c_res.notes
+    assert "Zero network requests dispatched" in c_res.notes
+    # Zero requests dispatched: neither baseline nor probe sent
+    assert len(dispatched) == 0
+
+
+def test_ssrf_engine_config_required_provider_fails_closed_zero_dispatch(temp_program_dir):
+    """When provider reports CONFIG_REQUIRED, fails closed with zero network dispatch."""
+    scope = ScopeEngine({
+        "program": {"name": "test-config"},
+        "targets": {"domains": ["api.local"], "recursive_subdomains": {"enabled": True}},
+    })
+
+    collaborator_prov = CollaboratorOobProvider(collab_host=None)
+    assert collaborator_prov.registration_status() == OobProviderStatus.CONFIG_REQUIRED
+
+    dispatched: List[ControlledRequest] = []
+    def spy_hook(req: ControlledRequest) -> ControlledResponse:
+        dispatched.append(req)
+        return ControlledResponse(status_code=200, headers={}, body="OK", size_bytes=2)
+
+    engine = SsrfIntelligenceEngine(
+        program_dir=temp_program_dir,
+        scope_engine=scope,
+        send_request_hook=spy_hook,
+        oob_provider=collaborator_prov,
+    )
+
+    cand = SsrfCandidate(
+        application="api.local",
+        endpoint="https://api.local/api/v1/fetch",
+        parameter="url",
+    )
+
+    c_res, finding_res = engine.validate_candidate(cand, force_approved=True)
+    assert finding_res is None
+    assert c_res.lifecycle_state == "CONFIG_REQUIRED"
+    assert "Zero network requests dispatched" in c_res.notes
+    assert len(dispatched) == 0
+
+
+def test_ssrf_engine_error_status_provider_fails_closed_zero_dispatch(temp_program_dir):
+    """When provider reports ERROR status, fails closed with zero network dispatch."""
+    class ErrorOobProvider(MockOobProvider):
+        def registration_status(self) -> OobProviderStatus:
+            return OobProviderStatus.ERROR
+
+    scope = ScopeEngine({
+        "program": {"name": "test-err"},
+        "targets": {"domains": ["api.local"], "recursive_subdomains": {"enabled": True}},
+    })
+
+    dispatched: List[ControlledRequest] = []
+    def spy_hook(req: ControlledRequest) -> ControlledResponse:
+        dispatched.append(req)
+        return ControlledResponse(status_code=200, headers={}, body="OK", size_bytes=2)
+
+    engine = SsrfIntelligenceEngine(
+        program_dir=temp_program_dir,
+        scope_engine=scope,
+        send_request_hook=spy_hook,
+        oob_provider=ErrorOobProvider(),
+    )
+
+    cand = SsrfCandidate(
+        application="api.local",
+        endpoint="https://api.local/api/v1/fetch",
+        parameter="url",
+    )
+
+    c_res, finding_res = engine.validate_candidate(cand, force_approved=True)
+    assert finding_res is None
+    assert c_res.lifecycle_state == "ERROR"
+    assert "Zero network requests dispatched" in c_res.notes
+    assert len(dispatched) == 0
+
+
+def test_ssrf_engine_untrusted_destination_rejected_zero_dispatch(temp_program_dir):
+    """When canary destination is untrusted, fails closed with POLICY_VIOLATION and zero network calls."""
+    scope = ScopeEngine({
+        "program": {"name": "test-untrusted"},
+        "targets": {"domains": ["api.local"], "recursive_subdomains": {"enabled": True}},
+    })
+
+    evil_provider = MockOobProvider(base_domain="attacker-controlled.net")
+
+    dispatched: List[ControlledRequest] = []
+    def spy_hook(req: ControlledRequest) -> ControlledResponse:
+        dispatched.append(req)
+        return ControlledResponse(status_code=200, headers={}, body="OK", size_bytes=2)
+
+    engine = SsrfIntelligenceEngine(
+        program_dir=temp_program_dir,
+        scope_engine=scope,
+        send_request_hook=spy_hook,
+        oob_provider=evil_provider,
+    )
+
+    cand = SsrfCandidate(
+        application="api.local",
+        endpoint="https://api.local/api/v1/fetch",
+        parameter="url",
+    )
+
+    c_res, finding_res = engine.validate_candidate(cand, force_approved=True)
+    assert finding_res is None
+    assert c_res.lifecycle_state == "POLICY_VIOLATION"
+    assert "OOB canary destination rejected by policy" in c_res.notes
+    assert "Untrusted OOB destination host" in c_res.notes
+    assert len(dispatched) == 0
+
+
+def test_ssrf_engine_metadata_destination_rejected_zero_dispatch(temp_program_dir):
+    """When canary destination targets cloud metadata IP, fails closed with POLICY_VIOLATION."""
+    scope = ScopeEngine({
+        "program": {"name": "test-meta"},
+        "targets": {"domains": ["api.local"], "recursive_subdomains": {"enabled": True}},
+    })
+
+    metadata_provider = MockOobProvider(base_domain="169.254.169.254")
+
+    dispatched: List[ControlledRequest] = []
+    def spy_hook(req: ControlledRequest) -> ControlledResponse:
+        dispatched.append(req)
+        return ControlledResponse(status_code=200, headers={}, body="OK", size_bytes=2)
+
+    engine = SsrfIntelligenceEngine(
+        program_dir=temp_program_dir,
+        scope_engine=scope,
+        send_request_hook=spy_hook,
+        oob_provider=metadata_provider,
+    )
+
+    cand = SsrfCandidate(
+        application="api.local",
+        endpoint="https://api.local/api/v1/fetch",
+        parameter="url",
+    )
+
+    c_res, finding_res = engine.validate_candidate(cand, force_approved=True)
+    assert finding_res is None
+    assert c_res.lifecycle_state == "POLICY_VIOLATION"
+    assert "Prohibited IP address" in c_res.notes
+    assert len(dispatched) == 0
+
+
+def test_ssrf_engine_missing_policy_method_fails_closed(temp_program_dir):
+    """If policy lacks validate_oob_destination, engine must fail closed with PolicyViolationError."""
+    scope = ScopeEngine({
+        "program": {"name": "test-missing-meth"},
+        "targets": {"domains": ["api.local"], "recursive_subdomains": {"enabled": True}},
+    })
+
+    class BarePolicy:
+        pass
+
+    engine = SsrfIntelligenceEngine(
+        program_dir=temp_program_dir,
+        scope_engine=scope,
+        policy=BarePolicy(),  # type: ignore
+        oob_provider=MockOobProvider(),
+    )
+
+    cand = SsrfCandidate(
+        application="api.local",
+        endpoint="https://api.local/api/v1/fetch",
+        parameter="url",
+    )
+
+    with pytest.raises(PolicyViolationError, match="missing required validate_oob_destination"):
+        engine.validate_candidate(cand, force_approved=True)
 
 
 def test_ssrf_engine_scope_and_policy_enforcement(temp_program_dir):

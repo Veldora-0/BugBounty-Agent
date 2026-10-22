@@ -37,6 +37,7 @@ class SsrfConfidence(str, Enum):
     SUSPECTED = "SUSPECTED"                  # Indirect evidence or unconfirmed timing anomaly
     OBSERVED = "OBSERVED"                    # Verified server-side DNS resolution or unauthenticated callback
     VALIDATED = "VALIDATED"                  # Reproducible server-side HTTP callback with matching token correlation
+    SIMULATED = "SIMULATED"                  # Local test harness simulation via Mock provider
 
 
 class OobInteractionType(str, Enum):

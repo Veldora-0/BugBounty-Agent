@@ -94,16 +94,17 @@ Safety boundaries:
   - Parser errors and secure rejections emit zero findings (no false positives).
   - Out-of-band correlation (`validate_oob_candidate`) differentiates mock test harness interactions (`SIMULATED`, `INFORMATIONAL`, `LOW` confidence) from live external target callbacks (`VALIDATED`, `HIGH`). Mock interactions can never produce live validated findings.
   - Truthful OOB Provider Availability: `InteractshOobProvider` and `CollaboratorOobProvider` report `CONFIG_REQUIRED` when unconfigured and `UNAVAILABLE` when configured (because live wire polling over network protocols is not implemented; storage is local in-memory only). A configured token or hostname alone does not establish operational live polling.
-- **Enforced OOB Destination Trust Boundary**:
+- **Enforced OOB Destination Trust Boundary & SSRF Provider Gating**:
   - Added `DEFAULT_TRUSTED_OOB_DOMAINS` and `validate_oob_destination()` in `SecurityTestPolicy` (`framework/validation/policy.py`).
-  - Prior to dispatching an OOB payload, `validate_oob_candidate()` (and `SsrfIntelligenceEngine.validate_candidate`):
+  - Prior to canary issuance, baseline requests, or probe dispatch in `SsrfIntelligenceEngine.validate_candidate()` and `XxeIntelligenceEngine.validate_oob_candidate()`:
     1. Requires candidate approval gate (`approval_status == 'APPROVED'`).
     2. Validates target endpoint against authorized program scope.
-    3. Verifies provider availability (halts with `TESTED` if provider reports `UNAVAILABLE` or `CONFIG_REQUIRED`).
-    4. Explicitly validates the generated canary destination against the dedicated trusted-provider policy before dispatch.
+    3. Verifies OOB provider availability, failing closed if provider reports `UNAVAILABLE`, `CONFIG_REQUIRED`, or `ERROR` with zero network requests dispatched.
+    4. Explicitly validates generated canary destination against `SecurityTestPolicy.validate_oob_destination()` before any request is dispatched; raises `PolicyViolationError` if the validation method is missing rather than silently skipping.
     5. Rejects unsupported schemes (only `http`/`https` allowed), embedded credentials, IP literals (loopback, private, carrier-grade NAT, or metadata IP addresses, including alternate hex/octal/dword encodings and trailing IP suffixes like `169.254.169.254`), prohibited hostnames (`metadata.google.internal`, `localhost`), and untrusted domains before any request is dispatched, preventing arbitrary environment variables from silently redirecting callbacks. Candidate is marked `POLICY_VIOLATION` with zero network egress.
+    6. Mock provider interactions in both XXE and SSRF engines strictly emit `SIMULATED` findings (`INFORMATIONAL`, `LOW` confidence), guaranteeing mock callbacks can never become live validated findings.
 - **Cross-Platform Verification Results**:
-  - Windows 11 (Python 3.14.7): 719 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py`) in 74s; 100% pass across all 90 Phase 18 tests.
+  - Windows 11 (Python 3.14.7): 726 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py`) in 100s; 100% pass across all 90 Phase 18 tests and 25 SSRF engine tests.
   - Kali Linux (Python 3.14.8): Synchronized and verified across all Phase 18 suites and full regression suites.
 - **Documented Phase 18 Limitations**:
   - Zero sensitive local file extraction (`file://`, `/etc/passwd`, `/etc/shadow`, `win.ini`) or cloud metadata probing (`169.254.169.254`, `metadata.google.internal`) is permitted; any matching target fails closed immediately.

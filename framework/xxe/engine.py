@@ -494,6 +494,10 @@ class XxeIntelligenceEngine:
         )
 
         # Explicitly validate generated canary destination against dedicated trusted-provider policy before dispatch
+        if not hasattr(self.policy, "validate_oob_destination"):
+            raise PolicyViolationError(
+                "SecurityTestPolicy is missing required validate_oob_destination method."
+            )
         try:
             self.policy.validate_oob_destination(canary_url)
         except (PolicyViolationError, ValueError) as e:
