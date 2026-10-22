@@ -72,10 +72,12 @@ from framework.validation.request import (
 )
 from framework.validation.state import SecurityStateManager
 from framework.validation.validator import (
+    CommandInjectionValidator,
     OpenRedirectValidator,
     ReflectedXSSValidator,
     SqlInjectionValidator,
     SsrfValidator,
+    XxeValidator,
 )
 
 
@@ -475,8 +477,20 @@ def test_unavailable_validators():
     assert not sqli.can_test("/test")
     assert len(sqli.prepare_test_cases("example.com", "/test")) == 0
 
+    cmd = CommandInjectionValidator()
+    assert not cmd.is_available
+
+
+def test_ssrf_and_xxe_validators():
     ssrf = SsrfValidator()
-    assert not ssrf.is_available
+    assert ssrf.is_available is True
+    assert ssrf.can_test("/proxy", "url") is True
+    assert len(ssrf.prepare_test_cases("example.com", "/proxy", "url")) == 1
+
+    xxe = XxeValidator()
+    assert xxe.is_available is True
+    assert xxe.can_test("/api/xml", "xml") is True
+    assert len(xxe.prepare_test_cases("example.com", "/api/xml", "xml")) == 1
 
 
 # ==============================================================================

@@ -32,6 +32,7 @@ class VulnerabilityFamily(str, Enum):
     TEMPLATE_INJECTION = "TEMPLATE_INJECTION"
     BUSINESS_LOGIC = "BUSINESS_LOGIC"
     CORS = "CORS"
+    XXE = "XXE"
     UNKNOWN = "UNKNOWN"
 
 

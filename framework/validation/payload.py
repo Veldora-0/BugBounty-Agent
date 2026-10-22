@@ -23,6 +23,8 @@ class MutationType(str, Enum):
     NUMERIC_MATH = "NUMERIC_MATH"
     PATH_TRAVERSAL = "PATH_TRAVERSAL"
     FILE_UPLOAD = "FILE_UPLOAD"
+    SYNTHETIC_ENTITY = "SYNTHETIC_ENTITY"
+    OOB_CANARY = "OOB_CANARY"
 
 
 class Payload:
@@ -185,6 +187,28 @@ class PayloadRegistry:
             expected_signals=["UPLOAD_ACCEPTED", "UPLOAD_REJECTED"],
             raw_template="BB_VERIFY_{TOKEN}",
             max_size_bytes=128,
+        ),
+        # Safe XXE synthetic entity reflection probe
+        "PL-XXE-REFL-01": Payload(
+            payload_id="PL-XXE-REFL-01",
+            vulnerability_family=VulnerabilityFamily.XXE,
+            purpose="Harmless internal synthetic entity reflection probe without external file or network access",
+            mutation_type=MutationType.SYNTHETIC_ENTITY,
+            risk_classification=RiskLevel.SAFE,
+            expected_signals=["ENTITY_EXPANDED", "SYNTHETIC_REFLECTION"],
+            raw_template='<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE test [ <!ENTITY canary "BB_XXE_{TOKEN}"> ]><test><val>&canary;</val></test>',
+            max_size_bytes=256,
+        ),
+        # Safe SSRF canary payload
+        "PL-SSRF-CANARY-01": Payload(
+            payload_id="PL-SSRF-CANARY-01",
+            vulnerability_family=VulnerabilityFamily.SSRF,
+            purpose="Controlled out-of-band canary probe for server-side HTTP/DNS callbacks",
+            mutation_type=MutationType.OOB_CANARY,
+            risk_classification=RiskLevel.SAFE,
+            expected_signals=["OOB_INTERACTION", "SERVER_CALLBACK"],
+            raw_template="http://canary.bugbounty-agent.local/oob_{TOKEN}",
+            max_size_bytes=256,
         ),
     }
 

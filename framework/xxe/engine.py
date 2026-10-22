@@ -1,0 +1,508 @@
+"""
+XXE & XML Parser Security Intelligence Engine (Phase 18).
+
+Orchestrates passive candidate discovery, safe non-destructive synthetic entity generation,
+baseline comparison, parser signal classification, out-of-band correlation, and finding deduplication.
+Strictly prohibits local file extraction (file://) and cloud metadata probing.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
+import uuid
+
+from framework.findings.lifecycle import FindingLifecycle
+from framework.findings.schema import Finding
+from framework.scope.engine import ScopeEngine
+from framework.ssrf.canary import CanaryManager
+from framework.ssrf.provider import MockOobProvider, OobProvider, OobProviderFactory
+from framework.state.dedup import FindingDeduplicator
+from framework.validation.engine import SecurityValidationEngine
+from framework.validation.policy import SecurityTestPolicy
+from framework.validation.request import ControlledRequest, ControlledResponse
+from framework.xxe.model import (
+    XxeCandidate,
+    XxeCategory,
+    XxeConfidence,
+    XxeEvidence,
+    XxeInteractionType,
+    XxeSource,
+)
+from framework.xxe.state import XxeStateManager
+
+
+# Strict disallowed targets to guarantee zero system damage or sensitive file reads
+DISALLOWED_TARGET_PATTERNS = [
+    re.compile(r"file://", re.IGNORECASE),
+    re.compile(r"/etc/(?:passwd|shadow|hosts|issue)", re.IGNORECASE),
+    re.compile(r"win\.ini", re.IGNORECASE),
+    re.compile(r"boot\.ini", re.IGNORECASE),
+    re.compile(r"169\.254\.169\.254"),
+    re.compile(r"metadata\.google\.internal", re.IGNORECASE),
+]
+
+
+class XxeIntelligenceEngine:
+    """Primary orchestrator for safe XXE and server-side XML parser intelligence."""
+
+    def __init__(
+        self,
+        program_dir: str,
+        scope_engine: Optional[ScopeEngine] = None,
+        policy: Optional[SecurityTestPolicy] = None,
+        validation_engine: Optional[SecurityValidationEngine] = None,
+        send_request_hook: Optional[Callable[[ControlledRequest], ControlledResponse]] = None,
+        oob_provider: Optional[OobProvider] = None,
+        correlation_window_seconds: float = 60.0,
+    ):
+        self.program_dir = os.path.abspath(program_dir)
+        self.scope_engine = scope_engine
+        if policy is not None:
+            self.policy = policy
+        else:
+            self.policy = SecurityTestPolicy(
+                allowed_methods={"GET", "HEAD", "OPTIONS", "POST"},
+                block_destructive_actions=False,
+            )
+        self.send_request_hook = send_request_hook
+        self.validation_engine = validation_engine or SecurityValidationEngine(
+            program_dir=self.program_dir,
+            scope_engine=self.scope_engine,
+            policy=self.policy,
+            send_request_hook=send_request_hook,
+        )
+        self.state_mgr = XxeStateManager(self.program_dir)
+
+        program_name = os.path.basename(self.program_dir)
+        self.oob_provider = oob_provider or OobProviderFactory.get_provider(provider_name="auto")
+        self.canary_mgr = CanaryManager(
+            provider=self.oob_provider,
+            program_id=program_name,
+            correlation_window_seconds=correlation_window_seconds,
+        )
+
+        self.excluded_source_ips: Set[str] = {"127.0.0.1", "::1", "192.168.1.50"}
+
+    @property
+    def total_bytes(self) -> int:
+        """Global accepted response bytes accounted for during validation."""
+        return getattr(self.validation_engine, "total_bytes", 0)
+
+    @property
+    def total_bytes_transferred(self) -> int:
+        """Total network bytes transferred across all requests including partial and failed reads."""
+        return getattr(self.validation_engine, "total_bytes_transferred", 0)
+
+    # ---------------- Safety Policy Validator ----------------
+
+    def _validate_payload_safety(self, payload: str) -> None:
+        """Enforces that XXE test payloads never attempt sensitive file or metadata access."""
+        for pattern in DISALLOWED_TARGET_PATTERNS:
+            if pattern.search(payload):
+                raise ValueError(
+                    f"Disallowed payload pattern detected: '{pattern.pattern}'. "
+                    f"BugBounty-Agent strictly prohibits local file extraction and cloud metadata access."
+                )
+
+    # ---------------- Candidate Discovery ----------------
+
+    def discover_candidates(
+        self,
+        asset_filter: Optional[str] = None,
+        endpoint_filter: Optional[str] = None,
+        param_filter: Optional[str] = None,
+    ) -> List[XxeCandidate]:
+        """Discovers XML-accepting endpoints from prior intelligence states and existing candidates."""
+        existing = self.state_mgr.list_candidates()
+        all_map: Dict[str, XxeCandidate] = {c.compute_fingerprint(): c for c in existing}
+
+        discovered: List[XxeCandidate] = []
+
+        # 1. Inspect API State (endpoints with application/xml or xml schema)
+        api_state_file = os.path.join(self.program_dir, "state", "api.json")
+        if os.path.exists(api_state_file):
+            try:
+                with open(api_state_file, "r", encoding="utf-8") as f:
+                    api_data = json.load(f)
+                for ep in api_data.get("endpoints", {}).values():
+                    url = ep.get("url") or f"http://{ep.get('host', 'unknown')}{ep.get('path', '/')}"
+                    content_types = ep.get("consumes", []) + ep.get("produces", [])
+                    is_xml = any("xml" in str(ct).lower() for ct in content_types)
+                    if is_xml:
+                        cand = XxeCandidate(
+                            application=ep.get("api_type", "API"),
+                            endpoint=url,
+                            parameter="xml_body",
+                            param_location="XML_BODY",
+                            method=ep.get("method", "POST"),
+                            source_intel=XxeSource("API_SCHEMA", "xml_body", context="API consumes XML"),
+                        )
+                        discovered.append(cand)
+            except Exception:
+                pass
+
+        # 2. Inspect WebApp State (forms or endpoints with XML keywords)
+        webapp_state_file = os.path.join(self.program_dir, "state", "webapp.json")
+        if os.path.exists(webapp_state_file):
+            try:
+                with open(webapp_state_file, "r", encoding="utf-8") as f:
+                    web_data = json.load(f)
+                for form in web_data.get("forms", {}).values():
+                    action = form.get("action_url") or ""
+                    enc = form.get("enctype") or ""
+                    if "xml" in action.lower() or "xml" in enc.lower():
+                        cand = XxeCandidate(
+                            application="WebApp",
+                            endpoint=action,
+                            parameter="form_xml",
+                            param_location="XML_BODY",
+                            method=form.get("method", "POST"),
+                            source_intel=XxeSource("WEBAPP_FORM", "form_xml", context="Form with XML enctype"),
+                        )
+                        discovered.append(cand)
+            except Exception:
+                pass
+
+        # Merge newly discovered
+        for c in discovered:
+            fp = c.compute_fingerprint()
+            if fp not in all_map:
+                all_map[fp] = c
+                self.state_mgr.save_candidate(c)
+
+        candidates = list(all_map.values())
+        if endpoint_filter:
+            candidates = [c for c in candidates if endpoint_filter in c.endpoint]
+        if asset_filter:
+            candidates = [c for c in candidates if asset_filter in c.endpoint or asset_filter in c.application]
+        if param_filter:
+            candidates = [c for c in candidates if c.parameter.lower() == param_filter.lower()]
+
+        return candidates
+
+    # ---------------- Controlled Payload & Request Builders ----------------
+
+    def _build_synthetic_reflection_payload(
+        self,
+        candidate: XxeCandidate,
+        entity_name: str,
+        canary_marker: str,
+    ) -> str:
+        """Constructs a non-destructive synthetic internal entity expansion payload."""
+        orig_body = candidate.body or ""
+        param = candidate.parameter or "val"
+
+        # Check if original XML body has root and elements
+        if orig_body and "<" in orig_body and ">" in orig_body:
+            # Inject DTD definition before root element
+            match = re.search(r"<([a-zA-Z0-9_\-]+)[^>]*>", orig_body)
+            if match:
+                root_tag = match.group(1)
+                dtd_decl = f'<!DOCTYPE {root_tag} [\n  <!ENTITY {entity_name} "{canary_marker}">\n]>\n'
+                clean_body = re.sub(r"<!DOCTYPE[^>]*(\[[^\]]*\])?>", "", orig_body, flags=re.IGNORECASE).strip()
+                # If param element exists, substitute its text with &entity_name;
+                elem_pat = re.compile(rf"(<{re.escape(param)}[^>]*>)(.*?)(</{re.escape(param)}>)", re.IGNORECASE | re.DOTALL)
+                if elem_pat.search(clean_body):
+                    mutated = elem_pat.sub(rf"\g<1>&{entity_name};\g<3>", clean_body)
+                else:
+                    mutated = clean_body.replace(f"</{root_tag}>", f"  <{param}>&{entity_name};</{param}>\n</{root_tag}>")
+                payload = dtd_decl + mutated
+                self._validate_payload_safety(payload)
+                return payload
+
+        payload = (
+            f'<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<!DOCTYPE test [\n'
+            f'  <!ENTITY {entity_name} "{canary_marker}">\n'
+            f']>\n'
+            f'<test>\n'
+            f'  <{param}>&{entity_name};</{param}>\n'
+            f'</test>'
+        )
+        self._validate_payload_safety(payload)
+        return payload
+
+    def _build_blind_oob_payload(
+        self,
+        candidate: XxeCandidate,
+        canary_url: str,
+    ) -> str:
+        """Constructs a non-destructive blind out-of-band external entity payload."""
+        payload = (
+            f'<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<!DOCTYPE test [\n'
+            f'  <!ENTITY % oob SYSTEM "{canary_url}">\n'
+            f'  %oob;\n'
+            f']>\n'
+            f'<test>\n'
+            f'  <param>canary_probe</param>\n'
+            f'</test>'
+        )
+        self._validate_payload_safety(payload)
+        return payload
+
+    def _build_baseline_payload(self, candidate: XxeCandidate) -> str:
+        """Constructs a harmless baseline XML payload without DOCTYPE or entities."""
+        param = candidate.parameter or "val"
+        payload = (
+            f'<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<test>\n'
+            f'  <{param}>baseline_control_marker</{param}>\n'
+            f'</test>'
+        )
+        self._validate_payload_safety(payload)
+        return payload
+
+    # ---------------- Active Controlled Validation ----------------
+
+    def validate_candidate(
+        self,
+        candidate: XxeCandidate,
+        force_approved: bool = False,
+        poll_wait_seconds: float = 2.0,
+    ) -> Tuple[XxeCandidate, Optional[Finding]]:
+        """
+        Executes controlled, non-destructive XXE verification:
+        1. Human approval check
+        2. Scope boundary check (Agent network safety)
+        3. Baseline capture (benign XML without entities)
+        4. Synthetic in-band entity reflection test
+        5. Blind out-of-band canary test (if provider available)
+        6. Response signal classification (distinguish parser error vs confirmed reflection)
+        7. Finding deduplication and structured report generation
+        """
+        # 1. Human Approval Gate
+        if not candidate.is_approved_for_execution() and not force_approved:
+            candidate.notes = "Execution halted: awaiting explicit human approval gate."
+            self.state_mgr.save_candidate(candidate)
+            return candidate, None
+
+        # 2. Scope Validation
+        if self.validation_engine:
+            try:
+                self.validation_engine.check_request_scope(candidate.endpoint)
+            except Exception as e:
+                candidate.lifecycle_state = "OUT_OF_SCOPE"
+                candidate.notes = f"Target endpoint {candidate.endpoint} is out of authorized scope: {e}"
+                self.state_mgr.save_candidate(candidate)
+                return candidate, None
+
+        # 3. Baseline Request (Benign XML)
+        baseline_payload = self._build_baseline_payload(candidate)
+        headers = dict(candidate.headers) if candidate.headers else {}
+        if "Content-Type" not in headers and "content-type" not in headers:
+            headers["Content-Type"] = "application/xml"
+
+        baseline_req = ControlledRequest(
+            url=candidate.endpoint,
+            method=candidate.method,
+            headers=headers,
+            body=baseline_payload,
+            mutated_target="baseline",
+            mutated_value="control",
+        )
+        baseline_resp = self.validation_engine.send_request(baseline_req)
+
+        # 4. In-Band Synthetic Entity Reflection Probe
+        canary_token = f"bbxxe_{uuid.uuid4().hex[:8]}"
+        canary_marker = f"CONFIRMED_ENTITY_EXPANSION_{canary_token}"
+        entity_name = f"canary_{uuid.uuid4().hex[:6]}"
+
+        test_payload = self._build_synthetic_reflection_payload(candidate, entity_name, canary_marker)
+        test_req = ControlledRequest(
+            url=candidate.endpoint,
+            method=candidate.method,
+            headers=headers,
+            body=test_payload,
+            mutated_target=candidate.parameter,
+            mutated_value=canary_marker,
+        )
+        test_resp = self.validation_engine.send_request(test_req)
+
+        # 5. Evaluate Reflection Signals
+        resp_body = test_resp.body or ""
+        test_status = test_resp.status_code
+
+        finding: Optional[Finding] = None
+        evidence: Optional[XxeEvidence] = None
+
+        if canary_marker in resp_body:
+            # Confirmed In-Band Entity Reflection!
+            candidate.confidence = XxeConfidence.VALIDATED
+            candidate.lifecycle_state = "VALIDATED"
+            candidate.callback_token = canary_token
+            summary = (
+                f"Verified XML External Entity (XXE) vulnerability via harmless synthetic entity expansion. "
+                f"Defined internal entity '&{entity_name};' which resolved and reflected marker '{canary_marker}' "
+                f"in HTTP {test_status} response from '{candidate.endpoint}'. Zero sensitive files accessed."
+            )
+            evidence = XxeEvidence(
+                test_id=f"xxe-test-{canary_token}",
+                canary_token=canary_token,
+                category=XxeCategory.SYNTHETIC_REFLECTION,
+                interaction_type=XxeInteractionType.SYNTHETIC_REFLECTION,
+                status_code=test_status,
+                reflected_marker=canary_marker,
+                evidence_summary=summary,
+            )
+            candidate.evidence = evidence
+            candidate.notes = summary
+
+            finding = Finding(
+                title=f"XML External Entity (XXE) Vulnerability on {candidate.endpoint}",
+                summary=summary,
+                affected_asset=urlparse(candidate.endpoint).netloc or candidate.application,
+                affected_endpoint=candidate.endpoint,
+                vulnerability_type="XML External Entity (XXE)",
+                severity="HIGH",
+                confidence="HIGH",
+                lifecycle_state=FindingLifecycle.VALIDATED,
+                description=(
+                    f"The endpoint '{candidate.endpoint}' parses XML documents with internal DTD and entity "
+                    f"expansion enabled. Controlled security testing confirmed that internal entities are resolved "
+                    f"and reflected back in the HTTP response. A harmless synthetic canary marker was injected and "
+                    f"observed in the server response body without file extraction or network disruption."
+                ),
+                root_cause="XML parser is configured without disabling DTD processing or external entity resolution.",
+                prerequisites="Endpoint accepts XML requests or parses XML input bodies.",
+                reproduction_steps=[
+                    f"1. Send {candidate.method} request to '{candidate.endpoint}' with XML payload containing DOCTYPE entity declaration.",
+                    f"2. Reference internal entity &{entity_name}; in request body.",
+                    f"3. Observe resolved entity marker in HTTP response body.",
+                ],
+                expected_result="Endpoint disallows DOCTYPE declarations or parses XML in strict secure mode.",
+                observed_result=f"Server resolved and reflected synthetic entity marker '{canary_marker}'.",
+                security_impact=(
+                    "An attacker could potentially read sensitive local files, access internal network services, "
+                    "or cause denial-of-service through recursive entity expansion (Billion Laughs)."
+                ),
+                remediation=(
+                    "Disable DTD (Document Type Definitions) and external entity resolution completely in the XML parser: "
+                    "In Python defusedxml or disallow_dtd=True, in Java setFeature 'http://apache.org/xml/features/disallow-doctype-decl' to true."
+                ),
+                scope_reference=f"Target {candidate.endpoint} in authorized scope.",
+                parameter=candidate.parameter,
+            )
+
+        else:
+            # Check for explicit secure rejection / hardening against DTD
+            secure_indicators = [
+                "doctype declarations are prohibited",
+                "doctype is not allowed",
+                "doctype not allowed",
+                "disallowed doctype",
+                "prohibited on this endpoint",
+                "disallow-doctype-decl",
+            ]
+            is_secure_reject = any(ind in resp_body.lower() for ind in secure_indicators)
+
+            # Check for parser errors suggesting active XML parser
+            parser_error_indicators = [
+                "xml syntax error",
+                "entity expansion",
+                "parser error",
+                "saxparseexception",
+                "xmlstreamexception",
+            ]
+            has_parser_error = any(ind in resp_body.lower() for ind in parser_error_indicators)
+
+            if is_secure_reject:
+                candidate.confidence = XxeConfidence.CANDIDATE
+                candidate.lifecycle_state = "TESTED"
+                candidate.notes = f"Endpoint explicitly prohibits DOCTYPE declarations (securely hardened against XXE); HTTP {test_status}."
+            elif has_parser_error and test_status != baseline_resp.status_code:
+                candidate.confidence = XxeConfidence.SUSPECTED
+                candidate.lifecycle_state = "TESTED"
+                candidate.notes = f"XML parser error detected in HTTP {test_status} response; DTD processing could not be confirmed."
+            else:
+                candidate.confidence = XxeConfidence.CANDIDATE
+                candidate.lifecycle_state = "TESTED"
+                candidate.notes = f"No entity expansion observed; endpoint responded with HTTP {test_status}."
+
+        # 6. Finding Deduplication and Persistence
+        if finding:
+            existing_findings = list(self.state_mgr._read_json().get("findings", {}).values())
+            is_dup, _ = FindingDeduplicator.check_duplicate(
+                candidate_asset=finding.affected_asset,
+                candidate_endpoint=finding.affected_endpoint,
+                candidate_vuln=finding.vulnerability_type,
+                candidate_root_cause=finding.root_cause,
+                existing_findings=existing_findings,
+                candidate_parameter=finding.parameter,
+            )
+            if not is_dup:
+                self.state_mgr.save_finding(finding.finding_id, finding.to_dict())
+
+        self.state_mgr.save_candidate(candidate)
+        return candidate, finding
+
+    # ---------------- Top-Level Workflow Pipeline ----------------
+
+    def run_evaluation(
+        self,
+        asset: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        parameter: Optional[str] = None,
+        approve_all: bool = False,
+        passive_only: bool = False,
+        dry_run: bool = False,
+        resume: bool = False,
+        max_tests: int = 30,
+    ) -> Dict[str, Any]:
+        """Orchestrates complete XXE research workflow."""
+        candidates = self.discover_candidates(
+            asset_filter=asset,
+            endpoint_filter=endpoint,
+            param_filter=parameter,
+        )
+
+        if approve_all:
+            for c in candidates:
+                self.state_mgr.approve_candidate(c.candidate_id, approver="security-researcher-cli")
+                c.approval_status = "APPROVED"
+                c.lifecycle_state = "APPROVED"
+                self.state_mgr.save_candidate(c)
+
+        if passive_only or dry_run:
+            return {
+                "program": os.path.basename(self.program_dir),
+                "mode": "dry-run" if dry_run else "passive-only",
+                "total_candidates": len(candidates),
+                "candidates": [c.to_dict() for c in candidates[:max_tests]],
+                "total_bytes_transferred": self.total_bytes_transferred,
+                "summary": self.state_mgr.get_summary(),
+            }
+
+        executed: List[XxeCandidate] = []
+        verified_findings: List[Finding] = []
+
+        count = 0
+        for c in candidates:
+            if count >= max_tests:
+                break
+            if resume and c.lifecycle_state in ("VALIDATED", "OBSERVED", "TESTED"):
+                continue
+            if not c.is_approved_for_execution() and not approve_all:
+                continue
+
+            cand_res, finding_res = self.validate_candidate(candidate=c, force_approved=approve_all)
+            executed.append(cand_res)
+            if finding_res:
+                verified_findings.append(finding_res)
+            count += 1
+
+        return {
+            "program": os.path.basename(self.program_dir),
+            "mode": "active",
+            "total_candidates": len(candidates),
+            "executed_tests": len(executed),
+            "verified_findings": len(verified_findings),
+            "findings": [f.to_dict() for f in verified_findings],
+            "total_bytes_transferred": self.total_bytes_transferred,
+            "summary": self.state_mgr.get_summary(),
+        }

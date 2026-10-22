@@ -581,7 +581,8 @@ def test_sec06_bounded_authentication_executor_handles_blocked_redirect():
 
     # Verify that execute_request converts this into failure with status_code=0
     from unittest.mock import patch
-    with patch("urllib.request.build_opener") as mock_build:
+    with patch("urllib.request.build_opener") as mock_build, \
+         patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]):
         mock_opener = MagicMock()
         mock_opener.open.side_effect = urllib.error.HTTPError(
             url="http://example.com/insecure",

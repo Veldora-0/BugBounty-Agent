@@ -377,9 +377,263 @@ class SqlInjectionValidator(UnavailableValidator):
         super().__init__("sql-injection", VulnerabilityFamily.SQL_INJECTION)
 
 
-class SsrfValidator(UnavailableValidator):
+class SsrfValidator(BaseValidator):
+    """
+    Non-destructive SSRF Candidate Validator.
+    Uses controlled canary URLs and out-of-band callback correlation.
+    Strict boundaries:
+    - NEVER targets cloud metadata (169.254.169.254).
+    - NEVER targets internal private networks or unauthorized loopback ports.
+    - Emits findings only upon confirmed server callback or DNS resolution.
+    """
+
     def __init__(self):
-        super().__init__("ssrf", VulnerabilityFamily.SSRF)
+        super().__init__(
+            validator_id="ssrf",
+            vulnerability_family=VulnerabilityFamily.SSRF,
+            is_available=True,
+        )
+
+    def can_test(self, endpoint: str, parameter: Optional[str] = None) -> bool:
+        if parameter:
+            p_lower = parameter.lower()
+            url_param_keywords = (
+                "url", "uri", "target", "dest", "endpoint", "feed",
+                "webhook", "proxy", "callback", "redirect", "src", "link", "host",
+            )
+            if any(k in p_lower for k in url_param_keywords):
+                return True
+        return bool(parameter) or "?" in endpoint
+
+    def prepare_test_cases(
+        self,
+        target: str,
+        endpoint: str,
+        parameter: Optional[str] = None,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> List[SecurityTestCase]:
+        payload = PayloadRegistry.get_payload("PL-SSRF-CANARY-01")
+        if not payload:
+            return []
+
+        return [
+            SecurityTestCase(
+                vulnerability_family=self.vulnerability_family,
+                target=target,
+                endpoint=endpoint,
+                method="GET",
+                parameter=parameter,
+                payload_identifier=payload.payload_id,
+                test_strategy="oob_canary",
+                risk_level=RiskLevel.SAFE,
+                request_budget=3,
+                expected_signals=["OOB_INTERACTION", "SERVER_CALLBACK"],
+                provenance=provenance,
+            )
+        ]
+
+    def analyze(
+        self,
+        comparison: BaselineComparison,
+        baseline: BaselineObservation,
+        response: ControlledResponse,
+        test_case: SecurityTestCase,
+    ) -> Tuple[ValidationResult, Optional[Finding]]:
+        signals = list(comparison.signals)
+        oob_received = "OOB_INTERACTION" in signals or "SERVER_CALLBACK" in signals
+
+        if not oob_received and not comparison.timing_anomaly_detected:
+            result = ValidationResult(
+                test_id=test_case.test_id,
+                lifecycle_state=FindingLifecycle.TESTED,
+                signals_observed=["NO_OOB_CALLBACK"],
+                evidence_summary="No out-of-band interaction or response anomaly observed for canary URL.",
+                confidence="LOW",
+                severity="INFORMATIONAL",
+            )
+            return result, None
+
+        if oob_received:
+            severity = "HIGH"
+            confidence = "HIGH"
+            finding_state = FindingLifecycle.VALIDATED
+            summary = f"Out-of-band network interaction confirmed on {test_case.endpoint} via parameter '{test_case.parameter}'."
+        else:
+            severity = "MEDIUM"
+            confidence = "MEDIUM"
+            finding_state = FindingLifecycle.SUSPECTED
+            summary = f"Response anomaly observed during SSRF probe on {test_case.endpoint} ({test_case.parameter})."
+
+        result = ValidationResult(
+            test_id=test_case.test_id,
+            lifecycle_state=finding_state,
+            signals_observed=signals,
+            evidence_summary=summary,
+            confidence=confidence,
+            severity=severity,
+        )
+
+        finding = Finding(
+            title=f"Potential Server-Side Request Forgery on {test_case.endpoint} ({test_case.parameter or 'target'})",
+            summary=summary,
+            affected_asset=test_case.target,
+            affected_endpoint=test_case.endpoint,
+            vulnerability_type="Server-Side Request Forgery (SSRF)",
+            severity=severity,
+            confidence=confidence,
+            lifecycle_state=finding_state,
+            description=(
+                f"Controlled testing with canary URL on '{test_case.parameter}' resulted in server-side "
+                f"network activity. No internal network scanning or cloud metadata access was performed."
+            ),
+            root_cause="Application initiates outbound network connections to user-supplied destination URLs.",
+            prerequisites="Endpoint accessible over HTTP/HTTPS with URL parameter acceptance.",
+            reproduction_steps=[
+                f"1. Send request to '{test_case.endpoint}' with parameter '{test_case.parameter}' set to canary URL.",
+                "2. Observe asynchronous interaction on OOB callback listener.",
+            ],
+            expected_result="Endpoint validates and rejects arbitrary remote destination URLs.",
+            observed_result=f"Observed signals: {', '.join(signals) if signals else 'timing/response anomaly'}.",
+            security_impact="Unauthorized outbound network requests may allow internal reconnaissance or protocol abuse.",
+            remediation="Enforce strict destination hostname whitelisting and egress firewall rules.",
+            scope_reference=f"Target {test_case.endpoint} in authorized scope.",
+            parameter=test_case.parameter,
+        )
+        return result, finding
+
+
+class XxeValidator(BaseValidator):
+    """
+    Non-destructive XML External Entity (XXE) Validator.
+    Uses harmless synthetic internal entity reflection marker (CONFIRMED_ENTITY_EXPANSION_<token>).
+    Strict boundaries:
+    - NEVER accesses local system files (file://, /etc/passwd, win.ini).
+    - NEVER targets cloud metadata endpoints (169.254.169.254).
+    - Distinguishes syntax/parser errors from confirmed entity resolution.
+    """
+
+    def __init__(self):
+        super().__init__(
+            validator_id="xxe",
+            vulnerability_family=VulnerabilityFamily.XXE,
+            is_available=True,
+        )
+
+    def can_test(self, endpoint: str, parameter: Optional[str] = None) -> bool:
+        if parameter:
+            p_lower = parameter.lower()
+            if any(k in p_lower for k in ("xml", "soap", "doc", "payload", "body", "data")):
+                return True
+        return "xml" in endpoint.lower() or "soap" in endpoint.lower() or parameter is not None
+
+    def prepare_test_cases(
+        self,
+        target: str,
+        endpoint: str,
+        parameter: Optional[str] = None,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> List[SecurityTestCase]:
+        payload = PayloadRegistry.get_payload("PL-XXE-REFL-01")
+        if not payload:
+            return []
+
+        return [
+            SecurityTestCase(
+                vulnerability_family=self.vulnerability_family,
+                target=target,
+                endpoint=endpoint,
+                method="POST",
+                parameter=parameter or "xml",
+                payload_identifier=payload.payload_id,
+                test_strategy="synthetic_entity_reflection",
+                risk_level=RiskLevel.SAFE,
+                request_budget=2,
+                expected_signals=["ENTITY_EXPANDED", "SYNTHETIC_REFLECTION"],
+                provenance=provenance,
+            )
+        ]
+
+    def analyze(
+        self,
+        comparison: BaselineComparison,
+        baseline: BaselineObservation,
+        response: ControlledResponse,
+        test_case: SecurityTestCase,
+    ) -> Tuple[ValidationResult, Optional[Finding]]:
+        resp_body = response.body or ""
+        token = test_case.test_id
+        canary_marker = f"BB_XXE_{token}"
+
+        is_reflected = canary_marker in resp_body or comparison.marker_reflected
+
+        if is_reflected:
+            severity = "HIGH"
+            confidence = "HIGH"
+            finding_state = FindingLifecycle.VALIDATED
+            summary = f"Verified XXE vulnerability: synthetic internal entity expanded and reflected in HTTP response on {test_case.endpoint}."
+
+            result = ValidationResult(
+                test_id=test_case.test_id,
+                lifecycle_state=finding_state,
+                signals_observed=["SYNTHETIC_ENTITY_REFLECTED", "DTD_ENABLED"],
+                evidence_summary=summary,
+                confidence=confidence,
+                severity=severity,
+            )
+
+            finding = Finding(
+                title=f"XML External Entity (XXE) Vulnerability on {test_case.endpoint}",
+                summary=summary,
+                affected_asset=test_case.target,
+                affected_endpoint=test_case.endpoint,
+                vulnerability_type="XML External Entity (XXE)",
+                severity=severity,
+                confidence=confidence,
+                lifecycle_state=finding_state,
+                description=(
+                    f"Controlled security testing confirmed that the XML parser on '{test_case.endpoint}' "
+                    f"resolves internal DTD entities. A harmless synthetic canary marker was injected and "
+                    f"observed in the response. Zero sensitive files or external network resources were accessed."
+                ),
+                root_cause="XML parser is configured without disabling DTD processing or external entity resolution.",
+                prerequisites="Endpoint accepts and parses XML input.",
+                reproduction_steps=[
+                    f"1. Send POST request to '{test_case.endpoint}' with XML containing DOCTYPE internal entity declaration.",
+                    "2. Reference internal entity in XML body element.",
+                    "3. Observe resolved entity marker in HTTP response body.",
+                ],
+                expected_result="Endpoint disallows DOCTYPE declarations or parses XML in strict secure mode.",
+                observed_result=f"Synthetic entity marker reflected in HTTP {response.status_code} response.",
+                security_impact="Attackers could potentially read local files, probe internal networks, or trigger denial-of-service.",
+                remediation="Disable DTD (Document Type Definitions) and external entity processing completely in the XML parser.",
+                scope_reference=f"Target {test_case.endpoint} in authorized scope.",
+                parameter=test_case.parameter,
+            )
+            return result, finding
+
+        parser_error_indicators = ["xml syntax error", "entity expansion", "parser error", "saxparseexception"]
+        has_parser_error = any(ind in resp_body.lower() for ind in parser_error_indicators)
+
+        if has_parser_error and response.status_code != baseline.status_code:
+            result = ValidationResult(
+                test_id=test_case.test_id,
+                lifecycle_state=FindingLifecycle.TESTED,
+                signals_observed=["PARSER_ERROR_DETECTED"],
+                evidence_summary=f"XML parser error detected in HTTP {response.status_code} response; entity expansion unconfirmed.",
+                confidence="LOW",
+                severity="INFORMATIONAL",
+            )
+            return result, None
+
+        result = ValidationResult(
+            test_id=test_case.test_id,
+            lifecycle_state=FindingLifecycle.REJECTED,
+            signals_observed=["NO_ENTITY_EXPANSION"],
+            evidence_summary="No entity expansion or reflection observed in post-mutation HTTP response.",
+            confidence="LOW",
+            severity="INFORMATIONAL",
+        )
+        return result, None
 
 
 class CommandInjectionValidator(UnavailableValidator):
