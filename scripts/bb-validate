@@ -28,7 +28,7 @@ if REPO_ROOT not in sys.path:
 
 from framework.common.config import get_program_dir, resolve_program_scope_file
 from framework.findings.lifecycle import FindingLifecycle
-from framework.scope.engine import ScopeEngine
+from framework.scope.engine import ScopeEngine, ScopeStatus
 from framework.validation.engine import SecurityValidationEngine
 from framework.validation.model import VulnerabilityFamily
 from framework.validation.policy import SecurityTestPolicy
@@ -141,6 +141,27 @@ Examples:
     if args.fixture_port is not None:
         if args.fixture_port < 1024 or args.fixture_port > 65535:
             print(f"[!] Error: Invalid fixture port {args.fixture_port}. Must be between 1024 and 65535.", file=sys.stderr)
+            sys.exit(1)
+        if scope_engine is None:
+            print("[!] Error: Local fixture ports require an initialized scope configuration.", file=sys.stderr)
+            sys.exit(1)
+        scope_has_loopback = False
+        for cand in (
+            f"http://127.0.0.1:{args.fixture_port}",
+            f"https://127.0.0.1:{args.fixture_port}",
+            f"http://localhost:{args.fixture_port}",
+            f"https://localhost:{args.fixture_port}",
+            "http://127.0.0.1",
+            "http://localhost",
+            "127.0.0.1",
+            "localhost",
+        ):
+            cand_dec = scope_engine.check(cand)
+            if cand_dec.status == ScopeStatus.IN_SCOPE:
+                scope_has_loopback = True
+                break
+        if not scope_has_loopback:
+            print(f"[!] Error: --fixture-port {args.fixture_port} rejected: target scope does not authorize 127.0.0.1 or localhost.", file=sys.stderr)
             sys.exit(1)
         engine.allow_fixture_port(args.fixture_port)
 

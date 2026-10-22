@@ -167,12 +167,42 @@ class ApiEndpoint:
     @property
     def key(self) -> str:
         m = self.method.upper()
+        if "#" in self.canonical_url:
+            base, frag = self.canonical_url.split("#", 1)
+            return f"{m} {canonicalize_url(base)}#{frag}"
         return f"{m} {canonicalize_url(self.canonical_url)}"
 
+    @property
+    def url(self) -> str:
+        """Compatibility alias for canonical_url."""
+        return self.canonical_url
+
+    @property
+    def path(self) -> str:
+        """Compatibility alias for path_template."""
+        return self.path_template
+
+    @property
+    def app_id(self) -> str:
+        """Compatibility property providing target application identifier."""
+        host = urlsplit(self.canonical_url).hostname or "unknown"
+        return f"api:{host}"
+
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        params_attached = getattr(self, "parameters", None)
+        serialized_params = []
+        if isinstance(params_attached, list):
+            for p in params_attached:
+                if hasattr(p, "to_dict"):
+                    serialized_params.append(p.to_dict())
+                elif isinstance(p, dict):
+                    serialized_params.append(dict(p))
+
+        d: Dict[str, Any] = {
             "canonical_url": self.canonical_url,
+            "url": self.canonical_url,
             "path_template": self.path_template,
+            "path": self.path_template,
             "method": self.method.upper(),
             "operation_id": self.operation_id,
             "api_style": self.api_style,
@@ -186,13 +216,18 @@ class ApiEndpoint:
             "timestamp": self.timestamp,
             "provenance": [p.to_dict() for p in self.provenance],
         }
+        if serialized_params:
+            d["parameters"] = serialized_params
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> ApiEndpoint:
         prov = [ObservationProvenance.from_dict(p) for p in data.get("provenance", [])]
-        return cls(
-            canonical_url=data.get("canonical_url", ""),
-            path_template=data.get("path_template", "/"),
+        canon = data.get("canonical_url") or data.get("url") or ""
+        ptmpl = data.get("path_template") or data.get("path") or "/"
+        ep = cls(
+            canonical_url=canon,
+            path_template=ptmpl,
             method=data.get("method", "GET").upper(),
             operation_id=data.get("operation_id"),
             api_style=data.get("api_style", ApiStyle.REST.value),
@@ -206,6 +241,9 @@ class ApiEndpoint:
             timestamp=data.get("timestamp", datetime.now(timezone.utc).isoformat()),
             provenance=prov,
         )
+        if "parameters" in data and isinstance(data["parameters"], list):
+            ep.parameters = [ApiParameter.from_dict(p) if isinstance(p, dict) else p for p in data["parameters"]]
+        return ep
 
 
 # ==============================================================================
@@ -232,6 +270,14 @@ class ApiParameter:
     def key(self) -> str:
         ep = self.endpoint_key or "global"
         return f"{ep}:{self.location}:{self.name.lower()}"
+
+    @property
+    def role(self) -> ParameterRole:
+        """Compatibility property returning ParameterRole enum."""
+        try:
+            return ParameterRole(self.semantic_role)
+        except ValueError:
+            return ParameterRole.GENERIC
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -371,9 +417,11 @@ class ApiAuthenticationObservation:
             "scheme": self.scheme,
             "location": self.location,
             "name": self.name,
+            "header_name": self.name,
             "confidence": self.confidence,
             "source": self.source,
             "endpoint_key": self.endpoint_key,
+            "endpoint_url": self.endpoint_key or "",
             "details": dict(self.details),
             "timestamp": self.timestamp,
             "provenance": [p.to_dict() for p in self.provenance],

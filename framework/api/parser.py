@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 import yaml
 
@@ -185,13 +185,36 @@ MAX_SCHEMA_DEPTH = 5
 MAX_SCHEMA_FIELDS = 100
 
 
-def build_bounded_schema(schema_data: Any, current_depth: int = 0) -> Dict[str, Any]:
+def build_bounded_schema(
+    schema_data: Any,
+    current_depth: int = 0,
+    resolver: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
+    visited_refs: Optional[Set[str]] = None,
+) -> Dict[str, Any]:
     """
     Safely extracts normalized, bounded schema representations without unbounded
-    recursion or memory bloat.
+    recursion or memory bloat. Resolves local $ref schemas up to maximum depth.
     """
     if current_depth > MAX_SCHEMA_DEPTH or not isinstance(schema_data, dict):
         return {"type": "unknown"}
+
+    if visited_refs is None:
+        visited_refs = set()
+
+    # Expand $ref pointer if present
+    if "$ref" in schema_data and isinstance(schema_data["$ref"], str):
+        ref_ptr = schema_data["$ref"]
+        if ref_ptr in visited_refs:
+            return {"type": "object", "_cyclic_ref": ref_ptr}
+        visited_refs.add(ref_ptr)
+        if resolver:
+            resolved = resolver(ref_ptr)
+            if resolved and isinstance(resolved, dict):
+                schema_data = resolved
+            else:
+                return {"type": "object", "_unresolved_ref": ref_ptr}
+        else:
+            return {"type": "object", "_ref": ref_ptr}
 
     stype = schema_data.get("type", "object")
     if isinstance(stype, list):
@@ -217,7 +240,7 @@ def build_bounded_schema(schema_data: Any, current_depth: int = 0) -> Dict[str, 
                 if i >= MAX_SCHEMA_FIELDS:
                     bounded_props["_truncated"] = True
                     break
-                bounded_props[str(k)[:50]] = build_bounded_schema(v, current_depth + 1)
+                bounded_props[str(k)[:50]] = build_bounded_schema(v, current_depth + 1, resolver, set(visited_refs))
             result["properties"] = bounded_props
 
         if "required" in schema_data and isinstance(schema_data["required"], list):
@@ -226,7 +249,7 @@ def build_bounded_schema(schema_data: Any, current_depth: int = 0) -> Dict[str, 
     # Array items
     elif stype == "array" and "items" in schema_data:
         items = schema_data.get("items", {})
-        result["items"] = build_bounded_schema(items, current_depth + 1)
+        result["items"] = build_bounded_schema(items, current_depth + 1, resolver, set(visited_refs))
 
     return result
 
@@ -247,6 +270,7 @@ class OpenApiParser:
         self.spec_data: Dict[str, Any] = {}
         self.format = SpecFormat.UNKNOWN
         self.version: Optional[str] = None
+        self._scheme_type_by_key: Dict[str, str] = {}
         self._parse_raw()
 
     def _parse_raw(self) -> None:
@@ -278,6 +302,86 @@ class OpenApiParser:
 
     def is_valid_spec(self) -> bool:
         return self.format in (SpecFormat.OPENAPI, SpecFormat.SWAGGER) and "paths" in self.spec_data
+
+    def _resolve_local_ref(
+        self,
+        ref_str: str,
+        visited: Optional[Set[str]] = None,
+        current_depth: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Safely resolves a local RFC 6901 JSON pointer ($ref) within this specification.
+        Forbids external URLs or file paths to prevent SSRF and arbitrary file access.
+        Enforces maximum recursion depth and cycle detection.
+        """
+        if not isinstance(ref_str, str) or not ref_str.startswith("#"):
+            return None
+
+        if visited is None:
+            visited = set()
+
+        if ref_str in visited or current_depth > MAX_SCHEMA_DEPTH:
+            return None
+
+        visited.add(ref_str)
+
+        # Remove leading "#" and split into path tokens
+        path = ref_str[1:]
+        if path.startswith("/"):
+            path = path[1:]
+
+        tokens = path.split("/") if path else []
+        curr: Any = self.spec_data
+
+        for raw_token in tokens:
+            # RFC 6901 unescaping: ~1 -> /, ~0 -> ~
+            token = raw_token.replace("~1", "/").replace("~0", "~")
+            if isinstance(curr, dict) and token in curr:
+                curr = curr[token]
+            elif isinstance(curr, list):
+                try:
+                    idx = int(token)
+                    if 0 <= idx < len(curr):
+                        curr = curr[idx]
+                    else:
+                        return None
+                except ValueError:
+                    return None
+            else:
+                return None
+
+        if not isinstance(curr, dict):
+            return None
+
+        # Transitive $ref resolution if the target is itself a reference
+        if "$ref" in curr and isinstance(curr["$ref"], str):
+            transitive = self._resolve_local_ref(curr["$ref"], visited, current_depth + 1)
+            if isinstance(transitive, dict):
+                return transitive
+
+        return curr
+
+    def _resolve_param(self, p_item: Any) -> Optional[Dict[str, Any]]:
+        """Resolves local $ref on parameter if present."""
+        if not isinstance(p_item, dict):
+            return None
+        if "$ref" in p_item and isinstance(p_item["$ref"], str):
+            resolved = self._resolve_local_ref(p_item["$ref"])
+            if isinstance(resolved, dict):
+                return dict(resolved)
+            return None
+        return dict(p_item)
+
+    @staticmethod
+    def _normalize_param_location(raw_loc: str) -> str:
+        """Normalizes OpenAPI parameter location string."""
+        raw_loc = str(raw_loc).strip().lower()
+        if raw_loc == "formdata":
+            return ParameterLocation.FORM.value
+        for loc in ParameterLocation:
+            if loc.value == raw_loc:
+                return loc.value
+        return ParameterLocation.QUERY.value
 
     def extract_base_url(self) -> str:
         """Extracts canonical API base URL from specification servers or host/basePath."""
@@ -319,6 +423,11 @@ class OpenApiParser:
         for name, item in sec_defs.items():
             if not isinstance(item, dict):
                 continue
+            if "$ref" in item and isinstance(item["$ref"], str):
+                resolved_sec = self._resolve_local_ref(item["$ref"])
+                if isinstance(resolved_sec, dict):
+                    item = resolved_sec
+
             stype = str(item.get("type", "")).lower()
             scheme = AuthScheme.UNKNOWN.value
 
@@ -326,10 +435,20 @@ class OpenApiParser:
                 scheme = AuthScheme.BASIC.value
             elif stype in ("bearer", "http") and str(item.get("scheme", "")).lower() == "bearer":
                 scheme = AuthScheme.BEARER.value
+            elif stype == "http":
+                subscheme = str(item.get("scheme", "")).lower()
+                if subscheme == "basic":
+                    scheme = AuthScheme.BASIC.value
+                elif subscheme == "bearer":
+                    scheme = AuthScheme.BEARER.value
+                else:
+                    scheme = AuthScheme.CUSTOM.value
             elif stype == "apikey":
                 scheme = AuthScheme.API_KEY.value
-            elif stype in ("oauth2", "openIdConnect"):
+            elif stype in ("oauth2", "openidconnect"):
                 scheme = AuthScheme.OAUTH2.value if stype == "oauth2" else AuthScheme.OPENID_CONNECT.value
+
+            self._scheme_type_by_key[name] = scheme
 
             loc = item.get("in", "header")
             param_name = item.get("name", "Authorization")
@@ -420,8 +539,30 @@ class OpenApiParser:
                     continue
 
                 op_id = op.get("operationId")
-                security_reqs = op.get("security", self.spec_data.get("security", []))
-                has_auth = bool(security_reqs)
+
+                # Security requirements:
+                # - If op has "security": [] -> explicitly public (auth_required = False)
+                # - If op has "security": [...] -> requires auth specified
+                # - If op does not have "security" -> fallback to top-level spec_data.get("security", [])
+                if "security" in op:
+                    security_reqs = op.get("security")
+                else:
+                    security_reqs = self.spec_data.get("security")
+
+                if security_reqs is None:
+                    security_reqs = []
+
+                has_auth = bool(isinstance(security_reqs, list) and len(security_reqs) > 0)
+                matched_scheme: Optional[str] = None
+                if has_auth and isinstance(security_reqs, list):
+                    for sec_req in security_reqs:
+                        if isinstance(sec_req, dict):
+                            for s_name in sec_req.keys():
+                                if s_name in self._scheme_type_by_key:
+                                    matched_scheme = self._scheme_type_by_key[s_name]
+                                    break
+                        if matched_scheme:
+                            break
 
                 ep = ApiEndpoint(
                     canonical_url=canon_url,
@@ -430,6 +571,7 @@ class OpenApiParser:
                     operation_id=str(op_id) if op_id else None,
                     api_style=ApiStyle.REST.value,
                     auth_required=has_auth,
+                    auth_scheme=matched_scheme,
                     source=f"spec:{self.format.value}",
                     confidence="CONFIRMED",
                     provenance=[
@@ -442,25 +584,45 @@ class OpenApiParser:
                 )
                 endpoints.append(ep)
 
-                # Collect parameters (common + operation specific)
-                combined_params = list(common_params) + (op.get("parameters", []) if isinstance(op.get("parameters"), list) else [])
-                for p_item in combined_params:
-                    if not isinstance(p_item, dict):
+                # Merge parameters with operation-level overriding path-level:
+                # OpenAPI identity: (name.lower(), location)
+                merged_params: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+                # Path-level parameters
+                for raw_p in common_params:
+                    resolved_p = self._resolve_param(raw_p)
+                    if not resolved_p or not isinstance(resolved_p, dict):
                         continue
-                    p_name = p_item.get("name", "")
+                    p_name = resolved_p.get("name", "")
                     if not p_name:
                         continue
+                    p_loc = self._normalize_param_location(resolved_p.get("in", ParameterLocation.QUERY.value))
+                    merged_params[(p_name.strip().lower(), p_loc)] = resolved_p
 
-                    p_loc = p_item.get("in", ParameterLocation.QUERY.value)
-                    # Normalize location
-                    if p_loc == "formData":
-                        p_loc = ParameterLocation.FORM.value
-                    elif p_loc not in [l.value for l in ParameterLocation]:
-                        p_loc = ParameterLocation.QUERY.value
+                # Operation-level parameters (overrides matching (name.lower(), location))
+                op_params = op.get("parameters", []) if isinstance(op.get("parameters"), list) else []
+                for raw_p in op_params:
+                    resolved_p = self._resolve_param(raw_p)
+                    if not resolved_p or not isinstance(resolved_p, dict):
+                        continue
+                    p_name = resolved_p.get("name", "")
+                    if not p_name:
+                        continue
+                    p_loc = self._normalize_param_location(resolved_p.get("in", ParameterLocation.QUERY.value))
+                    merged_params[(p_name.strip().lower(), p_loc)] = resolved_p
+
+                for p_item in merged_params.values():
+                    p_name = p_item.get("name", "")
+                    p_loc = self._normalize_param_location(p_item.get("in", ParameterLocation.QUERY.value))
 
                     p_schema = p_item.get("schema", p_item)
+                    if isinstance(p_schema, dict) and "$ref" in p_schema:
+                        resolved_schema = self._resolve_local_ref(p_schema["$ref"])
+                        if isinstance(resolved_schema, dict):
+                            p_schema = resolved_schema
+
                     p_type = p_schema.get("type", "string") if isinstance(p_schema, dict) else "string"
-                    p_req = bool(p_item.get("required", p_loc == "path"))
+                    p_req = bool(p_item.get("required", p_loc == ParameterLocation.PATH.value))
                     p_default = str(p_schema.get("default", "")) if isinstance(p_schema, dict) and "default" in p_schema else None
                     enums = [str(e) for e in p_schema.get("enum", [])] if isinstance(p_schema, dict) and "enum" in p_schema else []
 
@@ -487,15 +649,36 @@ class OpenApiParser:
                         )
                     )
 
-                # Request Schemas (OpenAPI 3 vs Swagger 2)
+                    # Swagger 2 body parameter -> ApiRequestSchema
+                    if (p_loc == ParameterLocation.BODY.value or p_item.get("in") == "body") and isinstance(p_schema, dict):
+                        bounded = build_bounded_schema(p_schema, resolver=self._resolve_local_ref)
+                        request_schemas.append(
+                            ApiRequestSchema(
+                                endpoint_key=ep.key,
+                                content_type="application/json",
+                                fields=bounded.get("properties", {}),
+                                required_fields=bounded.get("required", []),
+                                datatype=bounded.get("type", "object"),
+                            )
+                        )
+
+                # Request Schemas (OpenAPI 3)
                 if self.format == SpecFormat.OPENAPI:
                     req_body = op.get("requestBody", {})
                     if isinstance(req_body, dict):
+                        if "$ref" in req_body and isinstance(req_body["$ref"], str):
+                            resolved_rb = self._resolve_local_ref(req_body["$ref"])
+                            if isinstance(resolved_rb, dict):
+                                req_body = resolved_rb
+
                         content = req_body.get("content", {})
                         if isinstance(content, dict):
                             for ctype, cobj in content.items():
                                 if isinstance(cobj, dict) and "schema" in cobj:
-                                    bounded = build_bounded_schema(cobj["schema"])
+                                    bounded = build_bounded_schema(
+                                        cobj["schema"],
+                                        resolver=self._resolve_local_ref,
+                                    )
                                     request_schemas.append(
                                         ApiRequestSchema(
                                             endpoint_key=ep.key,
@@ -506,12 +689,17 @@ class OpenApiParser:
                                         )
                                     )
 
-                # Response Schemas
+                # Response Schemas (OpenAPI 3 vs Swagger 2)
                 responses = op.get("responses", {})
                 if isinstance(responses, dict):
                     for status_code_str, resp_obj in responses.items():
                         if not isinstance(resp_obj, dict):
                             continue
+                        if "$ref" in resp_obj and isinstance(resp_obj["$ref"], str):
+                            resolved_resp = self._resolve_local_ref(resp_obj["$ref"])
+                            if isinstance(resolved_resp, dict):
+                                resp_obj = resolved_resp
+
                         try:
                             st_code = int(status_code_str)
                         except ValueError:
@@ -522,7 +710,10 @@ class OpenApiParser:
                             if isinstance(rcontent, dict):
                                 for ctype, cobj in rcontent.items():
                                     if isinstance(cobj, dict) and "schema" in cobj:
-                                        bounded_resp = build_bounded_schema(cobj["schema"])
+                                        bounded_resp = build_bounded_schema(
+                                            cobj["schema"],
+                                            resolver=self._resolve_local_ref,
+                                        )
                                         response_schemas.append(
                                             ApiResponseSchema(
                                                 endpoint_key=ep.key,
@@ -534,7 +725,10 @@ class OpenApiParser:
                                         )
                         elif self.format == SpecFormat.SWAGGER:
                             if "schema" in resp_obj:
-                                bounded_resp = build_bounded_schema(resp_obj["schema"])
+                                bounded_resp = build_bounded_schema(
+                                    resp_obj["schema"],
+                                    resolver=self._resolve_local_ref,
+                                )
                                 response_schemas.append(
                                     ApiResponseSchema(
                                         endpoint_key=ep.key,
@@ -576,12 +770,75 @@ class OpenApiParser:
         }
 
 
+def calculate_graphql_query_depth(query_str: str) -> int:
+    """
+    Deterministically computes the maximum selection set nesting depth of a GraphQL query.
+    Depth is defined as the maximum nested level of selection sets enclosed in braces '{ ... }',
+    ignoring braces inside comments or string literals.
+    """
+    if query_str.strip().startswith("{") and '"query"' in query_str:
+        try:
+            parsed = json.loads(query_str)
+            if isinstance(parsed, dict) and "query" in parsed:
+                query_str = str(parsed["query"])
+        except Exception:
+            pass
+
+    max_depth = 0
+    current_depth = 0
+    in_string = False
+    in_comment = False
+    escape = False
+
+    for ch in query_str:
+        if in_comment:
+            if ch in ("\n", "\r"):
+                in_comment = False
+            continue
+
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == "#":
+            in_comment = True
+            continue
+        elif ch == '"':
+            in_string = True
+            continue
+        elif ch == "{":
+            current_depth += 1
+            if current_depth > max_depth:
+                max_depth = current_depth
+        elif ch == "}":
+            if current_depth > 0:
+                current_depth -= 1
+
+    return max_depth
+
+
 # ==============================================================================
 # 5. GRAPHQL ANALYZER
 # ==============================================================================
 
 class GraphQLAnalyzer:
     """Detects and analyzes GraphQL surfaces without intrusive or destructive probes."""
+
+    MAX_INTROSPECTION_SELECTION_DEPTH: int = 6
+    MAX_INTROSPECTION_SCHEMA_DEPTH: int = 3
+
+    @staticmethod
+    def calculate_query_depth(query_str: str) -> int:
+        """
+        Calculates the maximum selection set nesting depth ({ ... }) of a GraphQL query,
+        ignoring comments and string literals.
+        """
+        return calculate_graphql_query_depth(query_str)
 
     @staticmethod
     def is_likely_graphql_endpoint(url: str, content_type: str = "", body_sample: str = "") -> bool:
@@ -591,7 +848,7 @@ class GraphQLAnalyzer:
             return True
         if "application/graphql" in content_type:
             return True
-        if '"__schema"' in body_sample or '"query"' in body_sample and '"mutation"' in body_sample:
+        if '"__schema"' in body_sample or ('"query"' in body_sample and '"mutation"' in body_sample):
             return True
         return False
 
@@ -617,3 +874,130 @@ class GraphQLAnalyzer:
                 )
             ],
         )
+
+    @staticmethod
+    def build_bounded_introspection_query() -> str:
+        """
+        Builds a safe, non-destructive, read-only GraphQL introspection query.
+
+        Depth Metrics:
+        - Selection Set Nesting Depth = 6 (query -> __schema -> types -> fields -> args -> type)
+        - Schema Traversal Depth = 3 (__schema -> types -> fields, with bounded leaf args)
+
+        Strictly read-only; queries metadata types without executing any state mutations
+        or unbounded recursive fragment expansions.
+        """
+        return json.dumps({
+            "query": """query SafeIntrospection {
+  __schema {
+    queryType { name }
+    mutationType { name }
+    types {
+      name
+      kind
+      fields {
+        name
+        args {
+          name
+          type { name kind }
+        }
+      }
+    }
+  }
+}"""
+        })
+
+    @staticmethod
+    def parse_introspection_result(
+        service_url: str,
+        data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Parses GraphQL introspection JSON into ApiEndpoint, ApiParameter, and schema definitions.
+        """
+        endpoints: List[ApiEndpoint] = []
+        parameters: List[ApiParameter] = []
+
+        if not isinstance(data, dict):
+            return {"endpoints": [], "parameters": []}
+
+        schema_data = data.get("data", {}).get("__schema") if isinstance(data.get("data"), dict) else data.get("__schema")
+        if not isinstance(schema_data, dict):
+            return {"endpoints": [], "parameters": []}
+
+        query_type_name = (schema_data.get("queryType") or {}).get("name", "Query") if isinstance(schema_data.get("queryType"), dict) else "Query"
+        mutation_type_name = (schema_data.get("mutationType") or {}).get("name", "Mutation") if isinstance(schema_data.get("mutationType"), dict) else "Mutation"
+
+        types_list = schema_data.get("types", [])
+        if not isinstance(types_list, list):
+            types_list = []
+
+        types_by_name: Dict[str, Dict[str, Any]] = {}
+        for t in types_list:
+            if isinstance(t, dict) and "name" in t:
+                types_by_name[t["name"]] = t
+
+        canon_base = canonicalize_url(service_url)
+        path = urlsplit(canon_base).path or "/graphql"
+
+        for op_type, op_kind in [(query_type_name, "query"), (mutation_type_name, "mutation")]:
+            type_obj = types_by_name.get(op_type)
+            if not type_obj or not isinstance(type_obj.get("fields"), list):
+                continue
+
+            for field in type_obj["fields"]:
+                if not isinstance(field, dict):
+                    continue
+                field_name = field.get("name", "")
+                if not field_name or field_name.startswith("__"):
+                    continue
+
+                op_url = f"{canon_base}#{op_kind}:{field_name}"
+                ep = ApiEndpoint(
+                    canonical_url=op_url,
+                    path_template=f"{path}#{op_kind}:{field_name}",
+                    method="POST",
+                    operation_id=f"{op_kind}_{field_name}",
+                    api_style=ApiStyle.GRAPHQL.value,
+                    source="graphql_introspection",
+                    confidence="CONFIRMED",
+                    provenance=[
+                        ObservationProvenance(
+                            source="graphql_analyzer",
+                            method="introspection_schema",
+                            confidence="CONFIRMED",
+                        )
+                    ],
+                )
+                endpoints.append(ep)
+
+                args = field.get("args", [])
+                if isinstance(args, list):
+                    for arg in args:
+                        if not isinstance(arg, dict):
+                            continue
+                        arg_name = arg.get("name", "")
+                        if not arg_name:
+                            continue
+                        arg_type_info = arg.get("type", {})
+                        arg_type_name = arg_type_info.get("name") or arg_type_info.get("kind") or "string"
+                        parameters.append(
+                            ApiParameter(
+                                name=arg_name,
+                                location=ParameterLocation.BODY.value,
+                                datatype=str(arg_type_name).lower(),
+                                endpoint_key=ep.key,
+                                semantic_role=classify_parameter_role(arg_name),
+                                source="graphql_introspection",
+                                confidence="CONFIRMED",
+                                provenance=[
+                                    ObservationProvenance(
+                                        source="graphql_analyzer",
+                                        method="introspection_args",
+                                        confidence="CONFIRMED",
+                                    )
+                                ],
+                            )
+                        )
+
+        return {"endpoints": endpoints, "parameters": parameters}

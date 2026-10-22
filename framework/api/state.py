@@ -95,14 +95,46 @@ class ApiStateManager:
             self.applications[app.key] = app
 
         # Rehydrate Endpoints
-        for item in data.get("endpoints", []):
-            ep = ApiEndpoint.from_dict(item)
-            self.endpoints[ep.key] = ep
+        raw_eps = data.get("endpoints", [])
+        eps_list = raw_eps.values() if isinstance(raw_eps, dict) else (raw_eps if isinstance(raw_eps, list) else [])
+        for item in eps_list:
+            if isinstance(item, dict):
+                ep = ApiEndpoint.from_dict(item)
+                self.endpoints[ep.key] = ep
+            elif isinstance(item, str):
+                ep = ApiEndpoint(canonical_url=item, path_template=urlsplit(item).path)
+                self.endpoints[ep.key] = ep
 
         # Rehydrate Parameters
         for item in data.get("parameters", []):
-            p = ApiParameter.from_dict(item)
-            self.parameters[p.key] = p
+            if isinstance(item, dict):
+                p = ApiParameter.from_dict(item)
+                self.parameters[p.key] = p
+
+        # Legacy catalog support: if endpoints empty, rehydrate from catalog dictionary
+        if not self.endpoints and "catalog" in data and isinstance(data["catalog"], dict):
+            for path_k, ep_info in data["catalog"].items():
+                if not isinstance(ep_info, dict):
+                    continue
+                base_u = ep_info.get("url") or path_k
+                for op in ep_info.get("operations", []):
+                    if not isinstance(op, dict):
+                        continue
+                    m = op.get("method", "GET").upper()
+                    ep_obj = ApiEndpoint(
+                        canonical_url=op.get("url") or base_u,
+                        path_template=path_k,
+                        method=m,
+                        operation_id=op.get("operation_id"),
+                        auth_required=bool(op.get("auth_required", False)),
+                        auth_scheme=op.get("auth_scheme"),
+                    )
+                    self.endpoints[ep_obj.key] = ep_obj
+                    for p_data in op.get("parameters", []):
+                        if isinstance(p_data, dict):
+                            param_obj = ApiParameter.from_dict(p_data)
+                            param_obj.endpoint_key = ep_obj.key
+                            self.parameters[param_obj.key] = param_obj
 
         # Rehydrate Schemas
         for item in data.get("request_schemas", []):
@@ -132,7 +164,7 @@ class ApiStateManager:
         self.graph = ApiGraph.from_dict(data.get("graph", []))
 
     def save(self) -> None:
-        """Saves current state atomically to api.json."""
+        """Saves current state atomically to api.json with full backward compatibility."""
         self.metadata["last_run"] = datetime.now(timezone.utc).isoformat()
         self.metadata["total_applications"] = len(self.applications)
         self.metadata["total_endpoints"] = len(self.endpoints)
@@ -140,12 +172,40 @@ class ApiStateManager:
         self.metadata["total_specifications"] = len(self.specifications)
         self.metadata["total_auth_observations"] = len(self.auth_observations)
 
+        # Build backward-compatible catalog dictionary for authz and ssrf consumers
+        catalog: Dict[str, Dict[str, Any]] = {}
+        endpoints_export: List[Dict[str, Any]] = []
+
+        for ep in sorted(self.endpoints.values(), key=lambda x: x.key):
+            ep_params = [p.to_dict() for p in self.get_parameters_for_endpoint(ep.key)]
+            d = ep.to_dict()
+            d["parameters"] = ep_params
+            endpoints_export.append(d)
+
+            path_key = ep.path_template
+            if path_key not in catalog:
+                catalog[path_key] = {
+                    "url": ep.canonical_url,
+                    "path": ep.path_template,
+                    "operations": [],
+                }
+            catalog[path_key]["operations"].append({
+                "method": ep.method.upper(),
+                "url": ep.canonical_url,
+                "path": ep.path_template,
+                "operation_id": ep.operation_id,
+                "auth_required": ep.auth_required,
+                "auth_scheme": ep.auth_scheme,
+                "parameters": ep_params,
+            })
+
         export_data = {
             "metadata": self.metadata,
             "processed_urls": sorted(list(self.processed_urls)),
             "failed_urls": sorted(list(self.failed_urls)),
+            "catalog": catalog,
             "applications": [a.to_dict() for a in sorted(self.applications.values(), key=lambda x: x.key)],
-            "endpoints": [e.to_dict() for e in sorted(self.endpoints.values(), key=lambda x: x.key)],
+            "endpoints": endpoints_export,
             "parameters": [p.to_dict() for p in sorted(self.parameters.values(), key=lambda x: x.key)],
             "request_schemas": [s.to_dict() for s in sorted(self.request_schemas.values(), key=lambda x: x.key)],
             "response_schemas": [s.to_dict() for s in sorted(self.response_schemas.values(), key=lambda x: x.key)],
@@ -288,6 +348,17 @@ class ApiStateManager:
         return True
 
     # ---------------- Query Methods ----------------
+
+    def get_endpoints(self) -> List[ApiEndpoint]:
+        """
+        Returns list of all ApiEndpoint models with associated parameters attached.
+        Provides seamless backward compatibility for validation and authorization consumers.
+        """
+        result: List[ApiEndpoint] = []
+        for ep in self.endpoints.values():
+            ep.parameters = self.get_parameters_for_endpoint(ep.key)
+            result.append(ep)
+        return result
 
     def get_endpoints_for_domain(self, domain: str) -> List[ApiEndpoint]:
         """Filters endpoints whose host matches or ends with domain."""

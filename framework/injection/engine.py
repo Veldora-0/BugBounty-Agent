@@ -81,7 +81,9 @@ class InjectionIntelligenceEngine:
             scope_engine=self.scope_engine,
             policy=self.policy,
         )
-        self.send_request_hook = send_request_hook or self.validation_engine.execute_request
+        self.send_request_hook = send_request_hook or getattr(
+            self.validation_engine, "execute_request", getattr(self.validation_engine, "send_request", None)
+        )
         self.enable_timing = enable_timing
         self.approval_gate = HumanApprovalGate(auto_approve=auto_approve)
 
@@ -183,8 +185,12 @@ class InjectionIntelligenceEngine:
             try:
                 with open(api_file, "r", encoding="utf-8") as f:
                     api_data = json.load(f)
-                    for ep in api_data.get("endpoints", {}).values():
-                        url = ep.get("url") or ep.get("path")
+                    eps_raw = api_data.get("endpoints", [])
+                    eps_list = eps_raw.values() if isinstance(eps_raw, dict) else (eps_raw if isinstance(eps_raw, list) else [])
+                    for ep in eps_list:
+                        if not isinstance(ep, dict):
+                            continue
+                        url = ep.get("url") or ep.get("path") or ep.get("canonical_url")
                         if url and ("http://" in url or "https://" in url):
                             cands = self.discover_candidates_from_url(
                                 endpoint_url=url,

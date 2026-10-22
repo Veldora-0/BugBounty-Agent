@@ -146,9 +146,11 @@ Examples:
     parser.add_argument("-e", "--endpoint", help="Specific API endpoint URL to analyze directly")
     parser.add_argument("--spec", help="Path or URL to an OpenAPI/Swagger specification to ingest")
     parser.add_argument("--graphql", action="store_true", help="Filter and highlight GraphQL surfaces")
+    parser.add_argument("--allow-graphql-introspection", action="store_true", default=False, help="Enable safe active GraphQL schema introspection (default: False)")
     parser.add_argument("--max-endpoints", type=int, default=500, help="Maximum endpoints to catalog (default: 500)")
     parser.add_argument("--max-requests", type=int, default=200, help="Safety ceiling on active HTTP requests (default: 200)")
     parser.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024, help="Total acquisition byte ceiling (default: 10MB)")
+    parser.add_argument("--timeout", type=float, default=5.0, help="HTTP request timeout in seconds (default: 5.0)")
     parser.add_argument("--passive-only", action="store_true", help="Analyze existing state without issuing active HTTP requests")
     parser.add_argument("--correlate-js", dest="correlate_js", action="store_true", default=True, help="Correlate Phase 4 JavaScript endpoints (default: True)")
     parser.add_argument("--no-correlate-js", dest="correlate_js", action="store_false", help="Disable Phase 4 JavaScript correlation")
@@ -182,7 +184,9 @@ Examples:
         max_endpoints=args.max_endpoints,
         max_requests=args.max_requests,
         max_bytes=args.max_bytes,
+        timeout=args.timeout,
         passive_only=args.passive_only,
+        allow_graphql_introspection=args.allow_graphql_introspection,
         correlate_js=args.correlate_js,
     )
 
@@ -207,11 +211,11 @@ Examples:
 
     # Output Presentation
     if args.json:
-        if os.path.exists(api_state.api_file):
+        if args.dry_run or not os.path.exists(api_state.api_file):
+            print(json.dumps(api_state.to_dict(), indent=2))
+        else:
             with open(api_state.api_file, "r", encoding="utf-8") as f:
                 print(f.read())
-        else:
-            print(json.dumps({"endpoints": [], "parameters": [], "specifications": []}, indent=2))
     elif args.tree or not (args.json):
         target_h = args.asset or args.domain
         render_api_tree(api_state, target_host=target_h)
