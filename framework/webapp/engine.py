@@ -21,6 +21,7 @@ import xml.etree.ElementTree as ET
 from framework.assets.graph import AssetGraph
 from framework.assets.model import Asset, AssetType
 from framework.assets.provenance import ObservationProvenance
+from framework.common.xml_safe import SafeXMLParseError, safe_parse_xml
 from framework.recon.state import ReconStateManager
 from framework.scope.engine import ScopeEngine, ScopeStatus
 from framework.webapp.graph import AppRelationship, AppRelationType, WebAppGraph
@@ -257,24 +258,37 @@ class WebApplicationIntelligenceEngine:
             return []
 
         res = self.fetch_url(sitemap_url)
-        if not res or res["status_code"] != 200:
+        if not res or res.get("status_code") != 200 or not res.get("body"):
+            return []
+
+        body = res["body"]
+        max_bytes = getattr(self.policy, "max_response_bytes", 5 * 1024 * 1024)
+        body_bytes = body.encode("utf-8") if isinstance(body, str) else body
+        if len(body_bytes) > max_bytes:
+            return []
+
+        # If sitemap body contains prohibited DOCTYPE or ENTITY declarations, fail closed immediately
+        lower = body.lower()
+        if "<!doctype" in lower or "<!entity" in lower:
             return []
 
         discovered: List[str] = []
         try:
-            root = ET.fromstring(res["body"])
+            root = safe_parse_xml(body, max_bytes=max_bytes, disallow_dtd=True)
             # Support xmlns prefixes by matching tag ends
             for elem in root.iter():
                 if elem.tag.endswith("loc") and elem.text:
                     url = elem.text.strip()
                     if url and self._is_in_scope(url):
                         discovered.append(canonicalize_url(url))
-        except Exception:
-            # Fallback regex for loc tags in malformed XML
-            for match in re.finditer(r"<loc>(https?://[^<]+)</loc>", res["body"], re.IGNORECASE):
+        except SafeXMLParseError:
+            # Fallback regex for loc tags only in clean, non-DTD malformed XML
+            for match in re.finditer(r"<loc>(https?://[^<]+)</loc>", body, re.IGNORECASE):
                 url = match.group(1).strip()
                 if url and self._is_in_scope(url):
                     discovered.append(canonicalize_url(url))
+        except Exception:
+            pass
         return discovered
 
     # ==========================================================================
