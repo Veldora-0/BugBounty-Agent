@@ -686,10 +686,16 @@ def test_ssrf_engine_missing_policy_method_fails_closed(temp_program_dir):
     class BarePolicy:
         pass
 
+    dispatched: List[ControlledRequest] = []
+    def spy_hook(req: ControlledRequest) -> ControlledResponse:
+        dispatched.append(req)
+        return ControlledResponse(status_code=200, headers={}, body="OK", size_bytes=2)
+
     engine = SsrfIntelligenceEngine(
         program_dir=temp_program_dir,
         scope_engine=scope,
         policy=BarePolicy(),  # type: ignore
+        send_request_hook=spy_hook,
         oob_provider=MockOobProvider(),
     )
 
@@ -701,6 +707,49 @@ def test_ssrf_engine_missing_policy_method_fails_closed(temp_program_dir):
 
     with pytest.raises(PolicyViolationError, match="missing required validate_oob_destination"):
         engine.validate_candidate(cand, force_approved=True)
+
+    assert cand.lifecycle_state == "POLICY_VIOLATION"
+    assert "missing required validate_oob_destination" in cand.notes
+    assert "Zero network requests dispatched" in cand.notes
+    assert len(dispatched) == 0
+
+
+def test_ssrf_engine_non_callable_policy_method_fails_closed(temp_program_dir):
+    """If policy has non-callable validate_oob_destination, engine must fail closed with PolicyViolationError."""
+    scope = ScopeEngine({
+        "program": {"name": "test-noncallable-meth"},
+        "targets": {"domains": ["api.local"], "recursive_subdomains": {"enabled": True}},
+    })
+
+    class NonCallablePolicy:
+        validate_oob_destination = "not_a_function"
+
+    dispatched: List[ControlledRequest] = []
+    def spy_hook(req: ControlledRequest) -> ControlledResponse:
+        dispatched.append(req)
+        return ControlledResponse(status_code=200, headers={}, body="OK", size_bytes=2)
+
+    engine = SsrfIntelligenceEngine(
+        program_dir=temp_program_dir,
+        scope_engine=scope,
+        policy=NonCallablePolicy(),  # type: ignore
+        send_request_hook=spy_hook,
+        oob_provider=MockOobProvider(),
+    )
+
+    cand = SsrfCandidate(
+        application="api.local",
+        endpoint="https://api.local/api/v1/fetch",
+        parameter="url",
+    )
+
+    with pytest.raises(PolicyViolationError, match="validate_oob_destination attribute is not callable"):
+        engine.validate_candidate(cand, force_approved=True)
+
+    assert cand.lifecycle_state == "POLICY_VIOLATION"
+    assert "validate_oob_destination attribute is not callable" in cand.notes
+    assert "Zero network requests dispatched" in cand.notes
+    assert len(dispatched) == 0
 
 
 def test_ssrf_engine_scope_and_policy_enforcement(temp_program_dir):

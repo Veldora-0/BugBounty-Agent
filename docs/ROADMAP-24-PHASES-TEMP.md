@@ -100,11 +100,11 @@ Safety boundaries:
     1. Requires candidate approval gate (`approval_status == 'APPROVED'`).
     2. Validates target endpoint against authorized program scope.
     3. Verifies OOB provider availability, failing closed if provider reports `UNAVAILABLE`, `CONFIG_REQUIRED`, or `ERROR` with zero network requests dispatched.
-    4. Explicitly validates generated canary destination against `SecurityTestPolicy.validate_oob_destination()` before any request is dispatched; raises `PolicyViolationError` if the validation method is missing rather than silently skipping.
+    4. Explicitly validates generated canary destination against `SecurityTestPolicy.validate_oob_destination()` before any request is dispatched; verifies that the validation method exists and is callable, failing closed with `PolicyViolationError`, recording `POLICY_VIOLATION` candidate state with clear diagnostic notes, and dispatching zero network requests if missing or non-callable.
     5. Rejects unsupported schemes (only `http`/`https` allowed), embedded credentials, IP literals (loopback, private, carrier-grade NAT, or metadata IP addresses, including alternate hex/octal/dword encodings and trailing IP suffixes like `169.254.169.254`), prohibited hostnames (`metadata.google.internal`, `localhost`), and untrusted domains before any request is dispatched, preventing arbitrary environment variables from silently redirecting callbacks. Candidate is marked `POLICY_VIOLATION` with zero network egress.
     6. Mock provider interactions in both XXE and SSRF engines strictly emit `SIMULATED` findings (`INFORMATIONAL`, `LOW` confidence), guaranteeing mock callbacks can never become live validated findings.
 - **Cross-Platform Verification Results**:
-  - Windows 11 (Python 3.14.7): 726 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py`) in 100s; 100% pass across all 90 Phase 18 tests and 25 SSRF engine tests.
+  - Windows 11 (Python 3.14.7): 729 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py`) in 100s; 100% pass across all 92 Phase 18 tests and 26 SSRF engine tests.
   - Kali Linux (Python 3.14.8): Synchronized and verified across all Phase 18 suites and full regression suites.
 - **Documented Phase 18 Limitations**:
   - Zero sensitive local file extraction (`file://`, `/etc/passwd`, `/etc/shadow`, `win.ini`) or cloud metadata probing (`169.254.169.254`, `metadata.google.internal`) is permitted; any matching target fails closed immediately.

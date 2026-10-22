@@ -494,12 +494,29 @@ class XxeIntelligenceEngine:
         )
 
         # Explicitly validate generated canary destination against dedicated trusted-provider policy before dispatch
+        validate_fn = getattr(self.policy, "validate_oob_destination", None)
         if not hasattr(self.policy, "validate_oob_destination"):
+            candidate.lifecycle_state = "POLICY_VIOLATION"
+            candidate.notes = (
+                "SecurityTestPolicy is missing required validate_oob_destination method. "
+                "Zero network requests dispatched."
+            )
+            self.state_mgr.save_candidate(candidate)
             raise PolicyViolationError(
                 "SecurityTestPolicy is missing required validate_oob_destination method."
             )
+        if not callable(validate_fn):
+            candidate.lifecycle_state = "POLICY_VIOLATION"
+            candidate.notes = (
+                "SecurityTestPolicy validate_oob_destination attribute is not callable. "
+                "Zero network requests dispatched."
+            )
+            self.state_mgr.save_candidate(candidate)
+            raise PolicyViolationError(
+                "SecurityTestPolicy validate_oob_destination attribute is not callable."
+            )
         try:
-            self.policy.validate_oob_destination(canary_url)
+            validate_fn(canary_url)
         except (PolicyViolationError, ValueError) as e:
             candidate.lifecycle_state = "POLICY_VIOLATION"
             candidate.notes = f"OOB canary destination rejected by policy: {e}"

@@ -603,6 +603,82 @@ class TestXxeOobDispatchBoundary:
         assert "live polling not operational" in cand_res.notes
         assert len(dispatched_requests) == 0
 
+    def test_oob_dispatch_missing_policy_method_fails_closed(self):
+        """If policy lacks validate_oob_destination, engine fails closed with PolicyViolationError and zero requests."""
+        tmp_dir = tempfile.mkdtemp()
+        scope = make_scope()
+
+        class BarePolicy:
+            pass
+
+        dispatched_requests: List[ControlledRequest] = []
+        def spy_hook(req: ControlledRequest) -> ControlledResponse:
+            dispatched_requests.append(req)
+            return ControlledResponse(status_code=200, headers={}, body="ok", size_bytes=2, elapsed_seconds=0.01)
+
+        engine = XxeIntelligenceEngine(
+            program_dir=tmp_dir,
+            scope_engine=scope,
+            policy=BarePolicy(),  # type: ignore
+            send_request_hook=spy_hook,
+            oob_provider=MockOobProvider(),
+        )
+        engine.validation_engine.allow_fixture_port(8080)
+
+        cand = XxeCandidate(
+            application="OobApp",
+            endpoint="http://127.0.0.1:8080/xml",
+            parameter="doc",
+            category=XxeCategory.BLIND_OOB,
+            approval_status="APPROVED",
+        )
+
+        with pytest.raises(PolicyViolationError, match="missing required validate_oob_destination"):
+            engine.validate_oob_candidate(cand, force_approved=True)
+
+        assert cand.lifecycle_state == "POLICY_VIOLATION"
+        assert "missing required validate_oob_destination" in cand.notes
+        assert "Zero network requests dispatched" in cand.notes
+        assert len(dispatched_requests) == 0
+
+    def test_oob_dispatch_non_callable_policy_method_fails_closed(self):
+        """If policy has non-callable validate_oob_destination, engine fails closed with PolicyViolationError and zero requests."""
+        tmp_dir = tempfile.mkdtemp()
+        scope = make_scope()
+
+        class NonCallablePolicy:
+            validate_oob_destination = "not_a_function"
+
+        dispatched_requests: List[ControlledRequest] = []
+        def spy_hook(req: ControlledRequest) -> ControlledResponse:
+            dispatched_requests.append(req)
+            return ControlledResponse(status_code=200, headers={}, body="ok", size_bytes=2, elapsed_seconds=0.01)
+
+        engine = XxeIntelligenceEngine(
+            program_dir=tmp_dir,
+            scope_engine=scope,
+            policy=NonCallablePolicy(),  # type: ignore
+            send_request_hook=spy_hook,
+            oob_provider=MockOobProvider(),
+        )
+        engine.validation_engine.allow_fixture_port(8080)
+
+        cand = XxeCandidate(
+            application="OobApp",
+            endpoint="http://127.0.0.1:8080/xml",
+            parameter="doc",
+            category=XxeCategory.BLIND_OOB,
+            approval_status="APPROVED",
+        )
+
+        with pytest.raises(PolicyViolationError, match="validate_oob_destination attribute is not callable"):
+            engine.validate_oob_candidate(cand, force_approved=True)
+
+        assert cand.lifecycle_state == "POLICY_VIOLATION"
+        assert "validate_oob_destination attribute is not callable" in cand.notes
+        assert "Zero network requests dispatched" in cand.notes
+        assert len(dispatched_requests) == 0
+
     def test_oob_dispatch_scope_rejection_before_destination_check(self):
         """Target endpoint outside authorized scope halts before provider check or probe dispatch."""
         tmp_dir = tempfile.mkdtemp()
