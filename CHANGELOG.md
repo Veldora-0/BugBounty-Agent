@@ -16,18 +16,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **Precision Barrier Synchronization (`BarrierSynchronizer`)**:
   * Employs `threading.Barrier` to pre-arm parallel worker threads and trigger release simultaneously inside the microsecond server execution window.
   * Replaces volumetric flooding, algorithmic stress testing, and DoS attacks with surgical, bounded parallel probes.
-* **Invariant Discrimination Engine (`ConcurrencyInvariantEngine`)**:
-  * Rigorously evaluates multi-probe outcomes against business limits and state machine rules.
-  * Distinguishes confirmed vulnerabilities (`CONFIRMED`) from valid server-side concurrency defenses (`CONCURRENCY_CONTROLLED` via 409 Conflict, 429 Too Many Requests, 423 Locked, mutex serialization) and network timeouts (`INCONCLUSIVE`).
-* **Strict Concurrency Safety Policy (`ConcurrencySafetyPolicy`)**:
+* **Invariant Discrimination & Evidence Hardening (`ConcurrencyInvariantEngine`)**:
+  * Rigorously evaluates multi-probe outcomes against business limits and formal state invariants.
+  * Disallows classifying findings as `CONFIRMED` based solely on HTTP status code counts; requires reliable business-state mutation proof (distinct committed resource IDs, verified post-state counters, negative balance) or verified distributed rollback failure (`inconsistent_state: true`).
+  * Distinguishes idempotent duplicate representations from duplicate processing (`CONCURRENCY_CONTROLLED` vs `CONFIRMED`).
+  * Classifies ambiguous outcomes, identical responses without mutation proof, and missing/malformed post-state evidence strictly as `INCONCLUSIVE`.
+  * Recognizes valid server-side concurrency defenses (`CONCURRENCY_CONTROLLED` via 409 Conflict, 429 Too Many Requests, 423 Locked, mutex serialization) and network timeouts (`INCONCLUSIVE`).
+* **Strict Concurrency Safety Policy & Fail-Closed Transport (`ConcurrencySafetyPolicy`, `RaceIntelligenceEngine`)**:
   * Clamps burst sizes strictly to 2–5 parallel threads (default 4) with an un-overrideable hard cap of 10 (`MAX_BURST_SIZE = 10`).
-  * Caps maximum probes per test at 15 (`MAX_REQUESTS_PER_TEST = 15`) and blocks destructive HTTP methods (`TRACE`).
-  * Enforces offline scope validation before dispatch and anti-SSRF protection against private RFC 1918, loopback, and cloud metadata addresses (`169.254.169.254`, `metadata.google.internal`).
+  * Enforces hard request budget ceiling of 15 requests per test (`MAX_REQUESTS_PER_TEST = 15`) and blocks destructive HTTP methods (`TRACE`).
+  * Gating checks execute fail-closed immediately before each active dispatch in `_send_request_safe()`. In production mode, missing `ScopeEngine`, out-of-scope targets, or scope exceptions refuse dispatch immediately.
+  * Worker timeout and lifecycle handling locks out late-finishing threads via completion barriers, preventing unfinalized workers from mutating completed test results.
+  * Enforces anti-SSRF protection against private RFC 1918, loopback, and cloud metadata addresses (`169.254.169.254`, `metadata.google.internal`).
 * **Deterministic Local Simulation Lab (`LocalConcurrencyLab`)**:
   * Multi-threaded `ThreadingHTTPServer` serving 8 deterministic concurrency scenarios on an ephemeral loopback port (`127.0.0.1:0`).
   * Scenarios: coupon double-spend, balance transfer overdraw, voting limit overrun, idempotency race, mutex serialization (409), rate limit defense (429), gateway timeout (504), and distributed desync (500).
 * **Safe State Management & Secret Scrubbing (`ConcurrencyStateManager`)**:
-  * Atomic persistence of program-scoped state in `state/concurrency.json` with schema self-healing.
+  * Atomic persistence of program-scoped state in `state/concurrency.json` with schema self-healing and Windows retry handling.
   * Recursive sanitization of credentials, passwords, tokens, and authorization parameters (`[REDACTED_BY_BB_AGENT]`).
   * Exception sanitization via `_classify_request_exception` ensuring zero raw exception strings or secrets leak into state, logs, findings, or reports.
 * **CLI Wrapper, System Diagnostics & OpenCode Integration**:
@@ -36,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Extended `framework/state/manager.py` with `DEFAULT_CONCURRENCY` and synchronized `concurrency.json` into canonical findings.
   * Linked `bb-race` across deployment utilities (total 28 utilities).
 * **Automated Test Suite**:
-  * Added 27 unit and integration tests in `tests/test_concurrency_engine.py` covering taxonomy, barrier timing, invariant rules, all 8 lab scenarios, scope fail-closed enforcement, secret scrubbing, and disk report inspection.
+  * Expanded to 43 unit and integration tests in `tests/test_concurrency_engine.py` covering taxonomy, barrier timing, invariant rules, evidence classification hardening, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
 
 ### Phase 19: Infrastructure & Configuration Exposure (Accepted with Documented Limitations)
 

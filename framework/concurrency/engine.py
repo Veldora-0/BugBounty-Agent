@@ -14,6 +14,7 @@ import json
 import os
 import re
 import socket
+import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 import uuid
@@ -118,6 +119,8 @@ class RaceIntelligenceEngine:
             self._dispatch_fn = self._validation_engine.send_request
 
         self.synchronizer = BarrierSynchronizer(self._send_request_safe, timeout=self.policy.timeout)
+        self._request_budget_lock = threading.Lock()
+        self._current_test_requests = 0
 
     def allow_fixture_port(self, port: int) -> None:
         """Whitelists an ephemeral local test fixture port."""
@@ -126,8 +129,33 @@ class RaceIntelligenceEngine:
             self._validation_engine.allow_fixture_port(port)
 
     def _send_request_safe(self, req: ControlledRequest) -> ControlledResponse:
-        """Enforces policy validation and anti-SSRF checks before dispatching each probe."""
+        """
+        Enforces fail-closed scope gating, anti-SSRF policy, and request budget limits
+        immediately before each probe is dispatched.
+        """
+        # 1. Fail-closed scope enforcement
+        if not self.lab_mode:
+            if self.scope_engine is None:
+                raise ScopeViolationError("ScopeEngine is required in production mode; refusing to dispatch unvetted requests.")
+            decision = self.scope_engine.check(req.url)
+            if decision.status != ScopeStatus.IN_SCOPE:
+                raise ScopeViolationError(f"Scope authorization failure for {req.url}: {decision.reason}")
+        elif self.scope_engine:
+            decision = self.scope_engine.check(req.url)
+            if decision.status != ScopeStatus.IN_SCOPE:
+                raise ScopeViolationError(f"Scope authorization failure for {req.url}: {decision.reason}")
+
+        # 2. Concurrency Safety Policy validation (methods, SSRF, fixture ports)
         self.policy.validate_request_safety(req.method, req.url)
+
+        # 3. Enforce actual request budget per test
+        with self._request_budget_lock:
+            if self._current_test_requests >= self.policy.max_requests_per_test:
+                raise PolicyViolationError(
+                    f"Request budget exceeded: maximum {self.policy.max_requests_per_test} requests per test."
+                )
+            self._current_test_requests += 1
+
         return self._dispatch_fn(req)
 
     def add_hypothesis(
@@ -221,12 +249,52 @@ class RaceIntelligenceEngine:
         """
         Executes bounded, barrier-synchronized concurrency probe burst against target endpoint.
         """
+        # Reset per-test request counter
+        with self._request_budget_lock:
+            self._current_test_requests = 0
+
         # Scope fail-closed check
+        if not self.lab_mode and self.scope_engine is None:
+            hypothesis.lifecycle_state = FindingLifecycle.REJECTED
+            hypothesis.notes = "Scope policy violation: ScopeEngine required in production mode"
+            self.state_mgr.save_hypothesis(hypothesis)
+            res = RaceConditionTestResult(
+                hypothesis_id=hypothesis.hypothesis_id,
+                category=hypothesis.category,
+                confidence=RaceConfidence.INCONCLUSIVE,
+                lifecycle_state=FindingLifecycle.REJECTED,
+                severity="INFORMATIONAL",
+                is_vulnerable=False,
+                burst_size=0,
+                success_count=0,
+                failure_count=0,
+                reasons=["Scope policy violation: ScopeEngine required in production mode"],
+            )
+            return res, None
+
         if self.scope_engine:
-            decision = self.scope_engine.check(hypothesis.endpoint)
-            if decision.status != ScopeStatus.IN_SCOPE:
+            try:
+                decision = self.scope_engine.check(hypothesis.endpoint)
+                if decision.status != ScopeStatus.IN_SCOPE:
+                    hypothesis.lifecycle_state = FindingLifecycle.REJECTED
+                    hypothesis.notes = f"Rejected: out of scope ({decision.reason})"
+                    self.state_mgr.save_hypothesis(hypothesis)
+                    res = RaceConditionTestResult(
+                        hypothesis_id=hypothesis.hypothesis_id,
+                        category=hypothesis.category,
+                        confidence=RaceConfidence.INCONCLUSIVE,
+                        lifecycle_state=FindingLifecycle.REJECTED,
+                        severity="INFORMATIONAL",
+                        is_vulnerable=False,
+                        burst_size=0,
+                        success_count=0,
+                        failure_count=0,
+                        reasons=[f"Scope policy violation: {hypothesis.endpoint} is {decision.status.value}"],
+                    )
+                    return res, None
+            except Exception as exc:
                 hypothesis.lifecycle_state = FindingLifecycle.REJECTED
-                hypothesis.notes = f"Rejected: out of scope ({decision.reason})"
+                hypothesis.notes = f"Rejected: scope evaluation error ({_classify_request_exception(exc)})"
                 self.state_mgr.save_hypothesis(hypothesis)
                 res = RaceConditionTestResult(
                     hypothesis_id=hypothesis.hypothesis_id,
@@ -238,7 +306,7 @@ class RaceIntelligenceEngine:
                     burst_size=0,
                     success_count=0,
                     failure_count=0,
-                    reasons=[f"Scope policy violation: {hypothesis.endpoint} is {decision.status.value}"],
+                    reasons=[f"Scope authorization failure: {_classify_request_exception(exc)}"],
                 )
                 return res, None
 
@@ -281,7 +349,7 @@ class RaceIntelligenceEngine:
             return res, None
 
         # Prepare base probe request
-        burst_size = self.policy.validate_burst_size(hypothesis.burst_size)
+        burst_size = min(self.policy.validate_burst_size(hypothesis.burst_size), self.policy.max_requests_per_test)
         req_headers = {
             "User-Agent": "BugBounty-Agent/Concurrency-Intelligence (Safe Burst)",
             "Content-Type": "application/json",

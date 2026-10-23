@@ -138,14 +138,22 @@ The framework code enforces the following non-negotiable architectural boundarie
    * Probes are strictly bounded to 2–5 parallel threads (`DEFAULT_BURST_SIZE = 4`), with a hard, un-overrideable safety cap of 10 (`MAX_BURST_SIZE = 10`).
    * Maximum requests per test are capped at 15 (`MAX_REQUESTS_PER_TEST = 15`), preventing runaway retry loops or server-side exhaustion.
    * Prohibits destructive HTTP methods (`TRACE` is strictly blocked by policy).
-3. **Contention vs. Vulnerability Invariant Discrimination**:
+3. **Contention vs. Vulnerability Invariant Discrimination & Evidence Standards**:
+   * Findings are strictly disallowed from being classified as `CONFIRMED` based solely on HTTP status code counts (`success_count > allowed_limit`).
+   * Confirmation requires reliable proof of business-state mutation:
+     * Distinct committed resource identifiers returned across concurrent responses (e.g. distinct `order_id`, `redemption_id`, `vote_id`, `tx_id`).
+     * Server post-state verification confirming multiple mutations (e.g. server counter > limit, or negative balance).
+     * Verified inconsistent state or failed rollback evidence for distributed workflows (`inconsistent_state: true`).
+   * Idempotent duplicate responses returning cached results or identical representations are classified as `CONCURRENCY_CONTROLLED`.
+   * Identical responses with no mutation proof and missing/malformed post-state evidence are classified strictly as `INCONCLUSIVE`, never `CONFIRMED`.
    * Valid server-side serialization defenses (HTTP 409 Conflict, 429 Too Many Requests, 423 Locked) and mutex lock rejections are recognized as evidence of proper concurrency controls (`CONCURRENCY_CONTROLLED`) and are never reported as vulnerabilities.
    * Network timeouts (504 Gateway Timeout, connection drops) are classified strictly as `INCONCLUSIVE` without false positive alarms.
-   * Only genuine invariant breaches (multiple successful state mutations exceeding the authorized limit) are classified as `CONFIRMED`.
-4. **Offline Scope Enforcement & Anti-SSRF Protections**:
+4. **Offline & Transport Scope Enforcement & Anti-SSRF Protections**:
    * Scope verification executes offline before dispatching any concurrent probes; out-of-scope targets fail closed immediately.
+   * In production mode, active probe dispatching strictly fails closed if `ScopeEngine` is missing, throws errors, or target is out of scope. Checks execute immediately before each dispatch in `_send_request_safe()`.
    * Destination IPs and hostnames are validated against private RFC 1918, carrier-grade NAT, and cloud metadata addresses (`169.254.169.254`, `metadata.google.internal`).
    * Local test fixtures require explicit unprivileged integer port whitelisting (`allow_fixture_port()`).
+   * Worker lifecycle timeout and late-response lockout: completion of worker threads is tracked explicitly; late-finishing threads are locked out via completion events and cannot mutate finalized test state.
 5. **Operator Approval Gate & Zero Plaintext Secret Persistence**:
    * Concurrent state mutation testing requires explicit operator approval (`--approve`) when `require_approval=True`.
    * Passwords, tokens, API keys, and sensitive parameters are recursively scrubbed to `[REDACTED_BY_BB_AGENT]` before persistence to `state/concurrency.json`.

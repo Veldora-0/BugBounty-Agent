@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qsl, urlparse
+import uuid
 
 from framework.scope.engine import ScopeEngine
 
@@ -62,6 +63,7 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
                     "status": "APPLIED",
                     "coupon": "PROMO-50",
                     "redemptions": server.coupon_redemptions,
+                    "redemption_id": f"RDM-{server.coupon_redemptions}",
                 })
             else:
                 self._send_json(400, {"error": "COUPON_ALREADY_USED", "redemptions": server.coupon_redemptions})
@@ -77,6 +79,7 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {
                     "status": "TRANSFERRED",
                     "amount": amount,
+                    "transaction_id": f"TX-{uuid.uuid4().hex[:8]}",
                     "remaining_balance": server.account_balance,
                 })
             else:
@@ -89,7 +92,11 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
             time.sleep(0.04)  # Gap between quota check and vote registration
             if current_votes < 1:
                 server.voting_count += 1
-                self._send_json(200, {"status": "VOTE_RECORDED", "total_votes": server.voting_count})
+                self._send_json(200, {
+                    "status": "VOTE_RECORDED",
+                    "vote_id": f"VOTE-{server.voting_count}",
+                    "total_votes": server.voting_count,
+                })
             else:
                 self._send_json(429, {"error": "DAILY_VOTE_LIMIT_REACHED", "total_votes": server.voting_count})
             return
@@ -97,13 +104,14 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         # Scenario 4: Idempotency Key Cache Race (Vulnerable IDEMPOTENCY_BYPASS)
         if path == "/scenario/idempotency-race":
             key = self.headers.get("Idempotency-Key") or body.get("idempotency_key", "default_key")
-            time.sleep(0.04)  # Gap before writing key to distributed store
-            if key not in server.cached_idempotency_keys:
+            already_cached = key in server.cached_idempotency_keys
+            time.sleep(0.04)  # Gap between cache lookup and writing key to distributed store
+            if not already_cached:
                 server.cached_idempotency_keys.add(key)
                 server.order_count += 1
                 self._send_json(200, {"status": "ORDER_CREATED", "order_id": f"ORD-{server.order_count}"})
             else:
-                self._send_json(200, {"status": "DUPLICATE_ORDER_IGNORED", "idempotent": True})
+                self._send_json(200, {"status": "DUPLICATE_ORDER_IGNORED", "idempotent": True, "order_id": "ORD-1"})
             return
 
         # Scenario 5: Mutex Protected Endpoint (Safe: returns 409 Conflict on collision)

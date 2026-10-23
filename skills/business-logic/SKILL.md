@@ -38,8 +38,11 @@ Identify flaws in application workflows, business rules, and state machine assum
 
 ## 3. Evidence Documentation & Invariants
 * Document the complete sequence of requests in order with sanitized payloads and SHA-256 evidence digests.
-* Highlight the logical inconsistency between expected business rules and actual observed state via `BusinessLogicInvariantEngine`.
-* Support single replay, sequence replay, and bounded concurrent replay (maximum 5 threads/requests).
+* Highlight the logical inconsistency between expected business rules and actual observed state via `BusinessLogicInvariantEngine` and `ConcurrencyInvariantEngine`.
+* Concurrency invariant verification requires verifiable proof of business-state mutation (distinct committed resource IDs, verified post-state counters, balance overdraw) or verified inconsistent state for distributed workflows before classifying findings as `CONFIRMED`.
+* Idempotent duplicate responses returning cached representations are classified as `CONCURRENCY_CONTROLLED`; identical responses without mutation proof are marked `INCONCLUSIVE`.
+* All active probe dispatches fail closed if out of scope or if `ScopeEngine` is missing in production. Request budgets are strictly enforced at a maximum of 15 requests per test case.
+* Support single replay, sequence replay, and bounded concurrent replay (maximum 10 threads/requests).
 
 ## 4. CLI Tools: `bb-workflow` & `bb-race`
 

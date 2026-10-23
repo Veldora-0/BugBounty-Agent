@@ -42,7 +42,7 @@ class ConcurrencySafetyPolicy:
     ):
         self.burst_size = max(self.MIN_BURST_SIZE, min(self.MAX_BURST_SIZE, int(max_burst_size)))
         self.timeout = max(1.0, min(30.0, float(timeout)))
-        self.max_requests_per_test = max(self.MIN_BURST_SIZE, min(30, int(max_requests_per_test)))
+        self.max_requests_per_test = max(self.MIN_BURST_SIZE, min(self.MAX_REQUESTS_PER_TEST, int(max_requests_per_test)))
         self.require_approval = require_approval
         self.lab_mode = lab_mode
         self._allowed_fixture_ports: Set[int] = set()

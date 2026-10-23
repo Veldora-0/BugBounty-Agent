@@ -115,7 +115,14 @@ class ConcurrencyStateManager:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            os.replace(tmp_path, self.state_file)
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, self.state_file)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.02 * (attempt + 1))
         except Exception:
             if os.path.exists(tmp_path):
                 try:

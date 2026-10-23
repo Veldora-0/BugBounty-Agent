@@ -1,9 +1,9 @@
 # BugBounty-Agent — Phase 20 Implementation Plan
 ## Race Conditions & Distributed Workflows Intelligence
 
-**Accepted Baseline**: `7155bac6c109df73950fb28691f1a5f972b216c5`  
+**Accepted Baseline**: `6ae27b34f86b49c25c14f90d5706dfcb6723b2bb`  
 **Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 20)  
-**Status**: In Progress — Implementation  
+**Status**: Complete — Hardened & Verified  
 **Architecture Model**: Single primary OpenCode agent (`Bug-Bounty`) with 18 modular skills (`subagent_depth: 1`)
 
 ---
@@ -26,15 +26,25 @@ Rather than relying on high-volume request flooding, denial-of-service tactics, 
 2. **Barrier Synchronization (`threading.Barrier`)**:
    - Workers are pre-armed with validated `ControlledRequest` instances and held at an execution barrier.
    - Released simultaneously to transmit within the same microsecond burst window, maximizing race collision probability while strictly minimizing total request count.
-3. **Rigorous Invariant Evaluation**:
-   - Distinguishes **Confirmed Invariant Violations** (`INVARIANT_VIOLATED`) from **Valid Contention** (`CONCURRENCY_CONTROLLED`) and **Inconclusive Outcomes** (`INCONCLUSIVE`).
-   - Normal contention responses (e.g. HTTP 409 Conflict, HTTP 429 Too Many Requests, optimistic locking rollbacks, 1 success + 4 failures) are recognized as evidence of proper concurrency control, NOT vulnerabilities.
+3. **Rigorous Invariant Evaluation & Evidence Hardening**:
+   - Strictly disallows classifying findings as `CONFIRMED` based solely on HTTP status code counts (`success_count > allowed_limit`).
+   - Requires reliable proof of business-state mutation:
+     - Distinct committed resource IDs returned across responses (e.g. distinct `order_id`, `redemption_id`, `vote_id`, `tx_id`).
+     - Server post-state verification confirming multiple mutations (e.g. `redemptions > allowed_limit` or `balance < 0`).
+   - Distinguishes idempotent duplicate responses from duplicate processing:
+     - Multiple 200 OK responses with identical bodies, same resource ID, or idempotency markers (`idempotent: true`) are classified as `CONCURRENCY_CONTROLLED`.
+     - Multiple identical responses with no verified mutation proof are classified as `INCONCLUSIVE`, never `CONFIRMED`.
+   - Requires verified inconsistent state or failed rollback evidence for distributed partial execution (`PARTIAL_EXECUTION_DESYNC`). If consistency cannot be established, classifies as `INCONCLUSIVE`.
+   - Missing or malformed post-state evidence without distinct committed resource IDs is classified as `INCONCLUSIVE`, never `CONFIRMED`.
+   - Normal contention responses (e.g. HTTP 409 Conflict, HTTP 429 Too Many Requests, optimistic locking rollbacks) are recognized as evidence of proper concurrency control (`CONCURRENCY_CONTROLLED`), NOT vulnerabilities.
    - Transient network errors or timeouts under burst are classified as `INCONCLUSIVE` and never promoted to confirmed findings.
-4. **Strict Safety Boundaries**:
-   - Strictly bounded requests: default 3–5 concurrent threads; maximum 10 requests per test case.
-   - Offline `ScopeEngine` validation before any network probe.
+4. **Strict Safety Boundaries & Fail-Closed Transport**:
+   - Bounded concurrent bursts: 2–10 parallel worker threads (`MAX_BURST_SIZE = 10`).
+   - Hard request budget ceiling: strictly enforced maximum of 15 requests per test (`MAX_REQUESTS_PER_TEST = 15`).
+   - Fail-closed scope checks immediately before dispatch in `_send_request_safe()`; in production mode, missing `ScopeEngine`, out-of-scope targets, or scope exceptions refuse dispatch immediately.
    - Mandatory human approval gate (`require_approval`, `--approve`) for all active state mutations.
-   - Anti-SSRF enforcement preventing requests to private or loopback IP spaces in production.
+   - Anti-SSRF enforcement preventing requests to private or loopback IP spaces in production; lab mode explicitly whitelists only ephemeral test ports.
+   - Worker timeout and lifecycle handling: explicit tracking of worker thread completion; late-finishing workers are locked out via completion events and cannot mutate finalized test state.
 5. **Zero Secret Persistence & Complete Exception Sanitization**:
    - All credentials, tokens, session IDs, and exception messages are scrubbed (`sanitize_sensitive_data()`, secret regex) before persisting to `state/concurrency.json`, logs, finding objects, or markdown reports.
 6. **Single-Agent Architecture Invariant**:
@@ -92,7 +102,7 @@ scripts/
 
 ## 5. Verification Plan
 
-1. **Focused Test Suite**: `tests/test_concurrency_engine.py` covering all 8 lab scenarios, barrier synchronization, timeout handling, secret scrubbing, and report verification.
+1. **Focused Test Suite**: `tests/test_concurrency_engine.py` (43 tests) covering all 8 lab scenarios, evidence classification hardening, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, secret scrubbing, and report verification.
 2. **Phase 19 Sentinel Report Inspection Test**: Explicitly generates a markdown report from a finding with sanitized exception data and verifies the sentinel secret is absent on disk.
 3. **Cross-Platform Verification**:
    - Windows 11 full test suite pass.
