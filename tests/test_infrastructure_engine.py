@@ -357,7 +357,11 @@ class TestLocalInfrastructureLabScenarios(unittest.TestCase):
         # Must be OBSERVED, NEVER REJECTED!
         self.assertEqual(res.lifecycle_state, FindingLifecycle.OBSERVED)
         self.assertEqual(res.severity, "INFORMATIONAL")
+        self.assertEqual(res.confidence, "LOW")  # Appropriately conservative: 403 alone does not prove existence
         self.assertIn("access control", res.reasons[0].lower())
+        self.assertIn("does not verify", res.reasons[0].lower())
+        self.assertFalse(res.evidence.get("resource_confirmed", True))
+        self.assertTrue(res.evidence.get("access_restricted", False))
         self.assertIsNone(finding)
 
     def test_scenario_11_directory_listing(self):
@@ -559,6 +563,138 @@ class TestInfrastructureStateResilience(unittest.TestCase):
         self.assertIn("summary", state)
         self.assertEqual(state["summary"]["total_candidates"], 0)
         self.assertIn("candidates", state)
+
+
+class TestExceptionAndHttp403Hardening(unittest.TestCase):
+    """Verifies exception sanitization and conservative HTTP 403 semantics."""
+
+    def test_request_exception_sanitizes_sentinel_secret(self):
+        """
+        Verifies that when send_request raises an exception containing a unique sentinel secret,
+        the secret never leaks into reasons, evidence, candidate state, logs, findings, or reports.
+        """
+        sentinel_secret = "SENTINEL_SECRET_XYZ_987654321"
+
+        # 1. Direct evaluator test with secret embedded in exception text
+        mock_send = MagicMock(side_effect=RuntimeError(f"Connection failed: token={sentinel_secret}&user=admin"))
+        evaluator = InfrastructureExposureEvaluator(send_request_fn=mock_send)
+
+        cand = ExposureCandidate(
+            candidate_id="cand-exc-sentinel",
+            application="example.com",
+            endpoint="https://example.com/.env",
+            category=ExposureCategory.CONFIG_FILE,
+        )
+
+        res = evaluator.evaluate_candidate(cand)
+        self.assertFalse(res.is_exposed)
+        self.assertEqual(res.lifecycle_state, FindingLifecycle.NEEDS_MANUAL_REVIEW)
+        self.assertEqual(res.confidence, "LOW")
+
+        # Assert sentinel secret is strictly NOT in reasons, evidence, or excerpt
+        self.assertNotIn(sentinel_secret, " ".join(res.reasons))
+        self.assertNotIn(sentinel_secret, str(res.evidence))
+        self.assertNotIn(sentinel_secret, str(res.sanitized_excerpt))
+        self.assertIn("network transport error", res.reasons[0])
+
+        # 2. Engine lifecycle test verifying state persistence, logs, findings, and reports
+        temp_dir = tempfile.mkdtemp()
+        try:
+            scope_engine = MagicMock(spec=ScopeEngine)
+            scope_engine.check.return_value = MagicMock(status=ScopeStatus.IN_SCOPE)
+
+            mock_validation_engine = MagicMock(spec=SecurityValidationEngine)
+            mock_validation_engine.send_request.side_effect = RuntimeError(
+                f"Failed to connect to proxy: auth_key={sentinel_secret}"
+            )
+
+            engine = InfrastructureIntelligenceEngine(
+                program_dir=temp_dir,
+                scope_engine=scope_engine,
+                policy=InfrastructureExposurePolicy(),
+                validation_engine=mock_validation_engine,
+                require_approval=False,
+            )
+
+            with self.assertLogs(level="DEBUG") as log_capture:
+                # Add a harmless log entry so assertLogs doesn't fail if framework produces no logs
+                logging.getLogger("test_sentinel").info("Starting safe test run")
+                res, finding = engine.validate_candidate(cand, auto_approve=True)
+
+            # Assert finding is None
+            self.assertIsNone(finding)
+
+            # Assert logs do not contain the sentinel
+            for log_msg in log_capture.output:
+                self.assertNotIn(sentinel_secret, log_msg)
+
+            # Assert persistent state JSON does not contain the sentinel
+            state_file = os.path.join(temp_dir, "state", "infrastructure.json")
+            self.assertTrue(os.path.exists(state_file))
+            with open(state_file, "r", encoding="utf-8") as f:
+                state_content = f.read()
+            self.assertNotIn(sentinel_secret, state_content)
+
+            # Assert candidate note stored in state has clean generic diagnostic
+            state_data = json.loads(state_content)
+            saved_cand = next(c for c in state_data["candidates"] if c["candidate_id"] == "cand-exc-sentinel")
+            self.assertIn("Request failed: network transport error", saved_cand["notes"])
+            self.assertNotIn(sentinel_secret, saved_cand["notes"])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_request_exception_classification_categories(self):
+        """Tests that various exception types map to clean, informative category diagnostics."""
+        from framework.infrastructure.exposure import _classify_request_exception
+
+        self.assertEqual(
+            _classify_request_exception(TimeoutError("secret_timeout_info")),
+            "connection or read timeout",
+        )
+        self.assertEqual(
+            _classify_request_exception(ConnectionError("secret_conn_info")),
+            "network connection failure",
+        )
+        self.assertEqual(
+            _classify_request_exception(ScopeViolationError("out of scope secret")),
+            "scope authorization failure",
+        )
+        self.assertEqual(
+            _classify_request_exception(PolicyViolationError("policy error secret")),
+            "security policy violation",
+        )
+
+    def test_http_403_conservative_semantics_and_wording(self):
+        """Verifies that HTTP 403 uses conservative confidence (LOW) and does not assert resource existence."""
+        mock_resp = ControlledResponse(
+            status_code=403,
+            headers={"Content-Type": "text/html"},
+            body="<html><body><h1>403 Forbidden</h1></body></html>",
+            url="https://example.com/admin/secret",
+            method="GET",
+        )
+        mock_send = MagicMock(return_value=mock_resp)
+        evaluator = InfrastructureExposureEvaluator(send_request_fn=mock_send)
+
+        cand = ExposureCandidate(
+            candidate_id="cand-403-test",
+            application="example.com",
+            endpoint="https://example.com/admin/secret",
+            category=ExposureCategory.ADMIN_INTERFACE,
+        )
+
+        res = evaluator.evaluate_candidate(cand)
+        self.assertFalse(res.is_exposed)
+        self.assertEqual(res.lifecycle_state, FindingLifecycle.OBSERVED)
+        self.assertEqual(res.confidence, "LOW")
+        self.assertEqual(res.severity, "INFORMATIONAL")
+        self.assertTrue(res.evidence.get("access_restricted"))
+        self.assertFalse(res.evidence.get("resource_confirmed"))
+
+        # Assert reasons wording is conservative
+        reason = res.reasons[0].lower()
+        self.assertNotIn("resource exists", reason)
+        self.assertIn("does not verify", reason)
 
 
 if __name__ == "__main__":

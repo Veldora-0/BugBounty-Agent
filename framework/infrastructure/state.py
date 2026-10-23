@@ -129,11 +129,21 @@ class InfrastructureStateManager:
         cands: List[Dict[str, Any]] = state.get("candidates", [])
         cand_dict = candidate.to_dict()
 
+        # Sanitize candidate dict as defense-in-depth against accidental secret persistence
+        cand_raw_str = json.dumps(cand_dict)
+        cand_scrubbed_str = re.sub(
+            r"([A-Z0-9_]*(?:PASS|PWD|SECRET|KEY|TOKEN|AUTH|CREDENTIAL|PRIVATE)[A-Z0-9_]*\s*[:=]\s*)[^\"\r\n\\]+",
+            r"\g<1>[REDACTED_BY_BB_AGENT]",
+            cand_raw_str,
+            flags=re.IGNORECASE,
+        )
+        clean_cand = json.loads(sanitize_sensitive_data(cand_scrubbed_str))
+
         existing_idx = next((i for i, c in enumerate(cands) if c.get("candidate_id") == candidate.candidate_id), None)
         if existing_idx is not None:
-            cands[existing_idx] = cand_dict
+            cands[existing_idx] = clean_cand
         else:
-            cands.append(cand_dict)
+            cands.append(clean_cand)
 
         state["candidates"] = cands
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -148,11 +158,21 @@ class InfrastructureStateManager:
         hyps: List[Dict[str, Any]] = state.get("hypotheses", [])
         hyp_dict = hypothesis.to_dict()
 
+        # Sanitize hypothesis dict as defense-in-depth against accidental secret persistence
+        hyp_raw_str = json.dumps(hyp_dict)
+        hyp_scrubbed_str = re.sub(
+            r"([A-Z0-9_]*(?:PASS|PWD|SECRET|KEY|TOKEN|AUTH|CREDENTIAL|PRIVATE)[A-Z0-9_]*\s*[:=]\s*)[^\"\r\n\\]+",
+            r"\g<1>[REDACTED_BY_BB_AGENT]",
+            hyp_raw_str,
+            flags=re.IGNORECASE,
+        )
+        clean_hyp = json.loads(sanitize_sensitive_data(hyp_scrubbed_str))
+
         existing_idx = next((i for i, h in enumerate(hyps) if h.get("hypothesis_id") == hypothesis.hypothesis_id), None)
         if existing_idx is not None:
-            hyps[existing_idx] = hyp_dict
+            hyps[existing_idx] = clean_hyp
         else:
-            hyps.append(hyp_dict)
+            hyps.append(clean_hyp)
 
         state["hypotheses"] = hyps
         state["updated_at"] = datetime.now(timezone.utc).isoformat()

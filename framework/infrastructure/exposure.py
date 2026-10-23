@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import socket
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from framework.common.evidence import sanitize_sensitive_data
@@ -32,6 +33,36 @@ CONFIG_SECRET_PATTERN = re.compile(
     r"^([A-Z0-9_]*(?:PASS|PWD|SECRET|KEY|TOKEN|AUTH|CREDENTIAL|PRIVATE)[A-Z0-9_]*\s*[:=]\s*)[^\r\n]+",
     re.IGNORECASE | re.MULTILINE,
 )
+
+
+def _classify_request_exception(exc: Exception) -> str:
+    """
+    Returns a safe, high-level diagnostic string for a request exception.
+    Strictly avoids exposing raw str(exc), URLs, query strings, headers, credentials,
+    or response content.
+    """
+    exc_type = type(exc).__name__
+    exc_module = getattr(type(exc), "__module__", "")
+
+    # Check for scope or policy violations first
+    if "Scope" in exc_type or "scope" in exc_module.lower():
+        return "scope authorization failure"
+    if "Policy" in exc_type or "policy" in exc_module.lower():
+        return "security policy violation"
+
+    # Network, transport, and protocol categories
+    if isinstance(exc, (TimeoutError, socket.timeout)) or "Timeout" in exc_type:
+        return "connection or read timeout"
+    if "SSL" in exc_type or "Certificate" in exc_type or "TLS" in exc_type:
+        return "TLS/SSL handshake or certificate error"
+    if isinstance(exc, ConnectionError) or any(k in exc_type for k in ("Connection", "Unreachable", "GaiError", "Resolve")):
+        return "network connection failure"
+    if "HTTP" in exc_type:
+        return "HTTP protocol error"
+
+    # Default fallback: safe sanitized exception class name
+    safe_name = re.sub(r"[^A-Za-z0-9_]", "", exc_type) or "ExecutionError"
+    return f"network transport error ({safe_name})"
 
 
 def sanitize_exposure_content(text: str) -> str:
@@ -91,13 +122,14 @@ class InfrastructureExposureEvaluator:
         try:
             cand_resp = self.send_request_fn(req)
         except Exception as e:
+            category = _classify_request_exception(e)
             return ExposureEvaluationResult(
                 is_exposed=False,
                 confidence="LOW",
                 lifecycle_state=FindingLifecycle.NEEDS_MANUAL_REVIEW,
                 severity="INFORMATIONAL",
-                reasons=[f"Request failed: {str(e)}"],
-                evidence={"error": str(e)},
+                reasons=[f"Request failed: {category}"],
+                evidence={"error_category": category, "status": "failed"},
             )
 
         status = cand_resp.status_code
@@ -106,20 +138,25 @@ class InfrastructureExposureEvaluator:
         bytes_consumed = cand_resp.size_bytes if hasattr(cand_resp, "size_bytes") else len(body.encode("utf-8", errors="replace"))
 
         # 1. HTTP 403 Forbidden Handling
-        # Invariant: HTTP 403 must NOT be reported as REJECTED (absent).
-        # Classify as OBSERVED / ACCESS_RESTRICTED to record asset existence under access control.
+        # Invariant: HTTP 403 alone does not prove the target resource exists (may be generic WAF,
+        # default deny rule, or catch-all ACL). Must NOT be reported as REJECTED (absent), but
+        # kept as an access-restricted observation with conservative confidence (LOW) and wording.
         if status == 403:
             sanitized_body = sanitize_exposure_content(body[:512])
             fingerprint = hashlib.sha256(sanitized_body.encode("utf-8")).hexdigest()
             return ExposureEvaluationResult(
                 is_exposed=False,
-                confidence="HIGH",
+                confidence="LOW",
                 lifecycle_state=FindingLifecycle.OBSERVED,
                 severity="INFORMATIONAL",
-                reasons=["HTTP 403 Forbidden: resource exists under access control (not an unauthenticated leak)"],
+                reasons=[
+                    "HTTP 403 Forbidden: access restricted by server access control or WAF policy "
+                    "(does not verify underlying resource existence)"
+                ],
                 evidence={
                     "status_code": 403,
                     "access_restricted": True,
+                    "resource_confirmed": False,
                     "sanitized_sample": sanitized_body,
                 },
                 bytes_consumed=bytes_consumed,
