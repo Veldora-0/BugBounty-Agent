@@ -66,6 +66,8 @@ class PostStateEvidence:
     """
     Formal evidence contract tracking origin and validation for post-state mutation claims.
     Distinguishes untrusted caller assertions from independently verified server datastore queries.
+    Enforces a genuine cryptographic/attestation trust boundary: external or deserialized
+    dictionaries cannot elevate themselves into authoritative evidence.
     """
     source: EvidenceSource = EvidenceSource.UNTRUSTED_CALLER_CLAIM
     pre_state: Optional[Dict[str, Any]] = None
@@ -74,22 +76,58 @@ class PostStateEvidence:
     verified_at: Optional[str] = None
     delta_metrics: Dict[str, Any] = field(default_factory=dict)
     provenance_details: str = ""
+    _attestation_token: Optional[str] = field(default=None, repr=False)
 
     def is_authoritative(self) -> bool:
-        """Returns True if evidence originates from an authoritative, trusted source."""
-        return self.source in (EvidenceSource.INDEPENDENT_STATE_QUERY, EvidenceSource.LAB_FIXTURE_AUTHORITATIVE)
+        """
+        Returns True if and only if evidence originates from an authenticated, trusted source.
+        In the current architecture, only LAB_FIXTURE_AUTHORITATIVE with a valid internal
+        attestation is authoritative. Caller-provided claims, unauthenticated state queries,
+        or deserialized dictionaries return False.
+        """
+        if self.source == EvidenceSource.LAB_FIXTURE_AUTHORITATIVE:
+            if not self._attestation_token:
+                return False
+            try:
+                from framework.concurrency.lab import LocalConcurrencyLab
+                return LocalConcurrencyLab.verify_attestation(self)
+            except Exception:
+                return False
+
+        # NOTE: INDEPENDENT_STATE_QUERY currently lacks an authenticated integration;
+        # representing the absence of verifiable provenance honestly.
+        return False
 
     def validate_consistency(self) -> Tuple[bool, Optional[str]]:
         """
-        Validates internal consistency between pre-state and post-state observations.
-        Fails closed when pre-state and post-state contradict the mutation claim.
+        Validates internal consistency and field constraints for post-state evidence.
+        Fails closed when pre-state and post-state contradict the mutation claim,
+        or when required fields are malformed or missing.
         """
+        if self.source == EvidenceSource.LAB_FIXTURE_AUTHORITATIVE:
+            if not self.post_state or not isinstance(self.post_state, dict):
+                return False, "Authoritative evidence missing post_state dictionary."
+            if not self.verified_endpoint:
+                return False, "Authoritative evidence missing verified_endpoint."
+
+        if self.pre_state is not None and not isinstance(self.pre_state, dict):
+            return False, "Malformed non-dictionary pre_state."
+
+        if self.post_state is not None and not isinstance(self.post_state, dict):
+            return False, "Malformed non-dictionary post_state."
+
         if self.pre_state and self.post_state:
-            for k in ("count", "redemptions", "total_votes", "voting_count", "order_count", "counter"):
+            counter_keys = (
+                "count", "redemptions", "total_votes", "voting_count",
+                "order_count", "counter", "coupon_redemptions"
+            )
+            for k in counter_keys:
                 if k in self.pre_state and k in self.post_state:
                     try:
                         pre_v = int(self.pre_state[k])
                         post_v = int(self.post_state[k])
+                        if pre_v < 0 or post_v < 0:
+                            return False, f"Negative counter value not permitted for '{k}': pre={pre_v}, post={post_v}"
                         if post_v < pre_v:
                             return False, f"Contradictory pre/post state: {k} decreased from {pre_v} to {post_v}"
                     except (ValueError, TypeError):
@@ -110,19 +148,53 @@ class PostStateEvidence:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> PostStateEvidence:
-        src_val = data.get("source", "UNTRUSTED_CALLER_CLAIM")
-        try:
-            source = EvidenceSource(src_val)
-        except ValueError:
-            source = EvidenceSource.UNTRUSTED_CALLER_CLAIM
+        """
+        Deserializes evidence from an untrusted dictionary (e.g. state JSON or caller data).
+        CRITICAL TRUST BOUNDARY:
+        Deserialized external data is ALWAYS assigned UNTRUSTED_CALLER_CLAIM.
+        Caller-supplied source labels, boolean flags, or tokens cannot promote
+        themselves into authoritative evidence.
+        """
+        if not isinstance(data, dict):
+            return cls(
+                source=EvidenceSource.UNTRUSTED_CALLER_CLAIM,
+                provenance_details="Malformed non-dictionary data received.",
+            )
+
+        pre_state = data.get("pre_state")
+        if pre_state is not None and not isinstance(pre_state, dict):
+            pre_state = None
+
+        post_state = data.get("post_state")
+        if post_state is not None and not isinstance(post_state, dict):
+            post_state = None
+
+        delta_metrics = data.get("delta_metrics")
+        if not isinstance(delta_metrics, dict):
+            delta_metrics = {}
+
+        endpoint = data.get("verified_endpoint")
+        if endpoint is not None and not isinstance(endpoint, str):
+            endpoint = str(endpoint)
+
+        verified_at = data.get("verified_at")
+        if verified_at is not None and not isinstance(verified_at, str):
+            verified_at = str(verified_at)
+
+        prov_details = data.get("provenance_details", "")
+        if not isinstance(prov_details, str):
+            prov_details = str(prov_details)
+
+        claimed_source = str(data.get("source", "UNKNOWN"))
         return cls(
-            source=source,
-            pre_state=data.get("pre_state"),
-            post_state=data.get("post_state"),
-            verified_endpoint=data.get("verified_endpoint"),
-            verified_at=data.get("verified_at"),
-            delta_metrics=data.get("delta_metrics", {}),
-            provenance_details=data.get("provenance_details", ""),
+            source=EvidenceSource.UNTRUSTED_CALLER_CLAIM,
+            pre_state=pre_state,
+            post_state=post_state,
+            verified_endpoint=endpoint,
+            verified_at=verified_at,
+            delta_metrics=delta_metrics,
+            provenance_details=f"Deserialized from untrusted dictionary (claimed source: {claimed_source}). {prov_details}".strip(),
+            _attestation_token=None,
         )
 
 

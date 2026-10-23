@@ -19,6 +19,7 @@ import socket
 from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
+from framework.validation.engine import is_ssrf_prohibited_ip, parse_alternate_ip
 from framework.validation.policy import PolicyViolationError
 
 
@@ -87,9 +88,19 @@ class ConcurrencySafetyPolicy:
         """
         Resolves destination hostname to IP addresses for preflight SSRF validation.
         Supports custom resolver hook for deterministic offline testing.
+        Returns list of resolved IP string addresses.
+        If resolution fails with an error or returns None, returns empty list.
         """
         if self._resolver:
-            return self._resolver(hostname)
+            try:
+                res = self._resolver(hostname)
+                if res is None:
+                    return []
+                if isinstance(res, (list, tuple, set)):
+                    return [str(x) for x in res]
+                return [str(res)]
+            except Exception:
+                return []
         try:
             addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
             return list({sa[0] for _, _, _, _, sa in addr_info})
@@ -103,7 +114,7 @@ class ConcurrencySafetyPolicy:
         2. Prohibits cloud metadata addresses and hostnames.
         3. Enforces loopback port whitelisting in lab mode.
         4. Validates IP literals against private, loopback, link-local, multicast, and reserved spaces.
-        5. Validates resolved hostname IPs in production mode against SSRF prohibited ranges.
+        5. In production mode, enforces fail-closed preflight DNS resolution, validating EVERY resolved address.
         """
         meth_clean = (method or "POST").strip().upper()
         if meth_clean in self.PROHIBITED_METHODS:
@@ -133,18 +144,28 @@ class ConcurrencySafetyPolicy:
                 )
 
         # Anti-SSRF production verification: evaluate IP literal
-        is_ip = False
-        try:
-            ip_obj = ipaddress.ip_address(hostname)
-            is_ip = True
-        except ValueError:
-            is_ip = False
+        ip_obj = parse_alternate_ip(hostname)
+        if ip_obj is None:
+            try:
+                ip_obj = ipaddress.ip_address(hostname)
+            except ValueError:
+                ip_obj = None
 
-        if is_ip:
-            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast or ip_obj.is_reserved:
+        if ip_obj is not None:
+            is_bad, reason = is_ssrf_prohibited_ip(ip_obj)
+            if is_bad:
                 raise PolicyViolationError(
-                    f"Prohibited destination IP '{hostname}' (private/loopback/link-local address)."
+                    f"Prohibited destination IP '{hostname}' ({reason})."
                 )
+            if str(ip_obj) in self.PROHIBITED_HOSTS:
+                raise PolicyViolationError(
+                    f"Target host '{hostname}' is in prohibited cloud metadata list."
+                )
+            if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
+                if str(ip_obj.ipv4_mapped) in self.PROHIBITED_HOSTS:
+                    raise PolicyViolationError(
+                        f"Target host '{hostname}' is in prohibited cloud metadata list."
+                    )
         else:
             # Domain name, not raw IP literal
             if hostname in ("localhost", "local", "loopback") or hostname.endswith(".localhost"):
@@ -153,21 +174,42 @@ class ConcurrencySafetyPolicy:
             # In production mode: preflight DNS resolution check against prohibited address ranges
             if not self.lab_mode:
                 resolved_ips = self.resolve_hostname(hostname)
-                for r_ip in resolved_ips:
-                    try:
-                        r_ip_obj = ipaddress.ip_address(r_ip)
-                    except ValueError:
-                        continue
+                if not resolved_ips:
+                    # DNS resolution failed or returned no addresses -> FAIL CLOSED
+                    raise PolicyViolationError(
+                        f"DNS resolution failed or returned no addresses for host '{hostname}'; "
+                        f"refusing to dispatch unvetted requests in production mode."
+                    )
 
-                    if (
-                        r_ip_obj.is_private
-                        or r_ip_obj.is_loopback
-                        or r_ip_obj.is_link_local
-                        or r_ip_obj.is_multicast
-                        or r_ip_obj.is_reserved
-                        or str(r_ip_obj) in self.PROHIBITED_HOSTS
-                    ):
+                # Validate EVERY resolved address
+                for r_ip in resolved_ips:
+                    r_ip_str = str(r_ip).strip()
+                    r_ip_obj = parse_alternate_ip(r_ip_str)
+                    if r_ip_obj is None:
+                        try:
+                            r_ip_obj = ipaddress.ip_address(r_ip_str)
+                        except ValueError:
+                            # Malformed address in resolution result -> FAIL CLOSED
+                            raise PolicyViolationError(
+                                f"DNS resolution for host '{hostname}' returned malformed/invalid IP address '{r_ip}'."
+                            )
+
+                    is_bad, reason = is_ssrf_prohibited_ip(r_ip_obj)
+                    if is_bad:
                         raise PolicyViolationError(
                             f"Target host '{hostname}' resolves to prohibited destination IP '{r_ip}' "
-                            "(private/loopback/metadata address). Blocked by anti-SSRF policy."
+                            f"({reason}). Blocked by anti-SSRF policy."
                         )
+
+                    if str(r_ip_obj) in self.PROHIBITED_HOSTS:
+                        raise PolicyViolationError(
+                            f"Target host '{hostname}' resolves to prohibited destination IP '{r_ip}' "
+                            f"(cloud metadata). Blocked by anti-SSRF policy."
+                        )
+
+                    if isinstance(r_ip_obj, ipaddress.IPv6Address) and r_ip_obj.ipv4_mapped:
+                        if str(r_ip_obj.ipv4_mapped) in self.PROHIBITED_HOSTS:
+                            raise PolicyViolationError(
+                                f"Target host '{hostname}' resolves to prohibited destination IP '{r_ip}' "
+                                f"(IPv4-mapped cloud metadata). Blocked by anti-SSRF policy."
+                            )

@@ -275,10 +275,30 @@ class ConcurrencyInvariantEngine:
                 ps = post_state_evidence.post_state or {}
                 pre = post_state_evidence.pre_state or {}
 
-                # Check counter metrics
-                counter_keys = (
-                    "redemptions", "count", "total_votes", "counter",
-                    "order_count", "coupon_redemptions", "voting_count", "transfers"
+                # Check balance metrics for overdraw (especially for TOCTOU / balance transfer scenarios)
+                for bk in ("balance", "account_balance", "remaining_balance"):
+                    if bk in ps and ps[bk] is not None:
+                        try:
+                            b_val = float(ps[bk])
+                            if b_val < 0:
+                                post_state_overrun = True
+                                evidence["negative_balance_detected"] = b_val
+                            break
+                        except (ValueError, TypeError):
+                            pass
+
+                # Category-specific counter metrics mapping
+                category_counter_map: Dict[RaceCategory, Tuple[str, ...]] = {
+                    RaceCategory.DOUBLE_SPEND: ("coupon_redemptions", "redemptions", "claims", "count"),
+                    RaceCategory.LIMIT_OVERRUN: ("voting_count", "total_votes", "rate_limit_hits", "counter", "hits", "count"),
+                    RaceCategory.IDEMPOTENCY_BYPASS: ("order_count", "orders", "tx_count", "count"),
+                    RaceCategory.TOCTOU: ("transfers", "count"),
+                    RaceCategory.CONCURRENT_STATE_MUTATION: ("safe_mutex_counter", "counter", "mutations", "count"),
+                    RaceCategory.PARTIAL_EXECUTION_DESYNC: (),
+                }
+                counter_keys = category_counter_map.get(
+                    category,
+                    ("count", "counter", "redemptions", "total_votes", "order_count", "coupon_redemptions", "voting_count")
                 )
                 for ck in counter_keys:
                     if ck in ps and ps[ck] is not None:
@@ -294,31 +314,21 @@ class ConcurrencyInvariantEngine:
                                 evidence["verified_counter_delta"] = delta
                                 if delta > allowed_limit:
                                     post_state_overrun = True
-                                else:
+                                elif not post_state_overrun:
                                     post_state_controlled = True
                             else:
                                 if c_val > allowed_limit:
                                     post_state_overrun = True
-                                else:
+                                elif not post_state_overrun:
                                     post_state_controlled = True
-                            break
-                        except (ValueError, TypeError):
-                            pass
-
-                # Check balance metrics for overdraw
-                for bk in ("balance", "account_balance", "remaining_balance"):
-                    if bk in ps and ps[bk] is not None:
-                        try:
-                            b_val = float(ps[bk])
-                            if b_val < 0:
-                                post_state_overrun = True
-                                evidence["negative_balance_detected"] = b_val
                             break
                         except (ValueError, TypeError):
                             pass
 
                 # Check distributed inconsistent state
                 if ps.get("inconsistent_state") is True:
+                    post_state_inconsistent = True
+                elif ps.get("distributed_step1_committed") is True and not ps.get("distributed_step2_committed"):
                     post_state_inconsistent = True
 
         # 4. Check for pure transport failure
@@ -372,19 +382,19 @@ class ConcurrencyInvariantEngine:
                     evidence,
                 )
 
-            # Genuinely distinct committed resource entities returned across responses
+            # Distinct provisional identifiers returned across responses without authoritative state proof
             if len(distinct_resource_ids) > allowed_limit:
                 reasons.append(
-                    f"Invariant violated: {len(distinct_resource_ids)} genuinely distinct committed resource identifiers "
-                    f"({', '.join(sorted(list(distinct_resource_ids))[:3])}) returned across concurrent responses, "
-                    f"exceeding authorized limit of {allowed_limit}."
+                    f"Observed {len(distinct_resource_ids)} distinct provisional response identifiers "
+                    f"({', '.join(sorted(list(distinct_resource_ids))[:3])}) across concurrent responses, "
+                    f"but lacking authoritative server-side state verification; outcome is suspected, not confirmed."
                 )
-                severity = "HIGH" if category == RaceCategory.DOUBLE_SPEND else "MEDIUM"
+                evidence["observed_distinct_response_identifiers"] = sorted(list(distinct_resource_ids))
                 return (
-                    True,
-                    RaceConfidence.CONFIRMED,
-                    FindingLifecycle.VALIDATED,
-                    severity,
+                    False,
+                    RaceConfidence.SUSPECTED,
+                    FindingLifecycle.OBSERVED,
+                    "INFORMATIONAL",
                     reasons,
                     evidence,
                 )
@@ -419,7 +429,7 @@ class ConcurrencyInvariantEngine:
                     )
                 reasons.append(
                     f"Ambiguous outcome: {success_count} successful responses returned but lacked "
-                    f"distinct committed resource identifiers or authoritative post-state mutation proof; outcome inconclusive."
+                    f"authoritative server-side state mutation proof; outcome inconclusive."
                 )
                 return (
                     False,
@@ -447,10 +457,10 @@ class ConcurrencyInvariantEngine:
 
         # 6. Invariant Evaluation: Idempotency Bypass
         elif category == RaceCategory.IDEMPOTENCY_BYPASS:
-            if len(distinct_resource_ids) > allowed_limit:
+            if post_state_overrun:
                 reasons.append(
-                    f"Idempotency invariant breached: {len(distinct_resource_ids)} distinct duplicate records "
-                    f"({', '.join(sorted(list(distinct_resource_ids))[:3])}) created without atomic deduplication."
+                    f"Idempotency invariant breached: authoritative server-side state verification confirmed "
+                    f"duplicate records created without atomic deduplication."
                 )
                 return (
                     True,
@@ -468,6 +478,21 @@ class ConcurrencyInvariantEngine:
                 return (
                     False,
                     RaceConfidence.CONCURRENCY_CONTROLLED,
+                    FindingLifecycle.OBSERVED,
+                    "INFORMATIONAL",
+                    reasons,
+                    evidence,
+                )
+            if len(distinct_resource_ids) > allowed_limit:
+                reasons.append(
+                    f"Observed {len(distinct_resource_ids)} distinct provisional response identifiers "
+                    f"({', '.join(sorted(list(distinct_resource_ids))[:3])}) across duplicate submissions, "
+                    f"but lacking authoritative server-side state verification; outcome is suspected, not confirmed."
+                )
+                evidence["observed_distinct_response_identifiers"] = sorted(list(distinct_resource_ids))
+                return (
+                    False,
+                    RaceConfidence.SUSPECTED,
                     FindingLifecycle.OBSERVED,
                     "INFORMATIONAL",
                     reasons,
@@ -498,35 +523,9 @@ class ConcurrencyInvariantEngine:
 
         # 7. Invariant Evaluation: Distributed Partial Rollback / Desynchronization
         elif category == RaceCategory.PARTIAL_EXECUTION_DESYNC:
-            has_inconsistent_proof = False
-            details = ""
-
             if post_state_inconsistent:
-                has_inconsistent_proof = True
                 ps = post_state_evidence.post_state if post_state_evidence else {}
                 details = str(ps.get("details", "authoritative post-state verified rollback failure"))
-            else:
-                for resp in responses:
-                    if resp:
-                        b_text = (resp.body_text or resp.body or "").lower()
-                        if '"inconsistent_state": true' in b_text or '"inconsistent_state":true' in b_text:
-                            has_inconsistent_proof = True
-                            try:
-                                j_obj = json.loads(resp.body_text or resp.body or "")
-                                details = j_obj.get("details", "response body verified rollback failure")
-                            except Exception:
-                                details = "response body indicated inconsistent state"
-                            break
-
-                if not has_inconsistent_proof:
-                    for ex in executions:
-                        snippet = ex.body_snippet.lower()
-                        if '"inconsistent_state": true' in snippet or '"inconsistent_state":true' in snippet:
-                            has_inconsistent_proof = True
-                            details = "telemetry snippet indicated inconsistent state"
-                            break
-
-            if has_inconsistent_proof:
                 evidence["inconsistent_state_details"] = details
                 reasons.append(
                     f"Distributed workflow desynchronization: partial step failure left state inconsistent: {details}."
@@ -541,8 +540,8 @@ class ConcurrencyInvariantEngine:
                 )
 
             reasons.append(
-                "Distributed workflow failure encountered but transactional state consistency or "
-                "rollback failure could not be established; outcome inconclusive."
+                "No authoritative server-side post-state evidence of inconsistent distributed state "
+                "or uncompensated rollback; outcome inconclusive."
             )
             return (
                 False,

@@ -16,32 +16,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **Precision Barrier Synchronization (`BarrierSynchronizer`)**:
   * Employs `threading.Barrier` to pre-arm parallel worker threads and trigger release simultaneously inside the microsecond server execution window.
   * Replaces volumetric flooding, algorithmic stress testing, and DoS attacks with surgical, bounded parallel probes.
-* **Resource Identity & Invariant Evaluation Hardening (Blocker A — `ResourceIdentityTracker`, `ConcurrencyInvariantEngine`)**:
+* **Resource Identity, Counter Isolation & Candidate Invariant Calibration (Blocker B — `ResourceIdentityTracker`, `ConcurrencyInvariantEngine`)**:
   * Added `ResourceIdentityTracker` with category-prioritized primary key resolution (`order_id`, `redemption_id`, `vote_id`, `tx_id`, `id`).
   * Enforced field-alias deduplication (e.g. `order_id: ORD-1` and `id: ORD-1` in the same response resolve to a single resource entity).
   * Isolated resource identity sets from scalar counters (`items_count: 2`), response status counts, and nonces/timestamps.
+  * Distinct provisional response identifiers (e.g. `order_id: ORD-1`, `ORD-2`) alone without authoritative post-state evidence are strictly evaluated as `RaceConfidence.SUSPECTED` (`FindingLifecycle.OBSERVED`, `"INFORMATIONAL"`), never `CONFIRMED`.
+  * Invariant validation enforces category-specific counter mapping (`category_counter_map`: `coupon_redemptions` for `DOUBLE_SPEND`, `voting_count` for `LIMIT_OVERRUN`, `order_count` for `IDEMPOTENCY_BYPASS`, `account_balance` for `TOCTOU`) against server post-state.
   * Strictly disallows classifying findings as `CONFIRMED` based solely on HTTP status code counts; requires reliable business-state mutation proof or verified distributed rollback failure.
   * Distinguishes idempotent duplicate representations from duplicate processing (`CONCURRENCY_CONTROLLED` vs `CONFIRMED`).
   * Normal server concurrency defenses (HTTP 409 Conflict, 429 Too Many Requests, 423 Locked) and timeouts strictly evaluate as `CONCURRENCY_CONTROLLED` or `INCONCLUSIVE`.
-* **Post-State Evidence Provenance & Consistency Contracts (Blocker B — `PostStateEvidence`, `EvidenceSource`)**:
+* **Cryptographic Evidence Provenance Trust Boundary (Blocker A — `PostStateEvidence`, `EvidenceSource`, `LocalConcurrencyLab`)**:
   * Implemented explicit provenance tracking: `UNTRUSTED_CALLER_CLAIM`, `DIRECT_TRANSPORT_OBSERVATION`, `INDEPENDENT_STATE_QUERY`, and `LAB_FIXTURE_AUTHORITATIVE`.
-  * Untrusted caller dictionaries (e.g. plain `overrun_verified: true`) are classified as `UNTRUSTED_CALLER_CLAIM` and strictly rejected as authoritative proof.
+  * Added process-private HMAC-SHA256 attestation tokens (`_attestation_token`) issued by `LocalConcurrencyLab` using `_LAB_TRUST_KEY`. Only authenticated instances verify as authoritative.
+  * Caller-provided dictionaries, deserialized JSON payloads, and unverified inputs are forced to `UNTRUSTED_CALLER_CLAIM` upon deserialization (`PostStateEvidence.from_dict()`), stripping any caller-supplied attestation token.
+  * Explicitly and honestly represents `INDEPENDENT_STATE_QUERY` as unauthenticated/unverified (`is_authoritative() == False`) pending integration with an authenticated state query service.
   * `PostStateEvidence.validate_consistency()` validates that observed changes match operation invariants (e.g., counters cannot decrease when incremented). Inconsistent observations fail closed to `INCONCLUSIVE`.
-* **Worker Lifecycle, Bounded Deadlines & Container Sealing (Blocker C — `BurstExecutionContainer`, `WorkerLifecycleState`)**:
+* **Worker Lifecycle, Monotonic Deadlines & Container Sealing (Blocker C — `BurstExecutionContainer`, `WorkerLifecycleState`)**:
   * Modeled explicit lifecycle states: `COMPLETED`, `FAILED`, `TIMED_OUT_UNRESOLVED`, and `CANCELLED`.
-  * Replaced cumulative linear worker thread joins ($N \times \text{timeout}$) with a single monotonic overall deadline (`time.monotonic() + timeout + 1.0`).
+  * Replaced cumulative linear worker thread joins with a single monotonic overall deadline (`time.monotonic() + timeout + 1.0`). Workers unresolved at deadline transition to `TIMED_OUT_UNRESOLVED` and propagate to `INCONCLUSIVE`.
+  * Formally documented Python thread cancellation limits (lack of preemptive worker cancellation in stdlib threading).
   * `BurstExecutionContainer.seal()` permanently seals test containers upon join completion, preventing late-finishing background threads from mutating finalized test results.
   * Unique thread naming pattern `bb-race-worker-{i}-{burst_id}` eliminates thread tracking collisions across bursts.
 * **Per-Hypothesis Request Budget Isolation (Blocker D — `HypothesisBudgetContext`)**:
   * Replaced shared instance counters with thread-safe `HypothesisBudgetContext` instances bound to individual hypotheses.
   * Enforces hard ceiling of 15 requests per test case (`MAX_REQUESTS_PER_TEST = 15`), preventing parallel hypotheses from leaking, starving, or resetting shared request allocations.
-* **SSRF Preflight Resolution & Documented DNS Rebinding Limitation**:
-  * Preflight DNS resolution hook (`resolve_hostname()`, configurable `resolver`) validates hostnames against RFC 1918, loopback, carrier-grade NAT, and cloud metadata before dispatch.
+* **Fail-Closed DNS Resolution & Prohibited Address Ranges (Blocker E — `resolve_destination`)**:
+  * Preflight DNS resolution enforces strict fail-closed safety: resolution errors, empty resolution results, and malformed IP strings raise `PolicyViolationError`.
+  * Preflight resolution validates every resolved IP address against RFC 1918 private subnets, loopback (`127.0.0.0/8`), carrier-grade NAT (`100.64.0.0/10`), cloud metadata (`169.254.169.254`), IPv6 equivalents (`::1`, `fc00::/7`, `fe80::/10`), and IPv4-mapped IPv6 ranges (`::ffff:127.0.0.1`, etc.).
+  * Added pluggable `resolver` hook to facilitate isolated, deterministic unit testing.
   * Formally documented DNS rebinding limitation: Python standard HTTP transport does not pin socket IPs, recommending validating egress proxies or network namespaces for high-risk targets.
 * **Deterministic Local Simulation Lab (`LocalConcurrencyLab`)**:
   * Multi-threaded `ThreadingHTTPServer` serving 8 deterministic concurrency scenarios on an ephemeral loopback port (`127.0.0.1:0`).
   * Scenarios: coupon double-spend, balance transfer overdraw, voting limit overrun, idempotency race, mutex serialization (409), rate limit defense (429), gateway timeout (504), and distributed desync (500).
-  * Added `get_authoritative_state()` returning `LAB_FIXTURE_AUTHORITATIVE` post-state evidence.
+  * Added `get_authoritative_state()` returning HMAC-attested `LAB_FIXTURE_AUTHORITATIVE` post-state evidence.
 * **Safe State Management & Secret Scrubbing (`ConcurrencyStateManager`)**:
   * Atomic persistence of program-scoped state in `state/concurrency.json` with schema self-healing and Windows retry handling.
   * Recursive sanitization of credentials, passwords, tokens, and authorization parameters (`[REDACTED_BY_BB_AGENT]`).
@@ -53,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Extended `framework/state/manager.py` with `DEFAULT_CONCURRENCY` and synchronized `concurrency.json` into canonical findings.
   * Linked `bb-race` across deployment utilities (total 28 utilities).
 * **Automated Test Suite**:
-  * Expanded to 60 unit and integration tests in `tests/test_concurrency_engine.py` covering taxonomy, barrier timing, invariant rules, evidence classification hardening, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
+  * Expanded to 73 unit and integration tests in `tests/test_concurrency_engine.py` covering taxonomy, barrier timing, invariant rules, evidence classification hardening, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
 
 ### Phase 19: Infrastructure & Configuration Exposure (Accepted with Documented Limitations)
 

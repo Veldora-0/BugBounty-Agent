@@ -202,11 +202,16 @@ class TestConcurrencyInvariantEngine(unittest.TestCase):
             ControlledResponse(status_code=200, body_text='{"id": 3}', headers={}),
         ]
 
+        auth_evidence = LocalConcurrencyLab.create_authoritative_evidence(
+            post_state={"voting_count": 3},
+            pre_state={"voting_count": 0},
+        )
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
             category=RaceCategory.LIMIT_OVERRUN,
             allowed_limit=1,
             executions=executions,
             responses=responses,
+            post_state_data=auth_evidence,
         )
 
         self.assertTrue(is_vuln)
@@ -214,7 +219,7 @@ class TestConcurrencyInvariantEngine(unittest.TestCase):
         self.assertEqual(lifecycle, FindingLifecycle.VALIDATED)
         self.assertEqual(sev, "MEDIUM")
         self.assertIn("Invariant violated", reasons[0])
-        self.assertIn("exceeding authorized limit of 1", reasons[0])
+        self.assertIn("exceeded authorized limit of 1", reasons[0])
 
     def test_concurrency_controlled_409_and_429(self):
         """Tests that 409 Conflict and 429 Too Many Requests are recognized as valid contention."""
@@ -720,21 +725,25 @@ class TestEvidenceClassificationHardening(unittest.TestCase):
             ControlledResponse(status_code=200, body_text='{"order_id": "ORD-3"}', headers={}),
         ]
 
+        auth_state = LocalConcurrencyLab.create_authoritative_evidence(
+            post_state={"voting_count": 3},
+            pre_state={"voting_count": 0},
+        )
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
             category=RaceCategory.LIMIT_OVERRUN,
             allowed_limit=1,
             executions=execs,
             responses=resps,
-            post_state_data=None,
+            post_state_data=auth_state,
         )
 
         self.assertTrue(is_vuln)
         self.assertEqual(conf, RaceConfidence.CONFIRMED)
         self.assertEqual(lifecycle, FindingLifecycle.VALIDATED)
-        self.assertIn("distinct committed resource identifiers", reasons[0])
+        self.assertIn("verified server-side state mutation", reasons[0])
 
     def test_idempotent_identical_responses_vs_distinct_duplicate_processing(self):
-        """4. Idempotent identical responses return CONCURRENCY_CONTROLLED; distinct IDs return CONFIRMED."""
+        """4. Idempotent identical responses return CONCURRENCY_CONTROLLED; distinct IDs with authoritative state return CONFIRMED."""
         # 4a. Safe idempotent duplicate requests
         execs_safe = [
             SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet='{"order_id": "ORD-1", "idempotent": true}'),
@@ -762,11 +771,16 @@ class TestEvidenceClassificationHardening(unittest.TestCase):
             ControlledResponse(status_code=200, body_text='{"order_id": "ORD-1"}', headers={}),
             ControlledResponse(status_code=200, body_text='{"order_id": "ORD-2"}', headers={}),
         ]
+        auth_state = LocalConcurrencyLab.create_authoritative_evidence(
+            post_state={"order_count": 2},
+            pre_state={"order_count": 0},
+        )
         is_vuln_b, conf_b, _, _, _, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
             category=RaceCategory.IDEMPOTENCY_BYPASS,
             allowed_limit=1,
             executions=execs_vuln,
             responses=resps_vuln,
+            post_state_data=auth_state,
         )
         self.assertTrue(is_vuln_b)
         self.assertEqual(conf_b, RaceConfidence.CONFIRMED)
@@ -780,11 +794,15 @@ class TestEvidenceClassificationHardening(unittest.TestCase):
             ControlledResponse(status_code=500, body_text='{"inconsistent_state": true, "details": "rollback failed"}', headers={}),
         ]
 
+        auth_state = LocalConcurrencyLab.create_authoritative_evidence(
+            post_state={"inconsistent_state": True, "details": "rollback failed"},
+        )
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
             category=RaceCategory.PARTIAL_EXECUTION_DESYNC,
             allowed_limit=1,
             executions=execs,
             responses=resps,
+            post_state_data=auth_state,
         )
 
         self.assertTrue(is_vuln)
@@ -1178,8 +1196,8 @@ class TestBlockerAResourceIdentity(unittest.TestCase):
         self.assertEqual(evidence["distinct_resources_count"], 1)
         self.assertEqual(evidence["distinct_resource_ids"], ["ORD-1"])
 
-    def test_distinct_resource_ids_confirmed_when_exceeding_limit(self):
-        """2. Genuinely distinct resource IDs (ORD-1 vs ORD-2) confirm idempotency bypass."""
+    def test_distinct_response_ids_without_authoritative_state_is_suspected(self):
+        """2a. Genuinely distinct provisional IDs (ORD-1 vs ORD-2) without authoritative state do NOT confirm."""
         body1 = '{"order_id": "ORD-1", "id": "ORD-1"}'
         body2 = '{"order_id": "ORD-2", "id": "ORD-2"}'
         execs = [
@@ -1196,12 +1214,44 @@ class TestBlockerAResourceIdentity(unittest.TestCase):
             allowed_limit=1,
             executions=execs,
             responses=resps,
+            post_state_data=None,
+        )
+
+        self.assertFalse(is_vuln)
+        self.assertEqual(conf, RaceConfidence.SUSPECTED)
+        self.assertEqual(lifecycle, FindingLifecycle.OBSERVED)
+        self.assertEqual(evidence["distinct_resources_count"], 2)
+        self.assertEqual(evidence["distinct_resource_ids"], ["ORD-1", "ORD-2"])
+
+    def test_distinct_resource_ids_with_authoritative_state_confirms(self):
+        """2b. Distinct resource IDs with authoritative state verification confirm idempotency bypass."""
+        body1 = '{"order_id": "ORD-1", "id": "ORD-1"}'
+        body2 = '{"order_id": "ORD-2", "id": "ORD-2"}'
+        execs = [
+            SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet=body1),
+            SingleProbeExecution(request_index=1, status_code=200, response_time_ms=10.5, body_snippet=body2),
+        ]
+        resps = [
+            ControlledResponse(status_code=200, body_text=body1, headers={}),
+            ControlledResponse(status_code=200, body_text=body2, headers={}),
+        ]
+        auth_state = LocalConcurrencyLab.create_authoritative_evidence(
+            post_state={"order_count": 2},
+            pre_state={"order_count": 0},
+        )
+
+        is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.IDEMPOTENCY_BYPASS,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=auth_state,
         )
 
         self.assertTrue(is_vuln)
         self.assertEqual(conf, RaceConfidence.CONFIRMED)
+        self.assertEqual(lifecycle, FindingLifecycle.VALIDATED)
         self.assertEqual(evidence["distinct_resources_count"], 2)
-        self.assertEqual(evidence["distinct_resource_ids"], ["ORD-1", "ORD-2"])
 
     def test_counter_only_in_response_does_not_prove_state(self):
         """3. A counter appearing only in a response body is not automatically proof of committed state."""
@@ -1302,11 +1352,10 @@ class TestBlockerBPostStateProvenance(unittest.TestCase):
             ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
             ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
         ]
-        verified_evidence = PostStateEvidence(
-            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
-            pre_state={"coupon_redemptions": 0},
+        verified_evidence = LocalConcurrencyLab.create_authoritative_evidence(
             post_state={"coupon_redemptions": 2},
-            verified_endpoint="http://127.0.0.1:8080/state/status",
+            pre_state={"coupon_redemptions": 0},
+            endpoint="http://127.0.0.1:8080/state/status",
         )
 
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
@@ -1329,10 +1378,10 @@ class TestBlockerBPostStateProvenance(unittest.TestCase):
         resps = [
             ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
         ]
-        contradictory_evidence = PostStateEvidence(
-            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
+        contradictory_evidence = LocalConcurrencyLab.create_authoritative_evidence(
             pre_state={"count": 5},
             post_state={"count": 2},  # impossible decrement
+            endpoint="http://127.0.0.1:8080/state/status",
         )
 
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
@@ -1346,6 +1395,75 @@ class TestBlockerBPostStateProvenance(unittest.TestCase):
         self.assertFalse(is_vuln)
         self.assertEqual(conf, RaceConfidence.INCONCLUSIVE)
         self.assertIn("failed consistency check", reasons[0])
+
+    def test_dictionary_with_lab_authoritative_source_cannot_establish_provenance_by_itself(self):
+        """5. A dictionary claiming LAB_FIXTURE_AUTHORITATIVE cannot establish trusted provenance by itself."""
+        claim_dict = {
+            "source": "LAB_FIXTURE_AUTHORITATIVE",
+            "is_authoritative": True,
+            "post_state": {"coupon_redemptions": 5},
+            "verified_endpoint": "http://127.0.0.1:8080/state/status",
+        }
+        ev = PostStateEvidence.from_dict(claim_dict)
+        self.assertFalse(ev.is_authoritative())
+        self.assertEqual(ev.source, EvidenceSource.UNTRUSTED_CALLER_CLAIM)
+
+        execs = [SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}")]
+        resps = [ControlledResponse(status_code=200, body_text="{}", headers={})]
+        is_vuln, conf, _, _, reasons, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.DOUBLE_SPEND,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=claim_dict,
+        )
+        self.assertFalse(is_vuln)
+        self.assertNotEqual(conf, RaceConfidence.CONFIRMED)
+
+    def test_dictionary_with_independent_state_query_cannot_establish_provenance(self):
+        """6. A dictionary claiming INDEPENDENT_STATE_QUERY cannot establish trusted provenance."""
+        claim_dict = {
+            "source": "INDEPENDENT_STATE_QUERY",
+            "is_authoritative": True,
+            "post_state": {"voting_count": 10},
+        }
+        ev = PostStateEvidence.from_dict(claim_dict)
+        self.assertFalse(ev.is_authoritative())
+
+    def test_caller_supplied_is_authoritative_flag_cannot_bypass_validation(self):
+        """7. Caller-supplied is_authoritative: true fields cannot bypass validation."""
+        ev = PostStateEvidence(source=EvidenceSource.UNTRUSTED_CALLER_CLAIM)
+        self.assertFalse(ev.is_authoritative())
+
+    def test_unknown_source_values_fail_safely(self):
+        """8. Unknown source values fail safely to UNTRUSTED_CALLER_CLAIM."""
+        ev = PostStateEvidence.from_dict({"source": "SOME_UNKNOWN_ARBITRARY_PROVENANCE"})
+        self.assertEqual(ev.source, EvidenceSource.UNTRUSTED_CALLER_CLAIM)
+        self.assertFalse(ev.is_authoritative())
+
+    def test_serialization_and_deserialization_cannot_silently_elevate_untrusted_evidence(self):
+        """9. Serializing and deserializing evidence cannot silently preserve authoritative status without revalidation."""
+        auth_ev = LocalConcurrencyLab.create_authoritative_evidence(
+            post_state={"coupon_redemptions": 2},
+            pre_state={"coupon_redemptions": 0},
+        )
+        self.assertTrue(auth_ev.is_authoritative())
+
+        serialized = auth_ev.to_dict()
+        # Even though serialized dict claims LAB_FIXTURE_AUTHORITATIVE, deserializing it yields untrusted
+        deserialized = PostStateEvidence.from_dict(serialized)
+        self.assertFalse(deserialized.is_authoritative())
+        self.assertEqual(deserialized.source, EvidenceSource.UNTRUSTED_CALLER_CLAIM)
+
+    def test_forged_attestation_token_rejected(self):
+        """10. Manually crafted PostStateEvidence with forged attestation token is rejected."""
+        forged_ev = PostStateEvidence(
+            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
+            post_state={"coupon_redemptions": 5},
+            verified_endpoint="http://127.0.0.1:8080/state/status",
+            _attestation_token="0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        self.assertFalse(forged_ev.is_authoritative())
 
 
 class TestBlockerCWorkerLifecycleAndCancellation(unittest.TestCase):
@@ -1515,6 +1633,64 @@ class TestSSRFAndHostnameResolutionBoundaries(unittest.TestCase):
         policy = ConcurrencySafetyPolicy(lab_mode=False, resolver=mock_resolver)
         # Should not raise
         policy.validate_request_safety("POST", "https://authorized.example.com/api")
+
+    def test_dns_resolution_failure_fails_closed(self):
+        """5. DNS resolution error (e.g. gaierror or exception) fails closed in production mode."""
+        def error_resolver(h):
+            raise socket.gaierror(-2, "Name or service not known")
+
+        policy = ConcurrencySafetyPolicy(lab_mode=False, resolver=error_resolver)
+        with self.assertRaises(PolicyViolationError) as ctx:
+            policy.validate_request_safety("POST", "https://unresolvable.example.com/api")
+        self.assertIn("DNS resolution failed or returned no addresses", str(ctx.exception))
+
+    def test_dns_empty_results_fails_closed(self):
+        """6. DNS resolution returning empty address list fails closed in production mode."""
+        policy = ConcurrencySafetyPolicy(lab_mode=False, resolver=lambda h: [])
+        with self.assertRaises(PolicyViolationError) as ctx:
+            policy.validate_request_safety("POST", "https://empty-dns.example.com/api")
+        self.assertIn("DNS resolution failed or returned no addresses", str(ctx.exception))
+
+    def test_dns_malformed_ip_fails_closed(self):
+        """7. Malformed/invalid IP in DNS resolution result fails closed."""
+        policy = ConcurrencySafetyPolicy(lab_mode=False, resolver=lambda h: ["999.999.999.999"])
+        with self.assertRaises(PolicyViolationError) as ctx:
+            policy.validate_request_safety("POST", "https://bad-ip.example.com/api")
+        self.assertIn("returned malformed/invalid IP address", str(ctx.exception))
+
+    def test_mixed_public_and_prohibited_ips_fails_closed(self):
+        """8. Mixed resolution (one public, one private IP) fails closed."""
+        policy = ConcurrencySafetyPolicy(lab_mode=False, resolver=lambda h: ["93.184.216.34", "10.0.0.1"])
+        with self.assertRaises(PolicyViolationError) as ctx:
+            policy.validate_request_safety("POST", "https://mixed-resolution.example.com/api")
+        self.assertIn("resolves to prohibited destination IP '10.0.0.1'", str(ctx.exception))
+
+    def test_ipv6_loopback_and_link_local_prohibited(self):
+        """9. IPv6 loopback (::1) and link-local (fe80::1) are prohibited in production mode."""
+        policy_v6_loopback = ConcurrencySafetyPolicy(lab_mode=False, resolver=lambda h: ["::1"])
+        with self.assertRaises(PolicyViolationError):
+            policy_v6_loopback.validate_request_safety("POST", "https://v6-local.example.com/api")
+
+        policy_v6_linklocal = ConcurrencySafetyPolicy(lab_mode=False, resolver=lambda h: ["fe80::1"])
+        with self.assertRaises(PolicyViolationError):
+            policy_v6_linklocal.validate_request_safety("POST", "https://v6-linklocal.example.com/api")
+
+    def test_ipv4_mapped_ipv6_prohibited(self):
+        """10. IPv4-mapped IPv6 representations (loopback, metadata, CGNAT) are prohibited."""
+        # IPv4-mapped loopback ::ffff:127.0.0.1
+        policy_mapped_loopback = ConcurrencySafetyPolicy(lab_mode=False, resolver=lambda h: ["::ffff:127.0.0.1"])
+        with self.assertRaises(PolicyViolationError):
+            policy_mapped_loopback.validate_request_safety("POST", "https://mapped-loopback.example.com/api")
+
+        # IPv4-mapped metadata ::ffff:169.254.169.254
+        policy_mapped_meta = ConcurrencySafetyPolicy(lab_mode=False, resolver=lambda h: ["::ffff:169.254.169.254"])
+        with self.assertRaises(PolicyViolationError):
+            policy_mapped_meta.validate_request_safety("POST", "https://mapped-meta.example.com/api")
+
+        # IPv4-mapped CGNAT ::ffff:100.64.1.1
+        policy_mapped_cgnat = ConcurrencySafetyPolicy(lab_mode=False, resolver=lambda h: ["::ffff:100.64.1.1"])
+        with self.assertRaises(PolicyViolationError):
+            policy_mapped_cgnat.validate_request_safety("POST", "https://mapped-cgnat.example.com/api")
 
 
 if __name__ == "__main__":

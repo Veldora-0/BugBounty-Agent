@@ -164,6 +164,7 @@ Examples:
 
     if args.lab and lab_server:
         engine.allow_fixture_port(lab_server.port)
+        engine.set_lab_fixture(lab_server)
         # Register standard 8 deterministic lab scenarios
         engine.add_hypothesis(f"{base_url}/scenario/coupon-race", RaceCategory.DOUBLE_SPEND, burst_size=4, allowed_limit=1)
         engine.add_hypothesis(f"{base_url}/scenario/balance-transfer", RaceCategory.TOCTOU, burst_size=4, allowed_limit=1)

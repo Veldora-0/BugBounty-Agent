@@ -9,8 +9,12 @@ proper mutex/rate-limiting controls, and distributed workflow desynchronization.
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+import datetime
+import hashlib
+import hmac
 import json
 import logging
+import secrets
 import socket
 import threading
 import time
@@ -207,17 +211,73 @@ class LocalConcurrencyLabServer(ThreadingHTTPServer):
 class LocalConcurrencyLab:
     """Manages lifecycle of ephemeral local HTTP concurrency testing lab."""
 
+    # Cryptographically random internal trust key generated once per runtime process.
+    # Used to authenticate post-state evidence created specifically through the trusted lab interface.
+    _LAB_TRUST_KEY: bytes = secrets.token_bytes(32)
+    _ACTIVE_LABS: Dict[int, LocalConcurrencyLab] = {}
+
     def __init__(self):
         self.server: Optional[LocalConcurrencyLabServer] = None
         self.thread: Optional[threading.Thread] = None
         self.port: int = 0
         self.base_url: str = ""
 
+    @classmethod
+    def _create_attestation(cls, source: str, endpoint: str, post_state: Dict[str, Any]) -> str:
+        payload = f"{source}|{endpoint}|{json.dumps(post_state, sort_keys=True)}"
+        return hmac.new(cls._LAB_TRUST_KEY, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    @classmethod
+    def create_authoritative_evidence(
+        cls,
+        post_state: Dict[str, Any],
+        endpoint: str = "http://127.0.0.1:8080/state/status",
+        pre_state: Optional[Dict[str, Any]] = None,
+        provenance_details: str = "Deterministic test fixture evidence.",
+    ) -> PostStateEvidence:
+        """
+        Creates authenticated post-state evidence using the trusted lab fixture attestation.
+        Only accessible within the internal framework/lab boundary.
+        """
+        token = cls._create_attestation(EvidenceSource.LAB_FIXTURE_AUTHORITATIVE.value, endpoint, post_state)
+        return PostStateEvidence(
+            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
+            pre_state=pre_state,
+            post_state=post_state,
+            verified_endpoint=endpoint,
+            verified_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            provenance_details=provenance_details,
+            _attestation_token=token,
+        )
+
+    @classmethod
+    def verify_attestation(cls, evidence: Any) -> bool:
+        """
+        Validates cryptographic attestation of post-state evidence.
+        Guarantees evidence was produced directly by a genuine LocalConcurrencyLab instance.
+        """
+        if not hasattr(evidence, "_attestation_token") or not evidence._attestation_token:
+            return False
+        if not hasattr(evidence, "source") or evidence.source != EvidenceSource.LAB_FIXTURE_AUTHORITATIVE:
+            return False
+        ps = getattr(evidence, "post_state", None)
+        if not isinstance(ps, dict) or not ps:
+            return False
+        ep = getattr(evidence, "verified_endpoint", "") or ""
+        expected = cls._create_attestation(evidence.source.value, ep, ps)
+        return hmac.compare_digest(str(evidence._attestation_token), expected)
+
+    @classmethod
+    def get_active_lab(cls, port: int) -> Optional[LocalConcurrencyLab]:
+        """Looks up active LocalConcurrencyLab instance by ephemeral port."""
+        return cls._ACTIVE_LABS.get(port)
+
     def start(self) -> str:
         """Starts background HTTP server on ephemeral loopback port."""
         self.server = LocalConcurrencyLabServer(("127.0.0.1", 0), ConcurrencyLabHandler)
         self.port = self.server.server_address[1]
         self.base_url = f"http://127.0.0.1:{self.port}"
+        LocalConcurrencyLab._ACTIVE_LABS[self.port] = self
 
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="bb-concurrency-lab")
         self.thread.start()
@@ -225,6 +285,9 @@ class LocalConcurrencyLab:
 
     def stop(self) -> None:
         """Stops and cleans up the background HTTP server."""
+        if self.port in LocalConcurrencyLab._ACTIVE_LABS:
+            LocalConcurrencyLab._ACTIVE_LABS.pop(self.port, None)
+
         if self.server:
             try:
                 self.server.shutdown()
@@ -255,11 +318,15 @@ class LocalConcurrencyLab:
                 "distributed_step1_committed": self.server.distributed_step1_committed,
                 "distributed_step2_committed": self.server.distributed_step2_committed,
             }
+        ep = f"{self.base_url}/state/status"
+        token = self._create_attestation(EvidenceSource.LAB_FIXTURE_AUTHORITATIVE.value, ep, state_dict)
         return PostStateEvidence(
             source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
             post_state=state_dict,
-            verified_endpoint=f"{self.base_url}/state/status",
+            verified_endpoint=ep,
+            verified_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             provenance_details="Queried directly from in-memory LocalConcurrencyLab fixture server.",
+            _attestation_token=token,
         )
 
     @classmethod

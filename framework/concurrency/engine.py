@@ -85,6 +85,7 @@ class RaceIntelligenceEngine:
         dispatch_fn: Optional[Callable[[ControlledRequest], ControlledResponse]] = None,
         require_approval: bool = True,
         lab_mode: bool = False,
+        lab_fixture: Optional[Any] = None,
     ):
         self.program_dir = os.path.abspath(program_dir)
         self.program_name = os.path.basename(self.program_dir)
@@ -92,6 +93,7 @@ class RaceIntelligenceEngine:
         self.policy = policy or ConcurrencySafetyPolicy(require_approval=require_approval, lab_mode=lab_mode)
         self.require_approval = require_approval
         self.lab_mode = lab_mode
+        self.lab_fixture = lab_fixture
 
         # Persistence managers
         self.state_mgr = ConcurrencyStateManager(self.program_dir)
@@ -132,6 +134,10 @@ class RaceIntelligenceEngine:
         self.policy.allow_fixture_port(port)
         if hasattr(self, "_validation_engine") and self._validation_engine:
             self._validation_engine.allow_fixture_port(port)
+
+    def set_lab_fixture(self, lab_fixture: Any) -> None:
+        """Attaches an authoritative LocalConcurrencyLab fixture."""
+        self.lab_fixture = lab_fixture
 
     def _send_request_safe(
         self,
@@ -386,6 +392,19 @@ class RaceIntelligenceEngine:
         )
         executions = [r[0] for r in raw_results]
         responses = [r[1] for r in raw_results]
+
+        # Acquire authoritative post-state evidence from trusted lab fixture if in lab mode
+        if post_state_data is None and self.lab_mode:
+            port = urlparse(hypothesis.endpoint).port
+            lab = self.lab_fixture
+            if lab is None and port:
+                try:
+                    from framework.concurrency.lab import LocalConcurrencyLab
+                    lab = LocalConcurrencyLab.get_active_lab(port)
+                except Exception:
+                    lab = None
+            if lab and hasattr(lab, "get_authoritative_state"):
+                post_state_data = lab.get_authoritative_state()
 
         # Evaluate invariants
         (
