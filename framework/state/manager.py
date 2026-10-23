@@ -33,6 +33,22 @@ DEFAULT_COVERAGE = {
     "cloud": "not_tested",
 }
 
+DEFAULT_INFRASTRUCTURE: Dict[str, Any] = {
+    "updated_at": "",
+    "candidates": [],
+    "hypotheses": [],
+    "findings": [],
+    "tested_fingerprints": [],
+    "summary": {
+        "total_candidates": 0,
+        "total_hypotheses": 0,
+        "validated_findings": 0,
+        "observations": 0,
+        "rejected": 0,
+        "access_restricted": 0,
+    },
+}
+
 
 class StateManager:
     """
@@ -75,7 +91,7 @@ class StateManager:
             (self.javascript_file, {}),
             (self.api_file, {}),
             (self.security_file, {}),
-            (self.infrastructure_file, {}),
+            (self.infrastructure_file, DEFAULT_INFRASTRUCTURE),
         ]:
             if not os.path.exists(filepath):
                 self._atomic_write_json(filepath, default_content)

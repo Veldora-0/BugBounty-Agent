@@ -503,5 +503,63 @@ class TestVulnerabilityFamilyCompatibility(unittest.TestCase):
         self.assertEqual(f_dict["lifecycle_state"], "VALIDATED")
 
 
+class TestInfrastructureStateResilience(unittest.TestCase):
+    """Acceptance tests for persistent state schema resilience and self-healing."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_state_self_heals_empty_dict(self):
+        """Pre-existing empty dict in infrastructure.json does not raise KeyError."""
+        state_dir = os.path.join(self.temp_dir, "state")
+        os.makedirs(state_dir, exist_ok=True)
+        infra_file = os.path.join(state_dir, "infrastructure.json")
+        with open(infra_file, "w", encoding="utf-8") as f:
+            f.write("{}")
+
+        mgr = InfrastructureStateManager(self.temp_dir)
+        state = mgr.load_state()
+        self.assertIn("summary", state)
+        self.assertEqual(state["summary"]["total_candidates"], 0)
+
+        cand = ExposureCandidate(
+            candidate_id="cand-1",
+            application="example.com",
+            endpoint="https://example.com/.env",
+            category=ExposureCategory.CONFIG_FILE,
+        )
+        mgr.save_candidate(cand)
+        updated = mgr.load_state()
+        self.assertEqual(updated["summary"]["total_candidates"], 1)
+
+    def test_state_self_heals_missing_summary(self):
+        """State file with partial keys self-heals summary without losing candidates."""
+        state_dir = os.path.join(self.temp_dir, "state")
+        os.makedirs(state_dir, exist_ok=True)
+        infra_file = os.path.join(state_dir, "infrastructure.json")
+        with open(infra_file, "w", encoding="utf-8") as f:
+            json.dump({"candidates": [{"candidate_id": "c1", "category": "CONFIG_FILE", "url": "https://example.com/.env"}]}, f)
+
+        mgr = InfrastructureStateManager(self.temp_dir)
+        state = mgr.load_state()
+        self.assertIn("summary", state)
+        self.assertEqual(len(state["candidates"]), 1)
+
+    def test_state_manager_interoperability(self):
+        """Main StateManager creates default infrastructure state compatible with InfrastructureStateManager."""
+        from framework.state.manager import StateManager
+        main_mgr = StateManager(self.temp_dir)
+        self.assertTrue(os.path.exists(main_mgr.infrastructure_file))
+
+        infra_mgr = InfrastructureStateManager(self.temp_dir)
+        state = infra_mgr.load_state()
+        self.assertIn("summary", state)
+        self.assertEqual(state["summary"]["total_candidates"], 0)
+        self.assertIn("candidates", state)
+
+
 if __name__ == "__main__":
     unittest.main()

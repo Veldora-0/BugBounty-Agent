@@ -18,6 +18,51 @@ from framework.common.evidence import sanitize_sensitive_data
 from framework.infrastructure.model import ExposureCandidate, ExposureHypothesis
 
 
+def get_default_infrastructure_state() -> Dict[str, Any]:
+    """Returns a fresh default structure for infrastructure state."""
+    return {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "candidates": [],
+        "hypotheses": [],
+        "findings": [],
+        "tested_fingerprints": [],
+        "summary": {
+            "total_candidates": 0,
+            "total_hypotheses": 0,
+            "validated_findings": 0,
+            "observations": 0,
+            "rejected": 0,
+            "access_restricted": 0,
+        },
+    }
+
+
+def normalize_infrastructure_state(data: Any) -> Dict[str, Any]:
+    """Ensures state dictionary conforms to schema and has all required keys."""
+    default = get_default_infrastructure_state()
+    if not isinstance(data, dict):
+        return default
+
+    normalized = dict(data)
+    for list_key in ("candidates", "hypotheses", "findings", "tested_fingerprints"):
+        if list_key not in normalized or not isinstance(normalized[list_key], list):
+            normalized[list_key] = []
+
+    if "summary" not in normalized or not isinstance(normalized["summary"], dict):
+        normalized["summary"] = dict(default["summary"])
+    else:
+        summary = dict(normalized["summary"])
+        for sum_key, sum_val in default["summary"].items():
+            if sum_key not in summary:
+                summary[sum_key] = sum_val
+        normalized["summary"] = summary
+
+    if "updated_at" not in normalized or not normalized["updated_at"]:
+        normalized["updated_at"] = default["updated_at"]
+
+    return normalized
+
+
 class InfrastructureStateManager:
     """Manages persistent infrastructure exposure state per bug bounty program."""
 
@@ -29,24 +74,18 @@ class InfrastructureStateManager:
         self._init_file()
 
     def _init_file(self) -> None:
-        """Initializes empty state structure if not present."""
-        if not os.path.exists(self.state_file):
-            default_state: Dict[str, Any] = {
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "candidates": [],
-                "hypotheses": [],
-                "findings": [],
-                "tested_fingerprints": [],
-                "summary": {
-                    "total_candidates": 0,
-                    "total_hypotheses": 0,
-                    "validated_findings": 0,
-                    "observations": 0,
-                    "rejected": 0,
-                    "access_restricted": 0,
-                },
-            }
-            self._atomic_write(default_state)
+        """Initializes empty state structure if not present or missing required keys."""
+        if not os.path.exists(self.state_file) or os.path.getsize(self.state_file) == 0:
+            self._atomic_write(get_default_infrastructure_state())
+        else:
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                normalized = normalize_infrastructure_state(data)
+                if normalized != data:
+                    self._atomic_write(normalized)
+            except (json.JSONDecodeError, OSError):
+                self._atomic_write(get_default_infrastructure_state())
 
     def _atomic_write(self, data: Dict[str, Any]) -> None:
         """Safely writes JSON state atomically to prevent corruption."""
@@ -65,16 +104,24 @@ class InfrastructureStateManager:
             raise
 
     def load_state(self) -> Dict[str, Any]:
-        """Loads state dictionary from disk."""
+        """Loads state dictionary from disk, normalizing structure if needed."""
         if not os.path.exists(self.state_file):
             self._init_file()
         try:
             with open(self.state_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
         except (json.JSONDecodeError, OSError):
             self._init_file()
             with open(self.state_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+
+        normalized = normalize_infrastructure_state(data)
+        if normalized != data:
+            try:
+                self._atomic_write(normalized)
+            except Exception:
+                pass
+        return normalized
 
     def save_candidate(self, candidate: ExposureCandidate) -> None:
         """Adds or updates an exposure candidate."""
@@ -90,6 +137,8 @@ class InfrastructureStateManager:
 
         state["candidates"] = cands
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if "summary" not in state or not isinstance(state["summary"], dict):
+            state["summary"] = get_default_infrastructure_state()["summary"]
         state["summary"]["total_candidates"] = len(cands)
         self._atomic_write(state)
 
@@ -107,6 +156,8 @@ class InfrastructureStateManager:
 
         state["hypotheses"] = hyps
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if "summary" not in state or not isinstance(state["summary"], dict):
+            state["summary"] = get_default_infrastructure_state()["summary"]
         state["summary"]["total_hypotheses"] = len(hyps)
         self._atomic_write(state)
 
