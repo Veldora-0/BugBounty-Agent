@@ -25,6 +25,8 @@ BugBounty-Agent is an orchestrated security research system designed to operate 
 
 ## Repository Structure
 
+A representative overview of the repository structure is shown below:
+
 ```text
 BugBounty-Agent/
 ├── AGENTS.md                  # Agent directory, hierarchy, and interaction flow
@@ -104,6 +106,10 @@ BugBounty-Agent/
 │   ├── bb-nuclei              # Signal-only Nuclei scanner wrapper
 │   └── bb-evidence            # Evidence collector with automatic token redaction
 │
+├── config/                    # Authoritative tool and wordlist specifications
+│   ├── tools.yaml             # Machine-readable tool registry, installation, and tiers
+│   └── wordlists.yaml         # Wordlist specifications and path definitions
+│
 ├── templates/                 # Reusable templates
 │   ├── scope.yaml             # Complete program scope definition template
 │   ├── program.yaml           # Program metadata and preferences template
@@ -111,16 +117,14 @@ BugBounty-Agent/
 │   ├── report.md              # 17-section markdown report template
 │   └── config.example.yaml    # Global framework configuration template
 │
-├── tests/                     # 100% automated test suite
-│   ├── test_asset_model.py
-│   ├── test_asset_graph.py
-│   ├── test_asset_engine.py
-│   ├── test_scope.py
-│   ├── test_recursive_subdomains.py
-│   ├── test_target_normalization.py
-│   ├── test_deduplication.py
-│   ├── test_finding_schema.py
-│   └── test_runtime_isolation.py
+├── tests/                     # Automated regression test suite (representative selection; 43+ test modules)
+│   ├── test_scope.py          # Scope boundaries and DNS resolution tests
+│   ├── test_asset_engine.py   # Asset graph and subdomain intelligence tests
+│   ├── test_api_engine.py     # OpenAPI, GraphQL, and streaming byte budget tests
+│   ├── test_ssrf_engine.py    # SSRF transport, alternate IP, and provider tests
+│   ├── test_phase18_xxe_engine.py # XXE intelligence, entity limits, and lab tests
+│   ├── test_validation_engine.py  # Security validation foundation and baseline tests
+│   └── ...                    # Additional unit, transport, and subsystem test suites
 │
 ├── docs/                      # Comprehensive technical documentation
 │   ├── architecture.md
@@ -167,7 +171,7 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 | Tool | Category | Purpose | Tier | API Key | Auto-Install | Setup |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **subfinder** | Subdomain Enumeration | Passive subdomain discovery via 40+ datasets | CORE | Optional Providers | Yes | [subfinder.md](docs/tools/subfinder.md) |
-| **amass** | Asset Discovery | In-depth attack surface mapping & ASN correlation | CORE | Optional Providers | Yes | [subfinder.md](docs/tools/subfinder.md) |
+| **amass** | Asset Discovery | In-depth attack surface mapping & ASN correlation | CORE | Optional Providers | Yes | Native CLI |
 | **assetfinder** | Subdomain Enumeration | Fast passive subdomain scraping | CORE | None | Yes | Native CLI |
 | **chaos** | Asset Discovery | ProjectDiscovery indexed public DNS dataset client | PROVIDER-BACKED | Required | Yes | [chaos.md](docs/tools/chaos.md) |
 | **dnsx** | DNS | Multi-purpose DNS resolver & wildcard filter | CORE | None | Yes | Native CLI |
@@ -180,7 +184,7 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 | **cdncheck** | Cloud Intelligence | Identifies CDN, WAF, and Cloud provider IP ranges | CORE | None | Yes | Native CLI |
 | **mapcidr** | Pipeline Utility | Subnetting, slicing, and CIDR range handling | CORE | None | Yes | Native CLI |
 | **naabu** | Port Discovery | Fast SYN/CONNECT port scanner | CORE | None | Yes | Native CLI |
-| **urlfinder** | URL Discovery | Passive URL and endpoint discovery | CORE | Optional Providers | Yes | [subfinder.md](docs/tools/subfinder.md) |
+| **urlfinder** | URL Discovery | Passive URL and endpoint discovery | CORE | Optional Providers | Yes | Native CLI |
 | **katana** | Web Crawling | Next-gen crawling engine with headless JS support | CORE | None | Yes | Native CLI |
 | **gau** | URL Discovery | GetAllUrls - Historical archive URL aggregator | SPECIALIST | None | Yes | Native CLI |
 | **waybackurls** | URL Discovery | Wayback Machine URL harvester | SPECIALIST | None | Yes | Native CLI |
