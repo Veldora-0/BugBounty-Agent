@@ -229,8 +229,8 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 8. **Parameter Discovery**: `arjun`, `ffuf`
 9. **JavaScript Analysis**: `katana` (JS mode), `playwright`, `bb-js`
 10. **API Analysis**: `arjun`, `bb-api`, `httpx`
-11. **XSS Analysis**: `dalfox`, `bb-injection`
-12. **Injection & Parser Flaws**: `sqlmap`, `nuclei`, `bb-injection`
+11. **XSS Analysis**: `dalfox`, `bb-xss`
+12. **Injection & Parser Flaws**: `sqlmap`, `nuclei`, `bb-inject`
 13. **Authorization (BOLA/IDOR)**: `bb-authz` (dual-account reasoning), `proxify`
 14. **Business Logic & Workflows**: `bb-workflow`, `playwright`
 15. **Out-of-Band (OOB) & SSRF**: `interactsh`
@@ -248,28 +248,34 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 ## Tool Intelligence & Management
 
 ### 1. Automatic Diagnostics (`bb-doctor`)
-Run deep diagnostics across 22 system categories:
+Run deep diagnostics across 23 system categories:
 ```bash
 ./scripts/bb-doctor
 ```
 Checks:
 * **System**: OS, architecture, Python version, workspace root
 * **Dependencies**: Go, Python3, Pipx, Git, Cargo, Docker, Jq
-* **Tools**: Status of all 44 registered tools, version compatibility, and missing tools
+* **Tools**: Status of registered tools, version compatibility, and tiering
 * **Providers**: API keys for ProjectDiscovery Cloud, Shodan, Censys, SecurityTrails, VirusTotal, etc.
 * **Browser**: Playwright and Chromium sandbox readiness
 * **Wordlists**: SecLists presence on Kali (`/usr/share/seclists`) or user local directory
 * **Configuration**: `secrets.env` file presence and permissions
 * **Scope Engine**: Recursive subdomain validation and boundary security integrity
 * **Asset Intelligence**: Arbitrary-depth recursive graph engine and relationship models
-* **OpenCode**: Agent prompts and modular skills readiness
+* **Reconnaissance Engine**: Passive-first reconnaissance and HTTP observation models
+* **Web Application Engine**: Web surface mapping, HTML form/link parsing, and crawl policy
+* **JavaScript Engine**: Client-side route and endpoint analysis, sensitive string detection
+* **API Security Engine**: REST parameter classification, OpenAPI/GraphQL schema prober
+* **Validation Foundation**: Security test foundation, payload registry, test case fingerprints
 * **XSS Intelligence**: DOM, Reflected, Stored, and Context Analysis
 * **Authorization Engine**: Dual-account BOLA/IDOR matrix and approval gate
-* **SSRF Intelligence**: In-band SSRF and Interactsh OOB callback engine
+* **SSRF / OOB Engine**: In-band SSRF, alternate IP parsing, and Interactsh OOB callback engine
 * **Injection Intelligence**: SQLi, NoSQLi, SSTI, and Command injection validators
-* **HTTP Trust Engine**: Host injection, CORS, HPP, and cache-poisoning foundations
+* **HTTP Trust Engine**: Host injection, CORS, HPP, and protocol security foundations
 * **Business Logic Engine**: Workflow state machines, 24 invariant evaluations, safe replay, and approval gate
 * **Cloud Security Engine**: Cloud provider classification, object storage exposure, takeover signatures, and false positive elimination
+* **Authentication Engine**: Session analyzers, JWT token inspection, and authentication laboratory
+* **OpenCode Integration**: Canonical agent definition, modular skills, V2 permissions, and deployment
 
 ### 2. Safe On-Demand Installation (`bb-install`)
 Install approved tools when needed, either individually or by capability:
