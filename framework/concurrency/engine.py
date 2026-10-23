@@ -382,6 +382,21 @@ class RaceIntelligenceEngine:
             hypothesis_id=hypothesis.hypothesis_id,
             max_requests=self.policy.max_requests_per_test,
         )
+        observation_id = hypothesis.hypothesis_id
+
+        # 1. Start observation session if in lab mode to capture trusted pre-state baseline
+        lab = self.lab_fixture
+        if self.lab_mode and lab is None:
+            port = urlparse(hypothesis.endpoint).port
+            if port:
+                try:
+                    from framework.concurrency.lab import LocalConcurrencyLab
+                    lab = LocalConcurrencyLab.get_active_lab(port)
+                except Exception:
+                    lab = None
+        if lab and hasattr(lab, "start_observation"):
+            lab.start_observation(observation_id)
+
         scoped_dispatch = lambda r: self._send_request_safe(r, budget_ctx=budget_ctx)
 
         # Dispatch synchronized burst with isolated budget context
@@ -394,17 +409,11 @@ class RaceIntelligenceEngine:
         responses = [r[1] for r in raw_results]
 
         # Acquire authoritative post-state evidence from trusted lab fixture if in lab mode
-        if post_state_data is None and self.lab_mode:
-            port = urlparse(hypothesis.endpoint).port
-            lab = self.lab_fixture
-            if lab is None and port:
-                try:
-                    from framework.concurrency.lab import LocalConcurrencyLab
-                    lab = LocalConcurrencyLab.get_active_lab(port)
-                except Exception:
-                    lab = None
-            if lab and hasattr(lab, "get_authoritative_state"):
-                post_state_data = lab.get_authoritative_state()
+        if post_state_data is None and self.lab_mode and lab:
+            if hasattr(lab, "complete_observation"):
+                post_state_data = lab.complete_observation(observation_id)
+            elif hasattr(lab, "get_authoritative_state"):
+                post_state_data = lab.get_authoritative_state(observation_id=observation_id)
 
         # Evaluate invariants
         (
@@ -420,6 +429,7 @@ class RaceIntelligenceEngine:
             executions=executions,
             responses=responses,
             post_state_data=post_state_data,
+            expected_observation_id=observation_id,
         )
 
         success_count = sum(1 for e in executions if 200 <= e.status_code < 300)

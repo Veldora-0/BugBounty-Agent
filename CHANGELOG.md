@@ -25,12 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Strictly disallows classifying findings as `CONFIRMED` based solely on HTTP status code counts; requires reliable business-state mutation proof or verified distributed rollback failure.
   * Distinguishes idempotent duplicate representations from duplicate processing (`CONCURRENCY_CONTROLLED` vs `CONFIRMED`).
   * Normal server concurrency defenses (HTTP 409 Conflict, 429 Too Many Requests, 423 Locked) and timeouts strictly evaluate as `CONCURRENCY_CONTROLLED` or `INCONCLUSIVE`.
-* **Cryptographic Evidence Provenance Trust Boundary (Blocker A — `PostStateEvidence`, `EvidenceSource`, `LocalConcurrencyLab`)**:
-  * Implemented explicit provenance tracking: `UNTRUSTED_CALLER_CLAIM`, `DIRECT_TRANSPORT_OBSERVATION`, `INDEPENDENT_STATE_QUERY`, and `LAB_FIXTURE_AUTHORITATIVE`.
-  * Added process-private HMAC-SHA256 attestation tokens (`_attestation_token`) issued by `LocalConcurrencyLab` using `_LAB_TRUST_KEY`. Only authenticated instances verify as authoritative.
-  * Caller-provided dictionaries, deserialized JSON payloads, and unverified inputs are forced to `UNTRUSTED_CALLER_CLAIM` upon deserialization (`PostStateEvidence.from_dict()`), stripping any caller-supplied attestation token.
-  * Explicitly and honestly represents `INDEPENDENT_STATE_QUERY` as unauthenticated/unverified (`is_authoritative() == False`) pending integration with an authenticated state query service.
-  * `PostStateEvidence.validate_consistency()` validates that observed changes match operation invariants (e.g., counters cannot decrease when incremented). Inconsistent observations fail closed to `INCONCLUSIVE`.
+* **Cryptographic Evidence Provenance Trust Boundary & Full Envelope Attestation (Critical Findings A & B — `EvidenceEnvelope`, `canonical_serialize_envelope()`, `PostStateEvidence`, `LocalConcurrencyLab`)**:
+  * Completely eliminated public caller-supplied authoritative evidence factories (`create_authoritative_evidence()`), preventing any caller or test from signing arbitrary untrusted state.
+  * Authoritative evidence is strictly issued through genuine observations from an active `LocalConcurrencyLab` instance (`start_observation()`, `complete_observation()`, `capture_evidence()`, `get_authoritative_state()`) bound to its server state and validated port.
+  * Implemented `EvidenceEnvelope` (version `concurrency-evidence-v1`) binding all 9 decision-relevant fields (`schema_version`, `observation_id`, `source`, `endpoint`, `verified_at`, `pre_state`, `post_state`, `delta_metrics`, `provenance_details`).
+  * Enforced canonical deterministic serialization (`canonical_serialize_envelope()`) with lexicographical key ordering, strict primitive type verification, and deterministic JSON separators.
+  * Authenticated with HMAC-SHA256 using the process-private key `_LAB_TRUST_KEY`. Any post-attestation modification of any field or nested dictionary causes immediate verification failure (`is_authoritative() == False`).
+  * Deserialized external payloads (`PostStateEvidence.from_dict()`) are strictly forced to `UNTRUSTED_CALLER_CLAIM` and stripped of attestation tokens.
+  * Verified endpoint validation ensures evidence originates only from active local lab instances on loopback addresses.
+* **Pre-State Baselines, Delta Calculations & Monotonic Progression (Critical Finding C — `ConcurrencyInvariantEngine`, `RaceIntelligenceEngine`)**:
+  * Bound observations to hypothesis lifecycles (`observation_id = hypothesis.hypothesis_id`), capturing trusted pre-state baselines prior to burst dispatch and extracting post-state directly upon completion.
+  * State-based counter invariants (`LIMIT_OVERRUN`, `DOUBLE_SPEND`, `IDEMPOTENCY_BYPASS`) evaluate exact per-test counter deltas ($\Delta = \text{post} - \text{pre}$) rather than raw cumulative counters.
+  * Unbaselined post-state counter observations strictly fail safe to `RaceConfidence.SUSPECTED` or `INCONCLUSIVE`, never `CONFIRMED`.
+  * Decreasing counters for strictly increasing metrics violate monotonic progression invariants and immediately fail closed to `INCONCLUSIVE`.
+  * Contradictory pre/post state fails consistency checks before authority checks, preventing untrusted contradictory state from bypassing validation.
 * **Worker Lifecycle, Monotonic Deadlines & Container Sealing (Blocker C — `BurstExecutionContainer`, `WorkerLifecycleState`)**:
   * Modeled explicit lifecycle states: `COMPLETED`, `FAILED`, `TIMED_OUT_UNRESOLVED`, and `CANCELLED`.
   * Replaced cumulative linear worker thread joins with a single monotonic overall deadline (`time.monotonic() + timeout + 1.0`). Workers unresolved at deadline transition to `TIMED_OUT_UNRESOLVED` and propagate to `INCONCLUSIVE`.
@@ -60,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Extended `framework/state/manager.py` with `DEFAULT_CONCURRENCY` and synchronized `concurrency.json` into canonical findings.
   * Linked `bb-race` across deployment utilities (total 28 utilities).
 * **Automated Test Suite**:
-  * Expanded to 73 unit and integration tests in `tests/test_concurrency_engine.py` covering taxonomy, barrier timing, invariant rules, evidence classification hardening, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
+  * Expanded to 94 unit and integration tests in `tests/test_concurrency_engine.py` (and 141 tests across the full repository test suite) covering taxonomy, barrier timing, invariant rules, evidence classification hardening, full-envelope HMAC attestation, pre-state baselines, counter deltas, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
 
 ### Phase 19: Infrastructure & Configuration Exposure (Accepted with Documented Limitations)
 

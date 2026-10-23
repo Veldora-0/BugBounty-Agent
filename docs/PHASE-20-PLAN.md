@@ -1,9 +1,9 @@
 # BugBounty-Agent — Phase 20 Implementation Plan
 ## Race Conditions & Distributed Workflows Intelligence
 
-**Accepted Baseline**: `9bc923677f5d662f42b1c3a45105989179ec3617`  
-**Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 20)  
-**Status**: Complete — Hardened, Corrected & Verified  
+**Accepted Baseline**: `3ab5f7b657e8bcb9c66ffef5db665c7b1f90b121`
+**Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 20)
+**Status**: Complete — Hardened, Corrected & Verified (Evidence Trust, Invariant Accuracy, Counter Baselines)
 **Architecture Model**: Single primary OpenCode agent (`Bug-Bounty`) with 18 modular skills (`subagent_depth: 1`)
 
 ---
@@ -98,40 +98,59 @@ scripts/
 
 ---
 
-## 5. Blocker A: Genuine Evidence-Provenance Trust Boundary
+## 5. Blocker A: Genuine Evidence-Provenance Trust Boundary & Full Envelope Authentication
 
 ### Defect Addressed
-`PostStateEvidence.from_dict()` previously accepted a caller-provided `source` label, allowing untrusted callers or deserialized dictionaries to self-attest as authoritative evidence (`LAB_FIXTURE_AUTHORITATIVE`).
+`PostStateEvidence.from_dict()` previously accepted a caller-provided `source` label, allowing untrusted callers or deserialized dictionaries to self-attest as authoritative evidence (`LAB_FIXTURE_AUTHORITATIVE`). Furthermore, arbitrary caller state could previously be signed via public helper methods, and signatures previously covered only a subset of fields, risking post-attestation tampering.
 
 ### Implemented Hardening
-1. **Cryptographic Attestation Token**:
-   - `LocalConcurrencyLab` holds a process-private 256-bit secret key (`_LAB_TRUST_KEY = secrets.token_bytes(32)`) generated in memory on process start.
-   - Evidence produced through `LocalConcurrencyLab.get_authoritative_state()` or `create_authoritative_evidence()` carries an HMAC-SHA256 signature (`_attestation_token`) verifying its origin.
-   - `PostStateEvidence.is_authoritative()` validates this attestation via `LocalConcurrencyLab.verify_attestation(self)`.
-2. **Untrusted Deserialization**:
+1. **Elimination of Caller Evidence Forgery (Finding A)**:
+   - Completely deleted any public trusted evidence factory (such as `create_authoritative_evidence()`) that accepted arbitrary caller-supplied dictionaries.
+   - Authoritative evidence can **only** be issued through genuine observations from an active `LocalConcurrencyLab` instance bound to its live server state and validated port.
+   - Implemented observation lifecycle: `start_observation(obs_id)` captures pre-state baseline directly from the server; `complete_observation(obs_id)` extracts live post-state, calculates deltas, packages the envelope, and issues the cryptographic token.
+2. **Full-Envelope Cryptographic Attestation (Finding B)**:
+   - Defined `EvidenceEnvelope` (version `concurrency-evidence-v1`) binding every decision-relevant field:
+     - `schema_version`
+     - `observation_id`
+     - `source`
+     - `endpoint`
+     - `verified_at`
+     - `pre_state`
+     - `post_state`
+     - `delta_metrics`
+     - `provenance_details`
+   - Deterministic canonical serialization via `canonical_serialize_envelope()` enforces recursive lexicographical key sorting, strict primitive type verification, and deterministic JSON separators.
+   - Signed with HMAC-SHA256 using the process-private 256-bit key `_LAB_TRUST_KEY`.
+   - Post-attestation modification of any field or nested structure (such as altering counter values or inserting keys) causes immediate HMAC verification failure (`is_authoritative() == False`).
+   - Attestation verifies that the endpoint points to an active lab server on `127.0.0.1` or `localhost`.
+3. **Untrusted Deserialization Boundary**:
    - `PostStateEvidence.from_dict(data)` enforces a strict trust boundary: all deserialized external or state dictionaries are assigned `EvidenceSource.UNTRUSTED_CALLER_CLAIM` and stripped of attestation.
    - Deserialization cannot silently elevate untrusted data into authoritative evidence.
-3. **Honest Representation of State Query Boundaries**:
+4. **Honest Representation of State Query Boundaries**:
    - `EvidenceSource.INDEPENDENT_STATE_QUERY` is recognized as unauthenticated in the current architecture (as no real secondary database integration exists), and `is_authoritative()` returns `False`.
-4. **Field Validation & Consistency Constraints**:
+5. **Field Validation & Consistency Constraints**:
    - Required fields, dictionary types, non-negative numbers, and monotonic increment directions are strictly validated. Contradictory evidence fails closed to `INCONCLUSIVE`.
 
 ---
 
-## 6. Blocker B: Invariant Accuracy & Category-Specific Evidence Requirements
+## 6. Blocker B: Invariant Accuracy, Counter Baselines & Category-Specific Requirements
 
 ### Defect Addressed
-Distinct resource IDs returned in HTTP responses (e.g. `order_id: ORD-1` and `order_id: ORD-2`) do not prove that corresponding business operations committed on the server.
+Distinct resource IDs returned in HTTP responses (e.g. `order_id: ORD-1` and `order_id: ORD-2`) do not prove that corresponding business operations committed on the server. Furthermore, evaluating absolute cumulative counters without establishing a pre-test baseline risks misclassifying pre-existing state as a race condition overrun.
 
 ### Implemented Hardening
 1. **Response Observations vs. Committed Business State**:
    - Distinct response identifiers without authoritative server-side state verification are classified strictly as `SUSPECTED` (`FindingLifecycle.OBSERVED`, severity `"INFORMATIONAL"`), **never** `CONFIRMED`.
    - Downstream finding creation strictly requires `CONFIRMED` confidence to publish validated vulnerability findings.
-2. **Category-Specific Invariant Mappings**:
-   - `DOUBLE_SPEND`: Requires authoritative evidence of prohibited duplicate redemption (`coupon_redemptions > allowed_limit`).
-   - `LIMIT_OVERRUN`: Requires authoritative counter overrun (`voting_count > allowed_limit`).
+2. **Mandatory Pre-State Baselines & Delta Evaluation (Finding C)**:
+   - For state-based counter invariants (`LIMIT_OVERRUN`, `DOUBLE_SPEND`, `IDEMPOTENCY_BYPASS`), the invariant engine requires a trusted pre-state baseline (`pre_state`) and computes the exact per-test delta: $\Delta = \text{post} - \text{pre}$.
+   - If an absolute counter is observed without a trusted pre-state baseline, the engine records an `unbaselined_counter_observation` and notes that delta cannot be inferred. The test fails safely to `SUSPECTED` or `INCONCLUSIVE`, **never** `CONFIRMED`.
+   - Inconsistent counter progression ($\Delta < 0$ for strictly increasing counters) fails closed immediately to `INCONCLUSIVE`.
+3. **Category-Specific Invariant Mappings**:
+   - `DOUBLE_SPEND`: Requires authoritative evidence of prohibited duplicate redemption delta ($\Delta_{\text{redemptions}} > \text{allowed\_limit}$).
+   - `LIMIT_OVERRUN`: Requires authoritative counter overrun delta ($\Delta_{\text{votes}} > \text{allowed\_limit}$).
    - `TOCTOU`: Requires negative balance overdraw (`account_balance < 0`) or transfer overrun.
-   - `IDEMPOTENCY_BYPASS`: Requires duplicate committed order records (`order_count > allowed_limit`).
+   - `IDEMPOTENCY_BYPASS`: Requires duplicate committed order records delta ($\Delta_{\text{orders}} > \text{allowed\_limit}$).
    - `PARTIAL_EXECUTION_DESYNC`: Requires verified inconsistent state (`inconsistent_state == True` or uncompensated rollback).
 
 ---
@@ -194,18 +213,20 @@ Global or engine-level request counters allowed concurrent or sequential test ex
 ## 10. Verification & Test Plan
 
 1. **Focused Test Suite (`tests/test_concurrency_engine.py`)**:
-   - **73 comprehensive tests** covering:
-     - Blocker A: HMAC attestation, deserialized untrusted forcing, independent state query unauthenticated handling, and consistency checks.
+   - **94 comprehensive tests** covering:
+     - Blocker A & Critical Finding A: Elimination of caller-forged trusted evidence factories; genuine observation lifecycle bound to live server state.
+     - Blocker A & Critical Finding B: Full-envelope HMAC-SHA256 attestation (`EvidenceEnvelope`, `concurrency-evidence-v1`), canonical deterministic serialization, and tamper resistance across all 9 fields and nested dictionaries.
+     - Blocker B & Critical Finding C: Invariant evaluation requiring trusted pre-state baselines and per-test counter deltas; safe fallback on unbaselined counters; monotonic progression checks.
      - Blocker B: Category-specific counter mappings, distinct provisional ID handling, and authoritative post-state requirements.
      - Blocker C: Monotonic deadline bounding, worker lifecycle states, and container sealing.
      - Blocker D: Thread-safe per-hypothesis budget contexts and hard ceiling clamping.
      - Blocker E: Fail-closed DNS errors, empty results, malformed IPs, mixed resolution, IPv6 and IPv4-mapped IPv6 address blocks.
-     - All 8 local simulation lab scenarios.
+     - All 8 local simulation lab scenarios with multithreaded concurrent requests.
      - Secret scrubbing and Phase 19 sentinel report inspection.
 2. **Diagnostic Health**:
-   - `bb-doctor` Category 25 (`check_concurrency_engine`) reports `[HEALTHY]`.
+   - `bb-doctor` Category 25 (`check_concurrency_engine`) reports `[HEALTHY]` (all 17 framework engines healthy).
 3. **Cross-Platform Parity**:
-   - Verified on Windows 11 (73/73 concurrency tests, 120/120 total test discovery suite).
+   - Verified on Windows 11 (94/94 concurrency tests, 141/141 total test discovery suite).
    - Verified on Kali Linux VM (`ssh veldora@127.0.0.1 -p 2222`).
 
 ---

@@ -8,6 +8,7 @@ isolated request-budget contexts, and structured test outcomes.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -61,15 +62,89 @@ class EvidenceSource(str, Enum):
     LAB_FIXTURE_AUTHORITATIVE = "LAB_FIXTURE_AUTHORITATIVE"
 
 
+CURRENT_EVIDENCE_SCHEMA_VERSION = "concurrency-evidence-v1"
+
+
+def canonical_serialize_envelope(envelope_data: Dict[str, Any]) -> bytes:
+    """
+    Deterministically and canonically serializes the complete evidence envelope for HMAC signing.
+
+    Enforces strict canonical properties:
+    - Root and nested dictionaries have keys sorted lexicographically.
+    - Dict keys must be strings.
+    - Supported types: None, bool, int, float, str, dict, list.
+    - Unsupported types (sets, custom objects, etc.) raise TypeError to fail closed.
+    - Deterministic JSON separators (',', ':'), ensure_ascii=False, UTF-8 encoded.
+    """
+    def _validate_types(val: Any) -> None:
+        if val is None or isinstance(val, (bool, int, float, str)):
+            return
+        if isinstance(val, dict):
+            for k, v in val.items():
+                if not isinstance(k, str):
+                    raise TypeError(f"Dictionary keys must be strings, got: {type(k).__name__}")
+                _validate_types(v)
+            return
+        if isinstance(val, (list, tuple)):
+            for item in val:
+                _validate_types(item)
+            return
+        raise TypeError(f"Unsupported type in evidence envelope: {type(val).__name__}")
+
+    if not isinstance(envelope_data, dict):
+        raise TypeError("Envelope data must be a dictionary.")
+
+    _validate_types(envelope_data)
+    serialized = json.dumps(
+        envelope_data,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return serialized.encode("utf-8")
+
+
+@dataclass
+class EvidenceEnvelope:
+    """
+    Canonical, versioned envelope binding every decision-relevant field of post-state evidence.
+    Authenticated cryptographically via HMAC-SHA256 to prevent tampering or elevation.
+    """
+    schema_version: str
+    observation_id: str
+    source: str
+    endpoint: str
+    verified_at: str
+    pre_state: Optional[Dict[str, Any]]
+    post_state: Optional[Dict[str, Any]]
+    delta_metrics: Dict[str, Any]
+    provenance_details: str
+
+    def to_canonical_dict(self) -> Dict[str, Any]:
+        return {
+            "delta_metrics": self.delta_metrics or {},
+            "endpoint": self.endpoint or "",
+            "observation_id": self.observation_id or "",
+            "post_state": self.post_state or {},
+            "pre_state": self.pre_state or {},
+            "provenance_details": self.provenance_details or "",
+            "schema_version": self.schema_version or "",
+            "source": self.source or "",
+            "verified_at": self.verified_at or "",
+        }
+
+
 @dataclass
 class PostStateEvidence:
     """
     Formal evidence contract tracking origin and validation for post-state mutation claims.
     Distinguishes untrusted caller assertions from independently verified server datastore queries.
-    Enforces a genuine cryptographic/attestation trust boundary: external or deserialized
-    dictionaries cannot elevate themselves into authoritative evidence.
+    Enforces a genuine cryptographic attestation trust boundary over a canonical envelope:
+    external or deserialized dictionaries cannot elevate themselves into authoritative evidence.
     """
     source: EvidenceSource = EvidenceSource.UNTRUSTED_CALLER_CLAIM
+    schema_version: str = CURRENT_EVIDENCE_SCHEMA_VERSION
+    observation_id: str = ""
     pre_state: Optional[Dict[str, Any]] = None
     post_state: Optional[Dict[str, Any]] = None
     verified_endpoint: Optional[str] = None
@@ -78,25 +153,31 @@ class PostStateEvidence:
     provenance_details: str = ""
     _attestation_token: Optional[str] = field(default=None, repr=False)
 
-    def is_authoritative(self) -> bool:
+    def is_authoritative(self, expected_observation_id: Optional[str] = None) -> bool:
         """
-        Returns True if and only if evidence originates from an authenticated, trusted source.
-        In the current architecture, only LAB_FIXTURE_AUTHORITATIVE with a valid internal
-        attestation is authoritative. Caller-provided claims, unauthenticated state queries,
-        or deserialized dictionaries return False.
+        Returns True if and only if evidence originates from an authenticated, trusted source
+        and has passed cryptographic HMAC-SHA256 envelope verification.
+        Requires:
+        1. source == LAB_FIXTURE_AUTHORITATIVE
+        2. Valid attestation token present (hex SHA-256)
+        3. Schema version matches CURRENT_EVIDENCE_SCHEMA_VERSION
+        4. Valid endpoint matching an active LocalConcurrencyLab instance
+        5. If expected_observation_id is provided, observation_id must match
+        6. Cryptographic HMAC-SHA256 signature over the full canonical envelope matches.
         """
-        if self.source == EvidenceSource.LAB_FIXTURE_AUTHORITATIVE:
-            if not self._attestation_token:
-                return False
-            try:
-                from framework.concurrency.lab import LocalConcurrencyLab
-                return LocalConcurrencyLab.verify_attestation(self)
-            except Exception:
-                return False
-
-        # NOTE: INDEPENDENT_STATE_QUERY currently lacks an authenticated integration;
-        # representing the absence of verifiable provenance honestly.
-        return False
+        if self.source != EvidenceSource.LAB_FIXTURE_AUTHORITATIVE:
+            return False
+        if not self._attestation_token:
+            return False
+        if self.schema_version != CURRENT_EVIDENCE_SCHEMA_VERSION:
+            return False
+        if expected_observation_id and self.observation_id != expected_observation_id:
+            return False
+        try:
+            from framework.concurrency.lab import LocalConcurrencyLab
+            return LocalConcurrencyLab.verify_attestation(self, expected_observation_id=expected_observation_id)
+        except Exception:
+            return False
 
     def validate_consistency(self) -> Tuple[bool, Optional[str]]:
         """
@@ -109,6 +190,8 @@ class PostStateEvidence:
                 return False, "Authoritative evidence missing post_state dictionary."
             if not self.verified_endpoint:
                 return False, "Authoritative evidence missing verified_endpoint."
+            if not self.observation_id:
+                return False, "Authoritative evidence missing observation_id."
 
         if self.pre_state is not None and not isinstance(self.pre_state, dict):
             return False, "Malformed non-dictionary pre_state."
@@ -119,7 +202,7 @@ class PostStateEvidence:
         if self.pre_state and self.post_state:
             counter_keys = (
                 "count", "redemptions", "total_votes", "voting_count",
-                "order_count", "counter", "coupon_redemptions"
+                "order_count", "counter", "coupon_redemptions", "safe_mutex_counter", "rate_limit_hits"
             )
             for k in counter_keys:
                 if k in self.pre_state and k in self.post_state:
@@ -136,13 +219,15 @@ class PostStateEvidence:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
+            "observation_id": self.observation_id,
             "source": self.source.value if isinstance(self.source, EvidenceSource) else str(self.source),
             "is_authoritative": self.is_authoritative(),
-            "pre_state": self.pre_state,
-            "post_state": self.post_state,
+            "pre_state": copy.deepcopy(self.pre_state),
+            "post_state": copy.deepcopy(self.post_state),
             "verified_endpoint": self.verified_endpoint,
             "verified_at": self.verified_at,
-            "delta_metrics": self.delta_metrics,
+            "delta_metrics": copy.deepcopy(self.delta_metrics),
             "provenance_details": self.provenance_details,
         }
 
@@ -151,9 +236,9 @@ class PostStateEvidence:
         """
         Deserializes evidence from an untrusted dictionary (e.g. state JSON or caller data).
         CRITICAL TRUST BOUNDARY:
-        Deserialized external data is ALWAYS assigned UNTRUSTED_CALLER_CLAIM.
-        Caller-supplied source labels, boolean flags, or tokens cannot promote
-        themselves into authoritative evidence.
+        Deserialized external data is ALWAYS assigned UNTRUSTED_CALLER_CLAIM and
+        _attestation_token is stripped. Caller-supplied source labels, boolean flags,
+        or tokens cannot promote themselves into authoritative evidence.
         """
         if not isinstance(data, dict):
             return cls(
@@ -164,14 +249,20 @@ class PostStateEvidence:
         pre_state = data.get("pre_state")
         if pre_state is not None and not isinstance(pre_state, dict):
             pre_state = None
+        else:
+            pre_state = copy.deepcopy(pre_state)
 
         post_state = data.get("post_state")
         if post_state is not None and not isinstance(post_state, dict):
             post_state = None
+        else:
+            post_state = copy.deepcopy(post_state)
 
         delta_metrics = data.get("delta_metrics")
         if not isinstance(delta_metrics, dict):
             delta_metrics = {}
+        else:
+            delta_metrics = copy.deepcopy(delta_metrics)
 
         endpoint = data.get("verified_endpoint")
         if endpoint is not None and not isinstance(endpoint, str):
@@ -181,6 +272,14 @@ class PostStateEvidence:
         if verified_at is not None and not isinstance(verified_at, str):
             verified_at = str(verified_at)
 
+        observation_id = data.get("observation_id", "")
+        if not isinstance(observation_id, str):
+            observation_id = str(observation_id)
+
+        schema_version = data.get("schema_version", CURRENT_EVIDENCE_SCHEMA_VERSION)
+        if not isinstance(schema_version, str):
+            schema_version = str(schema_version)
+
         prov_details = data.get("provenance_details", "")
         if not isinstance(prov_details, str):
             prov_details = str(prov_details)
@@ -188,6 +287,8 @@ class PostStateEvidence:
         claimed_source = str(data.get("source", "UNKNOWN"))
         return cls(
             source=EvidenceSource.UNTRUSTED_CALLER_CLAIM,
+            schema_version=schema_version,
+            observation_id=observation_id,
             pre_state=pre_state,
             post_state=post_state,
             verified_endpoint=endpoint,

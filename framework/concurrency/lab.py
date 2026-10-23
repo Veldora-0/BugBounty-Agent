@@ -22,7 +22,13 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qsl, urlparse
 import uuid
 
-from framework.concurrency.model import EvidenceSource, PostStateEvidence
+from framework.concurrency.model import (
+    CURRENT_EVIDENCE_SCHEMA_VERSION,
+    EvidenceEnvelope,
+    EvidenceSource,
+    PostStateEvidence,
+    canonical_serialize_envelope,
+)
 from framework.scope.engine import ScopeEngine
 
 
@@ -126,11 +132,14 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
                 self._send_json(409, {"error": "RESOURCE_LOCKED", "message": "Concurrent modification conflict"})
                 return
             try:
-                time.sleep(0.03)  # Hold lock briefly
+                time.sleep(0.04)  # Hold lock briefly
                 server.safe_mutex_counter += 1
                 self._send_json(200, {"status": "SUCCESS", "counter": server.safe_mutex_counter})
             finally:
-                server.mutex_lock.release()
+                try:
+                    server.mutex_lock.release()
+                except RuntimeError:
+                    pass
             return
 
         # Scenario 6: Rate Limiting Protected (Safe: returns 429 Too Many Requests)
@@ -191,6 +200,8 @@ class LocalConcurrencyLabServer(ThreadingHTTPServer):
     """ThreadingHTTPServer holding stateful in-memory scenario counters."""
 
     def __init__(self, server_address, RequestHandlerClass):
+        self.mutex_lock = threading.Lock()
+        self.rate_limit_lock = threading.Lock()
         super().__init__(server_address, RequestHandlerClass)
         self.reset_state()
 
@@ -200,7 +211,6 @@ class LocalConcurrencyLabServer(ThreadingHTTPServer):
         self.voting_count = 0
         self.order_count = 0
         self.cached_idempotency_keys = set()
-        self.mutex_lock = threading.Lock()
         self.safe_mutex_counter = 0
         self.rate_limit_lock = threading.Lock()
         self.rate_limit_hits = 0
@@ -212,7 +222,7 @@ class LocalConcurrencyLab:
     """Manages lifecycle of ephemeral local HTTP concurrency testing lab."""
 
     # Cryptographically random internal trust key generated once per runtime process.
-    # Used to authenticate post-state evidence created specifically through the trusted lab interface.
+    # Used strictly to authenticate post-state evidence created from genuine LocalConcurrencyLab observations.
     _LAB_TRUST_KEY: bytes = secrets.token_bytes(32)
     _ACTIVE_LABS: Dict[int, LocalConcurrencyLab] = {}
 
@@ -221,51 +231,155 @@ class LocalConcurrencyLab:
         self.thread: Optional[threading.Thread] = None
         self.port: int = 0
         self.base_url: str = ""
+        self._active_observations: Dict[str, Dict[str, Any]] = {}
+        self._obs_lock = threading.Lock()
 
-    @classmethod
-    def _create_attestation(cls, source: str, endpoint: str, post_state: Dict[str, Any]) -> str:
-        payload = f"{source}|{endpoint}|{json.dumps(post_state, sort_keys=True)}"
-        return hmac.new(cls._LAB_TRUST_KEY, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    def _read_server_state(self) -> Dict[str, Any]:
+        """Reads in-memory state directly from the active LocalConcurrencyLabServer."""
+        if not self.server:
+            return {}
+        return {
+            "coupon_redemptions": int(self.server.coupon_redemptions),
+            "account_balance": float(self.server.account_balance),
+            "voting_count": int(self.server.voting_count),
+            "order_count": int(self.server.order_count),
+            "safe_mutex_counter": int(self.server.safe_mutex_counter),
+            "rate_limit_hits": int(self.server.rate_limit_hits),
+            "distributed_step1_committed": bool(self.server.distributed_step1_committed),
+            "distributed_step2_committed": bool(self.server.distributed_step2_committed),
+        }
 
-    @classmethod
-    def create_authoritative_evidence(
-        cls,
-        post_state: Dict[str, Any],
-        endpoint: str = "http://127.0.0.1:8080/state/status",
-        pre_state: Optional[Dict[str, Any]] = None,
-        provenance_details: str = "Deterministic test fixture evidence.",
-    ) -> PostStateEvidence:
+    def start_observation(self, observation_id: str) -> None:
+        """Captures initial pre-state baseline directly from server for a specific test run."""
+        with self._obs_lock:
+            self._active_observations[observation_id] = {
+                "pre_state": self._read_server_state(),
+                "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+
+    def complete_observation(self, observation_id: str) -> PostStateEvidence:
         """
-        Creates authenticated post-state evidence using the trusted lab fixture attestation.
-        Only accessible within the internal framework/lab boundary.
+        Completes the observation session for observation_id.
+        Collects post-state directly from the running server, computes deltas against
+        the pre-state baseline, constructs a canonical EvidenceEnvelope, and signs it.
         """
-        token = cls._create_attestation(EvidenceSource.LAB_FIXTURE_AUTHORITATIVE.value, endpoint, post_state)
-        return PostStateEvidence(
-            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
+        with self._obs_lock:
+            obs = self._active_observations.pop(observation_id, None)
+            pre_state = obs["pre_state"] if obs else None
+
+        post_state = self._read_server_state()
+        ep = f"{self.base_url}/state/status"
+
+        delta_metrics: Dict[str, Any] = {}
+        if pre_state and post_state:
+            for k in ("coupon_redemptions", "voting_count", "order_count", "safe_mutex_counter", "rate_limit_hits"):
+                if k in pre_state and k in post_state:
+                    delta_metrics[k] = post_state[k] - pre_state[k]
+            if "account_balance" in pre_state and "account_balance" in post_state:
+                delta_metrics["balance_delta"] = post_state["account_balance"] - pre_state["account_balance"]
+
+        envelope = EvidenceEnvelope(
+            schema_version=CURRENT_EVIDENCE_SCHEMA_VERSION,
+            observation_id=observation_id,
+            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE.value,
+            endpoint=ep,
+            verified_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             pre_state=pre_state,
             post_state=post_state,
-            verified_endpoint=endpoint,
-            verified_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            provenance_details=provenance_details,
+            delta_metrics=delta_metrics,
+            provenance_details="Captured directly from in-memory LocalConcurrencyLab fixture server.",
+        )
+        token = self._sign_envelope(envelope)
+        return PostStateEvidence(
+            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
+            schema_version=envelope.schema_version,
+            observation_id=envelope.observation_id,
+            pre_state=envelope.pre_state,
+            post_state=envelope.post_state,
+            delta_metrics=envelope.delta_metrics,
+            verified_endpoint=envelope.endpoint,
+            verified_at=envelope.verified_at,
+            provenance_details=envelope.provenance_details,
             _attestation_token=token,
         )
 
+    def capture_evidence(self, observation_id: Optional[str] = None) -> PostStateEvidence:
+        """Convenience method to complete an observation and capture signed authoritative evidence."""
+        obs_id = observation_id or str(uuid.uuid4())
+        return self.complete_observation(obs_id)
+
     @classmethod
-    def verify_attestation(cls, evidence: Any) -> bool:
+    def _sign_envelope(cls, envelope: EvidenceEnvelope) -> str:
+        raw = canonical_serialize_envelope(envelope.to_canonical_dict())
+        return hmac.new(cls._LAB_TRUST_KEY, raw, hashlib.sha256).hexdigest()
+
+    @classmethod
+    def verify_attestation(cls, evidence: Any, expected_observation_id: Optional[str] = None) -> bool:
         """
-        Validates cryptographic attestation of post-state evidence.
-        Guarantees evidence was produced directly by a genuine LocalConcurrencyLab instance.
+        Validates cryptographic attestation over the complete evidence envelope.
+        Guarantees evidence was produced directly by a genuine LocalConcurrencyLab instance
+        and has not been altered in any decision-relevant field.
         """
-        if not hasattr(evidence, "_attestation_token") or not evidence._attestation_token:
+        token = getattr(evidence, "_attestation_token", None)
+        if not token or not isinstance(token, str) or len(token) != 64:
             return False
-        if not hasattr(evidence, "source") or evidence.source != EvidenceSource.LAB_FIXTURE_AUTHORITATIVE:
+
+        source = getattr(evidence, "source", None)
+        if source != EvidenceSource.LAB_FIXTURE_AUTHORITATIVE:
             return False
+
+        schema_version = getattr(evidence, "schema_version", None)
+        if schema_version != CURRENT_EVIDENCE_SCHEMA_VERSION:
+            return False
+
+        obs_id = getattr(evidence, "observation_id", None)
+        if not obs_id or not isinstance(obs_id, str):
+            return False
+        if expected_observation_id and obs_id != expected_observation_id:
+            return False
+
+        ep = getattr(evidence, "verified_endpoint", "") or ""
+        if not ep or not isinstance(ep, str):
+            return False
+
+        # Endpoint validation: must correspond to an active lab server
+        parsed = urlparse(ep)
+        port = parsed.port
+        if not port or port not in cls._ACTIVE_LABS:
+            return False
+        if parsed.hostname not in ("127.0.0.1", "localhost"):
+            return False
+
         ps = getattr(evidence, "post_state", None)
         if not isinstance(ps, dict) or not ps:
             return False
-        ep = getattr(evidence, "verified_endpoint", "") or ""
-        expected = cls._create_attestation(evidence.source.value, ep, ps)
-        return hmac.compare_digest(str(evidence._attestation_token), expected)
+
+        pre = getattr(evidence, "pre_state", None)
+        if pre is not None and not isinstance(pre, dict):
+            return False
+
+        delta_m = getattr(evidence, "delta_metrics", {})
+        if not isinstance(delta_m, dict):
+            return False
+
+        envelope_dict = {
+            "delta_metrics": delta_m,
+            "endpoint": ep,
+            "observation_id": obs_id,
+            "post_state": ps,
+            "pre_state": pre or {},
+            "provenance_details": getattr(evidence, "provenance_details", "") or "",
+            "schema_version": schema_version,
+            "source": source.value if isinstance(source, EvidenceSource) else str(source),
+            "verified_at": getattr(evidence, "verified_at", "") or "",
+        }
+
+        try:
+            canonical_bytes = canonical_serialize_envelope(envelope_dict)
+            expected_token = hmac.new(cls._LAB_TRUST_KEY, canonical_bytes, hashlib.sha256).hexdigest()
+            return hmac.compare_digest(token, expected_token)
+        except Exception:
+            return False
 
     @classmethod
     def get_active_lab(cls, port: int) -> Optional[LocalConcurrencyLab]:
@@ -304,30 +418,10 @@ class LocalConcurrencyLab:
         if self.server:
             self.server.reset_state()
 
-    def get_authoritative_state(self) -> PostStateEvidence:
+    def get_authoritative_state(self, observation_id: Optional[str] = None) -> PostStateEvidence:
         """Returns verified, authoritative post-state evidence from the lab fixture."""
-        state_dict: Dict[str, Any] = {}
-        if self.server:
-            state_dict = {
-                "coupon_redemptions": self.server.coupon_redemptions,
-                "account_balance": self.server.account_balance,
-                "voting_count": self.server.voting_count,
-                "order_count": self.server.order_count,
-                "safe_mutex_counter": self.server.safe_mutex_counter,
-                "rate_limit_hits": self.server.rate_limit_hits,
-                "distributed_step1_committed": self.server.distributed_step1_committed,
-                "distributed_step2_committed": self.server.distributed_step2_committed,
-            }
-        ep = f"{self.base_url}/state/status"
-        token = self._create_attestation(EvidenceSource.LAB_FIXTURE_AUTHORITATIVE.value, ep, state_dict)
-        return PostStateEvidence(
-            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
-            post_state=state_dict,
-            verified_endpoint=ep,
-            verified_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            provenance_details="Queried directly from in-memory LocalConcurrencyLab fixture server.",
-            _attestation_token=token,
-        )
+        obs_id = observation_id or str(uuid.uuid4())
+        return self.complete_observation(obs_id)
 
     @classmethod
     def get_scope_engine(cls, port: int) -> ScopeEngine:

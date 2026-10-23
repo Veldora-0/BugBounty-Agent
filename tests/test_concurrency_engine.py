@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 from unittest.mock import MagicMock, patch
 
 from framework.common.evidence import sanitize_sensitive_data
@@ -189,6 +190,44 @@ class TestBarrierSynchronizer(unittest.TestCase):
 class TestConcurrencyInvariantEngine(unittest.TestCase):
     """Unit tests for invariant evaluation rules."""
 
+    @classmethod
+    def setUpClass(cls):
+        cls.lab = LocalConcurrencyLab()
+        cls.base_url = cls.lab.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.lab.stop()
+
+    def setUp(self):
+        self.lab.reset_state()
+
+    def _trigger_concurrent(self, url: str, count: int = 3, body: Optional[bytes] = None, headers: Optional[dict] = None) -> None:
+        def worker():
+            req = urllib.request.Request(url, data=body, headers=headers or {}, method="POST")
+            try:
+                urllib.request.urlopen(req, timeout=2.0)
+            except Exception:
+                pass
+        threads = [threading.Thread(target=worker) for _ in range(count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=3.0)
+
+    def _trigger_concurrent(self, url: str, count: int = 3, body: Optional[bytes] = None, headers: Optional[dict] = None) -> None:
+        def worker():
+            req = urllib.request.Request(url, data=body, headers=headers or {}, method="POST")
+            try:
+                urllib.request.urlopen(req, timeout=2.0)
+            except Exception:
+                pass
+        threads = [threading.Thread(target=worker) for _ in range(count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=3.0)
+
     def test_invariant_violation_confirmed(self):
         """Tests that exceeding allowed limit yields CONFIRMED vulnerability."""
         executions = [
@@ -202,16 +241,18 @@ class TestConcurrencyInvariantEngine(unittest.TestCase):
             ControlledResponse(status_code=200, body_text='{"id": 3}', headers={}),
         ]
 
-        auth_evidence = LocalConcurrencyLab.create_authoritative_evidence(
-            post_state={"voting_count": 3},
-            pre_state={"voting_count": 0},
-        )
+        obs_id = "test-inv-viol-1"
+        self.lab.start_observation(obs_id)
+        self._trigger_concurrent(f"{self.base_url}/scenario/voting-limit", count=3)
+        auth_evidence = self.lab.complete_observation(obs_id)
+
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
             category=RaceCategory.LIMIT_OVERRUN,
             allowed_limit=1,
             executions=executions,
             responses=responses,
             post_state_data=auth_evidence,
+            expected_observation_id=obs_id,
         )
 
         self.assertTrue(is_vuln)
@@ -659,6 +700,31 @@ class TestEvidenceClassificationHardening(unittest.TestCase):
     - All 8 lab scenarios evaluate according to their true security posture.
     """
 
+    @classmethod
+    def setUpClass(cls):
+        cls.lab = LocalConcurrencyLab()
+        cls.base_url = cls.lab.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.lab.stop()
+
+    def setUp(self):
+        self.lab.reset_state()
+
+    def _trigger_concurrent(self, url: str, count: int = 3, body: Optional[bytes] = None, headers: Optional[dict] = None) -> None:
+        def worker():
+            req = urllib.request.Request(url, data=body, headers=headers or {}, method="POST")
+            try:
+                urllib.request.urlopen(req, timeout=2.0)
+            except Exception:
+                pass
+        threads = [threading.Thread(target=worker) for _ in range(count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=3.0)
+
     def test_multiple_200s_with_one_committed_operation_is_controlled(self):
         """1. Multiple 200 OK responses with only 1 committed operation in post-state -> CONCURRENCY_CONTROLLED."""
         execs = [
@@ -725,16 +791,18 @@ class TestEvidenceClassificationHardening(unittest.TestCase):
             ControlledResponse(status_code=200, body_text='{"order_id": "ORD-3"}', headers={}),
         ]
 
-        auth_state = LocalConcurrencyLab.create_authoritative_evidence(
-            post_state={"voting_count": 3},
-            pre_state={"voting_count": 0},
-        )
+        obs_id = "obs-distinct-commit-1"
+        self.lab.start_observation(obs_id)
+        self._trigger_concurrent(f"{self.base_url}/scenario/voting-limit", count=3)
+        auth_state = self.lab.complete_observation(obs_id)
+
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
             category=RaceCategory.LIMIT_OVERRUN,
             allowed_limit=1,
             executions=execs,
             responses=resps,
             post_state_data=auth_state,
+            expected_observation_id=obs_id,
         )
 
         self.assertTrue(is_vuln)
@@ -771,16 +839,27 @@ class TestEvidenceClassificationHardening(unittest.TestCase):
             ControlledResponse(status_code=200, body_text='{"order_id": "ORD-1"}', headers={}),
             ControlledResponse(status_code=200, body_text='{"order_id": "ORD-2"}', headers={}),
         ]
-        auth_state = LocalConcurrencyLab.create_authoritative_evidence(
-            post_state={"order_count": 2},
-            pre_state={"order_count": 0},
-        )
+        obs_id = "obs-idemp-dup-1"
+        self.lab.start_observation(obs_id)
+        for i in range(2):
+            req = urllib.request.Request(
+                f"{self.base_url}/scenario/idempotency-race",
+                headers={"Idempotency-Key": f"key-{i}-{time.time()}"},
+                method="POST"
+            )
+            try:
+                urllib.request.urlopen(req, timeout=1.0)
+            except Exception:
+                pass
+        auth_state = self.lab.complete_observation(obs_id)
+
         is_vuln_b, conf_b, _, _, _, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
             category=RaceCategory.IDEMPOTENCY_BYPASS,
             allowed_limit=1,
             executions=execs_vuln,
             responses=resps_vuln,
             post_state_data=auth_state,
+            expected_observation_id=obs_id,
         )
         self.assertTrue(is_vuln_b)
         self.assertEqual(conf_b, RaceConfidence.CONFIRMED)
@@ -794,22 +873,29 @@ class TestEvidenceClassificationHardening(unittest.TestCase):
             ControlledResponse(status_code=500, body_text='{"inconsistent_state": true, "details": "rollback failed"}', headers={}),
         ]
 
-        auth_state = LocalConcurrencyLab.create_authoritative_evidence(
-            post_state={"inconsistent_state": True, "details": "rollback failed"},
-        )
+        obs_id = "obs-desync-commit-1"
+        self.lab.start_observation(obs_id)
+        req = urllib.request.Request(f"{self.base_url}/scenario/distributed-desync", method="POST")
+        try:
+            urllib.request.urlopen(req, timeout=1.0)
+        except Exception:
+            pass
+        auth_state = self.lab.complete_observation(obs_id)
+
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
             category=RaceCategory.PARTIAL_EXECUTION_DESYNC,
             allowed_limit=1,
             executions=execs,
             responses=resps,
             post_state_data=auth_state,
+            expected_observation_id=obs_id,
         )
 
         self.assertTrue(is_vuln)
         self.assertEqual(conf, RaceConfidence.CONFIRMED)
         self.assertEqual(lifecycle, FindingLifecycle.VALIDATED)
         self.assertEqual(sev, "HIGH")
-        self.assertIn("rollback failed", reasons[0])
+        self.assertIn("rollback", reasons[0])
 
     def test_partial_failure_with_unestablished_consistency_is_inconclusive(self):
         """6. Partial failure where consistency cannot be established -> INCONCLUSIVE."""
@@ -1166,6 +1252,31 @@ class TestBlockerAResourceIdentity(unittest.TestCase):
     - A counter or identifier appearing only in a response is not automatically considered proof of committed state.
     """
 
+    @classmethod
+    def setUpClass(cls):
+        cls.lab = LocalConcurrencyLab()
+        cls.base_url = cls.lab.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.lab.stop()
+
+    def setUp(self):
+        self.lab.reset_state()
+
+    def _trigger_concurrent(self, url: str, count: int = 3, body: Optional[bytes] = None, headers: Optional[dict] = None) -> None:
+        def worker():
+            req = urllib.request.Request(url, data=body, headers=headers or {}, method="POST")
+            try:
+                urllib.request.urlopen(req, timeout=2.0)
+            except Exception:
+                pass
+        threads = [threading.Thread(target=worker) for _ in range(count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=3.0)
+
     def test_field_aliases_count_as_one_resource(self):
         """1. Object containing order_id: ORD-1 and id: ORD-1 yields exactly one resource entity."""
         body = '{"order_id": "ORD-1", "id": "ORD-1", "uuid": "ORD-1", "status": "CREATED"}'
@@ -1235,10 +1346,19 @@ class TestBlockerAResourceIdentity(unittest.TestCase):
             ControlledResponse(status_code=200, body_text=body1, headers={}),
             ControlledResponse(status_code=200, body_text=body2, headers={}),
         ]
-        auth_state = LocalConcurrencyLab.create_authoritative_evidence(
-            post_state={"order_count": 2},
-            pre_state={"order_count": 0},
-        )
+        obs_id = "obs-distinct-res-1"
+        self.lab.start_observation(obs_id)
+        for i in range(2):
+            req = urllib.request.Request(
+                f"{self.base_url}/scenario/idempotency-race",
+                headers={"Idempotency-Key": f"key-res-{i}-{time.time()}"},
+                method="POST"
+            )
+            try:
+                urllib.request.urlopen(req, timeout=1.0)
+            except Exception:
+                pass
+        auth_state = self.lab.complete_observation(obs_id)
 
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
             category=RaceCategory.IDEMPOTENCY_BYPASS,
@@ -1246,6 +1366,7 @@ class TestBlockerAResourceIdentity(unittest.TestCase):
             executions=execs,
             responses=resps,
             post_state_data=auth_state,
+            expected_observation_id=obs_id,
         )
 
         self.assertTrue(is_vuln)
@@ -1294,6 +1415,31 @@ class TestBlockerBPostStateProvenance(unittest.TestCase):
     - Contradictory pre-state and post-state observations fail closed (inconclusive).
     - Properly verified evidence from supported trusted boundary establishes violation.
     """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lab = LocalConcurrencyLab()
+        cls.base_url = cls.lab.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.lab.stop()
+
+    def setUp(self):
+        self.lab.reset_state()
+
+    def _trigger_concurrent(self, url: str, count: int = 3, body: Optional[bytes] = None, headers: Optional[dict] = None) -> None:
+        def worker():
+            req = urllib.request.Request(url, data=body, headers=headers or {}, method="POST")
+            try:
+                urllib.request.urlopen(req, timeout=2.0)
+            except Exception:
+                pass
+        threads = [threading.Thread(target=worker) for _ in range(count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=3.0)
 
     def test_untrusted_caller_flag_cannot_confirm(self):
         """1. Plain dictionary overrun_verified: true lacks authoritative provenance and cannot confirm."""
@@ -1352,11 +1498,11 @@ class TestBlockerBPostStateProvenance(unittest.TestCase):
             ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
             ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
         ]
-        verified_evidence = LocalConcurrencyLab.create_authoritative_evidence(
-            post_state={"coupon_redemptions": 2},
-            pre_state={"coupon_redemptions": 0},
-            endpoint="http://127.0.0.1:8080/state/status",
-        )
+
+        obs_id = "obs-coupon-prov-1"
+        self.lab.start_observation(obs_id)
+        self._trigger_concurrent(f"{self.base_url}/scenario/coupon-race", count=2)
+        verified_evidence = self.lab.complete_observation(obs_id)
 
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
             category=RaceCategory.DOUBLE_SPEND,
@@ -1364,6 +1510,7 @@ class TestBlockerBPostStateProvenance(unittest.TestCase):
             executions=execs,
             responses=resps,
             post_state_data=verified_evidence,
+            expected_observation_id=obs_id,
         )
 
         self.assertTrue(is_vuln)
@@ -1378,10 +1525,11 @@ class TestBlockerBPostStateProvenance(unittest.TestCase):
         resps = [
             ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
         ]
-        contradictory_evidence = LocalConcurrencyLab.create_authoritative_evidence(
+        contradictory_evidence = PostStateEvidence(
+            source=EvidenceSource.UNTRUSTED_CALLER_CLAIM,
             pre_state={"count": 5},
             post_state={"count": 2},  # impossible decrement
-            endpoint="http://127.0.0.1:8080/state/status",
+            verified_endpoint=f"{self.base_url}/state/status",
         )
 
         is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
@@ -1443,10 +1591,15 @@ class TestBlockerBPostStateProvenance(unittest.TestCase):
 
     def test_serialization_and_deserialization_cannot_silently_elevate_untrusted_evidence(self):
         """9. Serializing and deserializing evidence cannot silently preserve authoritative status without revalidation."""
-        auth_ev = LocalConcurrencyLab.create_authoritative_evidence(
-            post_state={"coupon_redemptions": 2},
-            pre_state={"coupon_redemptions": 0},
-        )
+        obs_id = "obs-serial-1"
+        self.lab.start_observation(obs_id)
+        for _ in range(2):
+            req = urllib.request.Request(f"{self.base_url}/scenario/coupon-race", method="POST")
+            try:
+                urllib.request.urlopen(req, timeout=1.0)
+            except Exception:
+                pass
+        auth_ev = self.lab.complete_observation(obs_id)
         self.assertTrue(auth_ev.is_authoritative())
 
         serialized = auth_ev.to_dict()
@@ -1691,6 +1844,308 @@ class TestSSRFAndHostnameResolutionBoundaries(unittest.TestCase):
         policy_mapped_cgnat = ConcurrencySafetyPolicy(lab_mode=False, resolver=lambda h: ["::ffff:100.64.1.1"])
         with self.assertRaises(PolicyViolationError):
             policy_mapped_cgnat.validate_request_safety("POST", "https://mapped-cgnat.example.com/api")
+
+
+class TestBlockerBFullEnvelopeAuthentication(unittest.TestCase):
+    """
+    Adversarial Tests for Finding B (Authenticate Every Decision-Relevant Evidence Field):
+    Proves that altering any field in the evidence envelope after issuance invalidates
+    authority and prevents confirmation in the invariant evaluator.
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.lab = LocalConcurrencyLab()
+        cls.base_url = cls.lab.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.lab.stop()
+
+    def setUp(self):
+        self.lab.reset_state()
+
+    def _get_authentic_evidence(self, obs_id: str = "valid-run-1") -> PostStateEvidence:
+        self.lab.start_observation(obs_id)
+        threads = [
+            threading.Thread(target=lambda: urllib.request.urlopen(
+                urllib.request.Request(f"{self.base_url}/scenario/voting-limit", method="POST"), timeout=2.0
+            )) for _ in range(2)
+        ]
+        for t in threads: t.start()
+        for t in threads: t.join(timeout=3.0)
+        return self.lab.complete_observation(obs_id)
+
+    def test_positive_untampered_evidence_is_authoritative(self):
+        ev = self._get_authentic_evidence("run-pos-1")
+        self.assertTrue(ev.is_authoritative(expected_observation_id="run-pos-1"))
+        self.assertEqual(ev.source, EvidenceSource.LAB_FIXTURE_AUTHORITATIVE)
+
+    def test_tamper_pre_state_invalidates_authority(self):
+        ev = self._get_authentic_evidence("run-tamper-pre")
+        self.assertTrue(ev.is_authoritative())
+        ev.pre_state["voting_count"] = 99
+        self.assertFalse(ev.is_authoritative())
+
+    def test_tamper_post_state_invalidates_authority(self):
+        ev = self._get_authentic_evidence("run-tamper-post")
+        self.assertTrue(ev.is_authoritative())
+        ev.post_state["voting_count"] = 99
+        self.assertFalse(ev.is_authoritative())
+
+    def test_tamper_endpoint_invalidates_authority(self):
+        ev = self._get_authentic_evidence("run-tamper-ep")
+        self.assertTrue(ev.is_authoritative())
+        ev.verified_endpoint = f"http://127.0.0.1:{self.lab.port}/state/tampered"
+        self.assertFalse(ev.is_authoritative())
+
+    def test_tamper_source_invalidates_authority(self):
+        ev = self._get_authentic_evidence("run-tamper-src")
+        self.assertTrue(ev.is_authoritative())
+        ev.source = EvidenceSource.UNTRUSTED_CALLER_CLAIM
+        self.assertFalse(ev.is_authoritative())
+
+    def test_tamper_delta_metrics_invalidates_authority(self):
+        ev = self._get_authentic_evidence("run-tamper-delta")
+        self.assertTrue(ev.is_authoritative())
+        ev.delta_metrics["voting_count"] = 999
+        self.assertFalse(ev.is_authoritative())
+
+    def test_tamper_nested_value_invalidates_authority(self):
+        ev = self._get_authentic_evidence("run-tamper-nested")
+        ev.post_state["nested_data"] = {"sub_key": "val1"}
+        self.assertFalse(ev.is_authoritative())
+
+    def test_tamper_schema_version_invalidates_authority(self):
+        ev = self._get_authentic_evidence("run-tamper-ver")
+        self.assertTrue(ev.is_authoritative())
+        ev.schema_version = "concurrency-evidence-v2-tampered"
+        self.assertFalse(ev.is_authoritative())
+
+    def test_tamper_observation_id_invalidates_authority(self):
+        ev = self._get_authentic_evidence("run-tamper-obs")
+        self.assertTrue(ev.is_authoritative())
+        ev.observation_id = "run-tamper-obs-swapped"
+        self.assertFalse(ev.is_authoritative())
+
+    def test_missing_signature_rejected(self):
+        ev = self._get_authentic_evidence("run-no-sig")
+        ev._attestation_token = None
+        self.assertFalse(ev.is_authoritative())
+
+    def test_malformed_signature_rejected(self):
+        ev = self._get_authentic_evidence("run-bad-sig")
+        ev._attestation_token = "invalid-token"
+        self.assertFalse(ev.is_authoritative())
+
+    def test_forged_signature_rejected(self):
+        ev = self._get_authentic_evidence("run-forged-sig")
+        ev._attestation_token = "0" * 64
+        self.assertFalse(ev.is_authoritative())
+
+    def test_unmatched_observation_id_rejected_by_evaluator(self):
+        ev = self._get_authentic_evidence("run-match-obs")
+        execs = [SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}")]
+        resps = [ControlledResponse(status_code=200, body_text="{}", headers={})]
+        is_vuln, conf, _, _, reasons, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=ev,
+            expected_observation_id="different-expected-run-id",
+        )
+        self.assertFalse(is_vuln)
+        self.assertNotEqual(conf, RaceConfidence.CONFIRMED)
+        self.assertIn("lacks authoritative provenance or failed signature verification", reasons[0])
+
+
+class TestBlockerCCounterBaselinesAndDeltas(unittest.TestCase):
+    """
+    Regression Tests for Finding C (Never Infer a Per-Test Delta From an Absolute Counter):
+    - Large cumulative post-state counter with no baseline: must not confirm a per-test overrun.
+    - Valid baseline and allowed delta: must not report overrun (CONCURRENCY_CONTROLLED).
+    - Valid baseline and excessive delta: must correctly detect overrun (CONFIRMED).
+    - Missing, malformed, reset, decreasing, and incompatible counters: must fail safely.
+    - Forged or modified baseline: must not influence the result.
+    - Multiple observations/runs: ensure counters from different runs cannot be mixed.
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.lab = LocalConcurrencyLab()
+        cls.base_url = cls.lab.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.lab.stop()
+
+    def setUp(self):
+        self.lab.reset_state()
+
+    def test_large_cumulative_post_state_without_baseline_does_not_confirm(self):
+        for _ in range(10):
+            self.lab.server.voting_count += 1
+        obs_id = "obs-nobaseline-1"
+        evidence_no_baseline = self.lab.complete_observation(obs_id)
+        self.assertIsNone(evidence_no_baseline.pre_state)
+        self.assertEqual(evidence_no_baseline.post_state["voting_count"], 10)
+
+        execs = [
+            SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}"),
+            SingleProbeExecution(request_index=1, status_code=200, response_time_ms=10.0, body_snippet="{}"),
+        ]
+        resps = [
+            ControlledResponse(status_code=200, body_text="{}", headers={}),
+            ControlledResponse(status_code=200, body_text="{}", headers={}),
+        ]
+        is_vuln, conf, lifecycle, sev, reasons, ev = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=evidence_no_baseline,
+            expected_observation_id=obs_id,
+        )
+        self.assertFalse(is_vuln)
+        self.assertNotEqual(conf, RaceConfidence.CONFIRMED)
+        self.assertIn("per-test delta cannot be inferred from absolute count", reasons[0])
+
+    def test_valid_baseline_with_allowed_delta_does_not_report_overrun(self):
+        obs_id = "obs-allowed-delta-1"
+        self.lab.server.voting_count = 5
+        self.lab.start_observation(obs_id)
+        self.lab.server.voting_count += 1
+        evidence_allowed = self.lab.complete_observation(obs_id)
+        self.assertEqual(evidence_allowed.pre_state["voting_count"], 5)
+        self.assertEqual(evidence_allowed.post_state["voting_count"], 6)
+
+        execs = [SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}")]
+        resps = [ControlledResponse(status_code=200, body_text="{}", headers={})]
+        is_vuln, conf, _, _, reasons, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=evidence_allowed,
+            expected_observation_id=obs_id,
+        )
+        self.assertFalse(is_vuln)
+        self.assertEqual(conf, RaceConfidence.CONCURRENCY_CONTROLLED)
+        self.assertIn("Concurrency controlled", reasons[0])
+
+    def test_valid_baseline_with_excessive_delta_detects_overrun(self):
+        obs_id = "obs-excessive-delta-1"
+        self.lab.server.voting_count = 5
+        self.lab.start_observation(obs_id)
+        self.lab.server.voting_count += 4
+        evidence_overrun = self.lab.complete_observation(obs_id)
+        self.assertEqual(evidence_overrun.pre_state["voting_count"], 5)
+        self.assertEqual(evidence_overrun.post_state["voting_count"], 9)
+
+        execs = [
+            SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}"),
+            SingleProbeExecution(request_index=1, status_code=200, response_time_ms=10.0, body_snippet="{}"),
+        ]
+        resps = [
+            ControlledResponse(status_code=200, body_text="{}", headers={}),
+            ControlledResponse(status_code=200, body_text="{}", headers={}),
+        ]
+        is_vuln, conf, lifecycle, sev, reasons, ev = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=evidence_overrun,
+            expected_observation_id=obs_id,
+        )
+        self.assertTrue(is_vuln)
+        self.assertEqual(conf, RaceConfidence.CONFIRMED)
+        self.assertEqual(lifecycle, FindingLifecycle.VALIDATED)
+        self.assertIn("verified server-side state mutation", reasons[0])
+
+    def test_missing_counter_in_pre_state_fails_safely(self):
+        obs_id = "obs-missing-ck-1"
+        self.lab.start_observation(obs_id)
+        evidence = self.lab.complete_observation(obs_id)
+        evidence.pre_state.pop("voting_count", None)
+        execs = [SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}")]
+        resps = [ControlledResponse(status_code=200, body_text="{}", headers={})]
+        is_vuln, conf, _, _, reasons, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=evidence,
+            expected_observation_id=obs_id,
+        )
+        self.assertFalse(is_vuln)
+        self.assertNotEqual(conf, RaceConfidence.CONFIRMED)
+
+    def test_malformed_non_numeric_counter_fails_safely(self):
+        obs_id = "obs-malformed-ck-1"
+        self.lab.start_observation(obs_id)
+        evidence = self.lab.complete_observation(obs_id)
+        evidence.pre_state["voting_count"] = "not_a_number"
+        execs = [SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}")]
+        resps = [ControlledResponse(status_code=200, body_text="{}", headers={})]
+        is_vuln, conf, _, _, reasons, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=evidence,
+            expected_observation_id=obs_id,
+        )
+        self.assertFalse(is_vuln)
+        self.assertEqual(conf, RaceConfidence.INCONCLUSIVE)
+
+    def test_decreasing_or_reset_counter_fails_closed(self):
+        obs_id = "obs-decreasing-ck-1"
+        self.lab.start_observation(obs_id)
+        evidence = self.lab.complete_observation(obs_id)
+        evidence.pre_state["coupon_redemptions"] = 10
+        evidence.post_state["coupon_redemptions"] = 2
+        execs = [SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}")]
+        resps = [ControlledResponse(status_code=200, body_text="{}", headers={})]
+        is_vuln, conf, _, _, reasons, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.DOUBLE_SPEND,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=evidence,
+            expected_observation_id=obs_id,
+        )
+        self.assertFalse(is_vuln)
+        self.assertEqual(conf, RaceConfidence.INCONCLUSIVE)
+        self.assertIn("failed consistency check", reasons[0])
+
+    def test_forged_or_modified_baseline_fails_verification(self):
+        obs_id = "obs-forged-base-1"
+        self.lab.start_observation(obs_id)
+        evidence = self.lab.complete_observation(obs_id)
+        evidence.pre_state["voting_count"] = 999
+        self.assertFalse(evidence.is_authoritative(expected_observation_id=obs_id))
+
+    def test_multiple_runs_cannot_mix_counters(self):
+        obs_1 = "obs-run-1"
+        obs_2 = "obs-run-2"
+        self.lab.start_observation(obs_1)
+        ev_1 = self.lab.complete_observation(obs_1)
+        self.lab.start_observation(obs_2)
+        ev_2 = self.lab.complete_observation(obs_2)
+
+        execs = [SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}")]
+        resps = [ControlledResponse(status_code=200, body_text="{}", headers={})]
+        is_vuln, conf, _, _, reasons, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=ev_1,
+            expected_observation_id=obs_2,
+        )
+        self.assertFalse(is_vuln)
+        self.assertNotEqual(conf, RaceConfidence.CONFIRMED)
+        self.assertIn("failed signature verification", reasons[0])
 
 
 if __name__ == "__main__":

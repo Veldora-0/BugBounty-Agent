@@ -177,6 +177,7 @@ class ConcurrencyInvariantEngine:
         executions: List[SingleProbeExecution],
         responses: List[Optional[ControlledResponse]],
         post_state_data: Optional[Union[PostStateEvidence, Dict[str, Any]]] = None,
+        expected_observation_id: Optional[str] = None,
     ) -> Tuple[bool, RaceConfidence, FindingLifecycle, str, List[str], Dict[str, Any]]:
         """
         Evaluates concurrent burst outcomes against formal safety invariants.
@@ -251,26 +252,26 @@ class ConcurrencyInvariantEngine:
         if post_state_evidence:
             evidence["post_state_provenance"] = post_state_evidence.to_dict()
 
-            # Separate untrusted caller claims from verified evidence
-            if not post_state_evidence.is_authoritative():
+            # 1. Consistency check: contradictory pre/post state fails closed immediately
+            is_consistent, consistency_err = post_state_evidence.validate_consistency()
+            if not is_consistent:
+                reasons.append(f"Post-state verification failed consistency check: {consistency_err}")
+                return (
+                    False,
+                    RaceConfidence.INCONCLUSIVE,
+                    FindingLifecycle.OBSERVED,
+                    "INFORMATIONAL",
+                    reasons,
+                    evidence,
+                )
+
+            # 2. Separate untrusted caller claims from verified evidence
+            if not post_state_evidence.is_authoritative(expected_observation_id=expected_observation_id):
                 reasons.append(
-                    "Caller-supplied post-state evidence lacks authoritative provenance "
+                    "Caller-supplied post-state evidence lacks authoritative provenance or failed signature verification "
                     f"({post_state_evidence.source.value}); cannot independently confirm state mutation."
                 )
             else:
-                # Authoritative source: validate internal consistency
-                is_consistent, consistency_err = post_state_evidence.validate_consistency()
-                if not is_consistent:
-                    reasons.append(f"Post-state verification failed consistency check: {consistency_err}")
-                    return (
-                        False,
-                        RaceConfidence.INCONCLUSIVE,
-                        FindingLifecycle.OBSERVED,
-                        "INFORMATIONAL",
-                        reasons,
-                        evidence,
-                    )
-
                 # Evaluate authoritative post-state metrics
                 ps = post_state_evidence.post_state or {}
                 pre = post_state_evidence.pre_state or {}
@@ -307,20 +308,46 @@ class ConcurrencyInvariantEngine:
                             authoritative_counter_value = c_val
                             evidence["verified_server_counter"] = c_val
 
-                            # If pre-state is available, calculate delta
+                            # CRITICAL FINDING C: For state-based counter invariants, require a valid,
+                            # trusted pre-state baseline and compute delta. Never infer overrun from absolute counter!
                             if ck in pre and pre[ck] is not None:
-                                pre_val = int(pre[ck])
+                                try:
+                                    pre_val = int(pre[ck])
+                                except (ValueError, TypeError):
+                                    reasons.append(f"Malformed non-numeric pre-state counter value for '{ck}': {pre[ck]}")
+                                    return (
+                                        False,
+                                        RaceConfidence.INCONCLUSIVE,
+                                        FindingLifecycle.OBSERVED,
+                                        "INFORMATIONAL",
+                                        reasons,
+                                        evidence,
+                                    )
                                 delta = c_val - pre_val
                                 evidence["verified_counter_delta"] = delta
+                                if delta < 0:
+                                    # Decreasing counter violates monotonic progression requirement
+                                    reasons.append(f"Contradictory counter progression: {ck} decreased from {pre_val} to {c_val}.")
+                                    return (
+                                        False,
+                                        RaceConfidence.INCONCLUSIVE,
+                                        FindingLifecycle.OBSERVED,
+                                        "INFORMATIONAL",
+                                        reasons,
+                                        evidence,
+                                    )
                                 if delta > allowed_limit:
                                     post_state_overrun = True
                                 elif not post_state_overrun:
                                     post_state_controlled = True
                             else:
-                                if c_val > allowed_limit:
-                                    post_state_overrun = True
-                                elif not post_state_overrun:
-                                    post_state_controlled = True
+                                # No trusted baseline pre-state available!
+                                # Under Critical Finding C: do NOT compare absolute c_val against allowed_limit.
+                                evidence["unbaselined_counter_observation"] = c_val
+                                reasons.append(
+                                    f"Authoritative post-state observed counter '{ck}'={c_val}, but trusted pre-state baseline "
+                                    "is unavailable; per-test delta cannot be inferred from absolute count."
+                                )
                             break
                         except (ValueError, TypeError):
                             pass
