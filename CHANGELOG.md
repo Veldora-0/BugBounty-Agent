@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 20: Race Conditions & Distributed Workflows Intelligence (Accepted with Documented Limitations)
+
+#### Added & Hardened
+* **Concurrency & Race Conditions Subsystem (`framework/concurrency/`)**:
+  * Implemented core models (`RaceCategory`, `RaceConfidence`, `SingleProbeExecution`, `ConcurrencyProbePlan`, `RaceConditionHypothesis`, `RaceConditionTestResult`).
+  * Defined 6 core categories: `LIMIT_OVERRUN`, `TOCTOU`, `DOUBLE_SPEND`, `IDEMPOTENCY_BYPASS`, `PARTIAL_EXECUTION_DESYNC`, and `CONCURRENT_STATE_MUTATION`.
+* **Precision Barrier Synchronization (`BarrierSynchronizer`)**:
+  * Employs `threading.Barrier` to pre-arm parallel worker threads and trigger release simultaneously inside the microsecond server execution window.
+  * Replaces volumetric flooding, algorithmic stress testing, and DoS attacks with surgical, bounded parallel probes.
+* **Invariant Discrimination Engine (`ConcurrencyInvariantEngine`)**:
+  * Rigorously evaluates multi-probe outcomes against business limits and state machine rules.
+  * Distinguishes confirmed vulnerabilities (`CONFIRMED`) from valid server-side concurrency defenses (`CONCURRENCY_CONTROLLED` via 409 Conflict, 429 Too Many Requests, 423 Locked, mutex serialization) and network timeouts (`INCONCLUSIVE`).
+* **Strict Concurrency Safety Policy (`ConcurrencySafetyPolicy`)**:
+  * Clamps burst sizes strictly to 2–5 parallel threads (default 4) with an un-overrideable hard cap of 10 (`MAX_BURST_SIZE = 10`).
+  * Caps maximum probes per test at 15 (`MAX_REQUESTS_PER_TEST = 15`) and blocks destructive HTTP methods (`TRACE`).
+  * Enforces offline scope validation before dispatch and anti-SSRF protection against private RFC 1918, loopback, and cloud metadata addresses (`169.254.169.254`, `metadata.google.internal`).
+* **Deterministic Local Simulation Lab (`LocalConcurrencyLab`)**:
+  * Multi-threaded `ThreadingHTTPServer` serving 8 deterministic concurrency scenarios on an ephemeral loopback port (`127.0.0.1:0`).
+  * Scenarios: coupon double-spend, balance transfer overdraw, voting limit overrun, idempotency race, mutex serialization (409), rate limit defense (429), gateway timeout (504), and distributed desync (500).
+* **Safe State Management & Secret Scrubbing (`ConcurrencyStateManager`)**:
+  * Atomic persistence of program-scoped state in `state/concurrency.json` with schema self-healing.
+  * Recursive sanitization of credentials, passwords, tokens, and authorization parameters (`[REDACTED_BY_BB_AGENT]`).
+  * Exception sanitization via `_classify_request_exception` ensuring zero raw exception strings or secrets leak into state, logs, findings, or reports.
+* **CLI Wrapper, System Diagnostics & OpenCode Integration**:
+  * Created CLI utility `scripts/bb-race` and `scripts/bb-race.cmd` supporting `--lab`, `--tree`, `--burst`, `--approve`, `--dry-run`, and `--json`.
+  * Added Category 25 (`check_concurrency_engine`) to `framework/tools/doctor.py` and `scripts/bb-doctor`.
+  * Extended `framework/state/manager.py` with `DEFAULT_CONCURRENCY` and synchronized `concurrency.json` into canonical findings.
+  * Linked `bb-race` across deployment utilities (total 28 utilities).
+* **Automated Test Suite**:
+  * Added 27 unit and integration tests in `tests/test_concurrency_engine.py` covering taxonomy, barrier timing, invariant rules, all 8 lab scenarios, scope fail-closed enforcement, secret scrubbing, and disk report inspection.
+
 ### Phase 19: Infrastructure & Configuration Exposure (Accepted with Documented Limitations)
 
 #### Added & Hardened

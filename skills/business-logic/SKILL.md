@@ -41,7 +41,9 @@ Identify flaws in application workflows, business rules, and state machine assum
 * Highlight the logical inconsistency between expected business rules and actual observed state via `BusinessLogicInvariantEngine`.
 * Support single replay, sequence replay, and bounded concurrent replay (maximum 5 threads/requests).
 
-## 4. CLI Tool: `bb-workflow`
+## 4. CLI Tools: `bb-workflow` & `bb-race`
+
+### `bb-workflow` — Sequence & State Machine Verification
 ```bash
 # Inspect workflow state tree for a program
 bb-workflow --program acme-corp --tree
@@ -54,4 +56,19 @@ bb-workflow --lab --scenario checkout_step_skipping --approve
 
 # Execute workflow testing for a program with approval
 bb-workflow --program acme-corp --workflow checkout --approve
+```
+
+### `bb-race` — Precision Barrier-Synchronized Concurrency & Invariant Verification
+```bash
+# View visual ASCII tree of concurrency hypotheses and findings
+bb-race --program acme-corp --tree
+
+# Discover hypotheses from prior recon/webapps/api state (dry-run)
+bb-race --program acme-corp --dry-run
+
+# Run active barrier-synchronized micro-burst (2-5 threads, max 10) with operator approval
+bb-race --program acme-corp --approve --burst 4
+
+# Run against deterministic 8-scenario local concurrency lab
+bb-race --lab --tree
 ```

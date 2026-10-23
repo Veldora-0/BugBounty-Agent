@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""
+bb-race — BugBounty-Agent Concurrency & Distributed Workflows Intelligence Utility.
+
+Safely discovers, coordinates, and executes precision barrier-synchronized microsecond
+bursts (2-5 threads, hard cap 10) to detect race conditions, TOCTOU vulnerabilities,
+limit overruns, coupon double-spends, and distributed workflow desynchronization.
+Distinguishes confirmed vulnerabilities from valid contention (409/429) and network jitter.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+REPO_ROOT = os.environ.get(
+    "BUGBOUNTY_AGENT_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")),
+)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir, resolve_program_scope_file
+from framework.common.evidence import sanitize_sensitive_data
+from framework.concurrency.engine import RaceIntelligenceEngine
+from framework.concurrency.lab import LocalConcurrencyLab
+from framework.concurrency.model import RaceCategory
+from framework.concurrency.policy import ConcurrencySafetyPolicy
+from framework.scope.engine import ScopeEngine
+
+
+def render_race_tree(
+    summary: Dict[str, Any],
+    hypotheses: List[Dict[str, Any]],
+    findings: List[Dict[str, Any]],
+    program_name: str,
+) -> None:
+    """Renders visual ASCII tree of concurrency hypotheses and findings."""
+    print("\n==============================================================================")
+    print("        CONCURRENCY & DISTRIBUTED WORKFLOWS INTELLIGENCE TREE                 ")
+    print("==============================================================================")
+    print(f"\n[*] Program:                  {program_name}")
+    print(f"[*] Total Hypotheses:         {summary.get('total_hypotheses', len(hypotheses))}")
+    print(f"[*] Confirmed Breaches:       {summary.get('confirmed_vulnerabilities', 0)}")
+    print(f"[*] Concurrency Controlled:   {summary.get('concurrency_controlled', 0)}")
+    print(f"[*] Inconclusive / Jitter:    {summary.get('inconclusive', 0)}")
+    print(f"[*] Total Probes Dispatched:  {summary.get('total_probes_dispatched', 0)}")
+
+    if not hypotheses and not findings:
+        print("\n[*] No concurrency hypotheses or findings recorded in current state.")
+        print("==============================================================================\n")
+        return
+
+    # Group hypotheses by category
+    by_category: Dict[str, List[Dict[str, Any]]] = {}
+    for h in hypotheses:
+        cat = h.get("category", "UNKNOWN")
+        by_category.setdefault(cat, []).append(h)
+
+    print("\n[+] CONCURRENCY HYPOTHESES BY CATEGORY:")
+    for cat, items in sorted(by_category.items()):
+        print(f"    - [{cat}] ({len(items)} endpoints)")
+        for item in items[:5]:
+            status = item.get("approval_status", "PENDING")
+            ep = item.get("endpoint", "")
+            burst = item.get("burst_size", 4)
+            limit = item.get("allowed_limit", 1)
+            print(f"      * [{status}] {ep} (burst: {burst}, limit: {limit})")
+        if len(items) > 5:
+            print(f"      * ... and {len(items) - 5} more")
+
+    if findings:
+        print("\n[+] CONFIRMED INVARIANT BREACH FINDINGS:")
+        for f in findings:
+            state = f.get("lifecycle_state", "VALIDATED")
+            sev = f.get("severity", "MEDIUM")
+            title = f.get("title", "")
+            ep = f.get("affected_endpoint", "")
+            print(f"    - [{state}] [{sev}] {title}")
+            print(f"      Endpoint: {ep}")
+
+    print("\n==============================================================================")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="bb-race",
+        description="BugBounty-Agent Concurrency & Distributed Workflows Intelligence Utility",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # View visual tree of concurrency hypotheses and findings
+  bb-race --program acme --tree
+
+  # Discover hypotheses from prior recon/webapps state
+  bb-race --program acme --tree
+
+  # Execute dry-run of planned concurrency probes
+  bb-race --program acme --dry-run
+
+  # Run active testing with operator approval
+  bb-race --program acme --approve --burst 4
+
+  # Run local test lab simulation
+  bb-race --lab --tree
+        """,
+    )
+
+    parser.add_argument("-p", "--program", default="default", help="Target program name in workspace")
+    parser.add_argument("-s", "--scope", help="Path to scope.yaml file")
+    parser.add_argument("-b", "--burst", type=int, default=4, help="Burst size for concurrent probes (2-10, default 4)")
+    parser.add_argument("-t", "--timeout", type=float, default=5.0, help="Per-thread probe timeout in seconds (default 5.0)")
+    parser.add_argument("--dry-run", action="store_true", help="Plan concurrency tests without dispatching requests")
+    parser.add_argument("--approve", action="store_true", help="Approve hypotheses for active execution")
+    parser.add_argument("--tree", action="store_true", help="Render ASCII tree view of hypotheses and findings")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    parser.add_argument("--lab", action="store_true", help="Run against deterministic local concurrency lab")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+
+    args = parser.parse_args()
+
+    program_dir = get_program_dir(f"lab_{args.program}" if args.lab else args.program)
+    os.makedirs(program_dir, exist_ok=True)
+
+    # Local Lab Setup
+    lab_server: Optional[LocalConcurrencyLab] = None
+    scope_engine: Optional[ScopeEngine] = None
+    if args.lab:
+        # Reset ephemeral lab state for clean deterministic evaluation
+        cfile = os.path.join(program_dir, "state", "concurrency.json")
+        if os.path.exists(cfile):
+            try:
+                os.remove(cfile)
+            except Exception:
+                pass
+        lab_server = LocalConcurrencyLab()
+        base_url = lab_server.start()
+        scope_engine = LocalConcurrencyLab.get_scope_engine(lab_server.port)
+    else:
+        scope_file = resolve_program_scope_file(args.program, explicit_scope=args.scope)
+        if scope_file and os.path.exists(scope_file):
+            scope_engine = ScopeEngine.from_yaml(scope_file)
+        else:
+            if not args.dry_run:
+                print(f"[!] Warning: No scope.yaml found for program '{args.program}'. Active probes will fail-closed.", file=sys.stderr)
+
+    # Initialize Engine
+    policy = ConcurrencySafetyPolicy(
+        max_burst_size=args.burst,
+        timeout=args.timeout,
+        require_approval=not (args.approve or args.lab),
+        lab_mode=args.lab,
+    )
+    engine = RaceIntelligenceEngine(
+        program_dir=program_dir,
+        scope_engine=scope_engine,
+        policy=policy,
+        require_approval=not (args.approve or args.lab),
+        lab_mode=args.lab,
+    )
+
+    if args.lab and lab_server:
+        engine.allow_fixture_port(lab_server.port)
+        # Register standard 8 deterministic lab scenarios
+        engine.add_hypothesis(f"{base_url}/scenario/coupon-race", RaceCategory.DOUBLE_SPEND, burst_size=4, allowed_limit=1)
+        engine.add_hypothesis(f"{base_url}/scenario/balance-transfer", RaceCategory.TOCTOU, burst_size=4, allowed_limit=1)
+        engine.add_hypothesis(f"{base_url}/scenario/voting-limit", RaceCategory.LIMIT_OVERRUN, burst_size=4, allowed_limit=1)
+        engine.add_hypothesis(f"{base_url}/scenario/idempotency-race", RaceCategory.IDEMPOTENCY_BYPASS, burst_size=4, allowed_limit=1)
+        engine.add_hypothesis(f"{base_url}/scenario/mutex-safe", RaceCategory.TOCTOU, burst_size=4, allowed_limit=1)
+        engine.add_hypothesis(f"{base_url}/scenario/rate-limit-safe", RaceCategory.LIMIT_OVERRUN, burst_size=4, allowed_limit=1)
+        engine.add_hypothesis(f"{base_url}/scenario/timeout-inconclusive", RaceCategory.TOCTOU, burst_size=4, allowed_limit=1)
+        engine.add_hypothesis(f"{base_url}/scenario/distributed-desync", RaceCategory.PARTIAL_EXECUTION_DESYNC, burst_size=4, allowed_limit=1)
+
+    try:
+        if not args.dry_run:
+            results = engine.run_all(auto_approve=args.approve or args.lab)
+        else:
+            engine.discover_hypotheses_from_state()
+            results = {"total_tested": 0, "findings_count": 0, "summary": engine.state_mgr.get_summary()}
+    finally:
+        if lab_server:
+            lab_server.stop()
+
+    # Load state for presentation
+    state = engine.state_mgr.load_state()
+    hypotheses = state.get("hypotheses", [])
+    findings = state.get("findings", [])
+    summary = state.get("summary", results.get("summary", {}))
+
+    if args.json:
+        safe_output = json.loads(sanitize_sensitive_data(json.dumps({
+            "program": args.program,
+            "summary": summary,
+            "hypotheses": hypotheses,
+            "findings": findings,
+        })))
+        print(json.dumps(safe_output, indent=2))
+    elif args.tree or not args.dry_run:
+        render_race_tree(summary, hypotheses, findings, args.program)
+    else:
+        print(f"[*] Concurrency Intelligence completed for '{args.program}'.")
+        print(f"[*] Hypotheses: {len(hypotheses)} | Confirmed Breaches: {summary.get('confirmed_vulnerabilities', 0)}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -127,3 +127,27 @@ The framework code enforces the following non-negotiable architectural boundarie
    * Local simulation lab findings are strictly marked `SIMULATED` (`INFORMATIONAL`, `CONFIRMED` confidence) and can never produce live validated findings.
    * Broad directory brute-forcing, password guessing, and automated vulnerability report submissions are strictly forbidden.
 
+---
+
+## 8. Concurrency & Distributed Workflows Safeguards (Phase 20)
+
+1. **Precision Barrier Synchronization Over Volumetric Flooding**:
+   * Race condition testing uses precision barrier synchronization (`threading.Barrier`) to hold pre-armed parallel worker threads and release them simultaneously into the server-side microsecond execution window.
+   * Eliminates the need for high-volume request floods, stress testing, or volumetric denial-of-service.
+2. **Strict Concurrency Bounds & Clamping**:
+   * Probes are strictly bounded to 2–5 parallel threads (`DEFAULT_BURST_SIZE = 4`), with a hard, un-overrideable safety cap of 10 (`MAX_BURST_SIZE = 10`).
+   * Maximum requests per test are capped at 15 (`MAX_REQUESTS_PER_TEST = 15`), preventing runaway retry loops or server-side exhaustion.
+   * Prohibits destructive HTTP methods (`TRACE` is strictly blocked by policy).
+3. **Contention vs. Vulnerability Invariant Discrimination**:
+   * Valid server-side serialization defenses (HTTP 409 Conflict, 429 Too Many Requests, 423 Locked) and mutex lock rejections are recognized as evidence of proper concurrency controls (`CONCURRENCY_CONTROLLED`) and are never reported as vulnerabilities.
+   * Network timeouts (504 Gateway Timeout, connection drops) are classified strictly as `INCONCLUSIVE` without false positive alarms.
+   * Only genuine invariant breaches (multiple successful state mutations exceeding the authorized limit) are classified as `CONFIRMED`.
+4. **Offline Scope Enforcement & Anti-SSRF Protections**:
+   * Scope verification executes offline before dispatching any concurrent probes; out-of-scope targets fail closed immediately.
+   * Destination IPs and hostnames are validated against private RFC 1918, carrier-grade NAT, and cloud metadata addresses (`169.254.169.254`, `metadata.google.internal`).
+   * Local test fixtures require explicit unprivileged integer port whitelisting (`allow_fixture_port()`).
+5. **Operator Approval Gate & Zero Plaintext Secret Persistence**:
+   * Concurrent state mutation testing requires explicit operator approval (`--approve`) when `require_approval=True`.
+   * Passwords, tokens, API keys, and sensitive parameters are recursively scrubbed to `[REDACTED_BY_BB_AGENT]` before persistence to `state/concurrency.json`.
+   * Network and transport exceptions are mapped to sanitized generic categories via `_classify_request_exception` without exposing raw URLs, query strings, headers, or credentials in reasons, evidence, logs, findings, or reports.
+

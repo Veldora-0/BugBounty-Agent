@@ -639,6 +639,35 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_concurrency_engine(self) -> Dict[str, Any]:
+        """Category 25: Concurrency & Race Conditions Intelligence Subsystem."""
+        try:
+            from framework.concurrency.model import RaceCategory, RaceConfidence
+            from framework.concurrency.policy import ConcurrencySafetyPolicy
+            from framework.concurrency.synchronization import BarrierSynchronizer
+            from framework.concurrency.invariants import ConcurrencyInvariantEngine
+            from framework.concurrency.engine import RaceIntelligenceEngine
+            from framework.concurrency.lab import LocalConcurrencyLab
+
+            policy = ConcurrencySafetyPolicy()
+            invariants = ConcurrencyInvariantEngine()
+            lab = LocalConcurrencyLab()
+
+            healthy = (
+                len(RaceCategory) == 6
+                and policy.MAX_BURST_SIZE == 10
+                and policy.DEFAULT_BURST_SIZE == 4
+                and lab.port == 0
+            )
+            return {
+                "status": "HEALTHY" if healthy else "ERROR",
+                "healthy": healthy,
+                "categories_count": len(RaceCategory),
+                "max_burst_size": policy.MAX_BURST_SIZE,
+            }
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -665,6 +694,7 @@ class SystemDoctor:
             "cloud_security_engine": self.check_cloud_security_engine(),
             "auth_engine": self.check_authentication_engine(),
             "infrastructure_engine": self.check_infrastructure_engine(),
+            "concurrency_engine": self.check_concurrency_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }
 

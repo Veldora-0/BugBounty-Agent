@@ -3,7 +3,7 @@
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
 > **Repository baseline:** `1fcd552d53f99cf0a06802ddae45197796ec74c5`  
-> **Current phase:** Phase 20 — Race Conditions & Distributed Workflows (Planned; Phase 19 Complete)
+> **Current phase:** Phase 20 — Race Conditions & Distributed Workflows (Complete; Next Phase: Phase 21)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
 ## 1. Roadmap at a glance
@@ -16,8 +16,8 @@
 | 17 | Advanced API Security | High | Complete (accepted at `5502633bf4828e1c3a7493f36cdccbf435a1ebbf` with documented limitations) |
 | 18 | SSRF, XXE & Server-Side Parser Expansion | High | Complete (accepted at `1fcd552d53f99cf0a06802ddae45197796ec74c5` with documented limitations) |
 | 19 | Infrastructure & Configuration Exposure | Medium–High | Complete (accepted with documented limitations) |
-| 20 | Race Conditions & Distributed Workflows | Medium–High | Planned (Current Active Phase) |
-| 21 | Authentication & Authorization Correlation | Medium | Planned |
+| 20 | Race Conditions & Distributed Workflows | Medium–High | Complete (accepted with documented limitations) |
+| 21 | Authentication & Authorization Correlation | Medium | Planned (Next Phase) |
 | 22 | Cross-Engine Attack-Path Correlation | Very High | Planned |
 | 23 | Autonomous Research Planning & Coverage Intelligence | High | Planned |
 | 24 | Final Integration & Production Readiness | Mandatory | Planned |
@@ -166,6 +166,9 @@ Safety boundaries:
 
 ### Phase 20 — Race Conditions & Distributed Workflows
 **Goal:** Model concurrency-sensitive invariants and bounded, explicitly approved tests using isolated fixtures. Avoid high-volume request floods, destructive state changes, or uncontrolled concurrent operations against production systems.
+- **Implemented Subsystem**: `framework/concurrency/` providing `BarrierSynchronizer` (microsecond precision barrier release via `threading.Barrier`), `ConcurrencyInvariantEngine` (discriminating CONFIRMED invariant breaches from valid CONCURRENCY_CONTROLLED 409/429 contention and INCONCLUSIVE jitter), `ConcurrencySafetyPolicy` (strictly clamped burst 2-5, max cap 10, TRACE blocking, anti-SSRF IP verification), `ConcurrencyStateManager` (`state/concurrency.json`), and `LocalConcurrencyLab` (8 deterministic in-memory scenarios on ephemeral loopback).
+- **CLI & Diagnostics**: Created `scripts/bb-race` (`scripts/bb-race.cmd`), registered Category 25 (`check_concurrency_engine`) in `framework/tools/doctor.py` and `scripts/bb-doctor`, updated global OpenCode deployment for 28 utilities.
+- **Accepted with Documented Limitations**: Concurrency probing is bounded to 2-10 requests; high-volume volumetric floods or DoS attacks are strictly prohibited; out-of-scope targets fail closed offline.
 
 ### Phase 21 — Authentication & Authorization Correlation
 **Goal:** Correlate existing authentication/session and authorization engines: principal, role, tenant, session, resource, and workflow context. Reuse established dual-principal baselines and require strong evidence before reporting access-control findings.

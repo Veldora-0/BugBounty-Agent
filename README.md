@@ -87,7 +87,7 @@ BugBounty-Agent/
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
-│   ├── bb-doctor              # Diagnostics utility across 24 system categories
+│   ├── bb-doctor              # Diagnostics utility across 25 system categories
 │   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
@@ -97,6 +97,7 @@ BugBounty-Agent/
 │   ├── bb-cloud               # Cloud security & misconfiguration intelligence engine
 │   ├── bb-auth                # Authentication, session & identity security intelligence engine
 │   ├── bb-infra               # Infrastructure & configuration exposure intelligence engine
+│   ├── bb-race                # Concurrency & distributed workflows intelligence engine
 │   ├── bb-content             # Controlled content fuzzer wrapper (ffuf)
 │   ├── bb-js                  # JavaScript endpoint & secret analyzer
 │   ├── bb-api                 # REST/GraphQL API method and schema prober
@@ -250,7 +251,7 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 ## Tool Intelligence & Management
 
 ### 1. Automatic Diagnostics (`bb-doctor`)
-Run deep diagnostics across 24 system categories:
+Run deep diagnostics across 25 system categories:
 ```bash
 ./scripts/bb-doctor
 ```
@@ -278,6 +279,7 @@ Checks:
 * **Cloud Security Engine**: Cloud provider classification, object storage exposure, takeover signatures, and false positive elimination
 * **Authentication Engine**: Session analyzers, JWT token inspection, and authentication laboratory
 * **Infrastructure Engine**: Differential soft-404 detection, structural file signatures, and safe exposure intelligence
+* **Concurrency Engine**: Precision barrier synchronization, TOCTOU race testing, invariant discrimination, and safe state management
 * **OpenCode Integration**: Canonical agent definition, modular skills, V2 permissions, and deployment
 
 ### 2. Safe On-Demand Installation (`bb-install`)
@@ -411,10 +413,12 @@ BugBounty-Agent has delivered 18 cohesive security research phases, establishing
   * `LocalAuthenticationSecurityLab`: 21 offline authentication and session scenarios.
   * `LocalBusinessLogicLab`: 15 business logic and workflow scenarios.
   * `LocalCloudSecurityLab`: 15 cloud storage and takeover scenarios.
+  * `LocalInfrastructureLab`: 16 infrastructure, version control, and backup exposure scenarios.
+  * `LocalConcurrencyLab`: 8 deterministic race condition, TOCTOU, limit overrun, and distributed workflow scenarios.
 
 ### 16. Roadmap Status & Verification Baseline
-* **Accepted Baseline**: Phase 18 complete and accepted at commit `1fcd552d53f99cf0a06802ddae45197796ec74c5`.
-* **Next Planned Phase**: Phase 19 (Infrastructure & Configuration Exposure).
+* **Accepted Baseline**: Phase 19 (Infrastructure Exposure) and Phase 20 (Race Conditions & Distributed Workflows) complete and verified across Windows 11 and Kali Linux.
+* **Next Planned Phase**: Phase 21 (Authentication & Authorization Correlation).
 * **Full Roadmap**: Refer to [`docs/ROADMAP-24-PHASES-TEMP.md`](docs/ROADMAP-24-PHASES-TEMP.md) for the detailed 24-phase roadmap, architectural specifications, and historical verification records.
 
 ---

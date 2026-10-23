@@ -640,6 +640,49 @@ class TestExceptionAndHttp403Hardening(unittest.TestCase):
             saved_cand = next(c for c in state_data["candidates"] if c["candidate_id"] == "cand-exc-sentinel")
             self.assertIn("Request failed: network transport error", saved_cand["notes"])
             self.assertNotIn(sentinel_secret, saved_cand["notes"])
+
+            # 3. Explicit disk Markdown report inspection for Phase 19 sentinel secret
+            # Even if an operator or automated flow attempts to generate a report from candidate/evaluation notes,
+            # verify that a generated Markdown report written to disk has zero sentinel leakage.
+            reports_dir = os.path.join(temp_dir, "reports")
+            os.makedirs(reports_dir, exist_ok=True)
+            report_file = os.path.join(reports_dir, "report-cand-exc-sentinel.md")
+            
+            # Construct finding utilizing candidate notes / exception diagnostic
+            finding_with_diag = Finding(
+                title="Infrastructure Exposure Test Diagnostic",
+                summary=f"Evaluation completed with diagnostic: {saved_cand['notes']}",
+                affected_asset="example.com",
+                affected_endpoint="http://example.com/secret",
+                vulnerability_type=VulnerabilityFamily.CONFIGURATION_EXPOSURE.value,
+                severity="INFORMATIONAL",
+                description="Diagnostic test ensuring exception does not leak credentials into markdown artifacts.",
+                root_cause="N/A",
+                prerequisites="None",
+                reproduction_steps=["Step 1"],
+                expected_result="Generic diagnostic",
+                observed_result=saved_cand["notes"],
+                security_impact="None",
+                remediation="None",
+                scope_reference="In scope",
+                confidence="CONFIRMED",
+                finding_id="FND-INFRA-SENTINEL-01",
+                lifecycle_state=FindingLifecycle.VALIDATED,
+                validation_notes=f"Diagnostic notes: {saved_cand['notes']}",
+                evidence=[{
+                    "type": "diagnostic_log",
+                    "content": saved_cand["notes"],
+                    "timestamp": "2026-10-23T12:00:00Z",
+                }],
+            )
+            with open(report_file, "w", encoding="utf-8") as rf:
+                rf.write(finding_with_diag.to_markdown_report())
+
+            self.assertTrue(os.path.exists(report_file))
+            with open(report_file, "r", encoding="utf-8") as rf:
+                disk_report_content = rf.read()
+            self.assertNotIn(sentinel_secret, disk_report_content)
+            self.assertIn("network transport error", disk_report_content)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

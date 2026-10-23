@@ -49,6 +49,20 @@ DEFAULT_INFRASTRUCTURE: Dict[str, Any] = {
     },
 }
 
+DEFAULT_CONCURRENCY: Dict[str, Any] = {
+    "updated_at": "",
+    "hypotheses": [],
+    "findings": [],
+    "tested_fingerprints": [],
+    "summary": {
+        "total_hypotheses": 0,
+        "confirmed_vulnerabilities": 0,
+        "concurrency_controlled": 0,
+        "inconclusive": 0,
+        "total_probes_dispatched": 0,
+    },
+}
+
 
 class StateManager:
     """
@@ -73,6 +87,7 @@ class StateManager:
         self.api_file = os.path.join(self.state_dir, "api.json")
         self.security_file = os.path.join(self.state_dir, "security.json")
         self.infrastructure_file = os.path.join(self.state_dir, "infrastructure.json")
+        self.concurrency_file = os.path.join(self.state_dir, "concurrency.json")
 
         self._init_files()
 
@@ -92,6 +107,7 @@ class StateManager:
             (self.api_file, {}),
             (self.security_file, {}),
             (self.infrastructure_file, DEFAULT_INFRASTRUCTURE),
+            (self.concurrency_file, DEFAULT_CONCURRENCY),
         ]:
             if not os.path.exists(filepath):
                 self._atomic_write_json(filepath, default_content)
@@ -502,6 +518,8 @@ class StateManager:
             (os.path.join(self.state_dir, "ssrf.json"), "ssrf"),
             (os.path.join(self.state_dir, "authentication.json"), "authentication"),
             (os.path.join(self.state_dir, "http-trust.json"), "http_trust"),
+            (os.path.join(self.state_dir, "infrastructure.json"), "infrastructure"),
+            (os.path.join(self.state_dir, "concurrency.json"), "concurrency"),
         ]
 
         indexed_count = 0
@@ -610,4 +628,18 @@ class StateManager:
         """Returns a SecurityStateManager instance for this program."""
         from framework.validation.state import SecurityStateManager
         return SecurityStateManager(self.program_dir)
+
+    # ---------------- Infrastructure Exposure State ----------------
+
+    def get_infrastructure_state(self) -> Any:
+        """Returns an InfrastructureStateManager instance for this program."""
+        from framework.infrastructure.state import InfrastructureStateManager
+        return InfrastructureStateManager(self.program_dir)
+
+    # ---------------- Concurrency Intelligence State ----------------
+
+    def get_concurrency_state(self) -> Any:
+        """Returns a ConcurrencyStateManager instance for this program."""
+        from framework.concurrency.state import ConcurrencyStateManager
+        return ConcurrencyStateManager(self.program_dir)
 

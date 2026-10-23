@@ -21,6 +21,7 @@ def test_doctor_full_diagnosis():
         "scope_engine",
         "opencode_integration",
         "infrastructure_engine",
+        "concurrency_engine",
     ]
 
     for cat in required_categories:
@@ -49,4 +50,11 @@ def test_doctor_infrastructure_engine_check():
     assert infra_diag["healthy"] is True
     assert infra_diag["status"] == "HEALTHY"
     assert infra_diag["categories_count"] == 8
+
+def test_doctor_concurrency_engine_check():
+    doctor = SystemDoctor()
+    race_diag = doctor.check_concurrency_engine()
+    assert race_diag["healthy"] is True
+    assert race_diag["status"] == "HEALTHY"
+    assert race_diag["categories_count"] == 6
 
