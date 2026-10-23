@@ -55,7 +55,7 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         if path == "/scenario/coupon-race":
             # Check-then-act gap: read limit before updating
             current_redemptions = server.coupon_redemptions
-            time.sleep(0.015)  # Simulate DB query / asynchronous gap
+            time.sleep(0.04)  # Simulate DB query / asynchronous gap
             if current_redemptions < 1:
                 server.coupon_redemptions += 1
                 self._send_json(200, {
@@ -71,7 +71,7 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         if path == "/scenario/balance-transfer":
             amount = float(body.get("amount", 100.0))
             current_balance = server.account_balance
-            time.sleep(0.015)  # Gap between balance check and debit
+            time.sleep(0.04)  # Gap between balance check and debit
             if current_balance >= amount:
                 server.account_balance -= amount
                 self._send_json(200, {
@@ -86,7 +86,7 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         # Scenario 3: Voting Limit Overrun (Vulnerable LIMIT_OVERRUN)
         if path == "/scenario/voting-limit":
             current_votes = server.voting_count
-            time.sleep(0.015)  # Gap between quota check and vote registration
+            time.sleep(0.04)  # Gap between quota check and vote registration
             if current_votes < 1:
                 server.voting_count += 1
                 self._send_json(200, {"status": "VOTE_RECORDED", "total_votes": server.voting_count})
@@ -97,7 +97,7 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         # Scenario 4: Idempotency Key Cache Race (Vulnerable IDEMPOTENCY_BYPASS)
         if path == "/scenario/idempotency-race":
             key = self.headers.get("Idempotency-Key") or body.get("idempotency_key", "default_key")
-            time.sleep(0.015)  # Gap before writing key to distributed store
+            time.sleep(0.04)  # Gap before writing key to distributed store
             if key not in server.cached_idempotency_keys:
                 server.cached_idempotency_keys.add(key)
                 server.order_count += 1
@@ -141,7 +141,7 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         if path == "/scenario/distributed-desync":
             # Step 1: Debit funds
             server.distributed_step1_committed = True
-            time.sleep(0.015)
+            time.sleep(0.04)
             # Step 2: Fails unexpectedly and fails to compensate Step 1!
             server.distributed_step2_committed = False
             self._send_json(500, {
