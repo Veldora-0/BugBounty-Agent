@@ -245,10 +245,11 @@ class LocalConcurrencyLab:
 
     def release_measurement_lock(self) -> None:
         """Releases the lab observation measurement lock."""
-        try:
-            self._measurement_lock.release()
-        except RuntimeError:
-            pass
+        self._measurement_lock.release()
+
+    def is_measurement_locked(self) -> bool:
+        """Returns True if the measurement lock is currently held by any thread."""
+        return self._measurement_lock.locked()
 
     def _read_server_state(self) -> Dict[str, Any]:
         """Reads in-memory state directly from the active LocalConcurrencyLabServer."""

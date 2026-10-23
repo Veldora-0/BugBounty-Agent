@@ -2488,6 +2488,221 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
         self.assertGreater(res.success_count, 1)
         self.assertIsNotNone(fnd)
 
+    def test_start_observation_exception_releases_measurement_lock(self):
+        """
+        Requirement 1 & 6: If start_observation() raises after successful lock acquisition,
+        the measurement lock is safely released, observation state is discarded,
+        the original exception bubbles up, and a subsequent execution can acquire the lock.
+        """
+        hyp1 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        orig_start = self.lab.start_observation
+
+        def failing_start(obs_id):
+            raise ValueError("Simulated start_observation failure")
+
+        with patch.object(self.lab, "start_observation", side_effect=failing_start):
+            with self.assertRaises(ValueError) as ctx:
+                self.engine.execute_hypothesis(hyp1, auto_approve=True)
+            self.assertIn("Simulated start_observation failure", str(ctx.exception))
+
+        # Assert no leaked active observations and lock is released
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+        # Assert subsequent execution acquires lock and succeeds
+        hyp2 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=4,
+            allowed_limit=1,
+        )
+        res2, fnd2 = self.engine.execute_hypothesis(hyp2, auto_approve=True)
+        self.assertTrue(res2.is_vulnerable)
+        self.assertEqual(res2.confidence, RaceConfidence.CONFIRMED)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+    def test_failed_lock_acquisition_aborts_dispatch_and_returns_inconclusive(self):
+        """
+        Requirement 2 & 6: If measurement lock acquisition times out or returns False,
+        no burst requests are dispatched, no observation is started, no authoritative
+        evidence is produced, an inconclusive result is returned, and subsequent
+        executions can acquire the lock.
+        """
+        hyp1 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=4,
+            allowed_limit=1,
+        )
+        with patch.object(self.lab, "acquire_measurement_lock", return_value=False):
+            with patch.object(self.engine.synchronizer, "dispatch_burst") as mock_dispatch:
+                res, fnd = self.engine.execute_hypothesis(hyp1, auto_approve=True)
+                mock_dispatch.assert_not_called()
+
+        self.assertIsNone(fnd)
+        self.assertFalse(res.is_vulnerable)
+        self.assertEqual(res.confidence, RaceConfidence.INCONCLUSIVE)
+        self.assertEqual(res.lifecycle_state, FindingLifecycle.OBSERVED)
+        self.assertEqual(res.burst_size, 0)
+        self.assertEqual(len(res.executions), 0)
+        self.assertEqual(res.evidence, {})
+        self.assertIn("Measurement lock acquisition timed out or failed", res.reasons[0])
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+        # Assert subsequent execution can acquire lock and succeed normally
+        hyp2 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=4,
+            allowed_limit=1,
+        )
+        res2, fnd2 = self.engine.execute_hypothesis(hyp2, auto_approve=True)
+        self.assertTrue(res2.is_vulnerable)
+        self.assertEqual(res2.confidence, RaceConfidence.CONFIRMED)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+    def test_dispatch_exception_cleans_up_observation_and_releases_measurement_lock(self):
+        """
+        Requirement 3 & 6: An exception during dispatch still cleans up the observation,
+        releases the measurement lock, preserves the original exception, and allows
+        subsequent executions to acquire the lock.
+        """
+        hyp1 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        with patch.object(self.engine.synchronizer, "dispatch_burst", side_effect=RuntimeError("Simulated network drop")):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.engine.execute_hypothesis(hyp1, auto_approve=True)
+            self.assertIn("Simulated network drop", str(ctx.exception))
+
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+        # Assert subsequent execution can acquire lock and succeed
+        hyp2 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=4,
+            allowed_limit=1,
+        )
+        res2, fnd2 = self.engine.execute_hypothesis(hyp2, auto_approve=True)
+        self.assertTrue(res2.is_vulnerable)
+        self.assertEqual(res2.confidence, RaceConfidence.CONFIRMED)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+    def test_missing_and_externally_supplied_post_state_do_not_leak_locks_or_observations(self):
+        """
+        Requirement 4 & 6: Missing post-state and externally supplied post-state
+        do not leak active observations or measurement locks, and subsequent
+        executions can acquire the lock.
+        """
+        # A. Missing post-state (e.g. lab complete_observation returns None)
+        hyp1 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        with patch.object(self.lab, "complete_observation", return_value=None):
+            res1, fnd1 = self.engine.execute_hypothesis(hyp1, auto_approve=True)
+
+        self.assertIsNone(fnd1)
+        self.assertFalse(res1.is_vulnerable)
+        self.assertNotEqual(res1.confidence, RaceConfidence.CONFIRMED)
+        self.assertIn(res1.confidence, (RaceConfidence.INCONCLUSIVE, RaceConfidence.SUSPECTED))
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+        # B. Externally supplied post-state
+        hyp2 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/idempotency-race",
+            RaceCategory.IDEMPOTENCY_BYPASS,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        external_claim = {"order_count": 99, "source": "EXTERNAL_CLAIM"}
+        res2, fnd2 = self.engine.execute_hypothesis(hyp2, auto_approve=True, post_state_data=external_claim)
+
+        self.assertNotEqual(res2.confidence, RaceConfidence.CONFIRMED)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+        # C. Subsequent execution can acquire lock and succeed normally
+        self.lab.reset_state()
+        hyp3 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/coupon-race",
+            RaceCategory.DOUBLE_SPEND,
+            burst_size=4,
+            allowed_limit=1,
+        )
+        res3, fnd3 = self.engine.execute_hypothesis(hyp3, auto_approve=True)
+        self.assertTrue(res3.is_vulnerable)
+        self.assertEqual(res3.confidence, RaceConfidence.CONFIRMED)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+    def test_evidence_evaluation_failure_releases_lock_and_cleans_up_observation(self):
+        """
+        Requirement 5 & 6: An evidence-evaluation failure does not leave acquired
+        measurement locks or active observations behind, and subsequent executions
+        can acquire the lock.
+        """
+        hyp1 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        with patch.object(ConcurrencyInvariantEngine, "evaluate_burst_results", side_effect=ValueError("Simulated invariant crash")):
+            with self.assertRaises(ValueError) as ctx:
+                self.engine.execute_hypothesis(hyp1, auto_approve=True)
+            self.assertIn("Simulated invariant crash", str(ctx.exception))
+
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+        # Assert subsequent execution acquires lock and succeeds
+        self.lab.reset_state()
+        hyp2 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/coupon-race",
+            RaceCategory.DOUBLE_SPEND,
+            burst_size=4,
+            allowed_limit=1,
+        )
+        res2, fnd2 = self.engine.execute_hypothesis(hyp2, auto_approve=True)
+        self.assertTrue(res2.is_vulnerable)
+        self.assertEqual(res2.confidence, RaceConfidence.CONFIRMED)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+    def test_ownership_safe_release_enforces_lock_defects(self):
+        """
+        Requirement C: LocalConcurrencyLab.release_measurement_lock() does not swallow
+        lock-ownership defects; releasing an unowned lock raises RuntimeError.
+        """
+        self.assertFalse(self.lab.is_measurement_locked())
+        # Calling release when unacquired must raise RuntimeError
+        with self.assertRaises(RuntimeError):
+            self.lab.release_measurement_lock()
+
+        # When acquired, release succeeds and clears the locked state
+        self.assertTrue(self.lab.acquire_measurement_lock(timeout=1.0))
+        self.assertTrue(self.lab.is_measurement_locked())
+        self.lab.release_measurement_lock()
+        self.assertFalse(self.lab.is_measurement_locked())
+
 
 if __name__ == "__main__":
     unittest.main()

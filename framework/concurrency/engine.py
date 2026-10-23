@@ -14,6 +14,7 @@ import json
 import os
 import re
 import socket
+import sys
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
@@ -399,15 +400,35 @@ class RaceIntelligenceEngine:
         measurement_locked = False
         if self.lab_mode and lab and hasattr(lab, "acquire_measurement_lock"):
             measurement_locked = lab.acquire_measurement_lock(timeout=15.0)
+            if not measurement_locked:
+                reason = "Measurement lock acquisition timed out or failed; isolated measurement window could not be established."
+                hypothesis.lifecycle_state = FindingLifecycle.OBSERVED
+                hypothesis.notes = f"Inconclusive: {reason}"
+                self.state_mgr.save_hypothesis(hypothesis)
+                res = RaceConditionTestResult(
+                    hypothesis_id=hypothesis.hypothesis_id,
+                    category=hypothesis.category,
+                    confidence=RaceConfidence.INCONCLUSIVE,
+                    lifecycle_state=FindingLifecycle.OBSERVED,
+                    severity="INFORMATIONAL",
+                    is_vulnerable=False,
+                    burst_size=0,
+                    success_count=0,
+                    failure_count=0,
+                    reasons=[reason],
+                    evidence={},
+                    executions=[],
+                )
+                return res, None
 
         observation_started = False
         observation_completed = False
 
-        if self.lab_mode and lab and hasattr(lab, "start_observation"):
-            lab.start_observation(observation_id)
-            observation_started = True
-
         try:
+            if self.lab_mode and lab and hasattr(lab, "start_observation"):
+                lab.start_observation(observation_id)
+                observation_started = True
+
             scoped_dispatch = lambda r: self._send_request_safe(r, budget_ctx=budget_ctx)
 
             # Dispatch synchronized burst with isolated budget context
@@ -424,39 +445,63 @@ class RaceIntelligenceEngine:
                 if self.lab_mode and lab:
                     if hasattr(lab, "complete_observation"):
                         post_state_data = lab.complete_observation(observation_id)
-                        observation_completed = True
+                        if post_state_data is not None:
+                            observation_completed = True
+                        else:
+                            if hasattr(lab, "discard_observation"):
+                                lab.discard_observation(observation_id)
+                            observation_completed = True
                     elif hasattr(lab, "get_authoritative_state"):
                         post_state_data = lab.get_authoritative_state(observation_id=observation_id)
-                        observation_completed = True
+                        if post_state_data is not None:
+                            observation_completed = True
+                        else:
+                            if hasattr(lab, "discard_observation"):
+                                lab.discard_observation(observation_id)
+                            observation_completed = True
             else:
                 # If external post_state_data was explicitly supplied, ensure the started lab observation
                 # is safely discarded and not leaked in active observations.
                 if observation_started and lab and hasattr(lab, "discard_observation"):
                     lab.discard_observation(observation_id)
                     observation_completed = True
-        finally:
-            # Ensure any uncompleted observation (e.g. on dispatch exception or early exit) is discarded safely
-            if observation_started and not observation_completed and lab and hasattr(lab, "discard_observation"):
-                lab.discard_observation(observation_id)
-            if measurement_locked and lab and hasattr(lab, "release_measurement_lock"):
-                lab.release_measurement_lock()
 
-        # Evaluate invariants
-        (
-            is_vuln,
-            confidence,
-            lifecycle,
-            severity,
-            reasons,
-            evidence_dict,
-        ) = ConcurrencyInvariantEngine.evaluate_burst_results(
-            category=hypothesis.category,
-            allowed_limit=hypothesis.allowed_limit,
-            executions=executions,
-            responses=responses,
-            post_state_data=post_state_data,
-            expected_observation_id=observation_id,
-        )
+            # Evaluate invariants
+            (
+                is_vuln,
+                confidence,
+                lifecycle,
+                severity,
+                reasons,
+                evidence_dict,
+            ) = ConcurrencyInvariantEngine.evaluate_burst_results(
+                category=hypothesis.category,
+                allowed_limit=hypothesis.allowed_limit,
+                executions=executions,
+                responses=responses,
+                post_state_data=post_state_data,
+                expected_observation_id=observation_id,
+            )
+        finally:
+            try:
+                # Ensure any uncompleted or unremoved observation is discarded safely
+                if lab and hasattr(lab, "discard_observation"):
+                    if not observation_completed or (hasattr(lab, "is_observation_active") and lab.is_observation_active(observation_id)):
+                        try:
+                            lab.discard_observation(observation_id)
+                        except Exception:
+                            if sys.exc_info()[0] is None:
+                                raise
+            finally:
+                # Release measurement lock if held, even if observation discard failed
+                if measurement_locked and lab and hasattr(lab, "release_measurement_lock"):
+                    try:
+                        lab.release_measurement_lock()
+                    except Exception:
+                        if sys.exc_info()[0] is None:
+                            raise
+                    finally:
+                        measurement_locked = False
 
         success_count = sum(1 for e in executions if 200 <= e.status_code < 300)
         failure_count = len(executions) - success_count
