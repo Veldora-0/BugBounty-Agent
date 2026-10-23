@@ -29,15 +29,22 @@ from framework.concurrency.engine import (
     RaceIntelligenceEngine,
     _classify_request_exception,
 )
-from framework.concurrency.invariants import ConcurrencyInvariantEngine
+from framework.concurrency.invariants import (
+    ConcurrencyInvariantEngine,
+    ResourceIdentityTracker,
+)
 from framework.concurrency.lab import LocalConcurrencyLab
 from framework.concurrency.model import (
     ConcurrencyProbePlan,
+    EvidenceSource,
+    HypothesisBudgetContext,
+    PostStateEvidence,
     RaceCategory,
     RaceConfidence,
     RaceConditionHypothesis,
     RaceConditionTestResult,
     SingleProbeExecution,
+    WorkerLifecycleState,
 )
 from framework.concurrency.policy import ConcurrencySafetyPolicy
 from framework.concurrency.state import ConcurrencyStateManager
@@ -1119,7 +1126,7 @@ class TestWorkerTimeoutLifecycle(unittest.TestCase):
 
         # Worker 1 timed out
         self.assertEqual(results[1][0].status_code, 0)
-        self.assertEqual(results[1][0].error, "Worker execution timed out")
+        self.assertIn("Worker execution timed out", results[1][0].error)
         self.assertIsNone(results[1][1])
 
         # Wait for hanging thread to finish
@@ -1127,8 +1134,387 @@ class TestWorkerTimeoutLifecycle(unittest.TestCase):
 
         # Confirm results[1] was NOT mutated by the late finish
         self.assertEqual(results[1][0].status_code, 0)
-        self.assertEqual(results[1][0].error, "Worker execution timed out")
+        self.assertIn("Worker execution timed out", results[1][0].error)
         self.assertIsNone(results[1][1])
+
+
+class TestBlockerAResourceIdentity(unittest.TestCase):
+    """
+    Blocker A Regression Tests:
+    - Never treat two different field names containing the same identifier as two different resources.
+    - Multiple aliases of the same underlying identifier do not inflate the count.
+    - Two genuinely distinct resource identifiers can be distinguished when their identity semantics are documented.
+    - Repeated successful HTTP responses without evidence of a business-state violation do not confirm a race condition.
+    - A counter or identifier appearing only in a response is not automatically considered proof of committed state.
+    """
+
+    def test_field_aliases_count_as_one_resource(self):
+        """1. Object containing order_id: ORD-1 and id: ORD-1 yields exactly one resource entity."""
+        body = '{"order_id": "ORD-1", "id": "ORD-1", "uuid": "ORD-1", "status": "CREATED"}'
+        rid = ResourceIdentityTracker.extract_primary_resource_id(RaceCategory.IDEMPOTENCY_BYPASS, body)
+        self.assertEqual(rid, "ORD-1")
+
+        # Three responses all returning the same order_id: ORD-1 with aliases
+        execs = [
+            SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet=body),
+            SingleProbeExecution(request_index=1, status_code=200, response_time_ms=10.5, body_snippet=body),
+            SingleProbeExecution(request_index=2, status_code=200, response_time_ms=11.0, body_snippet=body),
+        ]
+        resps = [
+            ControlledResponse(status_code=200, body_text=body, headers={}),
+            ControlledResponse(status_code=200, body_text=body, headers={}),
+            ControlledResponse(status_code=200, body_text=body, headers={}),
+        ]
+
+        is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.IDEMPOTENCY_BYPASS,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+        )
+
+        self.assertFalse(is_vuln)
+        self.assertEqual(conf, RaceConfidence.CONCURRENCY_CONTROLLED)
+        self.assertEqual(evidence["distinct_resources_count"], 1)
+        self.assertEqual(evidence["distinct_resource_ids"], ["ORD-1"])
+
+    def test_distinct_resource_ids_confirmed_when_exceeding_limit(self):
+        """2. Genuinely distinct resource IDs (ORD-1 vs ORD-2) confirm idempotency bypass."""
+        body1 = '{"order_id": "ORD-1", "id": "ORD-1"}'
+        body2 = '{"order_id": "ORD-2", "id": "ORD-2"}'
+        execs = [
+            SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet=body1),
+            SingleProbeExecution(request_index=1, status_code=200, response_time_ms=10.5, body_snippet=body2),
+        ]
+        resps = [
+            ControlledResponse(status_code=200, body_text=body1, headers={}),
+            ControlledResponse(status_code=200, body_text=body2, headers={}),
+        ]
+
+        is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.IDEMPOTENCY_BYPASS,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+        )
+
+        self.assertTrue(is_vuln)
+        self.assertEqual(conf, RaceConfidence.CONFIRMED)
+        self.assertEqual(evidence["distinct_resources_count"], 2)
+        self.assertEqual(evidence["distinct_resource_ids"], ["ORD-1", "ORD-2"])
+
+    def test_counter_only_in_response_does_not_prove_state(self):
+        """3. A counter appearing only in a response body is not automatically proof of committed state."""
+        body = '{"status": "VOTE_RECORDED", "total_votes": 2}'
+        execs = [
+            SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet=body),
+            SingleProbeExecution(request_index=1, status_code=200, response_time_ms=10.0, body_snippet=body),
+        ]
+        resps = [
+            ControlledResponse(status_code=200, body_text=body, headers={}),
+            ControlledResponse(status_code=200, body_text=body, headers={}),
+        ]
+
+        is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=None,
+        )
+
+        self.assertFalse(is_vuln)
+        self.assertEqual(conf, RaceConfidence.INCONCLUSIVE)
+        self.assertIn("observed_response_counters", evidence)
+        self.assertEqual(evidence["distinct_resources_count"], 0)
+
+    def test_trivial_non_identifiers_ignored(self):
+        """4. Trivial boolean and status strings are rejected as resource identities."""
+        body = '{"id": "ok", "order_id": "true", "status": "success"}'
+        rid = ResourceIdentityTracker.extract_primary_resource_id(RaceCategory.IDEMPOTENCY_BYPASS, body)
+        self.assertIsNone(rid)
+
+
+class TestBlockerBPostStateProvenance(unittest.TestCase):
+    """
+    Blocker B Regression Tests:
+    - Separate untrusted observations and caller-supplied claims from verified post-state evidence.
+    - Plain dict {"overrun_verified": True} does not establish authoritative evidence by itself.
+    - Untrusted caller counters do not independently confirm a vulnerability.
+    - Contradictory pre-state and post-state observations fail closed (inconclusive).
+    - Properly verified evidence from supported trusted boundary establishes violation.
+    """
+
+    def test_untrusted_caller_flag_cannot_confirm(self):
+        """1. Plain dictionary overrun_verified: true lacks authoritative provenance and cannot confirm."""
+        execs = [
+            SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet='{"status": "ok"}'),
+            SingleProbeExecution(request_index=1, status_code=200, response_time_ms=10.0, body_snippet='{"status": "ok"}'),
+        ]
+        resps = [
+            ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
+            ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
+        ]
+        untrusted_post_state = {"overrun_verified": True}
+
+        is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=untrusted_post_state,
+        )
+
+        self.assertFalse(is_vuln)
+        self.assertEqual(conf, RaceConfidence.INCONCLUSIVE)
+        self.assertIn("lacks authoritative provenance", reasons[0])
+
+    def test_untrusted_caller_counter_cannot_confirm(self):
+        """2. Untrusted caller-supplied counters do not independently confirm a vulnerability."""
+        execs = [
+            SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet='{"status": "ok"}'),
+            SingleProbeExecution(request_index=1, status_code=200, response_time_ms=10.0, body_snippet='{"status": "ok"}'),
+        ]
+        resps = [
+            ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
+            ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
+        ]
+        caller_claims = {"source": "UNTRUSTED_CALLER_CLAIM", "post_state": {"redemptions": 10}}
+
+        is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.DOUBLE_SPEND,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=caller_claims,
+        )
+
+        self.assertFalse(is_vuln)
+        self.assertEqual(conf, RaceConfidence.INCONCLUSIVE)
+
+    def test_authoritative_lab_provenance_confirms(self):
+        """3. Authoritative evidence from trusted lab fixture establishes violation."""
+        execs = [
+            SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet='{"status": "ok"}'),
+            SingleProbeExecution(request_index=1, status_code=200, response_time_ms=10.0, body_snippet='{"status": "ok"}'),
+        ]
+        resps = [
+            ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
+            ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
+        ]
+        verified_evidence = PostStateEvidence(
+            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
+            pre_state={"coupon_redemptions": 0},
+            post_state={"coupon_redemptions": 2},
+            verified_endpoint="http://127.0.0.1:8080/state/status",
+        )
+
+        is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.DOUBLE_SPEND,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=verified_evidence,
+        )
+
+        self.assertTrue(is_vuln)
+        self.assertEqual(conf, RaceConfidence.CONFIRMED)
+        self.assertEqual(sev, "HIGH")
+
+    def test_contradictory_pre_and_post_state_fails_closed(self):
+        """4. Contradictory pre-state and post-state observations fail closed as INCONCLUSIVE."""
+        execs = [
+            SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet='{"status": "ok"}'),
+        ]
+        resps = [
+            ControlledResponse(status_code=200, body_text='{"status": "ok"}', headers={}),
+        ]
+        contradictory_evidence = PostStateEvidence(
+            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
+            pre_state={"count": 5},
+            post_state={"count": 2},  # impossible decrement
+        )
+
+        is_vuln, conf, lifecycle, sev, reasons, evidence = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=contradictory_evidence,
+        )
+
+        self.assertFalse(is_vuln)
+        self.assertEqual(conf, RaceConfidence.INCONCLUSIVE)
+        self.assertIn("failed consistency check", reasons[0])
+
+
+class TestBlockerCWorkerLifecycleAndCancellation(unittest.TestCase):
+    """
+    Blocker C Regression Tests:
+    - Distinguish completed, failed, cancelled, and timed-out unresolved operations.
+    - Total waiting time does not grow linearly with number of workers.
+    - Late workers cannot corrupt finalized results.
+    - Subsequent burst remains isolated from late worker of previous burst.
+    """
+
+    def test_bounded_overall_deadline_prevents_linear_wait(self):
+        """1. 4 hanging workers join within single bounded deadline without 4x sequential wait."""
+        def slow_dispatch(req: ControlledRequest) -> ControlledResponse:
+            time.sleep(1.0)
+            return ControlledResponse(status_code=200, body_text="{}", headers={})
+
+        synchronizer = BarrierSynchronizer(dispatch_fn=slow_dispatch, timeout=1.0)
+        base_req = ControlledRequest(method="POST", url="http://127.0.0.1/test")
+
+        start_t = time.monotonic()
+        results = synchronizer.dispatch_burst(base_req, burst_size=4)
+        elapsed = time.monotonic() - start_t
+
+        # If it waited sequentially for 4 workers, elapsed would be >= 4.0s.
+        # With single bounded deadline (timeout + 1.0s), elapsed is strictly < 3.0s.
+        self.assertLess(elapsed, 3.0)
+        self.assertEqual(len(results), 4)
+
+    def test_subsequent_burst_isolated_from_previous_late_worker(self):
+        """2. A late worker from burst 1 cannot mutate the container of burst 2."""
+        burst1_barrier = threading.Barrier(2)
+
+        def selective_dispatch(req: ControlledRequest) -> ControlledResponse:
+            if req.headers.get("X-Burst") == "1" and req.headers.get("X-Worker") == "1":
+                # Late worker hangs until burst 2 has started
+                burst1_barrier.wait(timeout=2.0)
+                time.sleep(0.05)
+                return ControlledResponse(status_code=200, body_text='{"polluted": true}', headers={})
+            return ControlledResponse(status_code=200, body_text='{"clean": true}', headers={})
+
+        synchronizer = BarrierSynchronizer(dispatch_fn=selective_dispatch, timeout=1.0)
+
+        # Burst 1: worker 1 will time out
+        req1 = ControlledRequest(method="POST", url="http://127.0.0.1/test", headers={"X-Burst": "1"})
+        mutations1 = [{"headers": {"X-Worker": "0"}}, {"headers": {"X-Worker": "1"}}]
+
+        real_join = threading.Thread.join
+        def mock_join(self, timeout=None):
+            if "bb-race-worker-1" in self.name:
+                return  # timeout worker 1
+            real_join(self, timeout)
+
+        with patch.object(threading.Thread, "join", mock_join):
+            results1 = synchronizer.dispatch_burst(req1, burst_size=2, per_request_mutations=mutations1)
+
+        self.assertEqual(results1[1][0].worker_state, WorkerLifecycleState.TIMED_OUT_UNRESOLVED)
+
+        # Release hanging worker in background while launching Burst 2
+        burst1_barrier.wait(timeout=2.0)
+
+        # Burst 2: completely separate execution
+        req2 = ControlledRequest(method="POST", url="http://127.0.0.1/test", headers={"X-Burst": "2"})
+        results2 = synchronizer.dispatch_burst(req2, burst_size=2)
+
+        self.assertEqual(results2[0][0].worker_state, WorkerLifecycleState.COMPLETED)
+        self.assertEqual(results2[1][0].worker_state, WorkerLifecycleState.COMPLETED)
+        self.assertIn("clean", results2[1][0].body_snippet)
+        self.assertNotIn("polluted", results2[1][0].body_snippet)
+
+
+class TestBlockerDRequestBudgetIsolation(unittest.TestCase):
+    """
+    Blocker D Regression Tests:
+    - Define request budget exact ownership and lifetime.
+    - Two concurrently executed hypotheses maintain separate budget accounting.
+    - Configured limits > 15 clamped to 15; negative clamped to 1.
+    - Concurrent workers cannot collectively bypass hypothesis budget.
+    """
+
+    def test_isolated_hypothesis_budget_contexts(self):
+        """1. Two separate hypotheses have isolated request accounting."""
+        ctx_a = HypothesisBudgetContext("hyp-a", max_requests=3)
+        ctx_b = HypothesisBudgetContext("hyp-b", max_requests=3)
+
+        # Consume all 3 slots of hyp-a
+        self.assertTrue(ctx_a.try_acquire_slot()[0])
+        self.assertTrue(ctx_a.try_acquire_slot()[0])
+        self.assertTrue(ctx_a.try_acquire_slot()[0])
+        self.assertFalse(ctx_a.try_acquire_slot()[0])  # 4th blocked
+
+        # hyp-b must still have all 3 slots available
+        self.assertEqual(ctx_b.dispatched_count, 0)
+        self.assertTrue(ctx_b.try_acquire_slot()[0])
+        self.assertEqual(ctx_b.dispatched_count, 1)
+
+    def test_budget_bounds_clamped_strictly(self):
+        """2. Excessive limit clamped to 15; zero or negative clamped to 1."""
+        ctx_high = HypothesisBudgetContext("high", max_requests=100)
+        self.assertEqual(ctx_high.max_requests, 15)
+
+        ctx_neg = HypothesisBudgetContext("neg", max_requests=-10)
+        self.assertEqual(ctx_neg.max_requests, 1)
+
+    def test_concurrent_workers_budget_thread_safety(self):
+        """3. Parallel threads cannot exceed hypothesis budget."""
+        ctx = HypothesisBudgetContext("par", max_requests=5)
+        success_slots = []
+        rejected_slots = []
+
+        def worker_task():
+            ok, num = ctx.try_acquire_slot()
+            if ok:
+                success_slots.append(num)
+            else:
+                rejected_slots.append(num)
+
+        threads = [threading.Thread(target=worker_task) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(success_slots), 5)
+        self.assertEqual(len(rejected_slots), 5)
+        self.assertEqual(ctx.dispatched_count, 5)
+
+
+class TestSSRFAndHostnameResolutionBoundaries(unittest.TestCase):
+    """
+    SSRF & Destination Resolution Tests:
+    - Hostname resolving to private/loopback/metadata IP is blocked in production mode.
+    - Mock DNS resolver enables deterministic offline testing.
+    - Preflight DNS validation limitations are documented.
+    """
+
+    def test_hostname_resolving_to_private_ip_blocked(self):
+        """1. Hostname resolving to private IP 10.0.0.1 is blocked by policy."""
+        mock_resolver = lambda h: ["10.0.0.1"]
+        policy = ConcurrencySafetyPolicy(lab_mode=False, resolver=mock_resolver)
+
+        with self.assertRaises(PolicyViolationError) as ctx:
+            policy.validate_request_safety("POST", "http://evil-private.test/api")
+        self.assertIn("resolves to prohibited destination IP '10.0.0.1'", str(ctx.exception))
+
+    def test_hostname_resolving_to_loopback_blocked(self):
+        """2. Hostname resolving to loopback 127.0.0.1 is blocked in production mode."""
+        mock_resolver = lambda h: ["127.0.0.1"]
+        policy = ConcurrencySafetyPolicy(lab_mode=False, resolver=mock_resolver)
+
+        with self.assertRaises(PolicyViolationError) as ctx:
+            policy.validate_request_safety("POST", "http://internal-local.test/api")
+        self.assertIn("resolves to prohibited destination IP '127.0.0.1'", str(ctx.exception))
+
+    def test_hostname_resolving_to_metadata_blocked(self):
+        """3. Hostname resolving to cloud metadata 169.254.169.254 is blocked."""
+        mock_resolver = lambda h: ["169.254.169.254"]
+        policy = ConcurrencySafetyPolicy(lab_mode=False, resolver=mock_resolver)
+
+        with self.assertRaises(PolicyViolationError) as ctx:
+            policy.validate_request_safety("POST", "http://magic-metadata.test/api")
+        self.assertIn("resolves to prohibited destination IP '169.254.169.254'", str(ctx.exception))
+
+    def test_hostname_resolving_to_public_ip_permitted(self):
+        """4. Hostname resolving to public routable IP is permitted."""
+        mock_resolver = lambda h: ["93.184.216.34"]
+        policy = ConcurrencySafetyPolicy(lab_mode=False, resolver=mock_resolver)
+        # Should not raise
+        policy.validate_request_safety("POST", "https://authorized.example.com/api")
 
 
 if __name__ == "__main__":

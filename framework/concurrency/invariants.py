@@ -5,24 +5,105 @@ Differentiates between confirmed race-condition vulnerabilities (CONFIRMED),
 proper server-side concurrency serialization/locks (CONCURRENCY_CONTROLLED),
 and ambiguous timing/network jitter (INCONCLUSIVE).
 
-Strictly enforces reliable proof of business-state mutation (distinct committed
-resource IDs, server post-state counter > limit, negative balance) or verified
-distributed workflow desynchronization before classifying as CONFIRMED.
+Strictly enforces:
+1. Genuinely distinct resource entity identity (preventing field-alias inflation).
+2. Distinction between entity identities, counters, response counts, and HTTP status codes.
+3. Provenance validation for post-state evidence (untrusted caller claims rejected).
+4. Unresolved in-flight worker timeouts fail closed to INCONCLUSIVE.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from framework.concurrency.model import (
+    EvidenceSource,
+    PostStateEvidence,
     RaceCategory,
     RaceConfidence,
     SingleProbeExecution,
+    WorkerLifecycleState,
 )
 from framework.findings.lifecycle import FindingLifecycle
 from framework.validation.request import ControlledResponse
+
+
+class ResourceIdentityTracker:
+    """
+    Extracts and validates genuinely distinct business resource identities from responses.
+    Prevents field-alias inflation (e.g. order_id: ORD-1 and id: ORD-1 refer to the same resource).
+    Ensures counters, status codes, and response counts are not mixed into identity sets.
+    """
+
+    # Category-specific primary identifier keys in precedence order
+    CATEGORY_PRIMARY_KEYS: Dict[RaceCategory, List[str]] = {
+        RaceCategory.IDEMPOTENCY_BYPASS: ["order_id", "order", "id", "uuid", "resource_id", "record_id"],
+        RaceCategory.DOUBLE_SPEND: ["redemption_id", "claim_id", "coupon_id", "tx_id", "transaction_id", "id", "uuid"],
+        RaceCategory.TOCTOU: ["transaction_id", "tx_id", "transfer_id", "id", "uuid"],
+        RaceCategory.LIMIT_OVERRUN: ["vote_id", "quota_id", "allocation_id", "id", "uuid"],
+        RaceCategory.CONCURRENT_STATE_MUTATION: ["mutation_id", "record_id", "id", "uuid"],
+        RaceCategory.PARTIAL_EXECUTION_DESYNC: ["workflow_id", "step_id", "id", "uuid"],
+    }
+
+    TRIVIAL_NON_IDENTIFIERS: Set[str] = {
+        "", "none", "null", "true", "false", "ok", "success", "applied",
+        "accepted", "default", "0", "-1", "undefined", "error", "failed",
+    }
+
+    @classmethod
+    def extract_primary_resource_id(
+        cls,
+        category: RaceCategory,
+        body_text: str,
+    ) -> Optional[str]:
+        """
+        Extracts the single primary resource entity identifier from a response body.
+        Resolves field aliases: multiple fields containing the same value (e.g. order_id and id)
+        yield exactly one resource identifier.
+        """
+        if not body_text:
+            return None
+
+        # 1. Attempt JSON parsing
+        try:
+            data = json.loads(body_text)
+            if isinstance(data, dict):
+                primary_keys = cls.CATEGORY_PRIMARY_KEYS.get(
+                    category, ["id", "uuid", "resource_id", "record_id"]
+                )
+
+                # Find candidate values in priority order
+                for pk in primary_keys:
+                    if pk in data and data[pk] is not None:
+                        val = str(data[pk]).strip()
+                        if val.lower() not in cls.TRIVIAL_NON_IDENTIFIERS:
+                            return val
+
+                # If no category key matched, check generic id / uuid
+                for gk in ("id", "uuid"):
+                    if gk in data and data[gk] is not None:
+                        val = str(data[gk]).strip()
+                        if val.lower() not in cls.TRIVIAL_NON_IDENTIFIERS:
+                            return val
+
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 2. Regex fallback for prefixed identifiers (e.g. "ORD-1", "TX-123", "RDM-1")
+        regex_patterns = [
+            r'"(?:order_id|redemption_id|vote_id|tx_id|transaction_id)"\s*:\s*"([^"]+)"',
+            r'\b(?:order_id|redemption_id|vote_id|tx_id|transaction_id)\s*[:=]\s*([A-Za-z0-9_-]+)',
+        ]
+        for pat in regex_patterns:
+            m = re.search(pat, body_text, re.IGNORECASE)
+            if m:
+                val = m.group(1).strip()
+                if val.lower() not in cls.TRIVIAL_NON_IDENTIFIERS:
+                    return val
+
+        return None
 
 
 class ConcurrencyInvariantEngine:
@@ -31,31 +112,21 @@ class ConcurrencyInvariantEngine:
     @classmethod
     def _extract_response_data(
         cls,
+        category: RaceCategory,
         executions: List[SingleProbeExecution],
         responses: List[Optional[ControlledResponse]],
-    ) -> Tuple[List[str], Set[str], bool]:
+    ) -> Tuple[List[str], Set[str], bool, Dict[str, List[int]]]:
         """
-        Extracts response body representations, distinct resource IDs, and idempotency markers.
+        Extracts response bodies, genuinely distinct resource IDs, idempotency signals,
+        and observed counters (kept strictly separate from entity identities).
         """
         bodies: List[str] = []
-        distinct_ids: Set[str] = set()
+        distinct_resource_ids: Set[str] = set()
         is_idempotent = False
+        observed_counters: Dict[str, List[int]] = {}
 
-        id_keys = {
-            "order_id",
-            "redemption_id",
-            "vote_id",
-            "transaction_id",
-            "tx_id",
-            "id",
-            "uuid",
-            "resource_id",
-            "coupon_id",
-            "transfer_id",
-            "record_id",
-        }
+        counter_keys = ("total_votes", "redemptions", "counter", "order_count", "voting_count")
 
-        # Inspect responses
         for idx, exec_info in enumerate(executions):
             if not (200 <= exec_info.status_code < 300):
                 continue
@@ -70,35 +141,33 @@ class ConcurrencyInvariantEngine:
             if body_text:
                 bodies.append(body_text.strip())
 
-            # Attempt JSON parsing
+            # Extract single primary resource identity for this response
+            res_id = ResourceIdentityTracker.extract_primary_resource_id(category, body_text)
+            if res_id:
+                distinct_resource_ids.add(res_id)
+
+            # Check idempotency markers and separate counter observations
             try:
                 data = json.loads(body_text)
                 if isinstance(data, dict):
-                    # Check idempotency markers
                     if data.get("idempotent") is True:
                         is_idempotent = True
                     status_str = str(data.get("status", "")).upper()
                     if status_str in ("DUPLICATE_ORDER_IGNORED", "IDEMPOTENT_REPLAY", "CACHED", "ALREADY_PROCESSED"):
                         is_idempotent = True
 
-                    # Look for distinct identifiers
-                    for k in id_keys:
-                        if k in data and data[k] is not None:
-                            val_str = str(data[k]).strip()
-                            if val_str:
-                                distinct_ids.add(f"{k}:{val_str}")
-
-                    # Look for counter progression if distinct
-                    for c_key in ("total_votes", "redemptions", "counter", "order_count"):
-                        if c_key in data and data[c_key] is not None:
-                            distinct_ids.add(f"{c_key}:{data[c_key]}")
-
+                    # Track counters separately - never mix with resource identities!
+                    for ck in counter_keys:
+                        if ck in data and data[ck] is not None:
+                            try:
+                                c_val = int(data[ck])
+                                observed_counters.setdefault(ck, []).append(c_val)
+                            except (ValueError, TypeError):
+                                pass
             except Exception:
-                # Text or regex fallback for resource IDs
-                for m in re.finditer(r'"(?:order_id|redemption_id|vote_id|tx_id|id)"\s*:\s*"([^"]+)"', body_text):
-                    distinct_ids.add(m.group(1))
+                pass
 
-        return bodies, distinct_ids, is_idempotent
+        return bodies, distinct_resource_ids, is_idempotent, observed_counters
 
     @classmethod
     def evaluate_burst_results(
@@ -107,7 +176,7 @@ class ConcurrencyInvariantEngine:
         allowed_limit: int,
         executions: List[SingleProbeExecution],
         responses: List[Optional[ControlledResponse]],
-        post_state_data: Optional[Dict[str, Any]] = None,
+        post_state_data: Optional[Union[PostStateEvidence, Dict[str, Any]]] = None,
     ) -> Tuple[bool, RaceConfidence, FindingLifecycle, str, List[str], Dict[str, Any]]:
         """
         Evaluates concurrent burst outcomes against formal safety invariants.
@@ -134,13 +203,19 @@ class ConcurrencyInvariantEngine:
         evidence["conflict_count"] = len(conflict_execs)
         evidence["error_count"] = len(error_execs)
 
-        # 1. Check for worker timeouts or barrier synchronization errors
-        timeout_execs = [e for e in executions if e.error and "timed out" in e.error.lower()]
+        # 1. Check for unresolved in-flight worker timeouts or barrier errors
+        unresolved_workers = [
+            e for e in executions
+            if e.worker_state == WorkerLifecycleState.TIMED_OUT_UNRESOLVED
+            or (e.error and "timed out" in e.error.lower())
+        ]
         barrier_err_execs = [e for e in executions if e.error and "barrier synchronization" in e.error.lower()]
-        if timeout_execs or barrier_err_execs:
+
+        if unresolved_workers or barrier_err_execs:
+            evidence["unresolved_workers_count"] = len(unresolved_workers)
             reasons.append(
-                "Worker timeout or barrier synchronization failure: completion of all concurrent probes "
-                "could not be established; outcome inconclusive."
+                "Worker timeout or unresolved in-flight probes: one or more worker threads timed out while HTTP dispatch was in flight; "
+                "server-side state mutation outcome cannot be established safely. Outcome is inconclusive."
             )
             return (
                 False,
@@ -151,61 +226,102 @@ class ConcurrencyInvariantEngine:
                 evidence,
             )
 
-        # 2. Extract response bodies, distinct IDs, and idempotency signals
-        bodies, distinct_ids, is_idempotent = cls._extract_response_data(executions, responses)
+        # 2. Extract response representations, genuinely distinct resource IDs, and separate counters
+        bodies, distinct_resource_ids, is_idempotent, observed_counters = cls._extract_response_data(
+            category, executions, responses
+        )
         bodies_are_identical = (len(set(bodies)) == 1) if bodies else False
+        evidence["distinct_resource_ids"] = sorted(list(distinct_resource_ids))
+        evidence["distinct_resources_count"] = len(distinct_resource_ids)
+        if observed_counters:
+            evidence["observed_response_counters"] = observed_counters
 
-        # 3. Analyze authoritative post-state data if available
+        # 3. Provenance and Trust Boundary Validation for Post-State Evidence
+        post_state_evidence: Optional[PostStateEvidence] = None
+        if isinstance(post_state_data, PostStateEvidence):
+            post_state_evidence = post_state_data
+        elif isinstance(post_state_data, dict):
+            post_state_evidence = PostStateEvidence.from_dict(post_state_data)
+
         post_state_overrun = False
         post_state_controlled = False
         post_state_inconsistent = False
-        actual_server_count: Optional[int] = None
+        authoritative_counter_value: Optional[int] = None
 
-        if isinstance(post_state_data, dict) and post_state_data:
-            # Check counter metrics safely
-            counter_keys = (
-                "redemptions",
-                "count",
-                "total_votes",
-                "counter",
-                "order_count",
-                "coupon_redemptions",
-                "voting_count",
-                "transfers",
-            )
-            for ck in counter_keys:
-                if ck in post_state_data and post_state_data[ck] is not None:
-                    try:
-                        c_val = int(post_state_data[ck])
-                        actual_server_count = c_val
-                        evidence["verified_server_counter"] = c_val
-                        if c_val > allowed_limit:
-                            post_state_overrun = True
-                        else:
-                            post_state_controlled = True
-                        break
-                    except (ValueError, TypeError):
-                        pass
+        if post_state_evidence:
+            evidence["post_state_provenance"] = post_state_evidence.to_dict()
 
-            # Check balance metrics safely
-            balance_keys = ("balance", "account_balance", "remaining_balance")
-            for bk in balance_keys:
-                if bk in post_state_data and post_state_data[bk] is not None:
-                    try:
-                        b_val = float(post_state_data[bk])
-                        if b_val < 0:
-                            post_state_overrun = True
-                            evidence["negative_balance_detected"] = b_val
-                        break
-                    except (ValueError, TypeError):
-                        pass
+            # Separate untrusted caller claims from verified evidence
+            if not post_state_evidence.is_authoritative():
+                reasons.append(
+                    "Caller-supplied post-state evidence lacks authoritative provenance "
+                    f"({post_state_evidence.source.value}); cannot independently confirm state mutation."
+                )
+            else:
+                # Authoritative source: validate internal consistency
+                is_consistent, consistency_err = post_state_evidence.validate_consistency()
+                if not is_consistent:
+                    reasons.append(f"Post-state verification failed consistency check: {consistency_err}")
+                    return (
+                        False,
+                        RaceConfidence.INCONCLUSIVE,
+                        FindingLifecycle.OBSERVED,
+                        "INFORMATIONAL",
+                        reasons,
+                        evidence,
+                    )
 
-            if post_state_data.get("overrun_verified") is True:
-                post_state_overrun = True
-            if post_state_data.get("inconsistent_state") is True:
-                post_state_inconsistent = True
+                # Evaluate authoritative post-state metrics
+                ps = post_state_evidence.post_state or {}
+                pre = post_state_evidence.pre_state or {}
 
-        # 4. Check for pure transport failures
+                # Check counter metrics
+                counter_keys = (
+                    "redemptions", "count", "total_votes", "counter",
+                    "order_count", "coupon_redemptions", "voting_count", "transfers"
+                )
+                for ck in counter_keys:
+                    if ck in ps and ps[ck] is not None:
+                        try:
+                            c_val = int(ps[ck])
+                            authoritative_counter_value = c_val
+                            evidence["verified_server_counter"] = c_val
+
+                            # If pre-state is available, calculate delta
+                            if ck in pre and pre[ck] is not None:
+                                pre_val = int(pre[ck])
+                                delta = c_val - pre_val
+                                evidence["verified_counter_delta"] = delta
+                                if delta > allowed_limit:
+                                    post_state_overrun = True
+                                else:
+                                    post_state_controlled = True
+                            else:
+                                if c_val > allowed_limit:
+                                    post_state_overrun = True
+                                else:
+                                    post_state_controlled = True
+                            break
+                        except (ValueError, TypeError):
+                            pass
+
+                # Check balance metrics for overdraw
+                for bk in ("balance", "account_balance", "remaining_balance"):
+                    if bk in ps and ps[bk] is not None:
+                        try:
+                            b_val = float(ps[bk])
+                            if b_val < 0:
+                                post_state_overrun = True
+                                evidence["negative_balance_detected"] = b_val
+                            break
+                        except (ValueError, TypeError):
+                            pass
+
+                # Check distributed inconsistent state
+                if ps.get("inconsistent_state") is True:
+                    post_state_inconsistent = True
+
+        # 4. Check for pure transport failure
         if len(error_execs) == len(executions) and category != RaceCategory.PARTIAL_EXECUTION_DESYNC:
             reasons.append("All concurrent probes encountered transport errors or timeouts; outcome inconclusive.")
             return (
@@ -217,18 +333,18 @@ class ConcurrencyInvariantEngine:
                 evidence,
             )
 
-        # 5. Case: Limit Overrun, Double Spend, TOCTOU, Concurrent State Mutation
+        # 5. Invariant Evaluation: Limit Overrun, Double Spend, TOCTOU, Concurrent State Mutation
         if category in (
             RaceCategory.LIMIT_OVERRUN,
             RaceCategory.DOUBLE_SPEND,
             RaceCategory.TOCTOU,
             RaceCategory.CONCURRENT_STATE_MUTATION,
         ):
-            # A. Authoritative post-state proves overrun
+            # Authoritative post-state proves overrun
             if post_state_overrun:
-                count_desc = f"{actual_server_count} mutations" if actual_server_count is not None else "overrun"
+                count_str = f"{authoritative_counter_value} mutations" if authoritative_counter_value is not None else "overrun"
                 reasons.append(
-                    f"Invariant violated: verified server-side state mutation ({count_desc}) "
+                    f"Invariant violated: verified server-side state mutation ({count_str}) "
                     f"exceeded authorized limit of {allowed_limit}."
                 )
                 severity = "HIGH" if category == RaceCategory.DOUBLE_SPEND else "MEDIUM"
@@ -241,7 +357,7 @@ class ConcurrencyInvariantEngine:
                     evidence,
                 )
 
-            # B. Authoritative post-state proves only allowed operations were committed
+            # Authoritative post-state proves operations bounded within limit
             if post_state_controlled:
                 reasons.append(
                     f"Concurrency controlled: server-side state verified bounded within "
@@ -256,12 +372,12 @@ class ConcurrencyInvariantEngine:
                     evidence,
                 )
 
-            # C. Distinct committed resource IDs returned across concurrent responses
-            if len(distinct_ids) > allowed_limit:
-                evidence["distinct_resource_ids"] = sorted(list(distinct_ids))
+            # Genuinely distinct committed resource entities returned across responses
+            if len(distinct_resource_ids) > allowed_limit:
                 reasons.append(
-                    f"Invariant violated: {len(distinct_ids)} distinct committed resource identifiers "
-                    f"({', '.join(sorted(list(distinct_ids))[:3])}) returned, exceeding authorized limit of {allowed_limit}."
+                    f"Invariant violated: {len(distinct_resource_ids)} genuinely distinct committed resource identifiers "
+                    f"({', '.join(sorted(list(distinct_resource_ids))[:3])}) returned across concurrent responses, "
+                    f"exceeding authorized limit of {allowed_limit}."
                 )
                 severity = "HIGH" if category == RaceCategory.DOUBLE_SPEND else "MEDIUM"
                 return (
@@ -273,7 +389,7 @@ class ConcurrencyInvariantEngine:
                     evidence,
                 )
 
-            # D. Multiple 200 OK responses, but identical bodies / no verified mutation proof
+            # Multiple 200 OK responses, but no distinct resource IDs and no authoritative post-state proof
             if success_count > allowed_limit:
                 if is_idempotent:
                     reasons.append(
@@ -303,7 +419,7 @@ class ConcurrencyInvariantEngine:
                     )
                 reasons.append(
                     f"Ambiguous outcome: {success_count} successful responses returned but lacked "
-                    f"distinct committed resource identifiers or post-state mutation proof; outcome inconclusive."
+                    f"distinct committed resource identifiers or authoritative post-state mutation proof; outcome inconclusive."
                 )
                 return (
                     False,
@@ -314,7 +430,7 @@ class ConcurrencyInvariantEngine:
                     evidence,
                 )
 
-            # E. Properly serialized / rate limited / controlled concurrency
+            # Normal concurrency controls (409 Conflict, 429 RateLimit, or serialized success)
             if success_count <= allowed_limit and (conflict_execs or bad_req_execs or success_count == allowed_limit):
                 reasons.append(
                     f"Concurrency controlled: {success_count} action succeeded and subsequent requests were "
@@ -329,13 +445,12 @@ class ConcurrencyInvariantEngine:
                     evidence,
                 )
 
-        # 6. Case: Idempotency Bypass
+        # 6. Invariant Evaluation: Idempotency Bypass
         elif category == RaceCategory.IDEMPOTENCY_BYPASS:
-            if post_state_overrun or len(distinct_ids) > allowed_limit:
-                evidence["distinct_resource_ids"] = sorted(list(distinct_ids))
+            if len(distinct_resource_ids) > allowed_limit:
                 reasons.append(
-                    f"Idempotency invariant breached: {len(distinct_ids) or success_count} distinct duplicate operations "
-                    f"processed without atomic deduplication."
+                    f"Idempotency invariant breached: {len(distinct_resource_ids)} distinct duplicate records "
+                    f"({', '.join(sorted(list(distinct_resource_ids))[:3])}) created without atomic deduplication."
                 )
                 return (
                     True,
@@ -345,10 +460,10 @@ class ConcurrencyInvariantEngine:
                     reasons,
                     evidence,
                 )
-            if is_idempotent or (bodies_are_identical and len(distinct_ids) <= allowed_limit) or post_state_controlled:
+            if is_idempotent or (bodies_are_identical and len(distinct_resource_ids) <= allowed_limit) or post_state_controlled:
                 reasons.append(
                     "Duplicate submission prevented: duplicate requests safely deduplicated or "
-                    "returned idempotent cached response."
+                    "returned idempotent cached representation."
                 )
                 return (
                     False,
@@ -381,14 +496,15 @@ class ConcurrencyInvariantEngine:
                 evidence,
             )
 
-        # 7. Case: Distributed Workflow Partial Desynchronization
+        # 7. Invariant Evaluation: Distributed Partial Rollback / Desynchronization
         elif category == RaceCategory.PARTIAL_EXECUTION_DESYNC:
             has_inconsistent_proof = False
             details = ""
 
             if post_state_inconsistent:
                 has_inconsistent_proof = True
-                details = str(post_state_data.get("details", "post-state verified rollback failure"))
+                ps = post_state_evidence.post_state if post_state_evidence else {}
+                details = str(ps.get("details", "authoritative post-state verified rollback failure"))
             else:
                 for resp in responses:
                     if resp:
@@ -424,7 +540,6 @@ class ConcurrencyInvariantEngine:
                     evidence,
                 )
 
-            # Partial failure or 500 error where consistency could NOT be established
             reasons.append(
                 "Distributed workflow failure encountered but transactional state consistency or "
                 "rollback failure could not be established; outcome inconclusive."
@@ -438,7 +553,7 @@ class ConcurrencyInvariantEngine:
                 evidence,
             )
 
-        # Fallback: Inconclusive
+        # Fallback
         reasons.append("Ambiguous response distribution under concurrent probe burst; invariant violation not proven.")
         return (
             False,

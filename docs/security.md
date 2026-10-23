@@ -134,27 +134,41 @@ The framework code enforces the following non-negotiable architectural boundarie
 1. **Precision Barrier Synchronization Over Volumetric Flooding**:
    * Race condition testing uses precision barrier synchronization (`threading.Barrier`) to hold pre-armed parallel worker threads and release them simultaneously into the server-side microsecond execution window.
    * Eliminates the need for high-volume request floods, stress testing, or volumetric denial-of-service.
-2. **Strict Concurrency Bounds & Clamping**:
+2. **Strict Concurrency Bounds, Budget Isolation & Clamping**:
    * Probes are strictly bounded to 2–5 parallel threads (`DEFAULT_BURST_SIZE = 4`), with a hard, un-overrideable safety cap of 10 (`MAX_BURST_SIZE = 10`).
-   * Maximum requests per test are capped at 15 (`MAX_REQUESTS_PER_TEST = 15`), preventing runaway retry loops or server-side exhaustion.
+   * Request budgets are strictly isolated per hypothesis via `HypothesisBudgetContext`, preventing parallel or sequential tests from consuming or resetting each other's budgets.
+   * Maximum requests per test are clamped to a hard ceiling of 15 (`MAX_REQUESTS_PER_TEST = 15`), preventing runaway retry loops or server-side exhaustion.
    * Prohibits destructive HTTP methods (`TRACE` is strictly blocked by policy).
-3. **Contention vs. Vulnerability Invariant Discrimination & Evidence Standards**:
+3. **Contention vs. Vulnerability Invariant Discrimination & Resource Identity Hardening**:
    * Findings are strictly disallowed from being classified as `CONFIRMED` based solely on HTTP status code counts (`success_count > allowed_limit`).
+   * `ResourceIdentityTracker` resolves canonical entity IDs using category-prioritized keys (`order_id`, `redemption_id`, `vote_id`, `tx_id`, `id`) and deduplicates field aliases within the same response (e.g. `order_id: ORD-1` and `id: ORD-1` resolve to one entity, not two).
+   * Resource identity sets are strictly isolated from scalar numeric counters (`items_count: 2`), response status counts, and nonces/timestamps.
    * Confirmation requires reliable proof of business-state mutation:
-     * Distinct committed resource identifiers returned across concurrent responses (e.g. distinct `order_id`, `redemption_id`, `vote_id`, `tx_id`).
-     * Server post-state verification confirming multiple mutations (e.g. server counter > limit, or negative balance).
+     * Distinct committed resource identifiers returned across concurrent responses.
+     * Authoritative server post-state verification confirming multiple mutations (e.g. server counter > limit, or negative balance).
      * Verified inconsistent state or failed rollback evidence for distributed workflows (`inconsistent_state: true`).
    * Idempotent duplicate responses returning cached results or identical representations are classified as `CONCURRENCY_CONTROLLED`.
    * Identical responses with no mutation proof and missing/malformed post-state evidence are classified strictly as `INCONCLUSIVE`, never `CONFIRMED`.
    * Valid server-side serialization defenses (HTTP 409 Conflict, 429 Too Many Requests, 423 Locked) and mutex lock rejections are recognized as evidence of proper concurrency controls (`CONCURRENCY_CONTROLLED`) and are never reported as vulnerabilities.
    * Network timeouts (504 Gateway Timeout, connection drops) are classified strictly as `INCONCLUSIVE` without false positive alarms.
-4. **Offline & Transport Scope Enforcement & Anti-SSRF Protections**:
+4. **Post-State Evidence Provenance & Consistency Contracts**:
+   * Provenance of post-state evidence is tracked explicitly via `EvidenceSource`:
+     * `UNTRUSTED_CALLER_CLAIM`: Unverified caller assertions (e.g. passing `overrun_verified: true` in arguments) are strictly rejected as authoritative proof.
+     * `DIRECT_TRANSPORT_OBSERVATION`: Transport responses directly observed by the engine.
+     * `INDEPENDENT_STATE_QUERY` / `LAB_FIXTURE_AUTHORITATIVE`: Authoritative independent verification required for confirmed findings.
+   * `PostStateEvidence.validate_consistency()` validates state change directionality against operation invariants. Inconsistent observations fail closed to `INCONCLUSIVE`.
+5. **Worker Lifecycle, Bounded Deadlines & State Isolation**:
+   * Explicit lifecycle tracking: `COMPLETED`, `FAILED`, `TIMED_OUT_UNRESOLVED`, and `CANCELLED`.
+   * Monotonic deadline bounding (`time.monotonic() + timeout + 1.0`) prevents sequential linear waiting across threads ($N \times \text{timeout}$).
+   * `BurstExecutionContainer.seal()` permanently seals test containers upon join completion, locking out late-finishing background threads from mutating finalized results.
+   * Unique thread naming pattern `bb-race-worker-{i}-{burst_id}` eliminates thread tracking collisions across bursts.
+6. **Offline Scope Enforcement, Anti-SSRF & DNS Rebinding Boundaries**:
    * Scope verification executes offline before dispatching any concurrent probes; out-of-scope targets fail closed immediately.
    * In production mode, active probe dispatching strictly fails closed if `ScopeEngine` is missing, throws errors, or target is out of scope. Checks execute immediately before each dispatch in `_send_request_safe()`.
-   * Destination IPs and hostnames are validated against private RFC 1918, carrier-grade NAT, and cloud metadata addresses (`169.254.169.254`, `metadata.google.internal`).
+   * Destination IPs and hostnames are validated preflight against private RFC 1918, loopback, carrier-grade NAT, and cloud metadata addresses (`169.254.169.254`, `metadata.google.internal`).
    * Local test fixtures require explicit unprivileged integer port whitelisting (`allow_fixture_port()`).
-   * Worker lifecycle timeout and late-response lockout: completion of worker threads is tracked explicitly; late-finishing threads are locked out via completion events and cannot mutate finalized test state.
-5. **Operator Approval Gate & Zero Plaintext Secret Persistence**:
+   * **Documented DNS Rebinding Limitation**: While preflight DNS resolution prevents initial connections to private or metadata addresses, Python's standard `http.client` / `urllib.request` sockets do not support IP pinning at the transport layer. In high-risk environments, concurrency probes should route through an egress-validating proxy or an isolated network namespace.
+7. **Operator Approval Gate & Zero Plaintext Secret Persistence**:
    * Concurrent state mutation testing requires explicit operator approval (`--approve`) when `require_approval=True`.
    * Passwords, tokens, API keys, and sensitive parameters are recursively scrubbed to `[REDACTED_BY_BB_AGENT]` before persistence to `state/concurrency.json`.
    * Network and transport exceptions are mapped to sanitized generic categories via `_classify_request_exception` without exposing raw URLs, query strings, headers, or credentials in reasons, evidence, logs, findings, or reports.

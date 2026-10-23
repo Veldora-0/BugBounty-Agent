@@ -79,6 +79,7 @@ BugBounty-Agent/
 │   ├── cloud_security/        # Cloud security & misconfiguration intelligence, S3/Blob/GCS, takeover
 │   ├── authentication/        # Authentication, session & identity security intelligence, MFA, reset
 │   ├── infrastructure/        # Infrastructure & configuration exposure intelligence, differential soft-404
+│   ├── concurrency/           # Concurrency & race conditions intelligence, barrier synchronization, invariants
 │   ├── findings/              # Finding schema, lifecycle state machine, markdown report generator
 │   ├── tools/                 # Tool registry, installer, doctor, deployer
 │   └── common/                # Safe XML parsing, transport, evidence store, sanitization, config
@@ -451,6 +452,9 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | **API Intelligence** | `shell` | `*bb-api*` | `ask` | Human confirmation required before probing API specifications or endpoints |
 | **Workflow Intelligence** | `shell` | `*bb-workflow*` | `ask` | Human confirmation required before executing multi-step business logic tests |
 | **Cloud Intelligence** | `shell` | `*bb-cloud*` | `ask` | Human confirmation required before executing active cloud security tests |
+| **Authentication Intelligence** | `shell` | `*bb-auth*` | `ask` | Human confirmation required before executing active authentication/session tests |
+| **Infrastructure Intelligence** | `shell` | `*bb-infra*` | `ask` | Human confirmation required before launching active infrastructure exposure tests |
+| **Concurrency Intelligence** | `shell` | `*bb-race*` | `ask` | Human confirmation required before launching active concurrency or race condition testing |
 | **Tool Installation** | `shell` | `*bb-install*` | `ask` | Human confirmation required before modifying system tools |
 | **Tool Updates** | `shell` | `*bb-update*` | `ask` | Human confirmation required before updating system tools |
 | **Remote Git Push** | `shell` | `git push *` | `ask` | Confirmation required before modifying remote repository |

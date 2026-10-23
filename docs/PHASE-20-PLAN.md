@@ -1,9 +1,9 @@
 # BugBounty-Agent — Phase 20 Implementation Plan
 ## Race Conditions & Distributed Workflows Intelligence
 
-**Accepted Baseline**: `6ae27b34f86b49c25c14f90d5706dfcb6723b2bb`  
+**Accepted Baseline**: `30f1b1dfb417989bd6889057a8c8f8a4abfaec8b`  
 **Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 20)  
-**Status**: Complete — Hardened & Verified  
+**Status**: Complete — Hardened, Corrected & Verified  
 **Architecture Model**: Single primary OpenCode agent (`Bug-Bounty`) with 18 modular skills (`subagent_depth: 1`)
 
 ---
@@ -73,12 +73,12 @@ Rather than relying on high-volume request flooding, denial-of-service tactics, 
 framework/concurrency/
 ├── __init__.py           # Subsystem exports
 ├── model.py              # RaceCategory, RaceConfidence, Hypothesis, TestResult, ConcurrencyProbePlan
-├── policy.py             # ConcurrencySafetyPolicy (bounded concurrency, budgets, timeouts)
-├── synchronization.py    # BarrierSynchronizer (threading.Barrier coordinated burst dispatcher)
-├── invariants.py         # ConcurrencyInvariantEngine (evaluates expected vs observed invariants)
+├── policy.py             # ConcurrencySafetyPolicy (bounded concurrency, budgets, timeouts, DNS preflight)
+├── synchronization.py    # BarrierSynchronizer (threading.Barrier coordinated burst dispatcher, sealing)
+├── invariants.py         # ConcurrencyInvariantEngine (ResourceIdentityTracker, provenance evaluation)
 ├── state.py              # ConcurrencyStateManager (manages state/concurrency.json atomically)
 ├── lab.py                # LocalConcurrencyLab (8 deterministic offline scenarios)
-└── engine.py             # RaceIntelligenceEngine (orchestration, scope, approval, deduplication)
+└── engine.py             # RaceIntelligenceEngine (orchestration, scope, approval, deduplication, budget contexts)
 
 scripts/
 ├── bb-race               # Shell CLI wrapper for Linux/macOS
@@ -100,11 +100,125 @@ scripts/
 
 ---
 
-## 5. Verification Plan
+## 5. Blocker A: Resource Identity & Invariant Evaluation
 
-1. **Focused Test Suite**: `tests/test_concurrency_engine.py` (43 tests) covering all 8 lab scenarios, evidence classification hardening, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, secret scrubbing, and report verification.
-2. **Phase 19 Sentinel Report Inspection Test**: Explicitly generates a markdown report from a finding with sanitized exception data and verifies the sentinel secret is absent on disk.
-3. **Cross-Platform Verification**:
-   - Windows 11 full test suite pass.
-   - Kali Linux VM (`ssh veldora@127.0.0.1 -p 2222`) focused and full test suite pass.
-4. **Diagnostic Integrity**: `bb-doctor` runs Category 25 and reports `[HEALTHY]`.
+### Defect Addressed
+Earlier implementations risked treating multiple JSON field aliases representing the same underlying entity (e.g., `{"order_id": "ORD-1", "id": "ORD-1"}`) as two distinct resources, or mixing scalar counters (e.g., `{"count": 2}`) and response status counts into entity ID sets.
+
+### Implemented Hardening
+1. **Category-Specific Primary Key Resolution**:
+   - `ResourceIdentityTracker` resolves canonical identifiers using category-prioritized keys:
+     - `DOUBLE_SPEND` / `LIMIT_OVERRUN`: `redemption_id`, `claim_id`, `coupon_id`, `reward_id`, `vote_id`.
+     - `IDEMPOTENCY_BYPASS`: `order_id`, `payment_id`, `transaction_id`, `invoice_id`.
+     - General: `id`, `resource_id`, `uuid`.
+2. **Field-Alias Deduplication**:
+   - When a single HTTP response contains multiple fields with identical values (e.g. `order_id: ORD-1` and `id: ORD-1`), the tracker maps them to a single canonical entity.
+   - Cross-response deduplication ensures two responses citing the same identifier are identified as a single created resource, correctly flagging idempotent deduplication (`CONCURRENCY_CONTROLLED`).
+3. **Rejection of Nonces, Counters and Trivial Values**:
+   - Trivial status markers (`"ok"`, `"true"`, `"success"`, `"created"`, `"failed"`) and generic boolean/status strings are explicitly filtered out.
+   - Scalar numeric counters (e.g. `"items_count": 2`) are isolated from resource identity sets.
+4. **HTTP Status Independence**:
+   - HTTP status code counts alone (`success_count > allowed_limit`) **never** prove an invariant violation. Proof requires either distinct entity identities or authoritative post-state evidence.
+
+---
+
+## 6. Blocker B: Post-State Evidence Provenance & Consistency Contracts
+
+### Defect Addressed
+Untrusted caller dictionaries (e.g. passing `post_state_evidence={"overrun_verified": True}`) could previously be accepted as authoritative proof of server-side mutation. Furthermore, inconsistent pre-state vs. post-state observations were not rigorously validated.
+
+### Implemented Hardening
+1. **Explicit Provenance Model (`EvidenceSource`)**:
+   - Four distinct provenance levels:
+     - `UNTRUSTED_CALLER_CLAIM`: Unverified caller assertions. Strictly rejected as authoritative proof.
+     - `DIRECT_TRANSPORT_OBSERVATION`: Transport-level responses directly parsed by the engine.
+     - `INDEPENDENT_STATE_QUERY`: Direct secondary query verifying server-side state.
+     - `LAB_FIXTURE_AUTHORITATIVE`: Authoritative in-memory state returned directly by deterministic lab fixtures (`LocalConcurrencyLab.get_authoritative_state()`).
+2. **`PostStateEvidence` Contract**:
+   - Encapsulates entity ID, pre-test and post-test values, expected delta, source provenance, and raw state verification data.
+   - `is_authoritative()` method enforces that only `INDEPENDENT_STATE_QUERY` and `LAB_FIXTURE_AUTHORITATIVE` qualify for `CONFIRMED` invariant verification.
+3. **Consistency Validation**:
+   - `validate_consistency()` validates that observed changes match the physics of the operation (e.g., a counter increment cannot result in `post_state < pre_state`).
+   - Contradictory, missing, or unverified post-state fails closed to `INCONCLUSIVE`.
+
+---
+
+## 7. Blocker C: Worker Lifecycle, Bounded Deadlines & State Isolation
+
+### Defect Addressed
+Thread synchronization using uncoordinated joins could result in cumulative linear timeouts ($N \times \text{timeout}$). Furthermore, background worker threads completing after test conclusion could mutate finalized test results, and thread naming collisions could corrupt cross-burst accounting.
+
+### Implemented Hardening
+1. **Single Monotonic Deadline**:
+   - `BarrierSynchronizer.execute_burst()` computes a single overall deadline: `deadline = time.monotonic() + self.timeout + 1.0`.
+   - All worker joins share this deadline via `remaining = max(0.001, deadline - time.monotonic())`.
+   - Bounded join wait prevents runaway linear wait when multiple threads hang.
+2. **Worker Lifecycle States (`WorkerLifecycleState`)**:
+   - Workers transition through explicit states: `COMPLETED`, `FAILED`, `TIMED_OUT_UNRESOLVED`, and `CANCELLED`.
+   - In-flight requests exceeding the timeout are classified as `TIMED_OUT_UNRESOLVED`.
+   - Unresolved timeouts fail closed to `INCONCLUSIVE`.
+3. **Container Sealing (`BurstExecutionContainer`)**:
+   - Execution results are collected in a `BurstExecutionContainer`.
+   - Upon join completion, `container.seal()` permanently locks the container against late modifications. Any late-arriving callback from a lagging worker is rejected.
+4. **Isolated Worker Thread Naming**:
+   - Workers are named `bb-race-worker-{i}-{burst_id}`, where `burst_id` is a unique per-burst UUID.
+   - Prevents cross-burst thread tracking collisions and enables deterministic selective joining in unit tests.
+
+---
+
+## 8. Blocker D: Per-Hypothesis Request Budget Isolation
+
+### Defect Addressed
+Global or engine-level request counters allowed concurrent or sequential test executions to bleed into, starve, or prematurely exhaust one another's request allocations.
+
+### Implemented Hardening
+1. **`HypothesisBudgetContext`**:
+   - Thread-safe, isolated request counter bound to each specific hypothesis execution.
+   - Clamped strictly to `min(max_requests, MAX_REQUESTS_PER_TEST = 15)`.
+2. **Isolation Guarantee**:
+   - Parallel or subsequent hypothesis evaluations instantiate their own independent `HypothesisBudgetContext`.
+   - No shared global state or instance-level accumulator is used for budget enforcement.
+   - Standalone requests fall back to an isolated `engine-default` context.
+
+---
+
+## 9. SSRF & Hostname Preflight Validation & Documented Limitations
+
+### Implemented Controls
+1. **Preflight DNS Resolution Hook (`resolve_hostname`)**:
+   - In production mode, hostnames in probe URLs are resolved to IP addresses prior to dispatch.
+   - Resolved IPs are validated against RFC 1918 private subnets, loopbacks (`127.0.0.0/8`), link-local (`169.254.0.0/16`), carrier-grade NAT (`100.64.0.0/10`), and IPv6 equivalents (`::1`, `fc00::/7`, `fe80::/10`).
+   - Supports a pluggable `resolver` hook in `ConcurrencySafetyPolicy` for deterministic testing.
+2. **Documented DNS Rebinding Limitation**:
+   - **Limitation**: While preflight DNS resolution validates that target hostnames do not initially resolve to internal or metadata IP addresses, standard Python `http.client` and `urllib.request` re-resolve hostnames upon socket connection without transport-level IP pinning.
+   - **Risk**: A sophisticated DNS rebinding server returning a public IP on preflight resolution and subsequently returning `127.0.0.1` on socket connection could evade preflight checks.
+   - **Production Recommendation**: In high-risk environments, concurrency probes should route through an egress-validating proxy (similar to Phase 16's `ValidatingEgressProxy`) or an OS-level network namespace (`ip netns`) that strictly pins destination IP tuples at the transport socket level.
+
+---
+
+## 10. Verification & Test Plan
+
+1. **Focused Test Suite (`tests/test_concurrency_engine.py`)**:
+   - **60 comprehensive tests** (up from initial 43).
+   - Covers:
+     - All 8 local simulation lab scenarios.
+     - Blocker A: Resource identity resolution, alias deduplication, and invariant evaluation.
+     - Blocker B: Post-state evidence provenance, authoritative source verification, and consistency checks.
+     - Blocker C: Worker lifecycle states, single bounded deadline join, burst container sealing, and timeout fail-closed semantics.
+     - Blocker D: Per-hypothesis request budget isolation and thread-safe counter ceiling enforcement.
+     - Anti-SSRF: Loopback, private IP, and cloud metadata preflight DNS checks.
+     - Secret scrubbing: Zero plaintext token or exception leaks to disk.
+     - Phase 19 Sentinel Report Inspection: Verifies absence of exception secrets in generated reports.
+2. **Diagnostic Health**:
+   - `bb-doctor` Category 25 (`check_concurrency_engine`) reports `[HEALTHY]`.
+3. **Cross-Platform Parity**:
+   - Verified on Windows 11 (60/60 concurrency tests, 107/107 total test suites).
+   - Verified on Kali Linux VM (`ssh veldora@127.0.0.1 -p 2222`).
+
+---
+
+## 11. Operational Boundaries & Non-Goals
+
+1. **No Volumetric Flooding**: Mass denial-of-service, traffic amplification, and uncoordinated stress testing remain strictly prohibited.
+2. **Single Orchestrator Invariant**: Phase 20 introduces zero additional agents or skills (`subagent_depth: 1`, 18 modular skills).
+3. **No Phase 21 Work**: Phase 21 (Authentication & Authorization Correlation) remains strictly out of scope for Phase 20.

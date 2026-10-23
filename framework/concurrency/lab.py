@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qsl, urlparse
 import uuid
 
+from framework.concurrency.model import EvidenceSource, PostStateEvidence
 from framework.scope.engine import ScopeEngine
 
 
@@ -239,6 +240,27 @@ class LocalConcurrencyLab:
         """Resets all in-memory mock scenario state."""
         if self.server:
             self.server.reset_state()
+
+    def get_authoritative_state(self) -> PostStateEvidence:
+        """Returns verified, authoritative post-state evidence from the lab fixture."""
+        state_dict: Dict[str, Any] = {}
+        if self.server:
+            state_dict = {
+                "coupon_redemptions": self.server.coupon_redemptions,
+                "account_balance": self.server.account_balance,
+                "voting_count": self.server.voting_count,
+                "order_count": self.server.order_count,
+                "safe_mutex_counter": self.server.safe_mutex_counter,
+                "rate_limit_hits": self.server.rate_limit_hits,
+                "distributed_step1_committed": self.server.distributed_step1_committed,
+                "distributed_step2_committed": self.server.distributed_step2_committed,
+            }
+        return PostStateEvidence(
+            source=EvidenceSource.LAB_FIXTURE_AUTHORITATIVE,
+            post_state=state_dict,
+            verified_endpoint=f"{self.base_url}/state/status",
+            provenance_details="Queried directly from in-memory LocalConcurrencyLab fixture server.",
+        )
 
     @classmethod
     def get_scope_engine(cls, port: int) -> ScopeEngine:

@@ -2,7 +2,8 @@
 Data Models and Enums for Race Conditions & Distributed Workflows Intelligence.
 
 Defines taxonomy for concurrent invariant testing, check-then-act race windows,
-bounded microsecond barrier dispatch plans, and structured test outcomes.
+bounded microsecond barrier dispatch plans, evidence provenance contracts,
+isolated request-budget contexts, and structured test outcomes.
 """
 
 from __future__ import annotations
@@ -12,7 +13,8 @@ from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import json
-from typing import Any, Dict, List, Optional
+import threading
+from typing import Any, Dict, List, Optional, Tuple
 
 from framework.findings.lifecycle import FindingLifecycle
 
@@ -43,6 +45,112 @@ class RaceConfidence(str, Enum):
     CONCURRENCY_CONTROLLED = "CONCURRENCY_CONTROLLED"
 
 
+class WorkerLifecycleState(str, Enum):
+    """State and outcome classification for individual concurrent probe worker threads."""
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    TIMED_OUT_UNRESOLVED = "TIMED_OUT_UNRESOLVED"
+    CANCELLED = "CANCELLED"
+
+
+class EvidenceSource(str, Enum):
+    """Provenance and trust boundary classification for post-state evidence."""
+    UNTRUSTED_CALLER_CLAIM = "UNTRUSTED_CALLER_CLAIM"
+    DIRECT_TRANSPORT_OBSERVATION = "DIRECT_TRANSPORT_OBSERVATION"
+    INDEPENDENT_STATE_QUERY = "INDEPENDENT_STATE_QUERY"
+    LAB_FIXTURE_AUTHORITATIVE = "LAB_FIXTURE_AUTHORITATIVE"
+
+
+@dataclass
+class PostStateEvidence:
+    """
+    Formal evidence contract tracking origin and validation for post-state mutation claims.
+    Distinguishes untrusted caller assertions from independently verified server datastore queries.
+    """
+    source: EvidenceSource = EvidenceSource.UNTRUSTED_CALLER_CLAIM
+    pre_state: Optional[Dict[str, Any]] = None
+    post_state: Optional[Dict[str, Any]] = None
+    verified_endpoint: Optional[str] = None
+    verified_at: Optional[str] = None
+    delta_metrics: Dict[str, Any] = field(default_factory=dict)
+    provenance_details: str = ""
+
+    def is_authoritative(self) -> bool:
+        """Returns True if evidence originates from an authoritative, trusted source."""
+        return self.source in (EvidenceSource.INDEPENDENT_STATE_QUERY, EvidenceSource.LAB_FIXTURE_AUTHORITATIVE)
+
+    def validate_consistency(self) -> Tuple[bool, Optional[str]]:
+        """
+        Validates internal consistency between pre-state and post-state observations.
+        Fails closed when pre-state and post-state contradict the mutation claim.
+        """
+        if self.pre_state and self.post_state:
+            for k in ("count", "redemptions", "total_votes", "voting_count", "order_count", "counter"):
+                if k in self.pre_state and k in self.post_state:
+                    try:
+                        pre_v = int(self.pre_state[k])
+                        post_v = int(self.post_state[k])
+                        if post_v < pre_v:
+                            return False, f"Contradictory pre/post state: {k} decreased from {pre_v} to {post_v}"
+                    except (ValueError, TypeError):
+                        return False, f"Malformed non-numeric counter value for '{k}'"
+        return True, None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source": self.source.value if isinstance(self.source, EvidenceSource) else str(self.source),
+            "is_authoritative": self.is_authoritative(),
+            "pre_state": self.pre_state,
+            "post_state": self.post_state,
+            "verified_endpoint": self.verified_endpoint,
+            "verified_at": self.verified_at,
+            "delta_metrics": self.delta_metrics,
+            "provenance_details": self.provenance_details,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> PostStateEvidence:
+        src_val = data.get("source", "UNTRUSTED_CALLER_CLAIM")
+        try:
+            source = EvidenceSource(src_val)
+        except ValueError:
+            source = EvidenceSource.UNTRUSTED_CALLER_CLAIM
+        return cls(
+            source=source,
+            pre_state=data.get("pre_state"),
+            post_state=data.get("post_state"),
+            verified_endpoint=data.get("verified_endpoint"),
+            verified_at=data.get("verified_at"),
+            delta_metrics=data.get("delta_metrics", {}),
+            provenance_details=data.get("provenance_details", ""),
+        )
+
+
+class HypothesisBudgetContext:
+    """
+    Thread-safe request budget isolated to a specific hypothesis execution.
+    Strictly caps dispatches at MAX_REQUESTS_PER_TEST = 15.
+    """
+    def __init__(self, hypothesis_id: str, max_requests: int = 15):
+        self.hypothesis_id = hypothesis_id
+        # Clamp configured limit: minimum 1, hard maximum 15
+        self.max_requests = max(1, min(15, int(max_requests)))
+        self._dispatched_count = 0
+        self._lock = threading.Lock()
+
+    def try_acquire_slot(self) -> Tuple[bool, int]:
+        with self._lock:
+            if self._dispatched_count >= self.max_requests:
+                return False, self._dispatched_count
+            self._dispatched_count += 1
+            return True, self._dispatched_count
+
+    @property
+    def dispatched_count(self) -> int:
+        with self._lock:
+            return self._dispatched_count
+
+
 @dataclass
 class SingleProbeExecution:
     """Telemetry and response summary from an individual concurrent probe thread."""
@@ -52,6 +160,7 @@ class SingleProbeExecution:
     body_snippet: str
     headers: Dict[str, str] = field(default_factory=dict)
     error: Optional[str] = None
+    worker_state: WorkerLifecycleState = WorkerLifecycleState.COMPLETED
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -61,6 +170,7 @@ class SingleProbeExecution:
             "body_snippet": self.body_snippet,
             "headers": self.headers,
             "error": self.error,
+            "worker_state": self.worker_state.value if isinstance(self.worker_state, WorkerLifecycleState) else str(self.worker_state),
         }
 
 
@@ -78,7 +188,6 @@ class ConcurrencyProbePlan:
     timeout: float = 5.0
 
     def __post_init__(self):
-        # Bound burst size between 2 and 10 to prevent denial of service
         self.burst_size = max(2, min(10, int(self.burst_size)))
         self.timeout = max(1.0, min(30.0, float(self.timeout)))
 

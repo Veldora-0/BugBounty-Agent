@@ -15,7 +15,7 @@ import os
 import re
 import socket
 import threading
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 import uuid
 
@@ -24,6 +24,9 @@ from framework.common.evidence import sanitize_sensitive_data
 from framework.concurrency.invariants import ConcurrencyInvariantEngine
 from framework.concurrency.model import (
     ConcurrencyProbePlan,
+    EvidenceSource,
+    HypothesisBudgetContext,
+    PostStateEvidence,
     RaceCategory,
     RaceConfidence,
     RaceConditionHypothesis,
@@ -119,8 +122,10 @@ class RaceIntelligenceEngine:
             self._dispatch_fn = self._validation_engine.send_request
 
         self.synchronizer = BarrierSynchronizer(self._send_request_safe, timeout=self.policy.timeout)
-        self._request_budget_lock = threading.Lock()
-        self._current_test_requests = 0
+        self._default_budget_context = HypothesisBudgetContext(
+            hypothesis_id="engine-default",
+            max_requests=self.policy.max_requests_per_test,
+        )
 
     def allow_fixture_port(self, port: int) -> None:
         """Whitelists an ephemeral local test fixture port."""
@@ -128,10 +133,14 @@ class RaceIntelligenceEngine:
         if hasattr(self, "_validation_engine") and self._validation_engine:
             self._validation_engine.allow_fixture_port(port)
 
-    def _send_request_safe(self, req: ControlledRequest) -> ControlledResponse:
+    def _send_request_safe(
+        self,
+        req: ControlledRequest,
+        budget_ctx: Optional[HypothesisBudgetContext] = None,
+    ) -> ControlledResponse:
         """
-        Enforces fail-closed scope gating, anti-SSRF policy, and request budget limits
-        immediately before each probe is dispatched.
+        Enforces fail-closed scope gating, anti-SSRF policy, and per-hypothesis request budget
+        limits immediately before each probe is dispatched.
         """
         # 1. Fail-closed scope enforcement
         if not self.lab_mode:
@@ -148,13 +157,14 @@ class RaceIntelligenceEngine:
         # 2. Concurrency Safety Policy validation (methods, SSRF, fixture ports)
         self.policy.validate_request_safety(req.method, req.url)
 
-        # 3. Enforce actual request budget per test
-        with self._request_budget_lock:
-            if self._current_test_requests >= self.policy.max_requests_per_test:
-                raise PolicyViolationError(
-                    f"Request budget exceeded: maximum {self.policy.max_requests_per_test} requests per test."
-                )
-            self._current_test_requests += 1
+        # 3. Enforce isolated request budget per hypothesis context
+        active_budget = budget_ctx or self._default_budget_context
+        acquired, current_count = active_budget.try_acquire_slot()
+        if not acquired:
+            raise PolicyViolationError(
+                f"Request budget exceeded for hypothesis {active_budget.hypothesis_id}: "
+                f"maximum {active_budget.max_requests} requests per test/hypothesis."
+            )
 
         return self._dispatch_fn(req)
 
@@ -244,15 +254,11 @@ class RaceIntelligenceEngine:
         auto_approve: bool = False,
         request_body: str = "",
         headers: Optional[Dict[str, str]] = None,
-        post_state_data: Optional[Dict[str, Any]] = None,
+        post_state_data: Optional[Union[PostStateEvidence, Dict[str, Any]]] = None,
     ) -> Tuple[RaceConditionTestResult, Optional[Finding]]:
         """
         Executes bounded, barrier-synchronized concurrency probe burst against target endpoint.
         """
-        # Reset per-test request counter
-        with self._request_budget_lock:
-            self._current_test_requests = 0
-
         # Scope fail-closed check
         if not self.lab_mode and self.scope_engine is None:
             hypothesis.lifecycle_state = FindingLifecycle.REJECTED
@@ -365,8 +371,19 @@ class RaceIntelligenceEngine:
             body=request_body,
         )
 
-        # Dispatch synchronized burst
-        raw_results = self.synchronizer.dispatch_burst(base_req, burst_size=burst_size)
+        # Create an isolated per-hypothesis request budget context
+        budget_ctx = HypothesisBudgetContext(
+            hypothesis_id=hypothesis.hypothesis_id,
+            max_requests=self.policy.max_requests_per_test,
+        )
+        scoped_dispatch = lambda r: self._send_request_safe(r, budget_ctx=budget_ctx)
+
+        # Dispatch synchronized burst with isolated budget context
+        raw_results = self.synchronizer.dispatch_burst(
+            base_req,
+            burst_size=burst_size,
+            dispatch_fn=scoped_dispatch,
+        )
         executions = [r[0] for r in raw_results]
         responses = [r[1] for r in raw_results]
 
