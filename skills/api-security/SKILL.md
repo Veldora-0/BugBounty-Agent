@@ -142,3 +142,12 @@ API endpoints are prime targets for cross-origin trust failures, unkeyed cache p
 * **CORS Trust Analysis**: REST APIs handling authentication headers or cookies are evaluated for credentialed reflection (`Access-Control-Allow-Credentials: true` with reflected `Origin`).
 * **HTTP Parameter Pollution (HPP)**: Evaluates whether duplicate query parameters (`?id=1&id=2`) bypass API authorization checks or cause parser confusion between API gateway and microservices.
 * **Header-Based Routing & Forwarded Trust**: Probes whether microservice routing trusts `X-Forwarded-Host` or `Forwarded` over API gateway hostname rules.
+
+---
+
+## 6. Advanced API Security & Streaming Byte-Budget Accounting (Phase 17)
+
+Phase 17 introduces hard resource limits and local test harness controls:
+* **Deep Reference Resolution**: Resolves OpenAPI local and relative `$ref` pointers up to depth 10 with cycle detection, while remote network references fail closed.
+* **Continuous Streaming Byte-Budget Accounting**: Network accounting tracks every consumed byte continuously (`total_bytes_transferred`), ensuring malformed, oversized, truncated, or error responses deplete the global budget (`max_bytes`).
+* **Fixture-Port Exact-Port Gating**: Testing against local loopback ports requires explicit unprivileged port registration (`1024-65535`) and scope authorization (`allow_fixture_port`); production targets strictly forbid loopback, private RFC 1918, or cloud metadata destinations. Explicit exclusions take precedence over fixture allowances.

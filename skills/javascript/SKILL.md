@@ -12,11 +12,11 @@ Extract hidden application routes, parameter definitions, client dependencies, a
 
 ## 1. Static Analysis Architecture (Phase 4)
 
-The **JavaScript Intelligence Engine** operates on JavaScript resources cataloged in `state/webapp.json` or provided via CLI. It performs pure static pattern analysis and deterministic extraction.
+The **JavaScript Intelligence Engine** operates on JavaScript resources cataloged in `state/webapps.json` (or `state/webapp.json`) or provided via CLI. It performs pure static pattern analysis and deterministic extraction.
 
 ```
 +-----------------------------------------------------------+
-|          JavaScript Resources (state/webapp.json)         |
+|          JavaScript Resources (state/webapps.json)        |
 +-----------------------------------------------------------+
                              |
                              v

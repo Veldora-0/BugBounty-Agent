@@ -63,17 +63,22 @@ BugBounty-Agent/
 │   ├── assets/                # Recursive asset graph engine, DNS/IP/ASN/TLS/CDN models
 │   ├── scope/                 # Scope engine, DNS boundary verification, normalizer
 │   ├── state/                 # Persistent state manager, test fingerprinting, dedup
-│   ├── validation/            # Security validation foundation & baseline comparison
+│   ├── validation/            # Security validation foundation, policy, test cases & baseline comparison
 │   ├── xss/                   # Context-aware XSS intelligence, DOM sources/sinks, stored correlation
 │   ├── authz/                 # Authorization intelligence, BOLA/IDOR baseline validation, human approval gate
-│   ├── ssrf/                  # SSRF intelligence, out-of-band canary correlation, blind verification
+│   ├── ssrf/                  # SSRF intelligence, out-of-band canary correlation, alternate IP parsing
+│   ├── xxe/                   # Conservative XXE intelligence, XML bomb protection, local simulation lab
 │   ├── injection/             # Injection intelligence, prioritization, SQLi/NoSQLi/SSTI/Command validators
+│   ├── api/                   # OpenAPI 2.0/3.x & GraphQL parser, streaming byte budget, loopback fixture ports
+│   ├── webapp/                # Web application attack surface mapping, forms, links, cookies
+│   ├── recon/                 # Reconnaissance orchestrator, DNS/HTTP/TLS/tech service enrichment
 │   ├── http_trust/            # HTTP / Header trust intelligence, Host injection, CORS, HPP, cache foundation
 │   ├── business_logic/        # Business logic state machines, invariant engine, replay, approval gate
 │   ├── cloud_security/        # Cloud security & misconfiguration intelligence, S3/Blob/GCS, takeover
 │   ├── authentication/        # Authentication, session & identity security intelligence, MFA, reset
+│   ├── findings/              # Finding schema, lifecycle state machine, markdown report generator
 │   ├── tools/                 # Tool registry, installer, doctor, deployer
-│   └── common/                # Evidence store, sanitization, tool detection, config
+│   └── common/                # Safe XML parsing, transport, evidence store, sanitization, config
 │
 ├── scripts/                   # Controlled CLI wrappers with mandatory scope checks
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
@@ -319,484 +324,87 @@ If a preferred tool is unavailable:
 
 ---
 
-## Phase 1: Recursive Asset Intelligence Engine
+## Implemented Research Capabilities & Security Subsystems (Phases 1–18)
 
-The **Asset Intelligence Engine** (`framework/assets/` & `scripts/bb-assets`) constructs and maintains an authoritative, recursive asset graph for authorized security research targets:
+BugBounty-Agent has delivered 18 cohesive security research phases, establishing a comprehensive, non-destructive intelligence and validation pipeline:
 
-* **Arbitrary-Depth Recursion**: Dynamically traverses subdomains down to arbitrary depths (depth 1, 2, 3, 4, 5, ...), preventing artificial discovery caps.
-* **Network & Infrastructure Graph**: Tracks directional semantic relationships:
-  * `HAS_SUBDOMAIN`: Apex domain or parent subdomain $\longrightarrow$ child subdomain
-  * `RESOLVES_TO`: Hostname $\longrightarrow$ IPv4/IPv6 address
-  * `CNAME_TO`: Hostname $\longrightarrow$ canonical name target
-  * `PRESENT_IN_CERT`: TLS certificate $\longrightarrow$ Subject Alternative Name (SAN)
-  * `HOSTED_BY`: Hostname or IP $\longrightarrow$ CDN edge or Cloud provider
-  * `BELONGS_TO_ASN`: IP address $\longrightarrow$ Autonomous System Number (ASN)
-* **DNS & Wildcard Mitigation**: Automatic active probing of randomized non-existent subdomains (`_bb_probe_<uuid>.<domain>`) to detect wildcard DNS and prevent synthetic wildcard subdomain explosion.
-* **TLS Certificate SAN Extraction**: Analyzes X.509 Subject Alternative Names and re-queues newly discovered in-scope hostnames into recursive traversal.
-* **CDN & Cloud Edge Attribution**: Classifies CDN reverse proxies (Cloudflare, CloudFront, Akamai, Fastly, Azure, Google Cloud) via CNAME fingerprints and BGP ASN mapping with confidence ratings (`CONFIRMED`, `PROBABLE`, `UNKNOWN`).
-* **Multi-Source Provenance & Confidence Scoring**: Calibrates confidence from `LOW` (unverified third-party passive feed) to `HIGH` ($\ge 2$ independent sources) and `CONFIRMED` (active DNS verification or verified network probe).
-* **Deterministic Scope Integration**: Offline validation through `ScopeEngine` gates every node before active resolution or recursion; out-of-scope nodes are recorded and skipped without further descent.
-* **CLI Utility**:
-  ```bash
-  # Discover recursive subdomains with ASCII tree visualization
-  ./scripts/bb-assets --domain example.com --scope scope.yaml --tree
+### 1. Asset Intelligence, Graph & Reconnaissance (Phases 1–3)
+* **Arbitrary-Depth Asset Graph (`bb-assets`)**: Traverses subdomains recursively without artificial depth caps (`example.com` $\to$ `sub` $\to$ `dev` $\to$ `api` $\to$ `internal`). Maps directional infrastructure relationships (`HAS_SUBDOMAIN`, `RESOLVES_TO`, `CNAME_TO`, `PRESENT_IN_CERT`, `HOSTED_BY`, `BELONGS_TO_ASN`), detects wildcard DNS, extracts X.509 TLS certificate SANs, identifies CDN/cloud reverse proxies, and calibrates multi-source provenance confidence (`LOW`, `MEDIUM`, `HIGH`, `CONFIRMED`).
+* **Reconnaissance Intelligence (`bb-recon`)**: Dynamically orchestrates passive CT logs, DNS intelligence (`crt.sh`, `subfinder`), and controlled active probing (`httpx`), mapping URLs, status codes, page titles, server banners, security headers, content lengths, response times, and redirect chains.
+* **Web Application Mapping (`bb-webapp`)**: Converts web service observations into a structured attack surface relationship model stored atomically in `state/webapps.json`, indexing static and dynamic resources (scripts, stylesheets, fonts), form structures, input parameters, and link graphs.
 
-  # Execute for an initialized program workspace
-  ./scripts/bb-assets --program acme-corp --tree
+### 2. Client-Side & JavaScript Intelligence (Phase 4)
+* **Static JavaScript Analysis (`bb-js`)**: Statically parses packed frontend JavaScript bundles without executing untrusted code. Extracts API endpoints (`fetch`, `axios`, `ajax`, `xhr`), Single-Page Application (SPA) client routes (React Router, Vue Router), parameters (`URLSearchParams`), framework dependencies, and source map references (`//# sourceMappingURL=...`).
+* **Secret Triage & Sanitization**: Categorizes candidate strings into public frontend keys (e.g., Firebase public keys, Algolia search keys) versus high-risk privileged secrets, automatically masking sensitive values.
 
-  # Passive analysis only (disables active DNS and TLS SAN probes)
-  ./scripts/bb-assets --program acme-corp --passive-only --json
-  ```
+### 3. API Security & Parameter Intelligence (Phases 5 & 17)
+* **OpenAPI & Swagger Specification Ingestion (`bb-api`)**: Ingests OpenAPI 2.0, 3.0, and 3.1 specifications (JSON/YAML), recursively resolving RFC 6901 local and relative `$ref` pointers up to depth 10 with circular reference protection.
+* **REST Path Parameter Inference**: Normalizes parameterized routes (`/api/v1/users/123` $\to$ `/api/v1/users/{user_id}`) while preserving static operational paths (`/users/me`, `/status`).
+* **GraphQL Surface Detection & Bounded Introspection**: Automatically detects GraphQL endpoints; active schema introspection is strictly opt-in (`--allow-graphql-introspection`, default disabled), structurally bounded to selection set depth $\le 6$, schema traversal depth $\le 3$, and max 5,000 parameters.
+* **Continuous Streaming Byte-Budget Accounting**: Tracks network egress continuously (`total_bytes_transferred`), ensuring malformed, oversized, truncated, or error responses deplete the global network byte budget (`max_bytes`).
+* **Loopback Fixture Port Gating**: Local testing against loopback fixtures strictly requires explicit unprivileged port registration (`1024-65535`) and scope authorization; production targets strictly forbid loopback, RFC 1918, and cloud metadata destinations. Dual-export state is maintained in `state/api.json`.
 
----
+### 4. Security Validation Foundation & Adversarial QC (Phase 6)
+* **Baseline Differential Validation (`bb-validate`)**: Bounded, hypothesis-driven security validation foundation comparing candidate responses against benign baselines (`BaselineComparison`) to eliminate false positives from custom 404 pages, WAF block pages, and CDN challenge responses.
+* **Standard Finding Lifecycle**: Enforces strict finding states: `OBSERVATION`, `CANDIDATE`, `TESTED`, `VALIDATED`, `REJECTED`, `SIMULATED`, `INFORMATIONAL`, and `NEEDS_MANUAL_REVIEW`.
+* **Conservative Safety Policy (`SecurityTestPolicy`)**: Enforces allowed HTTP methods, request budgets, maximum response byte limits, and state-changing endpoint detection.
 
-## Phase 2: Reconnaissance Intelligence & Enrichment Engine
+### 5. Cross-Site Scripting (XSS) Intelligence (Phase 7)
+* **Context-Aware XSS Analysis (`bb-xss`)**: Analyzes injection context (HTML body, attribute values, script blocks, event handlers, URL attributes, JSON strings), detecting HTML entity, URL, and JS escaping; defended reflections are discarded as `REJECTED`.
+* **DOM XSS Intelligence**: Tracks client sources (`location.search`, `location.hash`, `window.name`) to dangerous framework sinks (`dangerouslySetInnerHTML`, `v-html`, jQuery `html()`), accounting for client-side sanitizers (`DOMPurify`).
+* **Stored XSS Modeling**: Correlates input endpoints with retrieval endpoints, generating human verification plans without automated form submission.
 
-The **Reconnaissance Intelligence Engine** (`framework/recon/` & `scripts/bb-recon`) consumes confirmed assets from the `AssetGraph` and enriches them with structured, normalized observations:
+### 6. Authorization & Access Control (BOLA / IDOR) (Phase 8)
+* **3-Point Comparative Baseline Model (`bb-authz`)**: Evaluates Broken Object Level Authorization (BOLA/IDOR), Broken Function Level Authorization (BFLA), and multi-tenant isolation by comparing:
+  1. Baseline A: Owner Principal access $\to$ HTTP 200 (Valid Data).
+  2. Baseline B: Non-owner Principal access to invalid resource $\to$ HTTP 404 / Soft-404.
+  3. Testing Probe: Non-owner Principal cross-access $\to$ evaluated against Baselines A & B.
+* Eliminates soft-404s, generic 200 denial responses, and login redirects; requires human approval before active differential testing.
 
-* **Capability-Driven Orchestration**: Dynamically orchestrates recon capabilities (`dns`, `tls`, `http`, `ports`, `tech`, `endpoints`) instead of blindly chaining static security tools.
-* **HTTP Service Intelligence**: Captures URLs, status codes, page titles, server banners, security headers, content lengths, response times, and redirect chains.
-* **Port & Network Service Discovery**: Identifies open TCP ports and protocols with bounded safety budgets, preventing disruptive port flooding.
-* **DNS & TLS Certificate Enrichment**: Maps A, AAAA, CNAME, MX, and NS records, enriching IPs directly into the `AssetGraph`. Extracted in-scope TLS SAN names are dynamically promoted to graph nodes connected via `PRESENT_IN_CERT` edges.
-* **Technology Fingerprinting**: Identifies servers (Nginx, Apache, IIS, Caddy), frameworks (Next.js, Express, ASP.NET, PHP), and CMS platforms (WordPress, Drupal) with calibrated confidence (`OBSERVED`, `PROBABLE`, `CONFIRMED`).
-* **Endpoint & Route Discovery**: Structured mapping of web routes and API paths (`METHOD URL`), status codes, and content types with strict deduplication.
-* **Atomic State Persistence**: Persists observations atomically to `~/BugBounty-Workspace/programs/<name>/state/recon.json`, ensuring zero file corruption. Supports resumable execution (`--resume`) to skip already-probed assets.
-* **CLI Utility**:
-  ```bash
-  # Enrich attack surface for an initialized program workspace
-  ./scripts/bb-recon --program acme-corp --tree
+### 7. SSRF & Out-of-Band (OOB) Interaction Intelligence (Phases 9 & 18)
+* **Safe SSRF Request Mutation (`bb-ssrf`)**: Constructs non-destructive mutated requests across Query parameters, Path template parameters (`{param}`, `:param`), JSON bodies (flat and nested keys), Form-encoded bodies, and XML bodies (DOM text replacement with XML entity escaping).
+* **SSRF Transport Hardening**: Added `parse_alternate_ip` supporting alternate numeric notations (dotted decimal, decimal scalars, hex scalars, octal scalars, dotted octal/hex, and inet_aton multi-part formats); enforces multi-record DNS resolution anti-SSRF checks blocking loopback, private, carrier-grade NAT, and cloud metadata addresses.
+* **OOB Canary Correlation & Destination Policy Enforcement**: Unique canary tokens (`bb9-<program>-<test_id>-<hex>.<domain>`) tracked by `CanaryManager`. Enforces provider availability gating (status must be `AVAILABLE`, failing closed for `UNAVAILABLE`, `CONFIG_REQUIRED`, or `ERROR` with zero requests dispatched). Validates generated destinations against `validate_oob_destination()`, verifying that the method exists and is callable, failing closed with `PolicyViolationError` and zero requests if missing or non-callable.
+* **Truthful Mock vs. Live Classification**: Mock provider interactions strictly emit `SIMULATED` (`INFORMATIONAL`, `LOW` confidence) findings and can never become live validated findings. Configured external adapters without operational live wire polling report `UNAVAILABLE`.
 
-  # Passive analysis only without active network probes
-  ./scripts/bb-recon --program acme-corp --passive-only
+### 8. Injection Intelligence & Controlled Validation (Phases 10 & 18)
+* **Non-Destructive Injection Probes (`bb-inject`)**: Prioritizes parameters (0–100 score) and executes safe, canary-driven probes for SQLi (quote syntax fault, boolean differential, numeric identity), NoSQLi (`$ne`/`$eq` operators), and SSTI (`{{7*7}}` $\to$ `49`). Strictly prohibits destructive SQL (`DROP`, `DELETE`, `UPDATE`) or command execution (`curl`, `wget`, `bash`, `rm`).
+* **Conservative Server-Side XML & XXE Intelligence**: Portable stdlib XML parser security (`framework/common/xml_safe.py`) enforcing Billion Laughs and quadratic blowup defenses (`safe_parse_xml`, cumulative `max_expanded_chars`). Probes XML endpoints using safe synthetic internal entity reflection (`CONFIRMED_ENTITY_EXPANSION_<token>`). Internal entity reflection alone emits `OBSERVATION` (`INFORMATIONAL`, `MEDIUM` confidence), never a false `HIGH`-severity `VALIDATED` XXE finding. Parser errors and secure DTD prohibitions emit zero findings. Prohibits reading local system files (`file://`, `/etc/passwd`, `win.ini`) and metadata probing (`169.254.169.254`, `metadata.google.internal`).
 
-  # Target specific capabilities on a single asset
-  ./scripts/bb-recon --program acme-corp --asset api.example.com --capabilities "http,tls,tech"
+### 9. HTTP / Header Trust & Protocol Security (Phase 11)
+* **Metadata & Header Boundary Auditing (`bb-http`)**: Evaluates whether server-generated URLs trust client-supplied `Host`, `X-Forwarded-Host`, or `Forwarded` headers; evaluates credentialed CORS reflection (`Access-Control-Allow-Credentials: true` with reflected `Origin`); tests HTTP Parameter Pollution (HPP) precedence; models unkeyed cache-poisoning hypotheses without polluting shared caches.
 
-  # Resume previous scan and output JSON observations
-  ./scripts/bb-recon --program acme-corp --resume --json
-  ```
+### 10. Business Logic & Workflow Intelligence (Phase 12)
+* **State Machine Invariants (`bb-workflow`)**: Evaluates multi-step workflow transitions, step skipping, forced state transitions, quantitative manipulation (negative quantities, decimal precision), and race condition windows across 24 invariant classes. Human approval gate (`--approve`) is mandatory; execution is supported by single replay, sequence replay, and bounded concurrent replay ($\le 5$ requests).
 
----
+### 11. Cloud Security & Misconfiguration Intelligence (Phase 13)
+* **Cloud Infrastructure Assessment (`bb-cloud`)**: Multi-signal provider fingerprinting (AWS, Azure, GCP, Cloudflare, Fastly, DigitalOcean, Oracle) identifying S3/Blob/GCS buckets, CDNs, serverless function URLs, and administrative consoles. Safely validates public object reads and bucket listings; tests dangling CNAME records for subdomain takeover. Strictly prohibits direct metadata probing (`169.254.169.254`) and unauthorized testing of third-party cloud infrastructure.
 
-## Phase 3: Web Application Intelligence & Attack Surface Mapping
+### 12. Authentication, Session & Identity Security (Phase 14)
+* **Authentication Security & Session Lifecycle (`bb-auth`)**: 14-family authentication taxonomy (11 operational differential families, 3 observation-only families) evaluating login/logout flows, session fixation, session invalidation after logout and password changes, pre-MFA privilege exposure, password reset token reuse, differential account enumeration, and JWT structural decoding.
+* **Executor Safety & Anti-SSRF**: Standard TLS certificate/hostname verification, destination-IP pinning at socket connection (retaining SNI and `Host` header to eliminate DNS rebinding), safe proxy bypassing, per-redirect hop scope and anti-SSRF re-verification. Zero password spraying, dictionary attacks, OTP brute forcing, or CAPTCHA bypasses.
 
-The **Web Application Intelligence Engine** (`framework/webapp/` & `scripts/bb-webapp`) converts Phase 2 web service observations into an authoritative, structured attack surface relationship model:
+### 13. File Handling, Path Traversal & Upload Security (Phase 15)
+* **Safe File Handling Assessment**: Detects upload forms and file handling parameters; evaluates extension, content-type, and storage controls using harmless plain-text synthetic files (`test_<token>.txt`). Path traversal validation utilizes synthetic canary tokens (`bb_canary_<token>.txt`), strictly prohibiting requests for real sensitive system files (`/etc/passwd`, `win.ini`, `.env`).
 
-* **Application Attack Surface Topology**: Models relationships between `WebApplication`, `WebPage`, `WebEndpoint`, `ParameterObservation`, `FormObservation`, `CookieObservation`, `ResourceObservation`, and `LinkObservation` via `WebAppGraph`.
-* **Bounded Crawl Policies**: Centralized safety ceilings (`CrawlPolicy`) enforcing conservative bounds: maximum 500 pages, maximum crawl depth 3, maximum 2000 requests, 2 MB response limits, and strict same-origin filtering by default.
-* **Deterministic URL Normalization**: Canonicalizes URLs via `canonicalize_url()` (resolves path traversal, strips default ports and fragments, sorts query parameters deterministically).
-* **HTML Element & Form Extraction**: Parses HTML deterministically to capture links, forms (action, method, field types, password and file upload indicators), buttons, and query/body parameters without automatic form submission or payload execution.
-* **Robots.txt & Sitemap Intelligence**: Discovers valid in-scope endpoint routes from `/robots.txt` and XML sitemaps without recursive expansion loops.
-* **Cookie & Security Header Metadata**: Extracts and documents Set-Cookie flags (`Secure`, `HttpOnly`, `SameSite`) and security response headers.
-* **Static & Dynamic Resource Inventory**: Inventories scripts, stylesheets, fonts, and images, creating a clean dataset for Phase 4 JavaScript analysis.
-* **Atomic State Persistence**: Writes observations atomically to `~/BugBounty-Workspace/programs/<name>/state/webapps.json`. Supports resumable execution (`--resume`).
-* **CLI Utility**:
-  ```bash
-  # Map web applications in a program workspace with ASCII attack surface tree
-  ./scripts/bb-webapp --program acme-corp --tree
+### 14. Browser Runtime & Dynamic Analysis (Phase 16)
+* **Opt-In Headless Automation**: Disabled by default (`browser_enabled=False`); truth-first capability detection evaluates actual browser launchability before dispatch.
+* **Validating Egress Proxy & Pre-Handshake WebSocket Routing**: Chunnels browser egress through an ephemeral loopback proxy (`127.0.0.1:<port>`) with `--proxy-bypass-list=<-loopback>` and numeric IP pinning. Playwright route interception (`BrowserContext.route_web_socket`) blocks unauthorized `ws://` and `wss://` connections before handshakes reach upstream servers. Enforces strict execution budgets (5s timeout, max 50 requests, max 5 redirects).
 
-  # Map a specific application with customized crawl depth
-  ./scripts/bb-webapp --program acme-corp --asset app.example.com --max-pages 100 --max-depth 2
+### 15. Deterministic Local Security Labs
+* In-memory offline simulation environments for deterministic verification with zero external network traffic:
+  * `LocalXxeLab`: Reflection, secure DTD reject, parser error, and mock OOB modes.
+  * `LocalSsrfLab`: Direct, blind, redirect, and header SSRF scenarios.
+  * `LocalAuthenticationSecurityLab`: 21 offline authentication and session scenarios.
+  * `LocalBusinessLogicLab`: 15 business logic and workflow scenarios.
+  * `LocalCloudSecurityLab`: 15 cloud storage and takeover scenarios.
 
-  # Passive analysis only using existing reconnaissance observations
-  ./scripts/bb-webapp --program acme-corp --passive-only
-
-  # Resume previous crawl and output JSON state
-  ./scripts/bb-webapp --program acme-corp --resume --json
-  ```
+### 16. Roadmap Status & Verification Baseline
+* **Accepted Baseline**: Phase 18 complete and accepted at commit `1fcd552d53f99cf0a06802ddae45197796ec74c5`.
+* **Next Planned Phase**: Phase 19 (Infrastructure & Configuration Exposure).
+* **Full Roadmap**: Refer to [`docs/ROADMAP-24-PHASES-TEMP.md`](docs/ROADMAP-24-PHASES-TEMP.md) for the detailed 24-phase roadmap, architectural specifications, and historical verification records.
 
 ---
-
-## Phase 4: JavaScript Intelligence & Client Analysis Engine
-
-The **JavaScript Intelligence Engine** (`framework/javascript/` & `scripts/bb-js`) analyzes client-side JavaScript resources collected during web crawling and attack surface discovery:
-
-* **Pure Static Analysis**: Analyzes script source code via deterministic regex matching and parsing without arbitrary code execution (`eval`, `exec`, or browser runtime execution of target scripts are forbidden).
-* **API & Endpoint Extraction**: Discovers relative and absolute HTTP endpoints, API paths, and realtime communication channels from standard client libraries (`fetch`, `axios`, `$.ajax`, `XMLHttpRequest`, `WebSocket`, and REST route patterns).
-* **Client-Side SPA Routing**: Maps frontend single-page application routes across modern frameworks (React Router `<Route path="...">`, Vue Router `path: '...'`, and client links), uncovering hidden views and admin paths.
-* **Parameter Discovery**: Extracts query and payload parameter names referenced in `URLSearchParams`, query string templates, and request object builders, feeding downstream testing.
-* **Client Dependency Identification**: Detects frontend libraries and utility frameworks (React, Vue.js, Angular, jQuery, Axios, Lodash, Next.js, Webpack, Vite) with extracted version numbers when embedded.
-* **Source Map Detection**: Identifies source map directives (`//# sourceMappingURL=...`) and resolves source map targets deterministically against base script URLs.
-* **Sensitive String Classification & Automatic Masking**: Classifies sensitive configuration strings, tokens, and endpoints into calibrated risk tiers (`HIGH_CONFIDENCE_SECRET`, `SENSITIVE_LOOKING`, `INTERESTING`, `INFORMATIONAL`). High-confidence credentials (AWS keys, JWTs, private keys, bearer tokens) are **automatically masked** before persistence or display to prevent secret exposure.
-* **Atomic State Persistence**: Persists observations atomically to `~/BugBounty-Workspace/programs/<name>/state/javascript.json`. Supports incremental and resumable execution (`--resume`).
-* **CLI Utility**:
-  ```bash
-  # Analyze JavaScript resources for a program workspace with ASCII tree visualization
-  ./scripts/bb-js --program acme-corp --tree
-
-  # Target a specific domain or host
-  ./scripts/bb-js --program acme-corp --domain app.example.com
-
-  # Analyze a specific JavaScript resource URL directly
-  ./scripts/bb-js --program acme-corp --resource https://app.example.com/static/js/main.js
-
-  # Preview actions without fetching new resources
-  ./scripts/bb-js --program acme-corp --dry-run
-
-  # Resume previous analysis and output structured JSON
-  ./scripts/bb-js --program acme-corp --resume --json
-  ```
-
----
-
-## Phase 5: API Security & Parameter Intelligence Engine
-
-The **API Security & Parameter Intelligence Engine** (`framework/api/` & `scripts/bb-api`) transforms multi-source observations into an authoritative, normalized API attack surface model:
-
-* **Multi-Source Intelligence Correlation**: Correlates API endpoints across Phase 2 HTTP reconnaissance, Phase 3 web crawling, Phase 4 JavaScript bundle analysis, and authoritative API specifications into unified endpoint entities with rich multi-source provenance.
-* **OpenAPI 2.0 & 3.x Specification Ingestion**: Safely parses OpenAPI 2.0 (Swagger) and OpenAPI 3.x specifications in JSON and YAML formats. Extracts servers/base paths, operations, query/path/header/cookie/body parameters, request bodies, response schemas, and authentication schemes (`basic`, `bearer`, `api-key`, `oauth2`, `openid-connect`).
-* **REST Intelligence & Path Parameter Inference**: Recognizes and normalizes REST path parameter patterns (`/api/v1/users/123` $\longrightarrow$ `/api/v1/users/{user_id}`, `/api/orders/<uuid>` $\longrightarrow$ `/api/orders/{order_id}`), preserving concrete observed URLs alongside generalized route templates.
-* **GraphQL Intelligence**: Automatically detects GraphQL endpoints and operations from URLs, content types, and script bodies. Supports controlled, safe schema introspection checks under strict request limits.
-* **Parameter Intelligence & Semantic Classification**: Unifies parameters across query strings, path templates, forms, request payloads, and client scripts. Classifies semantic roles (`user_id`, `account_id`, `resource_id`, `redirect`, `callback`, `search`, `filter`, `sort`, `page`, `limit`, `token`, `session`, `file`).
-* **Bounded Schema Representations**: Builds bounded structural models of request and response payloads, enforcing maximum depth and field limits to prevent recursion and memory exhaustion.
-* **Integrated API Graph**: Direct semantic graph relationships (`WebApplication` $\longrightarrow$ `ApiApplication` $\longrightarrow$ `ApiEndpoint` $\longrightarrow$ `ApiParameter`, `ApiSpecification` $\longrightarrow$ `ApiEndpoint`, `JavaScriptResource` $\longrightarrow$ `ApiEndpoint`).
-* **Atomic State Persistence**: Writes observations atomically to `~/BugBounty-Workspace/programs/<name>/state/api.json`. Supports incremental and resumable execution (`--resume`).
-* **CLI Utility**:
-  ```bash
-  # Render visual ASCII API attack surface tree for a program workspace
-  ./scripts/bb-api --program acme-corp --tree
-
-  # Target a specific domain or host
-  ./scripts/bb-api --program acme-corp --domain api.example.com --tree
-
-  # Ingest and parse an OpenAPI / Swagger specification
-  ./scripts/bb-api --program acme-corp --spec https://api.example.com/openapi.json
-
-  # Filter and inspect GraphQL services
-  ./scripts/bb-api --program acme-corp --graphql --json
-
-  # Passive analysis only using existing observations
-  ./scripts/bb-api --program acme-corp --passive-only
-  ```
-
----
-
-## Phase 6: Security Validation & Vulnerability Analysis Foundation
-
-The **Security Validation Foundation Engine** (`framework/validation/` & `scripts/bb-validate`) transforms reconnaissance, webapp, JS, and API intelligence into controlled, hypothesis-driven security validation attempts and structured security findings:
-
-* **Formal Finding Lifecycle**: Enforces immutable state transitions (`CANDIDATE` $\longrightarrow$ `TESTING` $\longrightarrow$ `OBSERVED` $\longrightarrow$ `VALIDATED` / `REJECTED` / `DUPLICATE` / `NEEDS_MANUAL_REVIEW`). A finding is never confirmed solely because a payload was dispatched.
-* **Controlled Request Mutation**: `RequestBuilder` performs deterministic, single-parameter mutations across query strings, path variables, headers, cookies, JSON bodies, and form data without collateral alterations.
-* **Safe Testing Policy (`SecurityTestPolicy`)**: Centralized policy engine enforcing method restrictions (defaults to safe methods `GET`, `HEAD`, `OPTIONS`), blocking destructive actions, screening state-changing GET endpoints, and capping request counts, timeouts, payload sizes, and response bytes.
-* **Strict Anti-SSRF & Scope Enforcement**: Every validation request is verified by `ScopeEngine`. Private IP ranges (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`) and `localhost` are strictly rejected.
-* **Empirical Baseline Comparison**: Takes an untouched baseline snapshot of target behavior before mutation, evaluating differential signals (status changes, size deltas, content type variations, body similarity, marker reflections, and error signatures).
-* **Proof-of-Concept Validators**:
-  * **`ReflectedXSSValidator`**: Detects harmless marker (`XSHIELD_TEST_<token>`) reflection in HTML/JSON responses without executing JavaScript or launching a browser.
-  * **`OpenRedirectValidator`**: Detects unvalidated external redirection to a controlled canary URL (`https://canary.bugbounty-agent.local/redirect_<token>`) via 3xx status codes and `Location` headers without navigating victim browsers.
-* **Dual-Principal Authorization Foundation**: Formal data models (`Principal`, `SessionContext`, `ResourceIdentifier`, `ExpectedAccessPolicy`) for comparing resource access divergence without destructive testing or credential harvesting.
-* **Sanitized Cryptographic Evidence**: Integrates `EvidenceStore` with automatic token and cookie redaction (`Authorization: [REDACTED]`, `Cookie: [REDACTED]`), assigning SHA-256 digests.
-* **State Persistence & Deduplication**: Atomic storage in `~/BugBounty-Workspace/programs/<name>/state/security.json` with signature-based finding deduplication (`FindingDeduplicator`).
-* **CLI Utility**:
-  ```bash
-  # Render visual ASCII validation attack tree
-  ./scripts/bb-validate --program acme-corp --tree
-
-  # Targeted validator execution on specific parameter
-  ./scripts/bb-validate --program acme-corp --endpoint "https://app.example.com/search" --parameter q --validator reflected-xss
-
-  # Offline candidate prioritization from existing state
-  ./scripts/bb-validate --program acme-corp --passive-only --json
-
-  # Dry-run plan without issuing network requests
-  ./scripts/bb-validate --program acme-corp --dry-run
-  ```
-
----
-
-## Phase 7: Cross-Site Scripting (XSS) Intelligence & Controlled Validation
-
-The **XSS Intelligence & Validation Engine** (`framework/xss/` & `scripts/bb-xss`) performs context-aware, non-destructive XSS candidate triage and verification across Reflected, DOM, and Stored vectors without unbounded scanning:
-
-* **Context-Aware Reflection Engine (`ReflectedXssValidator`)**:
-  * Employs harmless, deterministic marker tokens (`XSHIELD_REFLECT_<token>`) to establish raw reflection.
-  * Contextual parsing: Analyzes response context (`HTML_BODY`, `HTML_ATTRIBUTE`, `SCRIPT_TAG`, `JSON`, `UNKNOWN`) to verify whether reflections break out of lexical enclosures.
-  * False-positive filtering: Rejects reflections inside safely encoded contexts (`&lt;...&gt;`), plaintext content types, and generic error reflections.
-* **DOM Source-to-Sink Static Analysis (`DomXssAnalyzer`)**:
-  * Statically analyzes JavaScript sources (`location.search`, `location.hash`, `document.referrer`, `window.name`, `postMessage`) and hazardous sinks (`eval`, `innerHTML`, `document.write`, `setTimeout`, `location.href`).
-  * Traces data flow and sanitization indicators (DOMPurify, encodeURIComponent, textContent) without executing untrusted scripts.
-* **Stored Retrieval Correlation (`StoredXssCorrelator`)**:
-  * Correlates multi-step injection and display endpoints via unique canary markers.
-  * Requires strict state tracking across injection and retrieval phases before marking candidates.
-* **Optional Headless Browser Confirmation**:
-  * Sandboxed Playwright verification (`--browser`) reserved strictly for confirmed candidates in browser-backed environments.
-* **CLI Utility**:
-  ```bash
-  # Render ASCII XSS intelligence and candidate tree
-  ./scripts/bb-xss --program acme-corp --tree
-
-  # Run full non-destructive XSS pipeline across discovered endpoints
-  ./scripts/bb-xss --program acme-corp --domain app.example.com
-
-  # Targeted single-endpoint reflection validation
-  ./scripts/bb-xss --program acme-corp --endpoint "https://app.example.com/search" --parameter q
-
-  # Passive-only inspection of stored state and DOM artifacts
-  ./scripts/bb-xss --program acme-corp --passive-only --json
-  ```
-
----
-
-## Phase 8: Authorization & Access Control (BOLA / IDOR) Intelligence
-
-The **Authorization & Access Control Intelligence Engine** (`framework/authz/` & `scripts/bb-authz`) validates object-level, functional, and tenant authorization boundaries through comparative multi-principal testing:
-
-* **Comparative 3-Point Access Control Baseline (`AccessControlComparator`)**:
-  * Differential testing using two distinct researcher-controlled identities (User A, User B) and an unauthenticated probe.
-  * Invariant: Horizontal BOLA/IDOR is verified only when User B successfully accesses User A's private resource and receives genuine resource data identical to User A's baseline.
-  * Soft-404 and Generic 200 Rejection: Detects and rejects empty envelopes, generic permission denial messages returned with HTTP 200, and identical responses across identities.
-* **Supported Authorization Categories**:
-  * **Horizontal BOLA/IDOR**: Cross-account access within the same tenant tier.
-  * **Vertical Privilege Escalation**: Low-privileged roles invoking high-privileged/admin endpoints.
-  * **Tenant Boundary Isolation**: Cross-tenant data leakage across separate organizational containers.
-  * **Unauthenticated Access**: Direct access to protected resources without credentials or session cookies.
-* **Human Approval Gating (`HumanApprovalGate`)**:
-  * Strict safety enforcement: All stateful or potentially mutating tests require explicit researcher approval (`--approve`).
-  * Scope enforcement is non-bypassable even with approval.
-* **Deterministic Local Security Lab (`LocalAuthzLab`)**:
-  * 8 offline simulation scenarios for automated verification without network activity (Horizontal IDOR, Vertical Escalation, Tenant Failure, Correct Enforcement, Soft-404, Generic 200 Denial, Unauthenticated Resource, Intentionally Public).
-* **CLI Utility**:
-  ```bash
-  # Render authorization candidate hierarchy and lifecycle tree
-  ./scripts/bb-authz --program acme-corp --tree
-
-  # Run comparative authorization tests against discovered resources
-  ./scripts/bb-authz --program acme-corp --domain app.example.com
-
-  # Execute state-changing / mutation test cases with explicit approval
-  ./scripts/bb-authz --program acme-corp --domain app.example.com --approve
-
-  # Offline evaluation using local lab fixture
-  ./scripts/bb-authz --program acme-corp --lab
-  ```
-
----
-
-## Phase 9: SSRF & Out-of-Band (OOB) Interaction Intelligence
-
-The **SSRF & Out-of-Band Intelligence Engine** (`framework/ssrf/` & `scripts/bb-ssrf`) validates Server-Side Request Forgery and out-of-band interactions using researcher-controlled canaries and safe callbacks:
-
-* **Canary Token & Correlation Management (`CanaryManager`)**:
-  * Generates unique cryptographic canary tokens per test (`canary_<hash>.<oob-domain>`).
-  * Maps callbacks precisely to test candidates, eliminating cross-test collision.
-* **Multi-Provider Architecture (`OobProviderFactory`)**:
-  * **Mock Provider (`MockOobProvider`)**: Deterministic local testing and test suite verification.
-  * **Interactsh Integration (`InteractshProvider`)**: Safe out-of-band DNS, HTTP, and HTTPS interaction verification.
-* **Supported SSRF Vulnerability Classes**:
-  * **Direct SSRF**: Target fetches external canary URL and echoes responses.
-  * **Blind SSRF**: Asynchronous background HTTP requests verified via OOB interaction polling.
-  * **DNS-Only Server-Side Interaction**: Target resolves canary hostname without issuing HTTP requests.
-  * **Redirect-Mediated SSRF**: Backend follows 3xx redirects to canary endpoints.
-* **Anti-SSRF Protection & Safety Rules**:
-  * Rejects private IP addresses (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`) and local hostnames.
-  * Restricts schemes to `http` and `https`, rejecting dangerous protocols (`file://`, `gopher://`, `dict://`).
-* **Deterministic Local Security Lab (`LocalSsrfLab`)**:
-  * 12 distinct SSRF and OOB interaction scenarios for offline test verification.
-* **CLI Utility**:
-  ```bash
-  # Render SSRF candidate status, OOB interactions, and findings
-  ./scripts/bb-ssrf --program acme-corp --tree
-
-  # Run SSRF candidate evaluation using default OOB provider
-  ./scripts/bb-ssrf --program acme-corp --domain app.example.com
-
-  # Execute approved tests with explicit human authorization
-  ./scripts/bb-ssrf --program acme-corp --domain app.example.com --approve
-
-  # Run local SSRF lab simulations across all 12 scenarios
-  ./scripts/bb-ssrf --program acme-corp --lab
-  ```
-
----
-
-## Phase 10: Injection Intelligence & Controlled Validation
-
-The **Injection Intelligence Engine** (`framework/injection/` & `scripts/bb-inject`) performs hypothesis-driven, non-destructive testing for SQLi, NoSQLi, SSTI, and Command Injection:
-
-* **Non-Destructive Differential Testing**:
-  * **Boolean-Based SQL Injection**: Evaluates truth-functional pairs (`id=1 AND 1=1` vs `id=1 AND 1=2`) against baseline behavior without using destructive SQL statements or bulk extraction.
-  * **NoSQL Injection**: Tests query operator differentials (`{"$gt": ""}`, `{"$ne": null}`) against strict type baselines.
-  * **Server-Side Template Injection (SSTI)**: Uses harmless arithmetic markers (`{{7*7}}`, `${7*7}`, `<%= 7*7 %>`) and checks for rendered evaluated outputs (`49`) without invoking remote code execution.
-  * **Command Injection Foundation**: Identifies parameter reflection into shell contexts using safe, non-destructive echo markers with strict timeouts.
-* **False-Positive Elimination & Operational Anomaly Handling**:
-  * Distinguishes syntax errors from actual SQLi vulnerabilities.
-  * Detects WAF challenges, rate limits (HTTP 429), and caching variations to prevent false positives.
-  * Timing-based verification (`--timing`) uses strictly bounded delays ($\le 5$ seconds) with baseline jitter compensation.
-* **Prioritization & Scoring (`InjectionPrioritizer`)**:
-  * Prioritizes candidates on a 0–100 scale based on parameter names, reflection signals, and technology fingerprints.
-* **Deterministic Local Security Lab (`LocalInjectionLab`)**:
-  * 15 comprehensive simulation scenarios covering SQL, NoSQL, SSTI, Command Injection, and anomalous conditions.
-* **CLI Utility**:
-  ```bash
-  # Render prioritized injection candidate tree
-  ./scripts/bb-inject --program acme-corp --tree
-
-  # Run non-destructive injection testing against discovered endpoints
-  ./scripts/bb-inject --program acme-corp --domain app.example.com
-
-  # Enable bounded timing-differential tests with human approval
-  ./scripts/bb-inject --program acme-corp --domain app.example.com --timing --approve
-
-  # Run offline validation through the 15-scenario local injection lab
-  ./scripts/bb-inject --program acme-corp --lab
-  ```
-
----
-
-## Phase 11: HTTP / Header Trust & Protocol Security
-
-The **HTTP / Header Trust & Protocol Security Engine** (`framework/http_trust/` & `scripts/bb-http`) evaluates protocol trust boundaries, reverse-proxy assumptions, and header-based vulnerabilities:
-
-* **Header Trust & Protocol Analysis**:
-  * **Host Header Injection**: Tests for unvalidated Host header usage in absolute URLs, password-reset links, canonical links, and redirect destinations.
-  * **X-Forwarded-Host & Forwarded Trust**: Evaluates whether intermediate proxies trust spoofed forward headers over direct socket connections.
-  * **Scheme & Protocol Trust (`X-Forwarded-Proto`)**: Tests whether backend applications alter URL schemes or downgrade security based on client-controlled protocol headers.
-  * **CORS Trust Boundaries**: Checks for dangerous `Access-Control-Allow-Origin: <reflected>` combined with `Access-Control-Allow-Credentials: true`, distinguishing public APIs from authenticated credential leaks.
-  * **HTTP Parameter Pollution (HPP)**: Evaluates parameter precedence differences between front-end and back-end parsers.
-  * **Cache Poisoning Foundation**: Identifies unkeyed header reflections and responses cached with client-controlled inputs without causing denial of service.
-* **Deterministic Local Security Lab (`LocalHttpTrustLab`)**:
-  * 15 distinct header trust, CORS reflection, HPP, and cache scenarios for fully offline verification.
-* **CLI Utility**:
-  ```bash
-  # Render HTTP header trust candidate tree and verification status
-  ./scripts/bb-http --program acme-corp --tree
-
-  # Evaluate HTTP header trust boundaries against target domain
-  ./scripts/bb-http --program acme-corp --domain app.example.com
-
-  # Execute approved stateful header tests
-  ./scripts/bb-http --program acme-corp --domain app.example.com --approve
-
-  # Run offline tests against all 15 scenarios in the local HTTP trust lab
-  ./scripts/bb-http --program acme-corp --lab
-  ```
-
----
-
-## Phase 12: Business Logic & Workflow Intelligence
-
-The **Business Logic & Workflow Intelligence Engine** (`framework/business_logic/` & `scripts/bb-workflow`) provides advanced workflow state analysis, deterministic state machine modeling, and controlled vulnerability evaluation:
-
-* **State Machine & Workflow Modeling**: Formally models multi-step application journeys (`Workflow`, `WorkflowStep`, `WorkflowTransition`, `WorkflowState`, `WorkflowActor`, `WorkflowResource`).
-* **Formal Invariant Engine (`BusinessLogicInvariantEngine`)**: Evaluates 24 specific business logic vulnerability classes across 4 domains:
-  * **Sequence & Transition**: Step skipping, forced transitions, step reordering, duplicate finalization, expired workflow resumption.
-  * **Identity & Tenancy**: Ownership mismatch, role transition violations, tenant boundary violations, unauthenticated step access.
-  * **Quantitative & Financial**: Negative item quantities, decimal/integer manipulation, currency confusion, client-calculated price tampering, discount/coupon reuse.
-  * **Concurrency & Timing**: Race window exploitation, double-spend / multi-redemption, limit bypass, resource lifecycle abuse.
-* **Safe Replay Engine (`WorkflowReplayEngine`)**:
-  * Single, sequence, and bounded concurrent replay modes.
-  * Strict safety bounds: concurrency capped at $\le 5$ requests, timeouts capped at $\le 10$ seconds.
-* **Human Approval Gate (`WorkflowApprovalGate`)**:
-  * Prevents accidental mutation of stateful resources.
-  * Generates structured pre-test audit dossiers detailing risks and rollback instructions.
-  * Execution strictly blocked unless `--approve` flag is supplied.
-* **Deterministic Local Security Lab (`LocalBusinessLogicLab`)**:
-  * 15 deterministic in-memory scenarios covering checkout step skipping, negative quantity cart manipulation, password reset token replay, multi-tenant workspace leakage, and voucher double-spend race condition simulation.
-  * Enables 100% offline testing without external network traffic.
-* **CLI Utilities**:
-  ```bash
-  # Business logic workflows and local lab
-  ./scripts/bb-workflow --program acme-corp --tree
-  ./scripts/bb-workflow --lab --tree
-  ./scripts/bb-workflow --lab --scenario checkout_step_skipping --approve
-  ```
-
----
-
-## Phase 13: Cloud Security & Misconfiguration Intelligence
-
-The **Cloud Security & Misconfiguration Intelligence Engine** (`framework/cloud_security/` & `scripts/bb-cloud`) identifies cloud infrastructure, evaluates object storage exposure, and detects dangling DNS takeovers:
-
-* **Multi-Signal Provider Fingerprinting**: Accurately classifies AWS, Azure, GCP, Cloudflare, Fastly, DigitalOcean, and Oracle by scoring DNS CNAMEs, IP/ASN ownership, TLS SAN records, and HTTP server headers.
-* **Cloud Service Identification**: Distinguishes object storage (S3, Blob, GCS), CDNs (CloudFront, Azure Front Door), serverless endpoints (Cloud Run, Cloud Functions), app hosting, and administrative interfaces.
-* **Exposure Hypothesis Formulation**:
-  * **Public Object Read**: Verified using safe `HEAD` probes without massive downloads.
-  * **Public Object Listing**: Verified by checking for XML/JSON enumeration schemas (`<ListBucketResult>`, `<EnumerationResults>`).
-  * **Suspected Write Capability**: Flagged as `WRITE_CAPABILITY_SUSPECTED` for manual operator review; automatic file uploads are strictly disabled.
-  * **Cloud Subdomain Takeover**: Detects orphaned cloud CNAMEs returning provider-specific registration prompts (`NoSuchBucket`, `404 Web Site not found`). Never attempts automatic resource claiming.
-  * **Unauthenticated Admin Interfaces**: Distinguishes public interfaces from unauthenticated administrative panels by verifying login/SSO barriers.
-* **Strict False Positive Elimination (`CloudFalsePositiveClassifier`)**: Rejects CDN normal endpoints, active access controls (HTTP 403 / `AccessDenied`), standard HTML website hosting, and generic 404s.
-* **Deterministic Local Security Lab (`LocalCloudSecurityLab`)**: 15 in-memory offline scenarios covering S3/Blob/GCS read and listing, dangling CNAME takeovers, admin interfaces, and false-positive rejections.
-* **CLI Utilities**:
-  ```bash
-  # Render cloud intelligence tree
-  ./scripts/bb-cloud --program acme-corp --tree
-
-  # Passive cloud asset mapping
-  ./scripts/bb-cloud --program acme-corp --passive-only --json
-
-  # Dry-run of planned cloud validation checks
-  ./scripts/bb-cloud --program acme-corp --dry-run
-
-  # Run 100% offline local cloud security lab
-  ./scripts/bb-cloud --lab --tree
-  ./scripts/bb-cloud --lab --validate
-  ```
-
----
-
-## Phase 14: Authentication, Session & Identity Security Intelligence
-
-The **Authentication, Session & Identity Security Intelligence Engine** (`framework/authentication/` & `scripts/bb-auth`) models authentication state machines, session lifecycles, and identity boundaries:
-
-* **Authentication Surface Discovery & Cross-Phase State Ingestion**:
-  * Automatically ingests endpoints, routes, forms, and authorization context from 7 state files across earlier phases (`webapps.json`, `api.json`, `javascript.json`, `assets.json`, `recon.json`, `authorization.json`, and `workflows.json`) via `AuthenticationSurfaceDiscoverer.discover_all()`.
-  * Catalogs login, logout, password change, password reset, MFA, and token refresh surfaces.
-* **Structured Identity & Session Modeling**:
-  * `IdentityProfile`: Tracks researcher-controlled identities across lifecycle states (`ANONYMOUS`, `MFA_REQUIRED`, `AUTHENTICATED`, `LOGGED_OUT`). Strictly redacts and forbids storing raw passwords.
-  * `SessionProfile`: Analyzes session lifecycles using SHA-256 masked fingerprints (`sess_sha256_...`), observing creation, rotation, invalidation, and transport attributes.
-* **Controlled Differential Testing & False Positive Elimination**:
-  * Compares Anonymous vs Authenticated vs Pre-MFA responses.
-  * Actively rejects HTTP 200 login forms, public pages, WAF challenges, and normal 401/403 access controls as non-vulnerabilities.
-* **Operational Vulnerability Taxonomy (14 Families)**:
-  * 11 operational testing families: `AUTHENTICATION_BYPASS`, `PRE_AUTH_PRIVILEGE_EXPOSURE`, `SESSION_FIXATION`, `SESSION_NOT_INVALIDATED`, `PASSWORD_RESET_TOKEN_REUSE`, `PASSWORD_RESET_STATE_CONFUSION`, `ACCOUNT_ENUMERATION`, `MFA_BYPASS`, `MFA_STATE_CONFUSION`, `REFRESH_TOKEN_REUSE`, `AUTHENTICATION_STATE_INCONSISTENCY`.
-  * 3 observation-only families: `SESSION_NOT_ROTATED`, `TOKEN_TRANSPORT_EXPOSURE`, `AUTHENTICATION_CONFIGURATION_WEAKNESS`.
-* **Session Fixation & Invalidation**:
-  * Detects unrotated session identifiers surviving login transitions and granting authenticated access.
-  * Validates session invalidation following logout or password change by verifying that protected endpoints return HTTP 401 rather than active user data.
-* **Password Reset & Account Enumeration**:
-  * Verifies reset token one-time use, expiration enforcement, and session invalidation post-reset.
-  * Evaluates repeatable differential signals (status code, body length, redirects, distinct error messages) across multiple trials to identify genuine account enumeration while rejecting uniform responses.
-* **MFA State Machine & Pre-MFA Exposure**:
-  * Detects sensitive account APIs accessible using pre-MFA tokens before secondary factor verification.
-  * Strictly prohibits OTP brute-forcing, OTP flooding, or automated CAPTCHA bypasses.
-* **Token & JWT Structural Intelligence**:
-  * Decodes JWT headers and payloads locally without live tampering or signature brute-forcing.
-  * Classifies missing expiration claims (`exp`) as informational configuration observations.
-  * Flags transport exposure (tokens leaked in URL query parameters or Referer headers).
-* **Bounded Execution, Destination-IP Pinning & Fail-Closed Scope (Phase 14.2)**:
-  * Uses `BoundedAuthenticationExecutor` and `AuthSafeRedirectHandler` with standard TLS certificate/hostname verification, destination-IP pinning (preserving SNI and `Host` header to prevent DNS rebinding), safe environment proxy bypassing, anti-SSRF protections (including IPv4, IPv6, and IPv4-mapped IPv6 `::ffff:0:0/96`), maximum 10-second timeout, maximum 100KB response limit, and 5 redirect hops caps.
-  * Resolves canonical `<program_dir>/scope/scope.yaml` without unsafe working directory fallbacks; enforces strict fail-closed offline scope checking via `ScopeEngine.check()`.
-  * Safe execution boundaries: zero password spraying, credential stuffing, password guessing, or brute force.
-  * Sensitive state mutations (password reset execution, password changes, MFA enrollments) strictly require operator confirmation (`--approve`). Operator approval never overrides scope boundaries.
-  * Real target validation utilizes authentic multi-step differential sequences with zero hardcoded synthetic responses. Missing credentials or sessions deterministically report `SKIPPED` or `CANDIDATE`.
-* **Deduplication, Resume & Native Finding Integration**:
-  * Deterministic SHA-256 test fingerprinting in `state/tests.json` via `StateManager.record_test` and `StateManager.has_test_run`.
-  * State resumption (`--resume`) and cryptographic evidence sanitization with family-specific redactions (`[REDACTED_PASSWORD]`, `[REDACTED_COOKIE]`, `[REDACTED_TOKEN]`, `[REDACTED_SECRET]`).
-  * Direct persistence to native findings in `state/findings.json` via `StateManager.save_finding` respecting `FindingLifecycle.VALIDATED`.
-* **Deterministic Local Authentication Lab (`LocalAuthenticationSecurityLab`)**: 21 in-memory offline scenarios covering bypasses, pre-MFA exposures, logout invalidation, session fixation, token reuse, enumeration, and false-positive elimination.
-* **CLI Utilities**:
-  ```bash
-  # Render visual authentication intelligence tree
-  ./scripts/bb-auth --program acme-corp --tree
-
-  # Passive discovery and modeling without active requests
-  ./scripts/bb-auth --program acme-corp --passive-only --json
-
-  # List generated hypotheses across all 14 families
-  ./scripts/bb-auth --program acme-corp --hypotheses
-
-  # Dry-run validation planning for session flows
-  ./scripts/bb-auth --program acme-corp --flow session --dry-run
-
-  # Execute active validation with operator approval on test accounts
-  ./scripts/bb-auth --program acme-corp --validate --approve
-
-  # Run 100% offline local authentication security lab
-  ./scripts/bb-auth --lab --tree
-  ```
-
----
-
 
 ## OpenCode V2 Runtime & Security Architecture
 
@@ -840,8 +448,9 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 * **Multi-Agent Distinction**: The previous 14-agent multi-agent architecture will be explored in a separate, dedicated repository in the future. It is intentionally not merged into this repository.
 
 ### 3. Environment & Runtime Status
-* **Development Machine**: Windows 10/11 x86_64 running Google Antigravity. Static configuration, schema compliance, and permission rule matching are validated locally via Python test suites.
-* **Target Runtime**: Kali/Debian Linux with OpenCode installed. Actual interactive terminal execution on a live Kali workstation is recorded as **PENDING — requires Kali**.
+* **Development & Evaluation Environments**: Validated and synchronized across Windows 11 x86_64 and Kali/Debian Linux workstations with Python 3.10+.
+* **Cross-Platform Test Coverage**: 729 tests passing on Windows 11 (2 skipped for interactive PTY tests requiring terminal attach); 731 tests passing on Kali Linux (0 skipped).
+* **Target Runtime**: Kali/Debian Linux with OpenCode installed, deploying `Bug-Bounty` globally via `bb-deploy`.
 
 ---
 
@@ -912,8 +521,8 @@ Each report includes all 17 standard bug bounty disclosure sections:
 | Belongs in Git Repository | Stays Local to Machine (Ignored) |
 | :--- | :--- |
 | Framework source code (`framework/`) | Target domain and URL lists |
-| Agent definitions (`.opencode/agents/`) | Reconnaissance scan logs (`recon/`, `scans/`) |
-| Methodology skills (`.opencode/skills/`) | Raw HTTP requests and responses (`evidence/`) |
+| Agent definitions (`agents/`) | Reconnaissance scan logs (`recon/`, `scans/`) |
+| Methodology skills (`skills/`) | Raw HTTP requests and responses (`evidence/`) |
 | Controlled CLI wrappers (`scripts/`) | Vulnerability findings (`findings/`) |
 | Scope templates (`templates/`) | Generated disclosure reports (`reports/`) |
 | Unit tests (`tests/`) | Authorization tokens, API keys, credentials (`secrets.env`) |

@@ -22,11 +22,12 @@ Safely detect and validate Server-Side Request Forgery (SSRF) and blind server-s
 
 ## 2. Infrastructure: Pluggable OOB Provider Architecture
 The engine abstracts interaction servers through a modular interface:
-1. **Mock Provider (`MockOobProvider`)**: Deterministic local in-memory simulation for offline test suites and local security lab verification.
-2. **Interactsh Provider (`InteractshOobProvider`)**: ProjectDiscovery Interactsh integration for production OOB callbacks (`oast.pro` or self-hosted).
+1. **Mock Provider (`MockOobProvider`)**: Deterministic local in-memory simulation for offline test suites and local security lab verification. Interactions produce `SIMULATED` (`INFORMATIONAL`, `LOW` confidence) observations; they never become live validated findings.
+2. **Interactsh Provider (`InteractshOobProvider`)**: ProjectDiscovery Interactsh adapter for production OOB callbacks (`oast.pro` or self-hosted).
 3. **Collaborator Provider (`CollaboratorOobProvider`)**: Burp Collaborator polling client adapter.
 
-Missing external providers never crash the system; they report `CONFIG_REQUIRED` or `UNAVAILABLE` and fall back gracefully.
+> [!NOTE]
+> **Truthful Provider Availability (Phase 18)**: Unconfigured providers report `CONFIG_REQUIRED`. Configured external adapters report `UNAVAILABLE` because live wire polling over network protocols is not implemented (storage is local in-memory only). A configured token or hostname alone does not establish operational live polling. Before issuing canaries or dispatching probes, the engine checks provider availability; if `UNAVAILABLE`, `CONFIG_REQUIRED`, or `ERROR`, it fails closed immediately with zero network requests dispatched.
 
 ---
 
@@ -34,12 +35,21 @@ Missing external providers never crash the system; they report `CONFIG_REQUIRED`
 Every SSRF probe receives a unique, non-sensitive correlation token:
 `bb9-<program_id>-<test_id>-<random_hex>.<oob_domain>`
 
+### Destination Trust & Method Verification (Phase 18):
+Before any request is sent, the generated canary destination is validated against `validate_oob_destination()` in `SecurityTestPolicy`. The engine verifies that this method exists and is callable. If missing or non-callable, it fails closed with `PolicyViolationError`, sets `POLICY_VIOLATION` candidate state, and dispatches zero network requests. The destination must belong to authorized trusted domains and strictly forbids IP literals (loopback, private, carrier-grade NAT, or metadata IP addresses, including alternate numeric representations) and prohibited hostnames.
+
 ### Correlation Lifecycle:
 ```text
 Candidate Endpoint (e.g. GET /fetch?url=...)
         │
         ▼
+Verify Provider Availability (AVAILABLE) ──► Fails closed if UNAVAILABLE / CONFIG_REQUIRED (0 requests)
+        │
+        ▼
 Issue Unique Canary Token (e.g. bb9-acme-01-f4a2.oob.local)
+        │
+        ▼
+Validate OOB Destination Trust Policy ──► Fails closed with PolicyViolationError if untrusted/non-callable
         │
         ▼
 Dispatch Controlled Probe with Safe HTTP Method (GET/HEAD)
@@ -52,7 +62,8 @@ Match Canary Token + Timestamp Window + Origin IP
         │
         ├── No Interaction Observed     ──► CANDIDATE / TESTED
         ├── DNS-Only Resolution Observed ──► OBSERVED (DNS Primitive)
-        └── HTTP/HTTPS Callback Observed ──► VALIDATED (Confirmed SSRF)
+        ├── Mock Callback Observed       ──► SIMULATED (Informational Mock Proof)
+        └── Live Wire Callback Observed  ──► VALIDATED (Confirmed SSRF)
 ```
 
 ---

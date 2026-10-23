@@ -67,3 +67,40 @@ The framework code enforces the following non-negotiable architectural boundarie
    * Proxy routing and Chromium isolation flags enforce strict application-level boundaries against web-tier SSRF and XSS callbacks.
    * Operating system network isolation (e.g., Linux network namespaces `ip netns`) should be deployed in production environments requiring protection against native browser escape vulnerabilities.
 
+---
+
+## 5. API Security & Streaming Byte-Budget Safeguards (Phase 17)
+
+1. **Continuous Streaming Byte-Budget Accounting**:
+   * Global network-byte accounting (`total_bytes_transferred`) tracks every consumed byte continuously.
+   * Failed, malformed, oversized, truncated, or rejected responses consume the budget to prevent runaway bandwidth consumption.
+   * Streaming responses exceeding `max_bytes` are aborted mid-flight.
+2. **Loopback Fixture Port Authorization**:
+   * Testing against local loopback ports requires explicit unprivileged integer port registration (`1024-65535`) and scope authorization.
+   * Production targets strictly forbid loopback, private RFC 1918, carrier-grade NAT, or cloud metadata addresses.
+   * Explicit scope exclusions take strict precedence over fixture port allowances and target inclusions.
+3. **Bounded GraphQL & OpenAPI Reference Ingestion**:
+   * Active GraphQL introspection is strictly opt-in (`allow_graphql_introspection=True`, default disabled) with depth and parameter bounds.
+   * OpenAPI reference resolution (`$ref`) is restricted to local/relative pointers up to depth 10 with circularity detection; external network references fail closed.
+
+---
+
+## 6. SSRF, XXE & Server-Side Parser Safeguards (Phase 18)
+
+1. **Agent-Side XML Parser Hardening**:
+   * Internal XML parsing (`framework/common/xml_safe.py`) enforces strict cumulative character expansion ceilings (`max_expanded_chars`), Expat amplification factor defenses, and Billion Laughs / quadratic blowup protection.
+   * Sitemap and XML parser errors fail closed immediately with zero insecure fallback.
+2. **Anti-SSRF Transport & Alternate Numeric IP Protection**:
+   * `parse_alternate_ip` unmaps and validates alternate numeric representations (dotted decimal, decimal scalars, hex scalars, octal scalars, dotted octal/hex, and inet_aton multi-part formats).
+   * Destination IP resolution fails closed if any DNS answer resolves to loopback, private RFC 1918, carrier-grade NAT, or cloud metadata addresses (`169.254.169.254`, `metadata.google.internal`).
+3. **Out-of-Band Canary Gating & Destination Trust Boundary**:
+   * OOB provider availability verification: provider status must be `AVAILABLE` before canary issuance or probe dispatch; fails closed for `UNAVAILABLE`, `CONFIG_REQUIRED`, or `ERROR` with zero network requests dispatched.
+   * Generated canary destinations are validated against `validate_oob_destination()` in `SecurityTestPolicy`, which verifies that the method exists and is callable; missing or non-callable methods fail closed with `PolicyViolationError`, record `POLICY_VIOLATION` candidate state, and dispatch zero requests.
+   * Canary destinations strictly forbid unauthorized domains, IP literals (including alternate encodings and IP-suffix tricks), and cloud metadata destinations.
+4. **Truthful Evidence Classification**:
+   * Mock provider interactions strictly emit `SIMULATED` (`INFORMATIONAL`, `LOW` confidence) findings and can never become live validated findings.
+   * Internal entity reflection alone emits an `OBSERVATION` (`INFORMATIONAL`, `MEDIUM` confidence), never a false `HIGH`-severity `VALIDATED` XXE finding.
+   * Parser errors and secure DTD prohibitions emit zero findings.
+   * Zero sensitive local file extraction (`file://`, `/etc/passwd`, `/etc/shadow`, `win.ini`) or cloud metadata probing (`169.254.169.254`, `metadata.google.internal`) is permitted; any matching target fails closed immediately.
+   * All active SSRF and XXE validation requires prior explicit human approval (`approval_status == 'APPROVED'`). Automated exploitation and automatic report submission are strictly prohibited.
+

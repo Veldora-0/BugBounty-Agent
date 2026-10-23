@@ -2,8 +2,8 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Repository baseline:** `5502633bf4828e1c3a7493f36cdccbf435a1ebbf`  
-> **Current phase:** Phase 18 — SSRF, XXE & Server-Side Parser Expansion
+> **Repository baseline:** `1fcd552d53f99cf0a06802ddae45197796ec74c5`  
+> **Current phase:** Phase 19 — Infrastructure & Configuration Exposure (Planned; Phase 18 Complete)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
 ## 1. Roadmap at a glance
@@ -14,8 +14,8 @@
 | 15 | File Upload, Path Traversal & Local File Exposure | Critical | Complete (acceptance report supplied) |
 | 16 | Browser Runtime & Client-Side Security | High | Complete (accepted with documented limitations) |
 | 17 | Advanced API Security | High | Complete (accepted at `5502633bf4828e1c3a7493f36cdccbf435a1ebbf` with documented limitations) |
-| 18 | SSRF, XXE & Server-Side Parser Expansion | High | In Review (Security Corrections Delivered; Awaiting Acceptance) |
-| 19 | Infrastructure & Configuration Exposure | Medium–High | Planned |
+| 18 | SSRF, XXE & Server-Side Parser Expansion | High | Complete (accepted at `1fcd552d53f99cf0a06802ddae45197796ec74c5` with documented limitations) |
+| 19 | Infrastructure & Configuration Exposure | Medium–High | Planned (Not Started) |
 | 20 | Race Conditions & Distributed Workflows | Medium–High | Planned |
 | 21 | Authentication & Authorization Correlation | Medium | Planned |
 | 22 | Cross-Engine Attack-Path Correlation | Very High | Planned |
@@ -53,6 +53,28 @@ Phase 17 (Advanced API Security) was accepted at baseline commit `5502633bf4828e
   - Explicit scope exclusions take strict precedence over fixture port allowances and target inclusions.
   - Automated exploitation and automatic report submission are strictly prohibited.
 
+### Phase 18 Acceptance & Verification Record
+Phase 18 (SSRF, XXE & Server-Side Parser Expansion) was accepted at baseline commit `1fcd552d53f99cf0a06802ddae45197796ec74c5`.
+- **Test execution results reported by environments** *(from prior verification passes; not independently rerun during documentation-only tasks)*:
+  - Windows 11 (Python 3.14.7): 26 passed in `tests/test_ssrf_engine.py`; 92 passed in `tests/test_phase18_*.py`; 729 passed, 2 skipped (expected Playwright real-browser interactive PTY tests in `tests/test_browser_skill.py`) in full test suite.
+  - Kali Linux (Python 3.14.8): 118 passed across targeted SSRF and Phase 18 test suites; 731 passed, 0 skipped in full regression suite.
+- **Review and acceptance status**:
+  - Independent source review conducted across `framework/common/xml_safe.py`, `framework/common/transport.py`, `framework/ssrf/`, `framework/xxe/`, `framework/validation/`, and related test suites.
+  - Verified agent-side XML parser hardening with cumulative expanded-character ceilings (`max_expanded_chars`), Expat amplification factor defenses, and safe sitemap parsing.
+  - Verified alternate numeric IP parsing (`parse_alternate_ip`), continuous response-byte accounting across partial reads, redirects, and HTTP errors, and multi-record DNS resolution anti-SSRF protections.
+  - Verified safe SSRF mutation across Query, Path, JSON, Form, and XML payloads.
+  - Verified conservative XXE signal classification: internal entity reflection emits `OBSERVATION` (`INFORMATIONAL`, `MEDIUM` confidence); parser errors emit zero findings.
+  - Verified truthful OOB provider availability reporting: unconfigured providers report `CONFIG_REQUIRED`; configured adapters without operational live wire polling report `UNAVAILABLE`.
+  - Verified fail-closed provider availability gate before canary generation or probe dispatch.
+  - Verified mandatory `validate_oob_destination` method presence and callable verification before network dispatch in both SSRF and XXE engines.
+  - Verified mock provider interactions strictly produce `SIMULATED` (`INFORMATIONAL`, `LOW` confidence) findings and can never produce live validated findings.
+- **Documented Phase 18 limitations**:
+  - Zero sensitive local file extraction (`file://`, `/etc/passwd`, `/etc/shadow`, `win.ini`) or cloud metadata probing (`169.254.169.254`, `metadata.google.internal`) is permitted; any matching target fails closed immediately.
+  - Configured Interactsh and Collaborator adapters do not have operational live wire polling implemented in this repository; local in-memory storage only. Truthful status reports `UNAVAILABLE` when configured.
+  - Internal entity reflection proves internal DTD processing only and does not establish external entity resolution.
+  - External entity resolution is unconfirmed unless an attributable, permitted out-of-band callback is received by an active provider.
+  - All active SSRF and XXE validation requires prior explicit human approval (`approval_status == 'APPROVED'`). Automated exploitation and automatic report submission are strictly prohibited.
+
 These notes are a preliminary inspection, not a complete coverage audit. Before implementing each phase, inspect the relevant current code and tests at the then-current HEAD.
 
 ## 3. Phase goals and boundaries
@@ -82,7 +104,7 @@ Safety boundaries:
 **Delivered:** Bounded OpenAPI 2.0/3.0/3.1 and GraphQL schema parsing, continuous byte accounting (`total_bytes_transferred`), fail-closed transport and scope controls, strict loopback fixture port gating with exclusion precedence, state management (`api.json`), and downstream injection engine integration.
 
 ### Phase 18 — SSRF, XXE & Server-Side Parser Expansion
-**Status:** In Review (Security & OOB trust correction pass delivered; awaiting independent acceptance review).
+**Status:** Complete (accepted at `1fcd552d53f99cf0a06802ddae45197796ec74c5`).
 **Delivered:**
 - **Agent-Side XML Hardening**: Implemented portable stdlib XML security in `framework/common/xml_safe.py` (`safe_parse_xml`, `safe_extract_sitemap_urls`, `XmlBombSecurityError`, `ProhibitedDtdSecurityError`, `ExternalEntitySecurityError`) with strict cumulative expanded-character budgets (`max_expanded_chars`), Expat amplification factor defense, input byte limits, and Billion Laughs protection. Hardened sitemap parser in `framework/webapp/engine.py` to fail closed immediately on XML security errors with zero regex fallback.
 - **SSRF Transport Hardening**: Added `parse_alternate_ip` in `framework/common/transport.py` supporting dotted decimal, decimal scalars, hex scalars, octal scalars, dotted octal/hex, and inet_aton multi-part formats; hardened destination IP resolution in `framework/validation/engine.py` to fail closed if any DNS answer resolves to loopback, private, or metadata IP addresses; implemented continuous streaming byte accounting (`total_bytes_transferred`) across partial reads, redirects, and HTTP errors; added `max_total_bytes` policy control to `SecurityTestPolicy`.
@@ -103,16 +125,18 @@ Safety boundaries:
     4. Explicitly validates generated canary destination against `SecurityTestPolicy.validate_oob_destination()` before any request is dispatched; verifies that the validation method exists and is callable, failing closed with `PolicyViolationError`, recording `POLICY_VIOLATION` candidate state with clear diagnostic notes, and dispatching zero network requests if missing or non-callable.
     5. Rejects unsupported schemes (only `http`/`https` allowed), embedded credentials, IP literals (loopback, private, carrier-grade NAT, or metadata IP addresses, including alternate hex/octal/dword encodings and trailing IP suffixes like `169.254.169.254`), prohibited hostnames (`metadata.google.internal`, `localhost`), and untrusted domains before any request is dispatched, preventing arbitrary environment variables from silently redirecting callbacks. Candidate is marked `POLICY_VIOLATION` with zero network egress.
     6. Mock provider interactions in both XXE and SSRF engines strictly emit `SIMULATED` findings (`INFORMATIONAL`, `LOW` confidence), guaranteeing mock callbacks can never become live validated findings.
-- **Cross-Platform Verification Results**:
-  - Windows 11 (Python 3.14.7): 729 passed, 2 skipped (expected Playwright real-browser tests in `tests/test_phase16_browser_runtime.py`) in 100s; 100% pass across all 92 Phase 18 tests and 26 SSRF engine tests.
-  - Kali Linux (Python 3.14.8): Synchronized and verified across all Phase 18 suites and full regression suites.
+- **Cross-Platform Verification Results** *(Reported from Phase 18 verification passes; not independently rerun during documentation-only tasks)*:
+  - Windows 11 (Python 3.14.7): 729 passed, 2 skipped (expected Playwright real-browser interactive PTY tests in `tests/test_browser_skill.py`) in 100s; 100% pass across all 92 Phase 18 tests and 26 SSRF engine tests.
+  - Kali Linux (Python 3.14.8): Synchronized and verified across all Phase 18 suites and full regression suites (731 passed, 0 skipped).
 - **Documented Phase 18 Limitations**:
   - Zero sensitive local file extraction (`file://`, `/etc/passwd`, `/etc/shadow`, `win.ini`) or cloud metadata probing (`169.254.169.254`, `metadata.google.internal`) is permitted; any matching target fails closed immediately.
+  - Configured Interactsh and Collaborator adapters do not have operational live wire polling implemented in this repository; local in-memory storage only. Truthful status reports `UNAVAILABLE` when configured.
   - Internal entity reflection is reported as an observation without implying external entity resolution.
   - External entity resolution is unconfirmed unless an attributable, permitted out-of-band callback is received by an active provider.
   - All active XXE validation requires explicit human approval gate (`approval_status == 'APPROVED'`) before dispatch.
 
 ### Phase 19 — Infrastructure & Configuration Exposure
+**Status:** Planned (Not Started).
 **Goal:** Correlate service and configuration observations with safe checks for exposed administrative surfaces, accidental configuration/backup exposure, unsafe defaults, and deployment mistakes. Distinguish informational observations from demonstrable vulnerabilities and avoid broad or disruptive scanning.
 
 ### Phase 20 — Race Conditions & Distributed Workflows

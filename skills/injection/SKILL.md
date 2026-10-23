@@ -94,6 +94,17 @@ Parameters are scored from **0 to 100** based on context and relevance:
 * **Safety Invariant**:
   Strictly **NEVER** executes `curl`, `wget`, `bash`, `sh`, `powershell`, `rm`, or `nc` against target endpoints.
 
+### 3.5 XML External Entity (XXE) & Parser Security (Phase 18)
+* **Safe Synthetic Internal Entity Reflection**:
+  * Probes XML endpoints using benign internal DTD entity declarations (`<!ENTITY canary "marker">`).
+  * Signal Classification: Internal entity reflection proves internal entity expansion only, emitting `OBSERVATION` (`INFORMATIONAL`, `MEDIUM` confidence), **never** a false `HIGH`-severity `VALIDATED` XXE finding.
+  * Parser errors and secure DTD rejections emit zero findings (no false positives).
+* **Hard Prohibitions**:
+  * Strictly prohibits reading local files (`file://`, `/etc/passwd`, `win.ini`) and probing cloud metadata (`169.254.169.254`, `metadata.google.internal`).
+  * External entity resolution is unconfirmed unless an attributable, permitted out-of-band callback is received by an active provider.
+* **Deterministic Local Lab (`LocalXxeLab`)**:
+  * Supports offline simulation across reflection, secure reject, error, and OOB modes.
+
 ---
 
 ## 4. Multi-Signal Comparator & False-Positive Reduction

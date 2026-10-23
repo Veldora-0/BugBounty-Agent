@@ -179,3 +179,46 @@ Specialized subsystem for bounded HTTP metadata and header trust validation:
 * **Deterministic Local Lab**: 15 in-memory scenarios (`LocalBusinessLogicLab`) validating vulnerabilities without external requests.
 * **Safe Replay Engine**: Single replay, sequence replay, and bounded concurrent replay ($\le 5$ requests, $\le 10$s timeout).
 * **Human Approval Gate**: Explicit pre-test audit dossier generation; execution blocked without `--approve`.
+
+---
+
+## 12. Phase 13: Cloud Security & Misconfiguration Intelligence (`bb-cloud`)
+* **Provider & Service Detection**: Multi-signal fingerprinting across AWS, Azure, GCP, Cloudflare, Fastly, DigitalOcean, and Oracle.
+* **Safe Read-Only Validation**: Audits public S3/Blob/GCS bucket permissions using `HEAD` and bounded `GET`. Tests dangling CNAMEs for subdomain takeover. Strictly forbids direct metadata probing (`169.254.169.254`) or destructive write operations.
+* **Local In-Memory Lab**: 15 offline scenarios in `LocalCloudSecurityLab`.
+
+---
+
+## 13. Phase 14: Authentication & Identity Security (`bb-auth`)
+* **14-Family Finding Taxonomy**: Differential baseline validation for login bypass, session fixation, session invalidation, pre-MFA exposure, and reset token reuse.
+* **Executor Safety**: Pinned socket destination IPs, standard TLS verification, safe proxy bypassing, and per-redirect hop anti-SSRF re-verification.
+* **Local In-Memory Lab**: 21 offline scenarios in `LocalAuthenticationSecurityLab`.
+
+---
+
+## 14. Phase 15: File Upload & Path Traversal Security
+* **Harmless Synthetic Canaries**: Path traversal validation relies strictly on synthetic markers (`bb_canary_<token>.txt`), never requesting real system files (`/etc/passwd`, `win.ini`).
+* **Upload Safety**: Plain-text test files only (`test_<token>.txt`); webshells and executables are strictly forbidden.
+
+---
+
+## 15. Phase 16: Browser Runtime & Dynamic Analysis
+* **Opt-In Headless Automation**: Strictly disabled by default (`browser_enabled=False`); launchability verification prevents silent skips.
+* **Local Validating Egress Proxy**: Ephemeral loopback proxy with numeric IP pinning and pre-handshake WebSocket routing (`BrowserContext.route_web_socket`), blocking unauthorized egress before handshakes reach upstream servers.
+
+---
+
+## 16. Phase 17: Advanced API Security (`bb-api`)
+* **Continuous Streaming Byte Accounting**: Tracks consumed bytes (`total_bytes_transferred`), ensuring malformed or failed responses deplete the global budget.
+* **Loopback Fixture Port Gating**: Requires explicit unprivileged port registration (`1024-65535`) and scope authorization (`allow_fixture_port`); production targets strictly forbid loopback/private destinations.
+
+---
+
+## 17. Phase 18: SSRF & XXE Security Subsystems
+* **Plugin Integrations (`SecurityValidationEngine`)**:
+  * `XxeValidator`: Validates XML handling with safe payload `PL-XXE-REFL-01`. Internal entity reflection emits `OBSERVATION` (`INFORMATIONAL`, `MEDIUM` confidence), never false `HIGH` validated XXE; parser errors emit zero findings.
+  * `SsrfValidator`: Evaluates SSRF candidates with safe payload `PL-SSRF-CANARY-01` and out-of-band canary tracking.
+* **OOB Provider & Destination Policy Gating**:
+  * Provider availability check: must be `AVAILABLE`; fails closed on `UNAVAILABLE`, `CONFIG_REQUIRED`, or `ERROR` with zero requests.
+  * Destination trust check: `validate_oob_destination()` must exist and be callable; fails closed with `PolicyViolationError` and zero requests if missing or non-callable.
+  * Mock provider interactions strictly emit `SIMULATED` findings (`INFORMATIONAL`, `LOW` confidence).

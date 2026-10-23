@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 18: SSRF, XXE & Server-Side Parser Expansion (Accepted with Documented Limitations)
+
+#### Added & Hardened
+* **Agent-Side XML Hardening (`framework/common/xml_safe.py`)**:
+  * Implemented portable stdlib XML security (`safe_parse_xml`, `safe_extract_sitemap_urls`, `XmlBombSecurityError`, `ProhibitedDtdSecurityError`, `ExternalEntitySecurityError`) with strict cumulative expanded-character budgets (`max_expanded_chars`), Expat amplification factor defenses, and Billion Laughs protection.
+  * Hardened webapp sitemap parser (`framework/webapp/engine.py`) to fail closed immediately on XML security errors with zero regex fallback.
+* **SSRF Transport Hardening (`framework/common/transport.py`, `framework/validation/engine.py`)**:
+  * Added `parse_alternate_ip` supporting dotted decimal, decimal scalars, hex scalars, octal scalars, dotted octal/hex, and inet_aton multi-part formats.
+  * Hardened destination IP resolution to fail closed if any DNS answer resolves to loopback, private, carrier-grade NAT, or cloud metadata addresses.
+  * Implemented continuous streaming byte accounting (`total_bytes_transferred`) across partial reads, redirects, and HTTP errors; added `max_total_bytes` policy control to `SecurityTestPolicy`.
+* **SSRF Request Mutation (`framework/ssrf/engine.py`)**:
+  * Expanded `_build_mutated_request()` supporting Query parameters, Path template parameters (`{param}`, `:param`), JSON bodies (flat and nested dotted keys), Form-encoded bodies, and XML bodies (DOM text replacement with XML entity escaping).
+* **Conservative XXE Intelligence Subsystem (`framework/xxe/`)**:
+  * Orchestrates non-destructive synthetic entity reflection, signal classification, deterministic local simulation harness (`LocalXxeLab`), state management (`xxe.json`), and deduplication.
+  * Added `XXE = "XXE"` to `VulnerabilityFamily`, safe payloads `PL-XXE-REFL-01` and `PL-SSRF-CANARY-01`, and `XxeValidator` / `SsrfValidator` plugins in `SecurityValidationEngine`.
+* **Evidence Semantics & Truthful OOB Availability**:
+  * Internal entity reflection alone emits an `OBSERVATION` (`INFORMATIONAL`, `MEDIUM` confidence), never a false `HIGH`-severity `VALIDATED` XXE finding. Parser errors and secure DTD rejections emit zero findings.
+  * Out-of-band correlation (`validate_oob_candidate`) differentiates mock test harness interactions (`SIMULATED`, `INFORMATIONAL`, `LOW` confidence) from live external target callbacks (`VALIDATED`, `HIGH`). Mock interactions can never produce live validated findings.
+  * Truthful OOB Provider Availability: `InteractshOobProvider` and `CollaboratorOobProvider` report `CONFIG_REQUIRED` when unconfigured and `UNAVAILABLE` when configured (because live wire polling over network protocols is not implemented; storage is local in-memory only).
+* **Enforced OOB Destination Trust Boundary & Method Verification**:
+  * Prior to canary issuance or probe dispatch, verifies provider availability (`AVAILABLE`), failing closed for `UNAVAILABLE`, `CONFIG_REQUIRED`, or `ERROR` with zero network requests dispatched.
+  * Validates generated canary destinations against `validate_oob_destination()` in `SecurityTestPolicy`, verifying that the method exists and is callable; fails closed with `PolicyViolationError`, sets `POLICY_VIOLATION` candidate state, and dispatches zero network requests if missing or non-callable.
+
+### Phase 17: Advanced API Security (Accepted with Documented Limitations)
+
+#### Added & Hardened
+* **Bounded OpenAPI & GraphQL Specification Parsing (`framework/api/`)**:
+  * Ingests OpenAPI 2.0, 3.0, and 3.1 specifications (JSON/YAML), recursively resolving RFC 6901 local and relative `$ref` pointers up to depth 10 with circular reference protection.
+  * GraphQL surface detection and opt-in schema introspection (`allow_graphql_introspection=True`, default disabled), bounded to selection set depth $\le 6$, schema traversal depth $\le 3$, and max 5,000 parameters.
+* **Continuous Streaming Byte-Budget Accounting**:
+  * Tracks network egress continuously (`total_bytes_transferred`), ensuring malformed, oversized, truncated, or error responses deplete the global network byte budget (`max_bytes`).
+* **Loopback Fixture Port Gating**:
+  * Local testing against loopback fixtures strictly requires explicit unprivileged port registration (`1024-65535`) and scope authorization; production targets strictly forbid loopback, RFC 1918, and cloud metadata destinations. Dual-export state is maintained in `state/api.json`.
+
 ### Phase 16: Browser Runtime & Client-Side Security (Accepted with Documented Limitations)
 
 #### Added & Hardened

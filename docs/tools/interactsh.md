@@ -63,3 +63,6 @@ Public `interact.sh` servers log DNS, HTTP, and SMTP transactions. For sensitive
 If the public server is blocked or unreachable:
 * Client exits with connection error.
 * BugBounty-Agent flags OOB testing as unavailable and skips blind callback validations.
+
+> [!NOTE]
+> **Framework Adapter Status (Phase 18)**: While the standalone `interactsh-client` CLI interacts with live servers, the Python framework provider adapter (`InteractshOobProvider` in `framework/ssrf/provider.py`) uses local in-memory storage and truthfully reports `CONFIG_REQUIRED` when unconfigured and `UNAVAILABLE` when configured because live wire polling over network protocols is not implemented. A configured token or hostname alone does not establish operational live polling.

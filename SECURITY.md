@@ -4,7 +4,7 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
+| 1.x     | :white_check_mark: |
 
 ---
 
@@ -23,3 +23,6 @@ If you discover a security vulnerability within the BugBounty-Agent framework (s
 * **Zero-Telemetry Framework**: BugBounty-Agent does not phone home, report findings to any cloud analytics, or transmit target information to external servers.
 * **Offline Verification**: `bb-scope` performs zero target network calls, preventing unintended target disclosures during authorization checks.
 * **Redaction by Default**: HTTP headers and payloads stored by `bb-evidence` are automatically scrubbed of authentication tokens, API keys, and session cookies.
+* **Continuous Streaming Byte-Budget Accounting**: Network egress accounting tracks every consumed byte continuously (`total_bytes_transferred`), ensuring failed, malformed, or oversized responses deplete the global budget.
+* **Agent-Side XML Hardening**: Internal XML parser defenses (`safe_parse_xml`) enforce cumulative expanded character budgets, Expat amplification defense, and Billion Laughs / quadratic blowup protection.
+* **Anti-SSRF & Destination Trust Boundaries**: Strict alternate numeric IP parsing (`parse_alternate_ip`), multi-record DNS resolution anti-SSRF protections, provider availability verification, and mandatory callable `validate_oob_destination` checks before network dispatch. Prohibits reading local files (`file://`, `/etc/passwd`) or probing metadata (`169.254.169.254`).
