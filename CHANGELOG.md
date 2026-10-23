@@ -55,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Preflight resolution validates every resolved IP address against RFC 1918 private subnets, loopback (`127.0.0.0/8`), carrier-grade NAT (`100.64.0.0/10`), cloud metadata (`169.254.169.254`), IPv6 equivalents (`::1`, `fc00::/7`, `fe80::/10`), and IPv4-mapped IPv6 ranges (`::ffff:127.0.0.1`, etc.).
   * Added pluggable `resolver` hook to facilitate isolated, deterministic unit testing.
   * Formally documented DNS rebinding limitation: Python standard HTTP transport does not pin socket IPs, recommending validating egress proxies or network namespaces for high-risk targets.
+* **Concurrent Observation Attribution & Overlap Guard (`LocalConcurrencyLab`, `ConcurrencyInvariantEngine`, `EvidenceEnvelope`)**:
+  * Implemented `_measurement_lock` (`threading.RLock`) in `LocalConcurrencyLab` and acquired it in `RaceIntelligenceEngine.execute_hypothesis()` to serialize observation measurement critical sections across executions, ensuring clean sequential observation windows on shared mutable lab state while preserving full barrier-synchronized parallel worker execution within each burst.
+  * Added fail-closed overlap attribution guard: `LocalConcurrencyLab.start_observation()` detects any concurrently active observations (`len(_active_observations) > 0`) and marks all overlapping observations with `has_overlap = True`.
+  * Integrated `has_overlap` directly into canonical serialization (`canonical_serialize_envelope()`) and `EvidenceEnvelope`. Any post-attestation modification of `has_overlap` invalidates HMAC verification.
+  * `ConcurrencyInvariantEngine.evaluate_burst_results()` logs overlapping measurement windows and immediately fails closed to `RaceConfidence.INCONCLUSIVE` (`is_vulnerable = False`, `FindingLifecycle.OBSERVED`) whenever `post_state_evidence.has_overlap == True`, preventing false positive findings from concurrent observation interference.
 * **Deterministic Local Simulation Lab (`LocalConcurrencyLab`)**:
   * Multi-threaded `ThreadingHTTPServer` serving 8 deterministic concurrency scenarios on an ephemeral loopback port (`127.0.0.1:0`).
   * Scenarios: coupon double-spend, balance transfer overdraw, voting limit overrun, idempotency race, mutex serialization (409), rate limit defense (429), gateway timeout (504), and distributed desync (500).
@@ -70,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Extended `framework/state/manager.py` with `DEFAULT_CONCURRENCY` and synchronized `concurrency.json` into canonical findings.
   * Linked `bb-race` across deployment utilities (total 28 utilities).
 * **Automated Test Suite**:
-  * Expanded to 104 unit and integration tests in `tests/test_concurrency_engine.py` (and 151 tests across the full repository test suite) covering taxonomy, barrier timing, invariant rules, evidence classification hardening, full-envelope HMAC attestation, pre-state baselines, counter deltas, observation lifecycle integrity, execution-bound unique observation IDs, cross-run baseline isolation, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
+  * Expanded to 107 unit and integration tests in `tests/test_concurrency_engine.py` (and 154 tests across the full repository test suite) covering taxonomy, barrier timing, invariant rules, evidence classification hardening, full-envelope HMAC attestation, pre-state baselines, counter deltas, observation lifecycle integrity, execution-bound unique observation IDs, cross-run baseline isolation, measurement window serialization, fail-closed `has_overlap` attribution guards on overlapping observations, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
 
 ### Phase 19: Infrastructure & Configuration Exposure (Accepted with Documented Limitations)
 

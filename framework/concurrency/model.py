@@ -119,11 +119,13 @@ class EvidenceEnvelope:
     post_state: Optional[Dict[str, Any]]
     delta_metrics: Dict[str, Any]
     provenance_details: str
+    has_overlap: bool = False
 
     def to_canonical_dict(self) -> Dict[str, Any]:
         return {
             "delta_metrics": self.delta_metrics or {},
             "endpoint": self.endpoint or "",
+            "has_overlap": bool(self.has_overlap),
             "observation_id": self.observation_id or "",
             "post_state": self.post_state or {},
             "pre_state": self.pre_state or {},
@@ -151,6 +153,7 @@ class PostStateEvidence:
     verified_at: Optional[str] = None
     delta_metrics: Dict[str, Any] = field(default_factory=dict)
     provenance_details: str = ""
+    has_overlap: bool = False
     _attestation_token: Optional[str] = field(default=None, repr=False)
 
     def is_authoritative(self, expected_observation_id: Optional[str] = None) -> bool:
@@ -221,6 +224,7 @@ class PostStateEvidence:
         return {
             "schema_version": self.schema_version,
             "observation_id": self.observation_id,
+            "has_overlap": bool(self.has_overlap),
             "source": self.source.value if isinstance(self.source, EvidenceSource) else str(self.source),
             "is_authoritative": self.is_authoritative(),
             "pre_state": copy.deepcopy(self.pre_state),
@@ -276,6 +280,8 @@ class PostStateEvidence:
         if not isinstance(observation_id, str):
             observation_id = str(observation_id)
 
+        has_overlap = bool(data.get("has_overlap", False))
+
         schema_version = data.get("schema_version", CURRENT_EVIDENCE_SCHEMA_VERSION)
         if not isinstance(schema_version, str):
             schema_version = str(schema_version)
@@ -294,6 +300,7 @@ class PostStateEvidence:
             verified_endpoint=endpoint,
             verified_at=verified_at,
             delta_metrics=delta_metrics,
+            has_overlap=has_overlap,
             provenance_details=f"Deserialized from untrusted dictionary (claimed source: {claimed_source}). {prov_details}".strip(),
             _attestation_token=None,
         )

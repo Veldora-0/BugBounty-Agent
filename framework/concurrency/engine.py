@@ -396,6 +396,10 @@ class RaceIntelligenceEngine:
                 except Exception:
                     lab = None
 
+        measurement_locked = False
+        if self.lab_mode and lab and hasattr(lab, "acquire_measurement_lock"):
+            measurement_locked = lab.acquire_measurement_lock(timeout=15.0)
+
         observation_started = False
         observation_completed = False
 
@@ -434,6 +438,8 @@ class RaceIntelligenceEngine:
             # Ensure any uncompleted observation (e.g. on dispatch exception or early exit) is discarded safely
             if observation_started and not observation_completed and lab and hasattr(lab, "discard_observation"):
                 lab.discard_observation(observation_id)
+            if measurement_locked and lab and hasattr(lab, "release_measurement_lock"):
+                lab.release_measurement_lock()
 
         # Evaluate invariants
         (

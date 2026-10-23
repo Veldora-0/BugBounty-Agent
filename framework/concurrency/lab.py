@@ -233,6 +233,22 @@ class LocalConcurrencyLab:
         self.base_url: str = ""
         self._active_observations: Dict[str, Dict[str, Any]] = {}
         self._obs_lock = threading.Lock()
+        self._measurement_lock = threading.RLock()
+
+    def acquire_measurement_lock(self, timeout: float = 15.0) -> bool:
+        """
+        Acquires the lab observation measurement lock.
+        Serializes observation measurement windows across independent test executions
+        while preserving full concurrent request execution within each individual burst.
+        """
+        return self._measurement_lock.acquire(timeout=timeout)
+
+    def release_measurement_lock(self) -> None:
+        """Releases the lab observation measurement lock."""
+        try:
+            self._measurement_lock.release()
+        except RuntimeError:
+            pass
 
     def _read_server_state(self) -> Dict[str, Any]:
         """Reads in-memory state directly from the active LocalConcurrencyLabServer."""
@@ -256,9 +272,17 @@ class LocalConcurrencyLab:
         with self._obs_lock:
             if observation_id in self._active_observations:
                 raise ValueError(f"Observation ID '{observation_id}' is already active.")
+
+            # Detect whether another observation is already active on this shared mutable lab fixture
+            overlap_detected = len(self._active_observations) > 0
+            if overlap_detected:
+                for existing_obs in self._active_observations.values():
+                    existing_obs["has_overlap"] = True
+
             self._active_observations[observation_id] = {
                 "pre_state": self._read_server_state(),
                 "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "has_overlap": overlap_detected,
             }
 
     def discard_observation(self, observation_id: str) -> bool:
@@ -292,6 +316,7 @@ class LocalConcurrencyLab:
         with self._obs_lock:
             obs = self._active_observations.pop(observation_id, None)
             pre_state = obs["pre_state"] if obs else None
+            has_overlap = obs.get("has_overlap", False) if obs else False
 
         post_state = self._read_server_state()
         ep = f"{self.base_url}/state/status"
@@ -314,6 +339,7 @@ class LocalConcurrencyLab:
             post_state=post_state,
             delta_metrics=delta_metrics,
             provenance_details="Captured directly from in-memory LocalConcurrencyLab fixture server.",
+            has_overlap=has_overlap,
         )
         token = self._sign_envelope(envelope)
         return PostStateEvidence(
@@ -326,6 +352,7 @@ class LocalConcurrencyLab:
             verified_endpoint=envelope.endpoint,
             verified_at=envelope.verified_at,
             provenance_details=envelope.provenance_details,
+            has_overlap=envelope.has_overlap,
             _attestation_token=token,
         )
 
@@ -391,6 +418,7 @@ class LocalConcurrencyLab:
         envelope_dict = {
             "delta_metrics": delta_m,
             "endpoint": ep,
+            "has_overlap": bool(getattr(evidence, "has_overlap", False)),
             "observation_id": obs_id,
             "post_state": ps,
             "pre_state": pre or {},

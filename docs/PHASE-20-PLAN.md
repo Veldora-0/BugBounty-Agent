@@ -135,6 +135,11 @@ scripts/
    - `EvidenceSource.INDEPENDENT_STATE_QUERY` is recognized as unauthenticated in the current architecture (as no real secondary database integration exists), and `is_authoritative()` returns `False`.
 5. **Field Validation & Consistency Constraints**:
    - Required fields, dictionary types, non-negative numbers, and monotonic increment directions are strictly validated. Contradictory evidence fails closed to `INCONCLUSIVE`.
+6. **Concurrent Observation Attribution & Fail-Closed Overlap Guard**:
+   - Serialized measurement windows via `_measurement_lock` (`threading.RLock`) in `LocalConcurrencyLab` and `RaceIntelligenceEngine.execute_hypothesis()` serialize observation measurement critical sections across executions, while strictly preserving full barrier-synchronized parallel worker execution (`threading.Barrier`) within each burst.
+   - Overlap Detection: `LocalConcurrencyLab.start_observation()` detects any concurrently active observations (`len(_active_observations) > 0`) and marks all overlapping observations with `has_overlap = True`.
+   - Full Envelope Binding: `has_overlap` is bound directly into `EvidenceEnvelope`, `PostStateEvidence`, and canonical serialization (`canonical_serialize_envelope()`). Post-attestation modification of `has_overlap` immediately invalidates the HMAC signature.
+   - Invariant Engine Fail-Closed: If `post_state_evidence.has_overlap == True`, `ConcurrencyInvariantEngine.evaluate_burst_results()` logs that measurement windows overlapped on shared mutable state and immediately fails closed to `RaceConfidence.INCONCLUSIVE` (`is_vulnerable = False`, `FindingLifecycle.OBSERVED`), preventing false positive overrun findings when observations overlap on shared mutable state.
 
 ---
 
@@ -218,11 +223,11 @@ Global or engine-level request counters allowed concurrent or sequential test ex
 ## 10. Verification & Test Plan
 
 1. **Focused Test Suite (`tests/test_concurrency_engine.py`)**:
-   - **104 comprehensive tests** covering:
+   - **107 comprehensive tests** covering:
      - Blocker A & Critical Finding A: Elimination of caller-forged trusted evidence factories; genuine observation lifecycle bound to live server state; unique execution identity and cross-run isolation.
-     - Blocker A & Critical Finding B: Full-envelope HMAC-SHA256 attestation (`EvidenceEnvelope`, `concurrency-evidence-v1`), canonical deterministic serialization, and tamper resistance across all 9 fields and nested dictionaries.
+     - Blocker A & Critical Finding B: Full-envelope HMAC-SHA256 attestation (`EvidenceEnvelope`, `concurrency-evidence-v1`), canonical deterministic serialization, and tamper resistance across all 9 fields, `has_overlap` flag, and nested dictionaries.
      - Blocker B & Critical Finding C: Invariant evaluation requiring trusted pre-state baselines and per-test counter deltas; safe fallback on unbaselined counters; monotonic progression checks.
-     - Observation Lifecycle & Isolation: Zero active observation leakage on externally supplied evidence, dispatch exceptions, or timeouts; duplicate active ID rejection; execution isolation.
+     - Observation Lifecycle & Isolation: Zero active observation leakage on externally supplied evidence, dispatch exceptions, or timeouts; duplicate active ID rejection; execution isolation; serialized observation measurement windows; fail-closed `has_overlap` attribution guards on overlapping observations.
      - Blocker B: Category-specific counter mappings, distinct provisional ID handling, and authoritative post-state requirements.
      - Blocker C: Monotonic deadline bounding, worker lifecycle states, and container sealing.
      - Blocker D: Thread-safe per-hypothesis budget contexts and hard ceiling clamping.
@@ -232,7 +237,7 @@ Global or engine-level request counters allowed concurrent or sequential test ex
 2. **Diagnostic Health**:
    - `bb-doctor` Category 25 (`check_concurrency_engine`) reports `[HEALTHY]` (all 17 framework engines healthy).
 3. **Cross-Platform Parity**:
-   - Verified on Windows 11 (104/104 concurrency tests, 151/151 total test discovery suite).
+   - Verified on Windows 11 (107/107 concurrency tests, 154/154 total test discovery suite).
    - Verified on Kali Linux VM (`ssh veldora@127.0.0.1 -p 2222`).
 
 ---

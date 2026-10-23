@@ -2391,6 +2391,103 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
         self.assertNotEqual(conf2, RaceConfidence.CONFIRMED)
         self.assertIn("per-test delta cannot be inferred", reasons2[0])
 
+    def test_overlapping_observations_cannot_attribute_shared_state_mutations(self):
+        """
+        Concurrency-Attribution Guard:
+        Two overlapping observations against shared mutable lab state cannot both falsely
+        attribute the aggregate mutations to their individual executions. The outcome
+        must fail closed to INCONCLUSIVE rather than CONFIRMED.
+        """
+        obs_A = "obs-overlap-A"
+        obs_B = "obs-overlap-B"
+
+        # Observation A starts
+        self.lab.start_observation(obs_A)
+        self.assertFalse(self.lab._active_observations[obs_A]["has_overlap"])
+
+        # Observation B starts before A completes (overlapping window!)
+        self.lab.start_observation(obs_B)
+        self.assertTrue(self.lab._active_observations[obs_A]["has_overlap"])
+        self.assertTrue(self.lab._active_observations[obs_B]["has_overlap"])
+
+        # Each run executes 1 mutation (aggregate = 2, but allowed limit = 1)
+        self.lab.server.voting_count += 1
+        self.lab.server.voting_count += 1
+
+        ev_A = self.lab.complete_observation(obs_A)
+        ev_B = self.lab.complete_observation(obs_B)
+
+        self.assertTrue(ev_A.has_overlap)
+        self.assertTrue(ev_B.has_overlap)
+        self.assertTrue(ev_A.is_authoritative(expected_observation_id=obs_A))
+        self.assertTrue(ev_B.is_authoritative(expected_observation_id=obs_B))
+
+        execs = [SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}")]
+        resps = [ControlledResponse(status_code=200, body_text="{}", headers={})]
+
+        # Evaluate observation A: despite delta > allowed_limit, must NOT confirm!
+        is_vuln_A, conf_A, life_A, _, reasons_A, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=ev_A,
+            expected_observation_id=obs_A,
+        )
+        self.assertFalse(is_vuln_A)
+        self.assertEqual(conf_A, RaceConfidence.INCONCLUSIVE)
+        self.assertIn("Measurement window overlapped with concurrent observation(s)", reasons_A[0])
+
+        # Evaluate observation B: must also NOT confirm!
+        is_vuln_B, conf_B, life_B, _, reasons_B, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=ev_B,
+            expected_observation_id=obs_B,
+        )
+        self.assertFalse(is_vuln_B)
+        self.assertEqual(conf_B, RaceConfidence.INCONCLUSIVE)
+        self.assertIn("Measurement window overlapped with concurrent observation(s)", reasons_B[0])
+
+    def test_tampering_has_overlap_flag_fails_hmac_verification(self):
+        """
+        Adversarial Test: Tampering with has_overlap flag from True to False
+        to bypass the inconclusive guard causes immediate cryptographic HMAC failure.
+        """
+        obs_1 = "obs-overlap-tamper-1"
+        obs_2 = "obs-overlap-tamper-2"
+        self.lab.start_observation(obs_1)
+        self.lab.start_observation(obs_2)
+        ev_1 = self.lab.complete_observation(obs_1)
+        self.lab.discard_observation(obs_2)
+
+        self.assertTrue(ev_1.has_overlap)
+        self.assertTrue(ev_1.is_authoritative(expected_observation_id=obs_1))
+
+        # Adversary attempts to clear has_overlap
+        ev_1.has_overlap = False
+        self.assertFalse(ev_1.is_authoritative(expected_observation_id=obs_1))
+
+    def test_genuine_within_burst_concurrency_exercises_race_window(self):
+        """
+        Within-burst concurrency: Proves that serializing the lab observation/measurement
+        window does NOT serialize requests within a burst; parallel worker threads
+        run concurrently through the barrier and trigger the server race window.
+        """
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=4,
+            allowed_limit=1,
+        )
+        res, fnd = self.engine.execute_hypothesis(hyp, auto_approve=True)
+        self.assertTrue(res.is_vulnerable)
+        self.assertEqual(res.confidence, RaceConfidence.CONFIRMED)
+        self.assertGreater(res.success_count, 1)
+        self.assertIsNotNone(fnd)
+
 
 if __name__ == "__main__":
     unittest.main()

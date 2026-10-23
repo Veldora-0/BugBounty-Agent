@@ -271,6 +271,20 @@ class ConcurrencyInvariantEngine:
                     "Caller-supplied post-state evidence lacks authoritative provenance or failed signature verification "
                     f"({post_state_evidence.source.value}); cannot independently confirm state mutation."
                 )
+            elif getattr(post_state_evidence, "has_overlap", False):
+                evidence["overlapping_observation_detected"] = True
+                reasons.append(
+                    "Measurement window overlapped with concurrent observation(s) on shared mutable state; "
+                    "observed state changes cannot be unambiguously attributed to this execution."
+                )
+                return (
+                    False,
+                    RaceConfidence.INCONCLUSIVE,
+                    FindingLifecycle.OBSERVED,
+                    "INFORMATIONAL",
+                    reasons,
+                    evidence,
+                )
             else:
                 # Evaluate authoritative post-state metrics
                 ps = post_state_evidence.post_state or {}
