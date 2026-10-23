@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 19: Infrastructure & Configuration Exposure (Accepted with Documented Limitations)
+
+#### Added & Hardened
+* **Infrastructure Intelligence Engine (`framework/infrastructure/`)**:
+  * Added core models, signatures, differential soft-404 analyzer, safe active evaluator, engine orchestrator, atomic state manager, and local lab simulation harness.
+  * Added `INFRASTRUCTURE_EXPOSURE` and `CONFIGURATION_EXPOSURE` to `VulnerabilityFamily`.
+  * Implemented support for 8 exposure classes: `VERSION_CONTROL` (`.git/HEAD`, `.svn/entries`), `CONFIG_FILE` (`.env`, `web.config`), `BACKUP_ARCHIVE` (`.zip`, `.tar.gz`), `ADMIN_INTERFACE` (`actuator/health`, `admin`), `DEPLOYMENT_MANIFEST` (`package.json`, `composer.json`), `SOURCE_MAP` (`*.js.map`), `DIRECTORY_LISTING` (`Index of /`), and `DEBUG_INTERFACE` (debug traces).
+* **Differential Soft-404 Engine (`DifferentialSoft404Engine`)**:
+  * Implemented differential comparison against application-subpath baselines with dynamic token stripping (nonces, timestamps, CSRF tokens, hashes) and token Jaccard similarity.
+  * Strictly enforces the non-rejection invariant: candidates are never rejected solely because a baseline probe returned HTTP 200.
+  * Handles SPA catch-all, distinct static files, dynamic error pages, and redirect catch-all patterns.
+* **Evidence-Sufficiency Stopping Rules**:
+  * Capped general HTTP response bodies at 32 KB (`max_response_bytes = 32_768`).
+  * Evaluated configuration files within an 8 KB ceiling (`max_config_bytes = 8_192`).
+  * Evaluated backup archives using strictly the first 1 KB binary magic bytes (`max_binary_magic_bytes = 1_024`); zero full archive downloads.
+* **Fail-Closed Safety Policy & Transport Controls (`InfrastructureExposurePolicy`)**:
+  * Restricted HTTP methods strictly to safe, idempotent read-only methods (`{"GET", "HEAD", "OPTIONS"}`).
+  * Policy blocks state-changing GET queries and `POST`/`PUT`/`DELETE`/`TRACE` methods.
+  * Enforced pre-dispatch ScopeEngine authorization and anti-SSRF loopback/private/metadata protections.
+* **Sensitive Data Redaction & Zero Secret Persistence**:
+  * Automated sanitization of discovered secret values, API keys, and passwords across state (`state/infrastructure.json`), finding objects, and markdown reports.
+  * Authenticated evidence fingerprints over sanitized representation (SHA-256).
+* **Deterministic Simulation Lab (`LocalInfrastructureLab`) & Regression Suite**:
+  * Implemented 16 deterministic scenarios on ephemeral loopback ports.
+  * Added 39 comprehensive tests in `tests/test_infrastructure_engine.py` covering all 16 scenarios, differential classes, stopping rules, secret scrub, and policy enforcement.
+* **CLI Wrapper, System Diagnostics & OpenCode Integration**:
+  * Created `scripts/bb-infra` (`scripts/bb-infra.cmd`) supporting `--tree`, `--passive-only`, `--dry-run`, `--approve`, `--json`, and `--lab`.
+  * Added Category 24 (`check_infrastructure_engine`) to `framework/tools/doctor.py` and `scripts/bb-doctor`.
+  * Added `*bb-infra*` permission rule to `opencode.jsonc`.
+
 ### Phase 18: SSRF, XXE & Server-Side Parser Expansion (Accepted with Documented Limitations)
 
 #### Added & Hardened

@@ -158,3 +158,62 @@ Phase 15 provides bounded, hypothesis-driven security validation for file handli
    - **No Executables or Webshells**: Testing never submits executable files (`.php`, `.jsp`, `.exe`, `.sh`, `.asp`), web shells, or destructive payloads.
    - **No Overwrite or Deletion**: File deletion or overwrite operations are strictly forbidden.
    - **Policy Gating**: When safety policy restricts state-changing `POST` requests, the engine produces a safe `NEEDS_MANUAL_REVIEW` observation instead of violating policy.
+
+---
+
+## 7. Infrastructure & Configuration Exposure Intelligence (Phase 19)
+
+Phase 19 systematically discovers, evaluates, and safely validates exposed administrative interfaces, configuration artifacts, version control metadata, and deployment mistakes across 8 structured exposure classes without broad or disruptive scanning.
+
+### Core CLI Tool (`bb-infra`)
+
+```bash
+# View visual ASCII tree of candidates, categories, and findings
+bb-infra --program <program-name> --tree
+
+# Passive discovery from prior recon/webapps state without network egress
+bb-infra --program <program-name> --passive-only --json
+
+# Execute dry-run of planned exposure checks
+bb-infra --program <program-name> --dry-run
+
+# Run active validation with operator approval
+bb-infra --program <program-name> --approve
+
+# Run local deterministic simulation lab
+bb-infra --lab --tree
+```
+
+### The 8 Exposure Categories
+
+| Category | Typical Targets | Verification Invariant | Realistic Severity |
+| :--- | :--- | :--- | :--- |
+| **`VERSION_CONTROL`** | `/.git/HEAD`, `/.svn/entries` | Valid `ref: refs/heads/...` or 40-hex SHA format. | `MEDIUM` |
+| **`CONFIG_FILE`** | `/.env`, `/web.config` | KEY=VALUE syntax; sensitive key presence calibrated. | `HIGH` (sensitive) / `MEDIUM` (benign) |
+| **`BACKUP_ARCHIVE`** | `/backup.zip`, `/site.tar.gz` | Magic bytes (`PK\x03\x04`, `\x1f\x8b`, `ustar`) within first 1 KB. | `MEDIUM` |
+| **`ADMIN_INTERFACE`** | `/actuator/health`, `/admin` | Unauthenticated admin console vs login interface. | `MEDIUM` (unauthenticated) / `OBSERVATION` (login form) |
+| **`DEPLOYMENT_MANIFEST`**| `/package.json`, `/composer.json` | Valid JSON structure with expected manifest keys. | `LOW` |
+| **`SOURCE_MAP`** | `*.js.map` | Valid JSON containing `"sources"` and `"mappings"`. | `LOW` |
+| **`DIRECTORY_LISTING`** | `/uploads/`, `/static/` | Web server directory index patterns (`Index of /`). | `LOW` |
+| **`DEBUG_INTERFACE`** | `/_debug`, `/__trace` | Diagnostic outputs, stack traces, framework debug pages. | `MEDIUM` |
+
+### Key Safety & Operational Invariants
+
+1. **Differential Soft-404 Validation**:
+   * Evaluates candidates against an application-subpath baseline response.
+   * Dynamically normalizes volatile nonces, timestamps, hashes, and CSRF tokens before computing Jaccard similarity.
+   * Enforces the non-rejection invariant: a candidate is **never** rejected solely because the baseline returned HTTP 200 (common in SPAs and custom 404 handlers).
+2. **Strict Response Byte Ceilings**:
+   * General HTTP responses capped at 32 KB (`max_response_bytes = 32_768`).
+   * Config files evaluated within 8 KB (`max_config_bytes = 8_192`).
+   * Backup archives inspected using only the first 1 KB binary magic bytes (`max_binary_magic_bytes = 1_024`); archives are **never** fully downloaded.
+3. **Safe Read-Only Methods**:
+   * Probes use strictly `GET`, `HEAD`, or `OPTIONS`. `POST`, `PUT`, `DELETE`, and `TRACE` are blocked.
+   * State-changing query parameters (e.g., `?action=delete`) are blocked pre-dispatch.
+4. **Zero Secret Persistence**:
+   * All discovered secret values (passwords, tokens, private keys) are automatically sanitized to `[REDACTED_BY_BB_AGENT]` before persisting to `state/infrastructure.json` or markdown reports.
+   * SHA-256 evidence fingerprints authenticate the sanitized representation.
+5. **Finding vs Observation Semantics**:
+   * Standard login interfaces (forms with username/password fields) are expected functionality and are classified strictly as `OBSERVATION` (`INFORMATIONAL`, `HIGH` confidence), never as high-severity vulnerabilities.
+   * HTTP 403 Forbidden responses are classified as `OBSERVED` / `ACCESS_RESTRICTED` (confirming active authorization controls).
+   * Local lab findings are strictly marked `SIMULATED` (`INFORMATIONAL`, `CONFIRMED` confidence).

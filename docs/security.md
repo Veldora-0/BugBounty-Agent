@@ -104,3 +104,26 @@ The framework code enforces the following non-negotiable architectural boundarie
    * Zero sensitive local file extraction (`file://`, `/etc/passwd`, `/etc/shadow`, `win.ini`) or cloud metadata probing (`169.254.169.254`, `metadata.google.internal`) is permitted; any matching target fails closed immediately.
    * All active SSRF and XXE validation requires prior explicit human approval (`approval_status == 'APPROVED'`). Automated exploitation and automatic report submission are strictly prohibited.
 
+---
+
+## 7. Infrastructure & Configuration Exposure Safeguards (Phase 19)
+
+1. **Strictly Safe Read-Only Methods**:
+   * Probing is strictly limited to safe, idempotent HTTP methods (`GET`, `HEAD`, `OPTIONS`).
+   * `POST`, `PUT`, `DELETE`, `PATCH`, and `TRACE` methods are strictly prohibited.
+   * State-changing GET query parameters (e.g., `?action=delete`, `?logout=true`, `?drop=true`) are blocked by policy.
+2. **Evidence-Sufficiency Stopping Rules**:
+   * General HTTP responses are capped at a 32 KB ceiling (`max_response_bytes = 32_768`).
+   * Configuration files (`.env`, `web.config`) are evaluated within an 8 KB ceiling (`max_config_bytes = 8_192`).
+   * Backup archives (`.zip`, `.tar.gz`) are verified using only the first 1 KB binary magic bytes (`max_binary_magic_bytes = 1_024`) to establish archive structure without downloading the archive file.
+   * Streaming response consumption continuously decrements the byte budget.
+3. **Secret Redaction & Sanitization Invariant**:
+   * Discovered configuration values, tokens, database passwords, and API secrets are automatically replaced with `[REDACTED_BY_BB_AGENT]` before persistence to state (`state/infrastructure.json`), inclusion in finding objects, or report generation.
+   * Cryptographic SHA-256 evidence fingerprints authenticate the sanitized record representation, guaranteeing zero secret persistence.
+4. **Conservative Classification & False-Positive Defenses**:
+   * Standard administrative login interfaces (forms with username/password inputs) are expected functionality and are classified strictly as `OBSERVATION` (`INFORMATIONAL`, `HIGH` confidence), never as high-severity exposures.
+   * HTTP 403 Forbidden responses are classified as `OBSERVED` / `ACCESS_RESTRICTED` (confirming active authorization controls), preventing false exposure reports.
+   * Differential soft-404 comparisons against application-subpath baselines strip volatile nonces/timestamps and require structural distinctness before any candidate is promoted.
+   * Local simulation lab findings are strictly marked `SIMULATED` (`INFORMATIONAL`, `CONFIRMED` confidence) and can never produce live validated findings.
+   * Broad directory brute-forcing, password guessing, and automated vulnerability report submissions are strictly forbidden.
+

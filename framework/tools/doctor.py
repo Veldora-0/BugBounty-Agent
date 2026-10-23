@@ -607,6 +607,38 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_infrastructure_engine(self) -> Dict[str, Any]:
+        """Category 24: Infrastructure & Configuration Exposure Intelligence Engine."""
+        try:
+            from framework.infrastructure.model import ExposureCategory, ExposureCandidate
+            from framework.infrastructure.signatures import InfrastructureSignatures
+            from framework.infrastructure.policy import InfrastructureExposurePolicy
+            from framework.infrastructure.differential import DifferentialSoft404Engine
+            from framework.infrastructure.engine import InfrastructureIntelligenceEngine
+            from framework.infrastructure.lab import LocalInfrastructureLab
+
+            policy = InfrastructureExposurePolicy()
+            match, _, meta = InfrastructureSignatures.match_version_control("ref: refs/heads/main\n")
+            norm_body = DifferentialSoft404Engine.normalize_body('Error 404 timestamp 2026-10-23T12:00:00Z nonce="abc"')
+            lab = LocalInfrastructureLab()
+
+            healthy = (
+                len(ExposureCategory) == 8
+                and policy.max_response_bytes == 32_768
+                and match is True
+                and meta.get("ref") == "ref: refs/heads/main"
+                and "timestamp" in norm_body
+                and lab.port >= 0
+            )
+            return {
+                "status": "HEALTHY" if healthy else "ERROR",
+                "healthy": healthy,
+                "categories_count": len(ExposureCategory),
+                "safe_methods": sorted(list(policy.allowed_methods)),
+            }
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -632,6 +664,7 @@ class SystemDoctor:
             "business_logic_engine": self.check_business_logic_engine(),
             "cloud_security_engine": self.check_cloud_security_engine(),
             "auth_engine": self.check_authentication_engine(),
+            "infrastructure_engine": self.check_infrastructure_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }
 

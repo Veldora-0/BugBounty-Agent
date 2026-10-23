@@ -20,6 +20,7 @@ def test_doctor_full_diagnosis():
         "configuration",
         "scope_engine",
         "opencode_integration",
+        "infrastructure_engine",
     ]
 
     for cat in required_categories:
@@ -41,3 +42,11 @@ def test_doctor_opencode_integration_check():
     assert opencode_diag["default_agent"] == "Bug-Bounty"
     assert opencode_diag["skill_count"] >= 17
     assert opencode_diag["status"] == "READY"
+
+def test_doctor_infrastructure_engine_check():
+    doctor = SystemDoctor()
+    infra_diag = doctor.check_infrastructure_engine()
+    assert infra_diag["healthy"] is True
+    assert infra_diag["status"] == "HEALTHY"
+    assert infra_diag["categories_count"] == 8
+

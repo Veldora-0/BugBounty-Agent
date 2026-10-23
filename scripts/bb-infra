@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""
+bb-infra — BugBounty-Agent Infrastructure & Configuration Exposure Intelligence Engine.
+
+Discovers, evaluates, and safely validates exposed administrative interfaces,
+version control metadata, configuration files, backup archives, deployment manifests,
+source maps, directory listings, and diagnostic endpoints.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+REPO_ROOT = os.environ.get(
+    "BUGBOUNTY_AGENT_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")),
+)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.common.config import get_program_dir, resolve_program_scope_file
+from framework.common.evidence import sanitize_sensitive_data
+from framework.infrastructure.engine import InfrastructureIntelligenceEngine
+from framework.infrastructure.lab import LocalInfrastructureLab
+from framework.infrastructure.model import ExposureCategory
+from framework.infrastructure.policy import InfrastructureExposurePolicy
+from framework.scope.engine import ScopeEngine
+
+
+def render_infra_tree(
+    summary: Dict[str, Any],
+    candidates: List[Dict[str, Any]],
+    hypotheses: List[Dict[str, Any]],
+    findings: List[Dict[str, Any]],
+    program_name: str,
+) -> None:
+    """Renders visual ASCII tree of exposure candidates, categories, and findings."""
+    print("\n==============================================================================")
+    print("           INFRASTRUCTURE & CONFIGURATION EXPOSURE INTELLIGENCE TREE          ")
+    print("==============================================================================")
+    print(f"\n[*] Program:            {program_name}")
+    print(f"[*] Total Candidates:   {summary.get('total_candidates', len(candidates))}")
+    print(f"[*] Total Hypotheses:   {summary.get('total_hypotheses', len(hypotheses))}")
+    print(f"[*] Validated Findings: {summary.get('validated_findings', 0)}")
+    print(f"[*] Observations:       {summary.get('observations', 0)}")
+
+    if not candidates and not findings:
+        print("\n[*] No infrastructure candidates or findings recorded in current state.")
+        print("==============================================================================\n")
+        return
+
+    # Group candidates by category
+    by_category: Dict[str, List[Dict[str, Any]]] = {}
+    for c in candidates:
+        cat = c.get("category", "UNKNOWN")
+        by_category.setdefault(cat, []).append(c)
+
+    print("\n[+] EXPOSURE CANDIDATES BY CATEGORY:")
+    for cat, items in sorted(by_category.items()):
+        print(f"    - [{cat}] ({len(items)} endpoints)")
+        for item in items[:5]:  # preview up to 5
+            state = item.get("lifecycle_state", "CANDIDATE")
+            ep = item.get("endpoint", "")
+            print(f"      * [{state}] {ep}")
+        if len(items) > 5:
+            print(f"      * ... and {len(items) - 5} more")
+
+    if findings:
+        print("\n[+] FINDINGS & OBSERVATIONS:")
+        for f in findings:
+            state = f.get("lifecycle_state", "VALIDATED")
+            sev = f.get("severity", "MEDIUM")
+            title = f.get("title", "")
+            ep = f.get("affected_endpoint", "")
+            print(f"    - [{state}] [{sev}] {title}")
+            print(f"      Endpoint: {ep}")
+
+    print("\n==============================================================================")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="bb-infra",
+        description="BugBounty-Agent Infrastructure & Configuration Exposure Intelligence Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # View visual tree of candidates and findings
+  bb-infra --program acme --tree
+
+  # Passive discovery from prior recon/webapps state
+  bb-infra --program acme --passive-only --json
+
+  # Execute dry-run of planned exposure checks
+  bb-infra --program acme --dry-run
+
+  # Run active validation with operator approval
+  bb-infra --program acme --approve
+
+  # Run local test lab simulation
+  bb-infra --lab --tree
+        """,
+    )
+
+    parser.add_argument("-p", "--program", default="default", help="Target program name in workspace")
+    parser.add_argument("-s", "--scope", help="Path to scope.yaml file")
+    parser.add_argument("--passive-only", action="store_true", help="Discover candidates without active network probes")
+    parser.add_argument("--dry-run", action="store_true", help="Plan exposure probes without dispatching requests")
+    parser.add_argument("--approve", action="store_true", help="Approve candidate probes for active verification")
+    parser.add_argument("--tree", action="store_true", help="Render ASCII tree view of candidates and findings")
+    parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    parser.add_argument("--lab", action="store_true", help="Run against deterministic local infrastructure lab")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+
+    args = parser.parse_args()
+
+    program_dir = get_program_dir(f"lab_{args.program}" if args.lab else args.program)
+    os.makedirs(program_dir, exist_ok=True)
+
+    # Local Lab Setup
+    lab_server: Optional[LocalInfrastructureLab] = None
+    if args.lab:
+        lab_server = LocalInfrastructureLab()
+        base_url = lab_server.start()
+        scope_engine = LocalInfrastructureLab.get_scope_engine(lab_server.port)
+    else:
+        scope_file = resolve_program_scope_file(args.program, explicit_scope=args.scope)
+        if scope_file and os.path.exists(scope_file):
+            scope_engine = ScopeEngine.from_yaml(scope_file)
+        else:
+            if not args.passive_only and not args.dry_run:
+                print(f"[!] Warning: No scope.yaml found for program '{args.program}'. Active probes will fail-closed.", file=sys.stderr)
+
+    # Initialize Engine
+    policy = InfrastructureExposurePolicy()
+    engine = InfrastructureIntelligenceEngine(
+        program_dir=program_dir,
+        scope_engine=scope_engine,
+        policy=policy,
+        passive_only=args.passive_only,
+        dry_run=args.dry_run,
+        require_approval=not args.approve,
+        lab_mode=args.lab,
+    )
+
+    if args.lab and lab_server:
+        engine.allow_fixture_port(lab_server.port)
+        # Register standard lab scenario candidates
+        engine.add_candidate(f"{base_url}/scenario/git-head/.git/HEAD", ExposureCategory.VERSION_CONTROL)
+        engine.add_candidate(f"{base_url}/scenario/spa-distinct/.git/HEAD", ExposureCategory.VERSION_CONTROL)
+        engine.add_candidate(f"{base_url}/scenario/spa-catchall/.git/HEAD", ExposureCategory.VERSION_CONTROL)
+        engine.add_candidate(f"{base_url}/scenario/env-sensitive/.env", ExposureCategory.CONFIG_FILE)
+        engine.add_candidate(f"{base_url}/scenario/env-benign/.env", ExposureCategory.CONFIG_FILE)
+        engine.add_candidate(f"{base_url}/scenario/backup/backup.zip", ExposureCategory.BACKUP_ARCHIVE)
+        engine.add_candidate(f"{base_url}/scenario/actuator/actuator/health", ExposureCategory.ADMIN_INTERFACE)
+        engine.add_candidate(f"{base_url}/scenario/admin/login", ExposureCategory.ADMIN_INTERFACE)
+        engine.add_candidate(f"{base_url}/scenario/restricted/secret-admin", ExposureCategory.ADMIN_INTERFACE)
+        engine.add_candidate(f"{base_url}/scenario/directory/uploads/", ExposureCategory.DIRECTORY_LISTING)
+        engine.add_candidate(f"{base_url}/scenario/sourcemap/app.js.map", ExposureCategory.SOURCE_MAP)
+
+    try:
+        # Run discovery and validation
+        results = engine.run_all(auto_approve=args.approve or args.lab)
+    finally:
+        if lab_server:
+            lab_server.stop()
+
+    # Load persistent state for display
+    state = engine.state_mgr.load_state()
+    candidates = state.get("candidates", [])
+    hypotheses = state.get("hypotheses", [])
+    findings = state.get("findings", [])
+    summary = state.get("summary", results.get("summary", {}))
+
+    if args.json:
+        safe_output = json.loads(sanitize_sensitive_data(json.dumps({
+            "program": args.program,
+            "summary": summary,
+            "candidates": candidates,
+            "hypotheses": hypotheses,
+            "findings": findings,
+        })))
+        print(json.dumps(safe_output, indent=2))
+    elif args.tree or not (args.passive_only or args.dry_run):
+        render_infra_tree(summary, candidates, hypotheses, findings, args.program)
+    else:
+        print(f"[*] Infrastructure Intelligence completed for '{args.program}'.")
+        print(f"[*] Candidates: {len(candidates)} | Validated: {summary.get('validated_findings', 0)} | Observations: {summary.get('observations', 0)}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

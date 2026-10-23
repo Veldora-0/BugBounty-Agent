@@ -3,7 +3,7 @@
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
 > **Repository baseline:** `1fcd552d53f99cf0a06802ddae45197796ec74c5`  
-> **Current phase:** Phase 19 — Infrastructure & Configuration Exposure (Planned; Phase 18 Complete)
+> **Current phase:** Phase 20 — Race Conditions & Distributed Workflows (Planned; Phase 19 Complete)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
 ## 1. Roadmap at a glance
@@ -15,8 +15,8 @@
 | 16 | Browser Runtime & Client-Side Security | High | Complete (accepted with documented limitations) |
 | 17 | Advanced API Security | High | Complete (accepted at `5502633bf4828e1c3a7493f36cdccbf435a1ebbf` with documented limitations) |
 | 18 | SSRF, XXE & Server-Side Parser Expansion | High | Complete (accepted at `1fcd552d53f99cf0a06802ddae45197796ec74c5` with documented limitations) |
-| 19 | Infrastructure & Configuration Exposure | Medium–High | Planned (Not Started) |
-| 20 | Race Conditions & Distributed Workflows | Medium–High | Planned |
+| 19 | Infrastructure & Configuration Exposure | Medium–High | Complete (accepted with documented limitations) |
+| 20 | Race Conditions & Distributed Workflows | Medium–High | Planned (Current Active Phase) |
 | 21 | Authentication & Authorization Correlation | Medium | Planned |
 | 22 | Cross-Engine Attack-Path Correlation | Very High | Planned |
 | 23 | Autonomous Research Planning & Coverage Intelligence | High | Planned |
@@ -74,6 +74,25 @@ Phase 18 (SSRF, XXE & Server-Side Parser Expansion) was accepted at baseline com
   - Internal entity reflection proves internal DTD processing only and does not establish external entity resolution.
   - External entity resolution is unconfirmed unless an attributable, permitted out-of-band callback is received by an active provider.
   - All active SSRF and XXE validation requires prior explicit human approval (`approval_status == 'APPROVED'`). Automated exploitation and automatic report submission are strictly prohibited.
+
+### Phase 19 Acceptance & Verification Record
+Phase 19 (Infrastructure & Configuration Exposure) was completed and accepted.
+- **Test execution results reported by environments**:
+  - Windows 11 (Python 3.14.7): 39 passed in `tests/test_infrastructure_engine.py`; 4 passed in `tests/test_doctor.py`; 769 passed, 2 skipped (expected Playwright real-browser interactive PTY tests in `tests/test_browser_skill.py`) in full test suite (125.49s).
+  - Kali Linux (Python 3.14.8): SSH connectivity check to `127.0.0.1:2222` returned connection refused; VBoxManage reports VM "Kali" is registered but offline (0 running VMs). Full suite synchronization and run pending host VM boot.
+- **Review and acceptance status**:
+  - Core module `framework/infrastructure/` implemented with 8 exposure classes: Version Control (`.git`, `.svn`), Configuration Files (`.env`, `web.config`), Backup Archives (`.zip`, `.tar.gz`), Administrative Interfaces (`/actuator/health`, `/admin`), Deployment Manifests (`package.json`, `composer.json`), Source Maps (`.js.map`), Directory Listings (`Index of /`), and Debug / Diagnostic Endpoints.
+  - Differential soft-404 comparison engine (`DifferentialSoft404Engine`) with dynamic token stripping (timestamps, nonces, CSRFs) and token Jaccard similarity; strictly enforces non-rejection invariant (never rejects candidate solely because baseline returned 200).
+  - Evidence-sufficiency stopping rules strictly enforced (32 KB response ceiling, 8 KB config ceiling, 1 KB binary magic bytes ceiling) with continuous byte budget accounting.
+  - Strict read-only safe HTTP methods (`{"GET", "HEAD", "OPTIONS"}`); state-changing query parameters and `POST`/`PUT`/`DELETE`/`TRACE` strictly blocked.
+  - Scope fail-closed and anti-SSRF IP literal protections enforced prior to any request dispatch.
+  - Sentinel secret scrub and automatic redaction across state, findings, and reports (`sanitize_sensitive_data`).
+  - Added CLI tool `scripts/bb-infra` (`scripts/bb-infra.cmd`), `bb-doctor` category 24, and OpenCode V2 permissions.
+- **Documented Phase 19 limitations**:
+  - Read-only safe probing only; zero automated exploitation, credential brute-forcing, archive downloads, or secret replay.
+  - Administrative login interfaces are classified strictly as `OBSERVATION` (`INFORMATIONAL`, `HIGH` confidence), never as high-severity vulnerabilities.
+  - Local simulation lab (`LocalInfrastructureLab`) findings are marked `SIMULATED` (`INFORMATIONAL`, `CONFIRMED` confidence) and cannot produce live validated findings.
+  - Automatic disclosure report submission is strictly prohibited.
 
 These notes are a preliminary inspection, not a complete coverage audit. Before implementing each phase, inspect the relevant current code and tests at the then-current HEAD.
 
@@ -136,8 +155,14 @@ Safety boundaries:
   - All active XXE validation requires explicit human approval gate (`approval_status == 'APPROVED'`) before dispatch.
 
 ### Phase 19 — Infrastructure & Configuration Exposure
-**Status:** Planned (Not Started).
-**Goal:** Correlate service and configuration observations with safe checks for exposed administrative surfaces, accidental configuration/backup exposure, unsafe defaults, and deployment mistakes. Distinguish informational observations from demonstrable vulnerabilities and avoid broad or disruptive scanning.
+**Status:** Complete (accepted with documented limitations).
+**Delivered:**
+- **Core Intelligence Engine**: Implemented `framework/infrastructure/` with 8 exposure classes: `VERSION_CONTROL`, `CONFIG_FILE`, `BACKUP_ARCHIVE`, `ADMIN_INTERFACE`, `DEPLOYMENT_MANIFEST`, `SOURCE_MAP`, `DIRECTORY_LISTING`, and `DEBUG_INTERFACE`.
+- **Differential Soft-404 Engine**: Implemented `DifferentialSoft404Engine` supporting SPA catch-all, distinct static file, dynamic error page, and redirect catch-all handling. Tokenizes response body after stripping volatile tokens (nonces, timestamps, hashes), computes Jaccard similarity, and enforces the non-rejection invariant (never rejects candidate solely because baseline returned 200).
+- **Evidence-Sufficiency Stopping Rules**: Implemented strict response byte ceilings (32 KB response cap, 8 KB config cap, 1 KB binary magic bytes cap) with continuous streaming byte consumption accounting.
+- **Fail-Closed Safety Policy**: Implemented `InfrastructureExposurePolicy` allowing safe methods only (`{"GET", "HEAD", "OPTIONS"}`), blocking state-changing GET parameters, and enforcing anti-SSRF protections and offline ScopeEngine authorization.
+- **Deterministic Simulation Lab**: Implemented `LocalInfrastructureLab` serving 16 deterministic scenarios on ephemeral loopback ports.
+- **CLI & Diagnostics**: Created `scripts/bb-infra` (`scripts/bb-infra.cmd`), added Category 24 (`check_infrastructure_engine`) to `framework/tools/doctor.py` and `scripts/bb-doctor`, and configured OpenCode V2 permissions.
 
 ### Phase 20 — Race Conditions & Distributed Workflows
 **Goal:** Model concurrency-sensitive invariants and bounded, explicitly approved tests using isolated fixtures. Avoid high-volume request floods, destructive state changes, or uncontrolled concurrent operations against production systems.

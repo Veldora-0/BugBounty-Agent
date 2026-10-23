@@ -40,6 +40,7 @@ BugBounty-Agent is built on four core architectural tenets:
 │   ├── framework/state (Manager, Fingerprint, Dedup)    │
 │   ├── framework/validation (Policy, TestCases, Compare)│
 │   ├── framework/authentication (Models, Sessions, MFA) │
+│   ├── framework/infrastructure (Differential 404, Ceilings)│
 │   ├── framework/ssrf (Canary, Alt-IP, Provider Gates)  │
 │   ├── framework/xxe (XML Hardening, Reflection Lab)    │
 │   ├── framework/findings (Schema, Lifecycle, Report)   │
@@ -66,6 +67,7 @@ BugBounty-Agent is built on four core architectural tenets:
 * **`framework.validation`**: Coordinates bounded security test cases, enforces conservative ceilings via `SecurityTestPolicy`, performs baseline response comparisons (`BaselineComparison`), and hosts pluggable validators (`XxeValidator`, `SsrfValidator`).
 * **`framework.ssrf` & `framework.xxe`**: Safely mutates SSRF requests across 5 payload formats, parses alternate numeric IP notations (`parse_alternate_ip`), verifies OOB provider availability and trusted destinations (`validate_oob_destination`), enforces Billion Laughs / quadratic blowup XML parser defenses (`safe_parse_xml`), and classifies synthetic entity reflections conservatively.
 * **`framework.findings`**: Enforces strict finding lifecycle transitions (`OBSERVATION` to `VALIDATED`) and formats reports to 17 standard bug bounty disclosure sections.
+* **`framework.infrastructure`**: Discovers, evaluates, and safely validates exposed administrative interfaces, version control metadata, configuration files, backup archives, deployment manifests, source maps, directory listings, and debug endpoints across 8 exposure categories. Implements differential soft-404 comparison (`DifferentialSoft404Engine`) with dynamic token stripping, enforces strict response byte ceilings (32 KB response, 8 KB config, 1 KB binary magic bytes), restricts methods to safe read-only (`GET`, `HEAD`, `OPTIONS`), and automatically sanitizes secrets across state, findings, and logs.
 * **`framework.authentication`**: Models authentication state machines, session lifecycles, and identity boundaries across 14 vulnerability families. Ingests 7 real multi-phase state files (`webapps.json`, `api.json`, `javascript.json`, `assets.json`, `recon.json`, `authorization.json`, and `workflows.json`), executes differential baseline testing via `BoundedAuthenticationExecutor` with anti-SSRF protections, enforces fail-closed scope checking, performs deterministic SHA-256 test deduplication, and persists validated findings to `state/findings.json`.
 * **`framework.common`**: Provides cryptographic evidence hashing (SHA-256), credential redaction, safe XML parsing primitives (`xml_safe`), transport utilities, and external tool detection.
 

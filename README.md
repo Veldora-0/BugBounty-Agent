@@ -78,6 +78,7 @@ BugBounty-Agent/
 │   ├── business_logic/        # Business logic state machines, invariant engine, replay, approval gate
 │   ├── cloud_security/        # Cloud security & misconfiguration intelligence, S3/Blob/GCS, takeover
 │   ├── authentication/        # Authentication, session & identity security intelligence, MFA, reset
+│   ├── infrastructure/        # Infrastructure & configuration exposure intelligence, differential soft-404
 │   ├── findings/              # Finding schema, lifecycle state machine, markdown report generator
 │   ├── tools/                 # Tool registry, installer, doctor, deployer
 │   └── common/                # Safe XML parsing, transport, evidence store, sanitization, config
@@ -86,7 +87,7 @@ BugBounty-Agent/
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
-│   ├── bb-doctor              # Diagnostics utility across 23 system categories
+│   ├── bb-doctor              # Diagnostics utility across 24 system categories
 │   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
@@ -95,6 +96,7 @@ BugBounty-Agent/
 │   ├── bb-workflow            # Business logic and multi-step workflow intelligence engine
 │   ├── bb-cloud               # Cloud security & misconfiguration intelligence engine
 │   ├── bb-auth                # Authentication, session & identity security intelligence engine
+│   ├── bb-infra               # Infrastructure & configuration exposure intelligence engine
 │   ├── bb-content             # Controlled content fuzzer wrapper (ffuf)
 │   ├── bb-js                  # JavaScript endpoint & secret analyzer
 │   ├── bb-api                 # REST/GraphQL API method and schema prober
@@ -248,7 +250,7 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 ## Tool Intelligence & Management
 
 ### 1. Automatic Diagnostics (`bb-doctor`)
-Run deep diagnostics across 23 system categories:
+Run deep diagnostics across 24 system categories:
 ```bash
 ./scripts/bb-doctor
 ```
@@ -275,6 +277,7 @@ Checks:
 * **Business Logic Engine**: Workflow state machines, 24 invariant evaluations, safe replay, and approval gate
 * **Cloud Security Engine**: Cloud provider classification, object storage exposure, takeover signatures, and false positive elimination
 * **Authentication Engine**: Session analyzers, JWT token inspection, and authentication laboratory
+* **Infrastructure Engine**: Differential soft-404 detection, structural file signatures, and safe exposure intelligence
 * **OpenCode Integration**: Canonical agent definition, modular skills, V2 permissions, and deployment
 
 ### 2. Safe On-Demand Installation (`bb-install`)
