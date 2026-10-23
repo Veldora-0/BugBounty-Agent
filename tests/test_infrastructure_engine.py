@@ -411,11 +411,28 @@ class TestLocalInfrastructureLabScenarios(unittest.TestCase):
         self.assertEqual(res.evidence_fingerprint, hashlib.sha256(clean_excerpt.encode("utf-8")).hexdigest())
 
     def test_scenario_14_streaming_stopping_rule_oversized(self):
-        # 10 MB endpoint: asserts actual bytes read are capped at <= 32 KB
+        # 10 MB endpoint: asserts actual bytes read are capped at <= 1 KB for backup archive
         cand = self.engine.add_candidate(f"{self.base_url}/scenario/streaming/large-backup.zip", ExposureCategory.BACKUP_ARCHIVE)
         res, finding = self.engine.validate_candidate(cand, auto_approve=True)
-        self.assertLessEqual(res.bytes_consumed, 32_768)
+        self.assertLessEqual(res.bytes_consumed, 1_024)
         self.assertTrue(res.stopping_rule_triggered)
+
+    def test_scenario_14b_config_streaming_stopping_rule(self):
+        # 1 MB endpoint: asserts actual bytes read are capped at <= 8 KB for config file
+        cand = self.engine.add_candidate(f"{self.base_url}/scenario/streaming/large-config.env", ExposureCategory.CONFIG_FILE)
+        res, finding = self.engine.validate_candidate(cand, auto_approve=True)
+        self.assertLessEqual(res.bytes_consumed, 8_192)
+        self.assertTrue(res.stopping_rule_triggered)
+
+    def test_colon_delimited_secret_redaction(self):
+        # Verify that colon-delimited secrets (e.g. YAML/env format) are sanitized
+        from framework.infrastructure.exposure import sanitize_exposure_content
+        sample = "DB_PASSWORD: superSecretPassword123\nAPI_KEY: my_token_456\nAPP_NAME: safe_app"
+        redacted = sanitize_exposure_content(sample)
+        self.assertNotIn("superSecretPassword123", redacted)
+        self.assertNotIn("my_token_456", redacted)
+        self.assertIn("[REDACTED_BY_BB_AGENT]", redacted)
+        self.assertIn("safe_app", redacted)
 
     def test_scenario_15_scope_fail_closed(self):
         # Out-of-scope target fails closed without dispatch

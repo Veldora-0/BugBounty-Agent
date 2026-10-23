@@ -589,7 +589,11 @@ class SecurityValidationEngine:
             bytes_read = 0
             effective_xfer = max(self.total_bytes_transferred, self.total_bytes)
             remaining_global = max(0, self.policy.max_total_bytes - effective_xfer)
-            allowed_to_read = min(self.policy.max_response_bytes, remaining_global)
+            req_cap = getattr(request, "max_response_bytes", None)
+            eff_policy_cap = self.policy.max_response_bytes
+            if req_cap is not None and isinstance(req_cap, int) and req_cap > 0:
+                eff_policy_cap = min(eff_policy_cap, req_cap)
+            allowed_to_read = min(eff_policy_cap, remaining_global)
 
             while bytes_read < allowed_to_read:
                 to_read = min(chunk_size, allowed_to_read - bytes_read)

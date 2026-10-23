@@ -29,7 +29,7 @@ from framework.validation.request import ControlledRequest, ControlledResponse
 
 
 CONFIG_SECRET_PATTERN = re.compile(
-    r"^([A-Z0-9_]*(?:PASS|PWD|SECRET|KEY|TOKEN|AUTH|CREDENTIAL|PRIVATE)[A-Z0-9_]*\s*=\s*)[^\r\n]+",
+    r"^([A-Z0-9_]*(?:PASS|PWD|SECRET|KEY|TOKEN|AUTH|CREDENTIAL|PRIVATE)[A-Z0-9_]*\s*[:=]\s*)[^\r\n]+",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -67,6 +67,17 @@ class InfrastructureExposureEvaluator:
         """
         Executes a targeted, non-destructive probe against candidate endpoint and evaluates the result.
         """
+        # Enforce category-specific streaming ceilings at transport layer
+        req_cap = self.max_response_bytes
+        if candidate.category == ExposureCategory.BACKUP_ARCHIVE:
+            req_cap = self.max_binary_magic_bytes
+        elif candidate.category in (
+            ExposureCategory.CONFIG_FILE,
+            ExposureCategory.DEPLOYMENT_MANIFEST,
+            ExposureCategory.SOURCE_MAP,
+        ):
+            req_cap = self.max_manifest_bytes
+
         req = ControlledRequest(
             method="GET",
             url=candidate.endpoint,
@@ -74,6 +85,7 @@ class InfrastructureExposureEvaluator:
                 "User-Agent": "BugBounty-Agent/Infrastructure-Intelligence (Safe Research)",
                 "Accept": "*/*",
             },
+            max_response_bytes=req_cap,
         )
 
         try:

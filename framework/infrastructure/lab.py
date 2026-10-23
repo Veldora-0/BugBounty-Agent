@@ -224,6 +224,20 @@ class InfrastructureLabHandler(BaseHTTPRequestHandler):
                     break
             return
 
+        if path == "/scenario/streaming/large-config.env":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(1024 * 1024)) # 1 MB
+            self.end_headers()
+            self._write_counted(b"APP_NAME=LargeApp\nDB_PASS=secret123\n")
+            chunk = b"KEY_VAR=value_line_data_padding\n" * 256
+            for _ in range(128):
+                try:
+                    self._write_counted(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+            return
+
         # Default 404 for any unmatched scenario path
         self.send_response(404)
         self.send_header("Content-Type", "text/plain")

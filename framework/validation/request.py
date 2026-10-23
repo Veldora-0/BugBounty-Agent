@@ -33,6 +33,7 @@ class ControlledRequest:
         body: Optional[str | bytes] = None,
         mutated_target: Optional[str] = None,
         mutated_value: Optional[str] = None,
+        max_response_bytes: Optional[int] = None,
     ):
         self.base_url = url.strip()
         self.method = method.strip().upper()
@@ -45,6 +46,7 @@ class ControlledRequest:
         self._raw_body = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body
         self.mutated_target = mutated_target
         self.mutated_value = mutated_value
+        self.max_response_bytes = max_response_bytes
 
     @property
     def body(self) -> Optional[str]:

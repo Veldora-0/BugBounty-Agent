@@ -118,7 +118,7 @@ class InfrastructureStateManager:
         # Sanitize any string fields in finding
         finding_raw_str = json.dumps(finding_dict)
         finding_scrubbed_str = re.sub(
-            r"([A-Z0-9_]*(?:PASS|PWD|SECRET|KEY|TOKEN|AUTH|CREDENTIAL|PRIVATE)[A-Z0-9_]*\s*=\s*)[^\"\r\n\\]+",
+            r"([A-Z0-9_]*(?:PASS|PWD|SECRET|KEY|TOKEN|AUTH|CREDENTIAL|PRIVATE)[A-Z0-9_]*\s*[:=]\s*)[^\"\r\n\\]+",
             r"\g<1>[REDACTED_BY_BB_AGENT]",
             finding_raw_str,
             flags=re.IGNORECASE,
