@@ -251,11 +251,37 @@ class LocalConcurrencyLab:
 
     def start_observation(self, observation_id: str) -> None:
         """Captures initial pre-state baseline directly from server for a specific test run."""
+        if not observation_id or not isinstance(observation_id, str):
+            raise ValueError("observation_id must be a non-empty string.")
         with self._obs_lock:
+            if observation_id in self._active_observations:
+                raise ValueError(f"Observation ID '{observation_id}' is already active.")
             self._active_observations[observation_id] = {
                 "pre_state": self._read_server_state(),
                 "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
+
+    def discard_observation(self, observation_id: str) -> bool:
+        """
+        Safely and idempotently removes an active observation without producing authoritative evidence.
+        Guarantees that an aborted, failed, or externally supplied observation does not leak state.
+        Returns True if the observation was active and removed, False otherwise.
+        """
+        if not observation_id or not isinstance(observation_id, str):
+            return False
+        with self._obs_lock:
+            removed = self._active_observations.pop(observation_id, None)
+            return removed is not None
+
+    def is_observation_active(self, observation_id: str) -> bool:
+        """Returns True if the observation is currently active in the registry."""
+        with self._obs_lock:
+            return observation_id in self._active_observations
+
+    def active_observation_count(self) -> int:
+        """Returns the number of currently active observations in the registry."""
+        with self._obs_lock:
+            return len(self._active_observations)
 
     def complete_observation(self, observation_id: str) -> PostStateEvidence:
         """
@@ -402,6 +428,9 @@ class LocalConcurrencyLab:
         if self.port in LocalConcurrencyLab._ACTIVE_LABS:
             LocalConcurrencyLab._ACTIVE_LABS.pop(self.port, None)
 
+        with self._obs_lock:
+            self._active_observations.clear()
+
         if self.server:
             try:
                 self.server.shutdown()
@@ -415,6 +444,8 @@ class LocalConcurrencyLab:
 
     def reset_state(self) -> None:
         """Resets all in-memory mock scenario state."""
+        with self._obs_lock:
+            self._active_observations.clear()
         if self.server:
             self.server.reset_state()
 

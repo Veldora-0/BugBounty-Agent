@@ -34,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Deserialized external payloads (`PostStateEvidence.from_dict()`) are strictly forced to `UNTRUSTED_CALLER_CLAIM` and stripped of attestation tokens.
   * Verified endpoint validation ensures evidence originates only from active local lab instances on loopback addresses.
 * **Pre-State Baselines, Delta Calculations & Monotonic Progression (Critical Finding C — `ConcurrencyInvariantEngine`, `RaceIntelligenceEngine`)**:
-  * Bound observations to hypothesis lifecycles (`observation_id = hypothesis.hypothesis_id`), capturing trusted pre-state baselines prior to burst dispatch and extracting post-state directly upon completion.
+  * Bound observations to unique per-execution identities (`observation_id = obs-{hypothesis.hypothesis_id}-{uuid}`), capturing trusted pre-state baselines prior to burst dispatch and extracting post-state directly upon completion while completely preventing cross-run baseline collisions.
+  * Ensured every started observation reaches exactly one safe terminal outcome (Completed, Discarded, or Failed-Closed) via idempotent `LocalConcurrencyLab.discard_observation()` and execution engine `try...finally` guards, preventing state leakage on exceptions, timeouts, or externally supplied caller evidence.
+  * Rejected duplicate active observation IDs safely with `ValueError` to prevent silent baseline replacement under concurrent starts.
   * State-based counter invariants (`LIMIT_OVERRUN`, `DOUBLE_SPEND`, `IDEMPOTENCY_BYPASS`) evaluate exact per-test counter deltas ($\Delta = \text{post} - \text{pre}$) rather than raw cumulative counters.
   * Unbaselined post-state counter observations strictly fail safe to `RaceConfidence.SUSPECTED` or `INCONCLUSIVE`, never `CONFIRMED`.
   * Decreasing counters for strictly increasing metrics violate monotonic progression invariants and immediately fail closed to `INCONCLUSIVE`.
@@ -68,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Extended `framework/state/manager.py` with `DEFAULT_CONCURRENCY` and synchronized `concurrency.json` into canonical findings.
   * Linked `bb-race` across deployment utilities (total 28 utilities).
 * **Automated Test Suite**:
-  * Expanded to 94 unit and integration tests in `tests/test_concurrency_engine.py` (and 141 tests across the full repository test suite) covering taxonomy, barrier timing, invariant rules, evidence classification hardening, full-envelope HMAC attestation, pre-state baselines, counter deltas, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
+  * Expanded to 104 unit and integration tests in `tests/test_concurrency_engine.py` (and 151 tests across the full repository test suite) covering taxonomy, barrier timing, invariant rules, evidence classification hardening, full-envelope HMAC attestation, pre-state baselines, counter deltas, observation lifecycle integrity, execution-bound unique observation IDs, cross-run baseline isolation, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
 
 ### Phase 19: Infrastructure & Configuration Exposure (Accepted with Documented Limitations)
 

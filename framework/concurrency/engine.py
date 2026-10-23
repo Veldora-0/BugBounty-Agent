@@ -382,7 +382,8 @@ class RaceIntelligenceEngine:
             hypothesis_id=hypothesis.hypothesis_id,
             max_requests=self.policy.max_requests_per_test,
         )
-        observation_id = hypothesis.hypothesis_id
+        # Generate a unique execution-bound observation identity preserving the hypothesis ID prefix
+        observation_id = f"obs-{hypothesis.hypothesis_id}-{uuid.uuid4().hex[:12]}"
 
         # 1. Start observation session if in lab mode to capture trusted pre-state baseline
         lab = self.lab_fixture
@@ -394,26 +395,45 @@ class RaceIntelligenceEngine:
                     lab = LocalConcurrencyLab.get_active_lab(port)
                 except Exception:
                     lab = None
-        if lab and hasattr(lab, "start_observation"):
+
+        observation_started = False
+        observation_completed = False
+
+        if self.lab_mode and lab and hasattr(lab, "start_observation"):
             lab.start_observation(observation_id)
+            observation_started = True
 
-        scoped_dispatch = lambda r: self._send_request_safe(r, budget_ctx=budget_ctx)
+        try:
+            scoped_dispatch = lambda r: self._send_request_safe(r, budget_ctx=budget_ctx)
 
-        # Dispatch synchronized burst with isolated budget context
-        raw_results = self.synchronizer.dispatch_burst(
-            base_req,
-            burst_size=burst_size,
-            dispatch_fn=scoped_dispatch,
-        )
-        executions = [r[0] for r in raw_results]
-        responses = [r[1] for r in raw_results]
+            # Dispatch synchronized burst with isolated budget context
+            raw_results = self.synchronizer.dispatch_burst(
+                base_req,
+                burst_size=burst_size,
+                dispatch_fn=scoped_dispatch,
+            )
+            executions = [r[0] for r in raw_results]
+            responses = [r[1] for r in raw_results]
 
-        # Acquire authoritative post-state evidence from trusted lab fixture if in lab mode
-        if post_state_data is None and self.lab_mode and lab:
-            if hasattr(lab, "complete_observation"):
-                post_state_data = lab.complete_observation(observation_id)
-            elif hasattr(lab, "get_authoritative_state"):
-                post_state_data = lab.get_authoritative_state(observation_id=observation_id)
+            # Acquire authoritative post-state evidence from trusted lab fixture if in lab mode
+            if post_state_data is None:
+                if self.lab_mode and lab:
+                    if hasattr(lab, "complete_observation"):
+                        post_state_data = lab.complete_observation(observation_id)
+                        observation_completed = True
+                    elif hasattr(lab, "get_authoritative_state"):
+                        post_state_data = lab.get_authoritative_state(observation_id=observation_id)
+                        observation_completed = True
+            else:
+                # If external post_state_data was explicitly supplied, ensure the started lab observation
+                # is safely discarded and not leaked in active observations.
+                if observation_started and lab and hasattr(lab, "discard_observation"):
+                    lab.discard_observation(observation_id)
+                    observation_completed = True
+        finally:
+            # Ensure any uncompleted observation (e.g. on dispatch exception or early exit) is discarded safely
+            if observation_started and not observation_completed and lab and hasattr(lab, "discard_observation"):
+                lab.discard_observation(observation_id)
 
         # Evaluate invariants
         (

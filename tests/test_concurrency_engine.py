@@ -2148,5 +2148,249 @@ class TestBlockerCCounterBaselinesAndDeltas(unittest.TestCase):
         self.assertIn("failed signature verification", reasons[0])
 
 
+class TestObservationLifecycleAndIsolation(unittest.TestCase):
+    """
+    Targeted Tests for Observation Lifecycle Integrity and Cross-Run Isolation:
+    Covers the 10 critical requirements for observation management:
+    1. Externally supplied evidence does not leak a started observation.
+    2. Successful lab execution completes observation exactly once.
+    3. Exception after observation start cleans up stale state (zero leak).
+    4. Worker timeout preserves safe evidence semantics and cleanup.
+    5. Concurrent executions of the same hypothesis do not overwrite each other's baselines.
+    6. Duplicate active observation ID is rejected safely.
+    7. Execution cannot consume another execution's evidence.
+    8. Repeated runs do not reuse stale pre-state or post-state.
+    9. Cleanup cannot accidentally remove another active execution's observation.
+    10. Existing evidence-authentication and counter-baseline adversarial tests remain effective.
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.lab = LocalConcurrencyLab()
+        cls.base_url = cls.lab.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.lab.stop()
+
+    def setUp(self):
+        self.lab.reset_state()
+        self.temp_dir = tempfile.mkdtemp(prefix="bb_test_lifecycle_")
+        self.scope_engine = LocalConcurrencyLab.get_scope_engine(self.lab.port)
+        self.engine = RaceIntelligenceEngine(
+            program_dir=self.temp_dir,
+            scope_engine=self.scope_engine,
+            lab_mode=True,
+            require_approval=False,
+        )
+        self.engine.allow_fixture_port(self.lab.port)
+
+    def tearDown(self):
+        self.lab.reset_state()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_externally_supplied_evidence_does_not_leak_observation(self):
+        """1. An execution using externally supplied evidence does not leak a started observation."""
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        external_claim = {"voting_count": 99, "source": "CLAIM"}
+        res, finding = self.engine.execute_hypothesis(
+            hyp,
+            auto_approve=True,
+            post_state_data=external_claim,
+        )
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertNotEqual(res.confidence, RaceConfidence.CONFIRMED)
+        self.assertIn("Caller-supplied post-state evidence lacks authoritative provenance", res.reasons[0])
+
+    def test_successful_lab_execution_completes_observation_exactly_once(self):
+        """2. A successful lab execution completes its observation exactly once."""
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=3,
+            allowed_limit=1,
+        )
+        res, finding = self.engine.execute_hypothesis(hyp, auto_approve=True)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertTrue(res.is_vulnerable)
+        self.assertEqual(res.confidence, RaceConfidence.CONFIRMED)
+        self.assertIsNotNone(finding)
+
+    def test_exception_after_observation_start_cleans_up_stale_state(self):
+        """3. An exception after observation start does not leave stale state."""
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        with patch.object(self.engine.synchronizer, "dispatch_burst", side_effect=RuntimeError("Simulated transport failure")):
+            with self.assertRaises(RuntimeError):
+                self.engine.execute_hypothesis(hyp, auto_approve=True)
+
+        self.assertEqual(self.lab.active_observation_count(), 0)
+
+    def test_worker_timeout_preserves_safe_evidence_semantics_and_cleanup(self):
+        """4. A worker timeout or unresolved operation preserves safe evidence semantics and cleanup."""
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/timeout-inconclusive",
+            RaceCategory.TOCTOU,
+            burst_size=4,
+            allowed_limit=1,
+        )
+        res, finding = self.engine.execute_hypothesis(hyp, auto_approve=True)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(res.is_vulnerable)
+        self.assertEqual(res.confidence, RaceConfidence.INCONCLUSIVE)
+        self.assertIsNone(finding)
+
+    def test_concurrent_executions_of_same_hypothesis_do_not_overwrite_baselines(self):
+        """5. Two concurrent executions of the same hypothesis cannot overwrite each other's baselines."""
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                barrier.wait(timeout=5.0)
+                res, fnd = self.engine.execute_hypothesis(hyp, auto_approve=True)
+                results.append(res)
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=worker)
+        t2 = threading.Thread(target=worker)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10.0)
+        t2.join(timeout=10.0)
+
+        self.assertEqual(len(errors), 0, f"Concurrent workers raised errors: {errors}")
+        self.assertEqual(len(results), 2)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+
+    def test_duplicate_active_observation_id_is_rejected_safely(self):
+        """6. A duplicate active observation ID is rejected or handled safely."""
+        obs_id = "test-dup-rejection-1"
+        self.lab.start_observation(obs_id)
+        self.assertTrue(self.lab.is_observation_active(obs_id))
+
+        with self.assertRaises(ValueError) as ctx:
+            self.lab.start_observation(obs_id)
+        self.assertIn("already active", str(ctx.exception))
+
+        self.assertTrue(self.lab.discard_observation(obs_id))
+        self.assertEqual(self.lab.active_observation_count(), 0)
+
+    def test_execution_cannot_consume_another_executions_evidence(self):
+        """7. An execution cannot consume another execution's evidence."""
+        obs_1 = "obs-exec-isolate-1"
+        obs_2 = "obs-exec-isolate-2"
+        self.lab.start_observation(obs_1)
+        self.lab.server.voting_count += 3
+        ev_1 = self.lab.complete_observation(obs_1)
+
+        self.lab.start_observation(obs_2)
+        self.lab.server.voting_count += 3
+        ev_2 = self.lab.complete_observation(obs_2)
+
+        execs = [SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}")]
+        resps = [ControlledResponse(status_code=200, body_text="{}", headers={})]
+
+        # Attempt to evaluate run 2 expecting obs_2 using evidence from run 1 (obs_1)
+        is_vuln, conf, _, _, reasons, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=ev_1,
+            expected_observation_id=obs_2,
+        )
+        self.assertFalse(is_vuln)
+        self.assertNotEqual(conf, RaceConfidence.CONFIRMED)
+        self.assertIn("failed signature verification", reasons[0])
+
+    def test_repeated_runs_do_not_reuse_stale_pre_state_or_post_state(self):
+        """8. Repeated runs do not reuse stale pre-state or post-state."""
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        res1, _ = self.engine.execute_hypothesis(hyp, auto_approve=True)
+        count_after_run1 = self.lab.server.voting_count
+        self.assertGreater(count_after_run1, 0)
+
+        # Run 2 on same endpoint: pre-state must match count_after_run1, not 0
+        obs_2 = "obs-run-2-check"
+        self.lab.start_observation(obs_2)
+        self.assertEqual(self.lab._active_observations[obs_2]["pre_state"]["voting_count"], count_after_run1)
+        ev2 = self.lab.complete_observation(obs_2)
+        self.assertEqual(ev2.pre_state["voting_count"], count_after_run1)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+
+    def test_cleanup_cannot_accidentally_remove_another_active_observation(self):
+        """9. Cleanup cannot accidentally remove another active execution's observation."""
+        obs_A = "obs-active-A"
+        obs_B = "obs-active-B"
+        self.lab.start_observation(obs_A)
+        self.lab.start_observation(obs_B)
+        self.assertEqual(self.lab.active_observation_count(), 2)
+
+        # Discarding obs_A leaves obs_B completely intact
+        self.assertTrue(self.lab.discard_observation(obs_A))
+        self.assertEqual(self.lab.active_observation_count(), 1)
+        self.assertFalse(self.lab.is_observation_active(obs_A))
+        self.assertTrue(self.lab.is_observation_active(obs_B))
+
+        # Complete obs_B and verify its baseline is fully intact
+        ev_B = self.lab.complete_observation(obs_B)
+        self.assertIsNotNone(ev_B.pre_state)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+
+    def test_adversarial_tampering_and_unbaselined_counter_defenses_remain_effective(self):
+        """10. All existing evidence-authentication and counter-baseline adversarial tests remain effective."""
+        # A. Untrusted caller dictionary
+        untrusted = {"voting_count": 100, "source": "UNTRUSTED_CALLER_CLAIM"}
+        execs = [SingleProbeExecution(request_index=0, status_code=200, response_time_ms=10.0, body_snippet="{}")]
+        resps = [ControlledResponse(status_code=200, body_text="{}", headers={})]
+        is_v, conf, _, _, reasons, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=untrusted,
+            expected_observation_id="test-obs-10",
+        )
+        self.assertFalse(is_v)
+        self.assertNotEqual(conf, RaceConfidence.CONFIRMED)
+
+        # B. Unbaselined authoritative evidence
+        unbaselined_ev = self.lab.capture_evidence("obs-unbaselined-10")
+        unbaselined_ev.pre_state = None
+        is_v2, conf2, _, _, reasons2, _ = ConcurrencyInvariantEngine.evaluate_burst_results(
+            category=RaceCategory.LIMIT_OVERRUN,
+            allowed_limit=1,
+            executions=execs,
+            responses=resps,
+            post_state_data=unbaselined_ev,
+            expected_observation_id="obs-unbaselined-10",
+        )
+        self.assertFalse(is_v2)
+        self.assertNotEqual(conf2, RaceConfidence.CONFIRMED)
+        self.assertIn("per-test delta cannot be inferred", reasons2[0])
+
+
 if __name__ == "__main__":
     unittest.main()

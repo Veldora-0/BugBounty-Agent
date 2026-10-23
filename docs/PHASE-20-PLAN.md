@@ -104,10 +104,15 @@ scripts/
 `PostStateEvidence.from_dict()` previously accepted a caller-provided `source` label, allowing untrusted callers or deserialized dictionaries to self-attest as authoritative evidence (`LAB_FIXTURE_AUTHORITATIVE`). Furthermore, arbitrary caller state could previously be signed via public helper methods, and signatures previously covered only a subset of fields, risking post-attestation tampering.
 
 ### Implemented Hardening
-1. **Elimination of Caller Evidence Forgery (Finding A)**:
+1. **Elimination of Caller Evidence Forgery & Observation Lifecycle (Finding A)**:
    - Completely deleted any public trusted evidence factory (such as `create_authoritative_evidence()`) that accepted arbitrary caller-supplied dictionaries.
    - Authoritative evidence can **only** be issued through genuine observations from an active `LocalConcurrencyLab` instance bound to its live server state and validated port.
-   - Implemented observation lifecycle: `start_observation(obs_id)` captures pre-state baseline directly from the server; `complete_observation(obs_id)` extracts live post-state, calculates deltas, packages the envelope, and issues the cryptographic token.
+   - Implemented strict observation lifecycle:
+     - Each execution generates an execution-bound unique observation ID (`obs-{hypothesis_id}-{uuid}`), guaranteeing cross-run isolation and preventing baseline collisions across concurrent or sequential runs.
+     - `start_observation(obs_id)` captures a fresh pre-state baseline directly from the server. Duplicate active IDs are rejected safely with `ValueError`.
+     - `complete_observation(obs_id)` extracts live post-state, calculates deltas against the baseline, packages the envelope, signs the HMAC token, and pops the observation atomically.
+     - `discard_observation(obs_id)` idempotently removes active observations without producing authoritative evidence.
+     - Execution engine uses a `try...finally` block guaranteeing that every started observation reaches exactly one safe terminal outcome (Completed, Discarded, or Failed-Closed) with zero state leakage on exceptions, worker timeouts, or externally supplied caller evidence.
 2. **Full-Envelope Cryptographic Attestation (Finding B)**:
    - Defined `EvidenceEnvelope` (version `concurrency-evidence-v1`) binding every decision-relevant field:
      - `schema_version`
@@ -213,10 +218,11 @@ Global or engine-level request counters allowed concurrent or sequential test ex
 ## 10. Verification & Test Plan
 
 1. **Focused Test Suite (`tests/test_concurrency_engine.py`)**:
-   - **94 comprehensive tests** covering:
-     - Blocker A & Critical Finding A: Elimination of caller-forged trusted evidence factories; genuine observation lifecycle bound to live server state.
+   - **104 comprehensive tests** covering:
+     - Blocker A & Critical Finding A: Elimination of caller-forged trusted evidence factories; genuine observation lifecycle bound to live server state; unique execution identity and cross-run isolation.
      - Blocker A & Critical Finding B: Full-envelope HMAC-SHA256 attestation (`EvidenceEnvelope`, `concurrency-evidence-v1`), canonical deterministic serialization, and tamper resistance across all 9 fields and nested dictionaries.
      - Blocker B & Critical Finding C: Invariant evaluation requiring trusted pre-state baselines and per-test counter deltas; safe fallback on unbaselined counters; monotonic progression checks.
+     - Observation Lifecycle & Isolation: Zero active observation leakage on externally supplied evidence, dispatch exceptions, or timeouts; duplicate active ID rejection; execution isolation.
      - Blocker B: Category-specific counter mappings, distinct provisional ID handling, and authoritative post-state requirements.
      - Blocker C: Monotonic deadline bounding, worker lifecycle states, and container sealing.
      - Blocker D: Thread-safe per-hypothesis budget contexts and hard ceiling clamping.
@@ -226,7 +232,7 @@ Global or engine-level request counters allowed concurrent or sequential test ex
 2. **Diagnostic Health**:
    - `bb-doctor` Category 25 (`check_concurrency_engine`) reports `[HEALTHY]` (all 17 framework engines healthy).
 3. **Cross-Platform Parity**:
-   - Verified on Windows 11 (94/94 concurrency tests, 141/141 total test discovery suite).
+   - Verified on Windows 11 (104/104 concurrency tests, 151/151 total test discovery suite).
    - Verified on Kali Linux VM (`ssh veldora@127.0.0.1 -p 2222`).
 
 ---
