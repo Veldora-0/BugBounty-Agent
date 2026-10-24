@@ -77,6 +77,55 @@ def _classify_request_exception(exc: Exception) -> str:
     return f"network transport error ({safe_name})"
 
 
+def _sanitize_cleanup_diagnostic(exc: BaseException) -> str:
+    """
+    Returns a safe diagnostic representation of a cleanup exception without leaking raw secrets.
+    """
+    exc_type = type(exc).__name__
+    raw_msg = str(exc)
+    if not raw_msg or raw_msg == exc_type:
+        return exc_type
+    sanitized_msg = sanitize_sensitive_data(raw_msg)
+    if len(sanitized_msg) > 256:
+        sanitized_msg = sanitized_msg[:253] + "..."
+    return f"{exc_type}: {sanitized_msg}"
+
+
+def _attach_cleanup_diagnostic(primary: BaseException, stage: str, exc: BaseException) -> None:
+    """
+    Attaches secondary cleanup failure diagnostic information to the propagating primary exception
+    without altering its type or primary message.
+    Uses exception notes (PEP 678 / Python 3.11+) and structured diagnostic attributes.
+    """
+    diagnostic = _sanitize_cleanup_diagnostic(exc)
+    note = f"Secondary cleanup failure during {stage}: {diagnostic}"
+    try:
+        if hasattr(primary, "add_note"):
+            primary.add_note(note)
+        else:
+            notes = getattr(primary, "__notes__", None)
+            if notes is None:
+                notes = []
+                setattr(primary, "__notes__", notes)
+            notes.append(note)
+    except Exception:
+        pass
+
+    try:
+        cleanup_failures = getattr(primary, "__cleanup_failures__", None)
+        if cleanup_failures is None:
+            cleanup_failures = []
+            setattr(primary, "__cleanup_failures__", cleanup_failures)
+        cleanup_failures.append({
+            "stage": stage,
+            "exception": exc,
+            "exception_type": type(exc).__name__,
+            "diagnostic": diagnostic,
+        })
+    except Exception:
+        pass
+
+
 class RaceIntelligenceEngine:
     """Subsystem engine for concurrent state-machine and distributed workflow intelligence."""
 
@@ -477,8 +526,10 @@ class RaceIntelligenceEngine:
                 primary_exc = exc
                 raise
         finally:
-            cleanup_obs_exc: Optional[BaseException] = None
+            cleanup_inspect_exc: Optional[BaseException] = None
+            cleanup_discard_exc: Optional[BaseException] = None
             cleanup_release_exc: Optional[BaseException] = None
+            cleanup_obs_exc: Optional[BaseException] = None
 
             # Stage 1: Observation-state inspection and discard
             # Enclosed to guarantee that ANY failure during observation inspection or discard
@@ -490,12 +541,13 @@ class RaceIntelligenceEngine:
                         try:
                             is_active = bool(lab.is_observation_active(observation_id))
                         except BaseException as exc:
+                            cleanup_inspect_exc = exc
                             cleanup_obs_exc = exc
                             try:
                                 logger.debug(
                                     "Error inspecting observation state for %s during cleanup: %s",
                                     observation_id,
-                                    _classify_request_exception(exc),
+                                    _sanitize_cleanup_diagnostic(exc),
                                 )
                             except Exception:
                                 pass
@@ -506,13 +558,14 @@ class RaceIntelligenceEngine:
                     needs_discard = (
                         (observation_started and not observation_completed)
                         or is_active
-                        or (cleanup_obs_exc is not None)
+                        or (cleanup_inspect_exc is not None)
                     )
 
                     if needs_discard and hasattr(lab, "discard_observation"):
                         try:
                             lab.discard_observation(observation_id)
                         except BaseException as exc:
+                            cleanup_discard_exc = exc
                             if cleanup_obs_exc is not None:
                                 # Both inspection and discard failed: chain discard error to inspection error
                                 exc.__context__ = cleanup_obs_exc
@@ -521,7 +574,7 @@ class RaceIntelligenceEngine:
                                 logger.debug(
                                     "Error discarding observation %s during cleanup: %s",
                                     observation_id,
-                                    _classify_request_exception(exc),
+                                    _sanitize_cleanup_diagnostic(exc),
                                 )
                             except Exception:
                                 pass
@@ -540,7 +593,7 @@ class RaceIntelligenceEngine:
                     try:
                         logger.debug(
                             "Error releasing measurement lock during cleanup: %s",
-                            _classify_request_exception(exc),
+                            _sanitize_cleanup_diagnostic(exc),
                         )
                     except Exception:
                         pass
@@ -550,11 +603,19 @@ class RaceIntelligenceEngine:
             # Exception Precedence Resolution:
             # 1. If a primary execution exception was already propagating, preserve it as the primary failure.
             #    Do not let cleanup failures mask the original dispatch, observation, or evaluation error.
-            # 2. If NO primary exception exists and cleanup failed, propagate the cleanup failure.
-            # 3. If both observation cleanup and lock release fail without a primary exception:
-            #    propagate the observation cleanup failure with the lock release failure chained,
-            #    ensuring diagnostic information about all failures remains accessible.
-            if primary_exc is None:
+            #    Record any secondary cleanup failures as diagnostic notes on the primary exception.
+            if primary_exc is not None:
+                if cleanup_inspect_exc is not None:
+                    _attach_cleanup_diagnostic(primary_exc, "observation inspection", cleanup_inspect_exc)
+                if cleanup_discard_exc is not None:
+                    _attach_cleanup_diagnostic(primary_exc, "observation discard", cleanup_discard_exc)
+                if cleanup_release_exc is not None:
+                    _attach_cleanup_diagnostic(primary_exc, "measurement lock release", cleanup_release_exc)
+            else:
+                # 2. If NO primary exception exists and cleanup failed, propagate the cleanup failure.
+                # 3. If both observation cleanup and lock release fail without a primary exception:
+                #    propagate the observation cleanup failure with the lock release failure chained,
+                #    ensuring diagnostic information about all failures remains accessible.
                 if cleanup_obs_exc is not None and cleanup_release_exc is not None:
                     if cleanup_obs_exc.__context__ is None:
                         cleanup_obs_exc.__context__ = cleanup_release_exc

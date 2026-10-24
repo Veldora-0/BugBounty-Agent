@@ -2787,6 +2787,7 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
         """
         Requirement 2.3 & 2.4: When a primary exception occurs, cleanup failures
         (discard failure or release failure) do NOT mask the primary exception.
+        Diagnostic notes identify the secondary discard failure.
         """
         hyp1 = self.engine.add_hypothesis(
             f"{self.base_url}/scenario/voting-limit",
@@ -2798,7 +2799,12 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
             with patch.object(self.lab, "discard_observation", side_effect=RuntimeError("Secondary discard failure")):
                 with self.assertRaises(ValueError) as ctx:
                     self.engine.execute_hypothesis(hyp1, auto_approve=True)
-                self.assertIn("Primary dispatch network error", str(ctx.exception))
+                self.assertIsInstance(ctx.exception, ValueError)
+                self.assertEqual(str(ctx.exception), "Primary dispatch network error")
+                notes = getattr(ctx.exception, "__notes__", [])
+                self.assertTrue(any("observation discard" in n and "Secondary discard failure" in n for n in notes))
+                failures = getattr(ctx.exception, "__cleanup_failures__", [])
+                self.assertTrue(any(f["stage"] == "observation discard" for f in failures))
 
         # Lock was still released
         self.assertFalse(self.lab.is_measurement_locked())
@@ -2857,8 +2863,12 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
                 with patch.object(self.lab, "release_measurement_lock", side_effect=KeyError("Stage 2 release failure")) as mock_rel2:
                     with self.assertRaises(TypeError) as ctx2:
                         self.engine.execute_hypothesis(hyp2, auto_approve=True)
-                    self.assertIn("Primary burst failure", str(ctx2.exception))
+                    self.assertIsInstance(ctx2.exception, TypeError)
+                    self.assertEqual(str(ctx2.exception), "Primary burst failure")
                     mock_rel2.assert_called()
+                    notes2 = getattr(ctx2.exception, "__notes__", [])
+                    self.assertTrue(any("observation discard" in n and "Stage 1 discard failure" in n for n in notes2))
+                    self.assertTrue(any("measurement lock release" in n and "Stage 2 release failure" in n for n in notes2))
 
         if self.lab.is_measurement_locked():
             real_release()
@@ -2930,9 +2940,9 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
         Section 3.B: Cause hypothesis dispatch to raise a distinctive primary exception
         and make is_observation_active() raise during cleanup.
         Verify:
-        - The original dispatch exception remains the propagated primary exception.
+        - The original dispatch exception remains the propagated primary exception unchanged in type/message.
         - Lock release is still attempted.
-        - Cleanup failure diagnostics remain available.
+        - Cleanup failure diagnostics remain available in notes and __cleanup_failures__.
         """
         hyp = self.engine.add_hypothesis(
             f"{self.base_url}/scenario/voting-limit",
@@ -2945,10 +2955,48 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
                 with patch.object(self.lab, "release_measurement_lock", wraps=self.lab.release_measurement_lock) as spy_release:
                     with self.assertRaises(ValueError) as ctx:
                         self.engine.execute_hypothesis(hyp, auto_approve=True)
-                    self.assertIn("Distinctive primary dispatch error", str(ctx.exception))
+                    self.assertIsInstance(ctx.exception, ValueError)
+                    self.assertEqual(str(ctx.exception), "Distinctive primary dispatch error")
                     mock_inspect.assert_called()
                     spy_release.assert_called_once()
+                    notes = getattr(ctx.exception, "__notes__", [])
+                    self.assertTrue(any("observation inspection" in n and "Secondary inspection error" in n for n in notes))
+                    failures = getattr(ctx.exception, "__cleanup_failures__", [])
+                    self.assertTrue(any(f["stage"] == "observation inspection" for f in failures))
 
+        self.assertFalse(self.lab.is_measurement_locked())
+        self.lab.reset_state()
+
+    def test_cleanup_lock_release_failure_during_primary_exception_preserves_original_exception(self):
+        """
+        Section 5: Primary dispatch failure plus lock-release failure.
+        Verify:
+        - The original dispatch exception remains the propagated primary exception unchanged in type and message.
+        - Lock release is still attempted.
+        - Secondary lock release cleanup failure remains diagnostically accessible.
+        """
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        real_release = self.lab.release_measurement_lock
+        with patch.object(self.engine.synchronizer, "dispatch_burst", side_effect=ValueError("Primary dispatch network error")):
+            with patch.object(self.lab, "release_measurement_lock", side_effect=KeyError("Secondary lock release failure")) as mock_release:
+                with self.assertRaises(ValueError) as ctx:
+                    self.engine.execute_hypothesis(hyp, auto_approve=True)
+                self.assertIsInstance(ctx.exception, ValueError)
+                self.assertEqual(str(ctx.exception), "Primary dispatch network error")
+                mock_release.assert_called_once()
+                notes = getattr(ctx.exception, "__notes__", [])
+                self.assertTrue(any("measurement lock release" in n and "Secondary lock release failure" in n for n in notes))
+                failures = getattr(ctx.exception, "__cleanup_failures__", [])
+                self.assertTrue(any(f["stage"] == "measurement lock release" for f in failures))
+
+        # Real lock is still locked because release failed
+        self.assertTrue(self.lab.is_measurement_locked())
+        real_release()
         self.assertFalse(self.lab.is_measurement_locked())
         self.lab.reset_state()
 
@@ -3009,10 +3057,17 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
                     with patch.object(self.lab, "release_measurement_lock", side_effect=KeyError("Stage 2 release failure")) as mock_rel:
                         with self.assertRaises(TypeError) as ctx1:
                             self.engine.execute_hypothesis(hyp1, auto_approve=True)
-                        self.assertIn("Primary burst dispatch failure", str(ctx1.exception))
+                        self.assertIsInstance(ctx1.exception, TypeError)
+                        self.assertEqual(str(ctx1.exception), "Primary burst dispatch failure")
                         mock_insp.assert_called()
                         mock_disc.assert_called()
                         mock_rel.assert_called_once()
+                        notes1 = getattr(ctx1.exception, "__notes__", [])
+                        self.assertTrue(any("observation inspection" in n and "Stage 1 inspection failure" in n for n in notes1))
+                        self.assertTrue(any("observation discard" in n and "Stage 1 discard failure" in n for n in notes1))
+                        self.assertTrue(any("measurement lock release" in n and "Stage 2 release failure" in n for n in notes1))
+                        failures1 = getattr(ctx1.exception, "__cleanup_failures__", [])
+                        self.assertEqual(len(failures1), 3)
 
         # Real lock was not released
         self.assertTrue(self.lab.is_measurement_locked())
