@@ -226,11 +226,12 @@ Global or engine-level request counters allowed concurrent or sequential test ex
 ## 10. Verification & Test Plan
 
 1. **Focused Test Suite (`tests/test_concurrency_engine.py`)**:
-   - **113 comprehensive tests** covering:
+   - **118 comprehensive tests** covering:
      - Blocker A & Critical Finding A: Elimination of caller-forged trusted evidence factories; genuine observation lifecycle bound to live server state; unique execution identity and cross-run isolation.
      - Blocker A & Critical Finding B: Full-envelope HMAC-SHA256 attestation (`EvidenceEnvelope`, `concurrency-evidence-v1`), canonical deterministic serialization, and tamper resistance across all 9 fields, `has_overlap` flag, and nested dictionaries.
      - Blocker B & Critical Finding C: Invariant evaluation requiring trusted pre-state baselines and per-test counter deltas; safe fallback on unbaselined counters; monotonic progression checks.
      - Observation Lifecycle & Isolation: Zero active observation leakage on externally supplied evidence, dispatch exceptions, or timeouts; duplicate active ID rejection; execution isolation; serialized observation measurement windows; fail-closed `has_overlap` attribution guards on overlapping observations; exception-safe measurement lock cleanup on observation creation failures, failed acquisitions, dispatch exceptions, missing post-state, and invariant evaluation crashes.
+     - Primary Exception Preservation & Deterministic Cleanup Exception Precedence: Explicit `primary_exc` capture during hypothesis dispatch and invariant evaluation ensures in-flight primary exceptions are never masked by cleanup failures. Two-stage cleanup handles observation discard (Stage 1) and measurement lock release (Stage 2) sequentially; lock release is always attempted even if discard fails. When no primary exception occurs, cleanup failures are never swallowed and propagate directly; when both cleanup stages fail without a primary exception, the discard error propagates with the release error chained in `__context__`. Deterministic regression tests verify lock release and state cleanliness across all permutations.
      - Blocker B: Category-specific counter mappings, distinct provisional ID handling, and authoritative post-state requirements.
      - Blocker C: Monotonic deadline bounding, worker lifecycle states, and container sealing.
      - Blocker D: Thread-safe per-hypothesis budget contexts and hard ceiling clamping.
@@ -240,7 +241,7 @@ Global or engine-level request counters allowed concurrent or sequential test ex
 2. **Diagnostic Health**:
    - `bb-doctor` Category 25 (`check_concurrency_engine`) reports `[HEALTHY]` (all 17 framework engines healthy).
 3. **Cross-Platform Parity**:
-   - Verified on Windows 11 (113/113 concurrency tests, 160/160 total test discovery suite).
+   - Verified on Windows 11 (118/118 concurrency tests, 165/165 total test discovery suite).
    - Verified on Kali Linux VM (`ssh veldora@127.0.0.1 -p 2222`).
 
 ---

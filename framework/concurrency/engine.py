@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
 import re
 import socket
@@ -19,6 +20,8 @@ import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 import uuid
+
+logger = logging.getLogger("bb.concurrency.engine")
 
 from framework.common.config import get_program_dir
 from framework.common.evidence import sanitize_sensitive_data
@@ -423,85 +426,96 @@ class RaceIntelligenceEngine:
 
         observation_started = False
         observation_completed = False
+        primary_exc: Optional[BaseException] = None
 
         try:
-            if self.lab_mode and lab and hasattr(lab, "start_observation"):
-                lab.start_observation(observation_id)
-                observation_started = True
-
-            scoped_dispatch = lambda r: self._send_request_safe(r, budget_ctx=budget_ctx)
-
-            # Dispatch synchronized burst with isolated budget context
-            raw_results = self.synchronizer.dispatch_burst(
-                base_req,
-                burst_size=burst_size,
-                dispatch_fn=scoped_dispatch,
-            )
-            executions = [r[0] for r in raw_results]
-            responses = [r[1] for r in raw_results]
-
-            # Acquire authoritative post-state evidence from trusted lab fixture if in lab mode
-            if post_state_data is None:
-                if self.lab_mode and lab:
-                    if hasattr(lab, "complete_observation"):
-                        post_state_data = lab.complete_observation(observation_id)
-                        if post_state_data is not None:
-                            observation_completed = True
-                        else:
-                            if hasattr(lab, "discard_observation"):
-                                lab.discard_observation(observation_id)
-                            observation_completed = True
-                    elif hasattr(lab, "get_authoritative_state"):
-                        post_state_data = lab.get_authoritative_state(observation_id=observation_id)
-                        if post_state_data is not None:
-                            observation_completed = True
-                        else:
-                            if hasattr(lab, "discard_observation"):
-                                lab.discard_observation(observation_id)
-                            observation_completed = True
-            else:
-                # If external post_state_data was explicitly supplied, ensure the started lab observation
-                # is safely discarded and not leaked in active observations.
-                if observation_started and lab and hasattr(lab, "discard_observation"):
-                    lab.discard_observation(observation_id)
-                    observation_completed = True
-
-            # Evaluate invariants
-            (
-                is_vuln,
-                confidence,
-                lifecycle,
-                severity,
-                reasons,
-                evidence_dict,
-            ) = ConcurrencyInvariantEngine.evaluate_burst_results(
-                category=hypothesis.category,
-                allowed_limit=hypothesis.allowed_limit,
-                executions=executions,
-                responses=responses,
-                post_state_data=post_state_data,
-                expected_observation_id=observation_id,
-            )
-        finally:
             try:
-                # Ensure any uncompleted or unremoved observation is discarded safely
-                if lab and hasattr(lab, "discard_observation"):
-                    if not observation_completed or (hasattr(lab, "is_observation_active") and lab.is_observation_active(observation_id)):
-                        try:
-                            lab.discard_observation(observation_id)
-                        except Exception:
-                            if sys.exc_info()[0] is None:
-                                raise
-            finally:
-                # Release measurement lock if held, even if observation discard failed
-                if measurement_locked and lab and hasattr(lab, "release_measurement_lock"):
+                if self.lab_mode and lab and hasattr(lab, "start_observation"):
+                    lab.start_observation(observation_id)
+                    observation_started = True
+
+                scoped_dispatch = lambda r: self._send_request_safe(r, budget_ctx=budget_ctx)
+
+                # Dispatch synchronized burst with isolated budget context
+                raw_results = self.synchronizer.dispatch_burst(
+                    base_req,
+                    burst_size=burst_size,
+                    dispatch_fn=scoped_dispatch,
+                )
+                executions = [r[0] for r in raw_results]
+                responses = [r[1] for r in raw_results]
+
+                # Acquire authoritative post-state evidence from trusted lab fixture if in lab mode
+                if post_state_data is None:
+                    if self.lab_mode and lab:
+                        if hasattr(lab, "complete_observation"):
+                            post_state_data = lab.complete_observation(observation_id)
+                            if post_state_data is not None:
+                                observation_completed = True
+                        elif hasattr(lab, "get_authoritative_state"):
+                            post_state_data = lab.get_authoritative_state(observation_id=observation_id)
+                            if post_state_data is not None:
+                                observation_completed = True
+
+                # Evaluate invariants
+                (
+                    is_vuln,
+                    confidence,
+                    lifecycle,
+                    severity,
+                    reasons,
+                    evidence_dict,
+                ) = ConcurrencyInvariantEngine.evaluate_burst_results(
+                    category=hypothesis.category,
+                    allowed_limit=hypothesis.allowed_limit,
+                    executions=executions,
+                    responses=responses,
+                    post_state_data=post_state_data,
+                    expected_observation_id=observation_id,
+                )
+            except BaseException as exc:
+                primary_exc = exc
+                raise
+        finally:
+            cleanup_discard_exc: Optional[BaseException] = None
+            cleanup_release_exc: Optional[BaseException] = None
+
+            # Stage 1: Discard active observation if not completed cleanly
+            if lab and hasattr(lab, "discard_observation"):
+                needs_discard = (
+                    (observation_started and not observation_completed)
+                    or (hasattr(lab, "is_observation_active") and lab.is_observation_active(observation_id))
+                )
+                if needs_discard:
                     try:
-                        lab.release_measurement_lock()
-                    except Exception:
-                        if sys.exc_info()[0] is None:
-                            raise
-                    finally:
-                        measurement_locked = False
+                        lab.discard_observation(observation_id)
+                    except BaseException as exc:
+                        cleanup_discard_exc = exc
+                        logger.debug("Error discarding observation %s during cleanup: %s", observation_id, _classify_request_exception(exc))
+
+            # Stage 2: Release measurement lock if held by this execution, ALWAYS attempted even if discard failed
+            if measurement_locked and lab and hasattr(lab, "release_measurement_lock"):
+                try:
+                    lab.release_measurement_lock()
+                except BaseException as exc:
+                    cleanup_release_exc = exc
+                    logger.debug("Error releasing measurement lock during cleanup: %s", _classify_request_exception(exc))
+                finally:
+                    measurement_locked = False
+
+            # Exception Precedence Resolution:
+            # 1. If a primary execution exception was already propagating, preserve it as the primary failure.
+            #    Do not let cleanup failures mask the original dispatch, observation, or evaluation error.
+            # 2. If NO primary exception exists and cleanup failed, propagate the cleanup failure.
+            # 3. If both cleanup stages fail without a primary exception, propagate the discard failure with the release failure chained.
+            if primary_exc is None:
+                if cleanup_discard_exc is not None and cleanup_release_exc is not None:
+                    cleanup_discard_exc.__context__ = cleanup_release_exc
+                    raise cleanup_discard_exc
+                elif cleanup_discard_exc is not None:
+                    raise cleanup_discard_exc
+                elif cleanup_release_exc is not None:
+                    raise cleanup_release_exc
 
         success_count = sum(1 for e in executions if 200 <= e.status_code < 300)
         failure_count = len(executions) - success_count
