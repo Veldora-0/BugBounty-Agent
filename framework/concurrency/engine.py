@@ -96,6 +96,7 @@ def _attach_cleanup_diagnostic(primary: BaseException, stage: str, exc: BaseExce
     Attaches secondary cleanup failure diagnostic information to the propagating primary exception
     without altering its type or primary message.
     Uses exception notes (PEP 678 / Python 3.11+) and structured diagnostic attributes.
+    Stores only minimal, sanitized, bounded diagnostic information without retaining raw exception objects.
     """
     diagnostic = _sanitize_cleanup_diagnostic(exc)
     note = f"Secondary cleanup failure during {stage}: {diagnostic}"
@@ -118,7 +119,6 @@ def _attach_cleanup_diagnostic(primary: BaseException, stage: str, exc: BaseExce
             setattr(primary, "__cleanup_failures__", cleanup_failures)
         cleanup_failures.append({
             "stage": stage,
-            "exception": exc,
             "exception_type": type(exc).__name__,
             "diagnostic": diagnostic,
         })

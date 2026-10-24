@@ -2805,6 +2805,8 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
                 self.assertTrue(any("observation discard" in n and "Secondary discard failure" in n for n in notes))
                 failures = getattr(ctx.exception, "__cleanup_failures__", [])
                 self.assertTrue(any(f["stage"] == "observation discard" for f in failures))
+                for f in failures:
+                    self.assertNotIn("exception", f)
 
         # Lock was still released
         self.assertFalse(self.lab.is_measurement_locked())
@@ -2963,6 +2965,8 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
                     self.assertTrue(any("observation inspection" in n and "Secondary inspection error" in n for n in notes))
                     failures = getattr(ctx.exception, "__cleanup_failures__", [])
                     self.assertTrue(any(f["stage"] == "observation inspection" for f in failures))
+                    for f in failures:
+                        self.assertNotIn("exception", f)
 
         self.assertFalse(self.lab.is_measurement_locked())
         self.lab.reset_state()
@@ -2993,6 +2997,8 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
                 self.assertTrue(any("measurement lock release" in n and "Secondary lock release failure" in n for n in notes))
                 failures = getattr(ctx.exception, "__cleanup_failures__", [])
                 self.assertTrue(any(f["stage"] == "measurement lock release" for f in failures))
+                for f in failures:
+                    self.assertNotIn("exception", f)
 
         # Real lock is still locked because release failed
         self.assertTrue(self.lab.is_measurement_locked())
@@ -3068,6 +3074,8 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
                         self.assertTrue(any("measurement lock release" in n and "Stage 2 release failure" in n for n in notes1))
                         failures1 = getattr(ctx1.exception, "__cleanup_failures__", [])
                         self.assertEqual(len(failures1), 3)
+                        for f in failures1:
+                            self.assertNotIn("exception", f)
 
         # Real lock was not released
         self.assertTrue(self.lab.is_measurement_locked())
@@ -3133,6 +3141,83 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
         self.assertIsNotNone(fnd2)
         self.assertEqual(self.lab.active_observation_count(), 0)
         self.assertFalse(self.lab.is_measurement_locked())
+
+    def test_cleanup_diagnostic_safety_does_not_leak_secrets_or_raw_exceptions(self):
+        """
+        Security Test: Verifies that secondary cleanup failures containing synthetic secrets
+        do not leak those secrets into primary.__cleanup_failures__ or __notes__,
+        and never retain raw exception objects, tracebacks, or chained exceptions in structured records.
+        """
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        real_release = self.lab.release_measurement_lock
+
+        # Synthetic test secrets that must be sanitized
+        secret_token = "token=SYNTHETIC_CLEANUP_TOKEN_987654"
+        secret_pass = "password=SYNTHETIC_CLEANUP_PASS_123456"
+        secret_key = "api_key=SYNTHETIC_CLEANUP_KEY_ABCDEF"
+
+        with patch.object(self.engine.synchronizer, "dispatch_burst", side_effect=ValueError("Primary dispatch failure")):
+            with patch.object(self.lab, "is_observation_active", side_effect=RuntimeError(f"Inspection error with {secret_token}")):
+                with patch.object(self.lab, "discard_observation", side_effect=ValueError(f"Discard error with {secret_pass}")):
+                    with patch.object(self.lab, "release_measurement_lock", side_effect=KeyError(f"Release error with {secret_key}")):
+                        with self.assertRaises(ValueError) as ctx:
+                            self.engine.execute_hypothesis(hyp, auto_approve=True)
+
+        # 1. Primary exception type and message remain strictly unchanged
+        self.assertIsInstance(ctx.exception, ValueError)
+        self.assertEqual(str(ctx.exception), "Primary dispatch failure")
+
+        # 2. Diagnostic notes are sanitized and length-bounded; secrets do not leak
+        notes = getattr(ctx.exception, "__notes__", [])
+        self.assertEqual(len(notes), 3)
+        for n in notes:
+            self.assertIsInstance(n, str)
+            self.assertNotIn("SYNTHETIC_CLEANUP_TOKEN_987654", n)
+            self.assertNotIn("SYNTHETIC_CLEANUP_PASS_123456", n)
+            self.assertNotIn("SYNTHETIC_CLEANUP_KEY_ABCDEF", n)
+            self.assertIn("[REDACTED_BY_BB_AGENT]", n)
+            self.assertLessEqual(len(n), 350)
+
+        # 3. Structured records (__cleanup_failures__) retain NO raw exception objects
+        failures = getattr(ctx.exception, "__cleanup_failures__", [])
+        self.assertEqual(len(failures), 3)
+        for f in failures:
+            self.assertIsInstance(f, dict)
+            # Must strictly NOT contain the raw exception object
+            self.assertNotIn("exception", f)
+            self.assertNotIn("traceback", f)
+            self.assertNotIn("context", f)
+            self.assertNotIn("cause", f)
+
+            # Minimal structured fields must be present
+            self.assertIn("stage", f)
+            self.assertIn("exception_type", f)
+            self.assertIn("diagnostic", f)
+
+            # No raw secrets appear in any field values
+            for key, val in f.items():
+                self.assertNotIsInstance(val, BaseException)
+                self.assertNotIn("SYNTHETIC_CLEANUP_TOKEN_987654", str(val))
+                self.assertNotIn("SYNTHETIC_CLEANUP_PASS_123456", str(val))
+                self.assertNotIn("SYNTHETIC_CLEANUP_KEY_ABCDEF", str(val))
+
+            self.assertIn("[REDACTED_BY_BB_AGENT]", f["diagnostic"])
+            self.assertLessEqual(len(f["diagnostic"]), 256)
+
+        # 4. Stages and exception types remain individually diagnosable
+        self.assertEqual([f["stage"] for f in failures], ["observation inspection", "observation discard", "measurement lock release"])
+        self.assertEqual([f["exception_type"] for f in failures], ["RuntimeError", "ValueError", "KeyError"])
+
+        # Clean up lock
+        self.assertTrue(self.lab.is_measurement_locked())
+        real_release()
+        self.assertFalse(self.lab.is_measurement_locked())
+        self.lab.reset_state()
 
 
 if __name__ == "__main__":
