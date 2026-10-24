@@ -3219,6 +3219,222 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
         self.assertFalse(self.lab.is_measurement_locked())
         self.lab.reset_state()
 
+    def test_cleanup_diagnostic_str_conversion_failure_preserves_primary_exception(self):
+        """
+        Test 1: Custom cleanup exception whose __str__() raises an exception.
+        Verifies:
+        - Primary exception type and message remain unchanged.
+        - Cleanup continues through all required stages.
+        - No unsanitized cleanup message or exception text is exposed.
+        - The diagnostic safely identifies the cleanup exception type.
+        - Structured diagnostic records contain no raw exception objects.
+        """
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+
+        class BrokenStrException(Exception):
+            def __init__(self, secret: str):
+                super().__init__()
+                self.secret = secret
+
+            def __str__(self):
+                raise RuntimeError(f"Crashing __str__ with secret: {self.secret}")
+
+        broken_exc = BrokenStrException("SYNTHETIC_BROKEN_STR_SECRET_XYZ")
+
+        with patch.object(self.engine.synchronizer, "dispatch_burst", side_effect=ValueError("Primary dispatch failure")):
+            with patch.object(self.lab, "discard_observation", side_effect=broken_exc):
+                with self.assertRaises(ValueError) as ctx:
+                    self.engine.execute_hypothesis(hyp, auto_approve=True)
+
+        # 1. Primary exception type and message remain strictly unchanged
+        self.assertIsInstance(ctx.exception, ValueError)
+        self.assertEqual(str(ctx.exception), "Primary dispatch failure")
+
+        # 2. Cleanup continued: measurement lock was released
+        self.assertFalse(self.lab.is_measurement_locked())
+
+        # 3. Notes are safe and contain no unhandled str error or raw secret
+        notes = getattr(ctx.exception, "__notes__", [])
+        self.assertTrue(any("BrokenStrException" in n for n in notes))
+        for n in notes:
+            self.assertNotIn("SYNTHETIC_BROKEN_STR_SECRET_XYZ", n)
+            self.assertNotIn("Crashing __str__", n)
+
+        # 4. Structured record safely identifies exception type without raw exception objects
+        failures = getattr(ctx.exception, "__cleanup_failures__", [])
+        self.assertTrue(any(f["stage"] == "observation discard" for f in failures))
+        for f in failures:
+            self.assertNotIn("exception", f)
+            self.assertNotIn("traceback", f)
+            self.assertNotIn("context", f)
+            self.assertNotIn("cause", f)
+            for k, v in f.items():
+                self.assertNotIsInstance(v, BaseException)
+                self.assertNotIn("SYNTHETIC_BROKEN_STR_SECRET_XYZ", str(v))
+                self.assertNotIn("Crashing __str__", str(v))
+            if f["stage"] == "observation discard":
+                self.assertEqual(f["exception_type"], "BrokenStrException")
+                self.assertEqual(f["diagnostic"], "BrokenStrException")
+
+        self.lab.reset_state()
+
+    def test_cleanup_diagnostic_sanitizer_failure_falls_back_safely_without_leaking_secrets(self):
+        """
+        Test 2: Mock sanitize_sensitive_data() to raise during cleanup diagnostic generation.
+        Verifies:
+        - Primary exception remains unchanged.
+        - Cleanup stages continue to execute.
+        - Fallback diagnostic contains no raw exception message or synthetic secret.
+        - No raw secondary exception objects are retained.
+        - Diagnostic generation failure does not replace the primary exception.
+        """
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+
+        secret_cleanup_token = "token=SYNTHETIC_SECRET_TOKEN_FAILURE_999"
+        cleanup_exc = RuntimeError(f"Discard failure containing {secret_cleanup_token}")
+
+        real_sanitize = sanitize_sensitive_data
+
+        def faulty_sanitize(text):
+            if secret_cleanup_token in text or "Discard failure" in text:
+                raise RuntimeError("Sanitizer component crashed unexpectedly")
+            return real_sanitize(text)
+
+        with patch.object(self.engine.synchronizer, "dispatch_burst", side_effect=ValueError("Primary dispatch failure")):
+            with patch.object(self.lab, "discard_observation", side_effect=cleanup_exc):
+                with patch("framework.concurrency.engine.sanitize_sensitive_data", side_effect=faulty_sanitize):
+                    with self.assertRaises(ValueError) as ctx:
+                        self.engine.execute_hypothesis(hyp, auto_approve=True)
+
+        # 1. Primary exception type and message remain strictly unchanged
+        self.assertIsInstance(ctx.exception, ValueError)
+        self.assertEqual(str(ctx.exception), "Primary dispatch failure")
+
+        # 2. Cleanup stages continued: measurement lock was released
+        self.assertFalse(self.lab.is_measurement_locked())
+
+        # 3. Notes are safe and contain no synthetic secrets or raw messages
+        notes = getattr(ctx.exception, "__notes__", [])
+        self.assertTrue(any("RuntimeError" in n for n in notes))
+        for n in notes:
+            self.assertNotIn(secret_cleanup_token, n)
+            self.assertNotIn("SYNTHETIC_SECRET_TOKEN_FAILURE_999", n)
+            self.assertNotIn("Discard failure", n)
+
+        # 4. Structured record safely falls back to exception_type without raw exception objects
+        failures = getattr(ctx.exception, "__cleanup_failures__", [])
+        self.assertTrue(any(f["stage"] == "observation discard" for f in failures))
+        for f in failures:
+            self.assertNotIn("exception", f)
+            self.assertNotIn("traceback", f)
+            self.assertNotIn("context", f)
+            self.assertNotIn("cause", f)
+            for k, v in f.items():
+                self.assertNotIsInstance(v, BaseException)
+                self.assertNotIn(secret_cleanup_token, str(v))
+                self.assertNotIn("Discard failure", str(v))
+            if f["stage"] == "observation discard":
+                self.assertEqual(f["exception_type"], "RuntimeError")
+                self.assertEqual(f["diagnostic"], "RuntimeError")
+
+        self.lab.reset_state()
+
+    def test_cleanup_multiple_failures_with_partial_diagnostic_failure(self):
+        """
+        Test 3: Multiple cleanup failures (inspection, discard, lock-release) where diagnostic
+        formatting/sanitization fails for at least one secondary failure.
+        Verifies:
+        - Original primary exception type and message remain unchanged.
+        - Every required cleanup stage is attempted.
+        - Diagnostics for failures that can be safely represented remain available.
+        - Failure to generate one diagnostic does not prevent recording other safe diagnostics.
+        - No raw secondary exception objects or unsanitized messages are retained.
+        - Lock state and observation lifecycle behavior remain consistent.
+        """
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        real_release = self.lab.release_measurement_lock
+
+        class BrokenDiagnosticException(Exception):
+            def __str__(self):
+                raise RuntimeError("Crashing __str__ in discard exception")
+
+        secret_token = "token=SYNTHETIC_INSPECT_TOKEN_111"
+        secret_key = "api_key=SYNTHETIC_LOCK_KEY_222"
+
+        try:
+            with patch.object(self.engine.synchronizer, "dispatch_burst", side_effect=ValueError("Primary dispatch failure")):
+                with patch.object(self.lab, "is_observation_active", side_effect=RuntimeError(f"Inspection error with {secret_token}")):
+                    with patch.object(self.lab, "discard_observation", side_effect=BrokenDiagnosticException()):
+                        with patch.object(self.lab, "release_measurement_lock", side_effect=KeyError(f"Release error with {secret_key}")):
+                            with self.assertRaises(ValueError) as ctx:
+                                self.engine.execute_hypothesis(hyp, auto_approve=True)
+
+            # 1. Primary exception type and message remain strictly unchanged
+            self.assertIsInstance(ctx.exception, ValueError)
+            self.assertEqual(str(ctx.exception), "Primary dispatch failure")
+
+            # 2. Every cleanup stage was attempted and all 3 are recorded
+            failures = getattr(ctx.exception, "__cleanup_failures__", [])
+            self.assertEqual(len(failures), 3)
+
+            # Stage 1: inspection safely sanitized
+            self.assertEqual(failures[0]["stage"], "observation inspection")
+            self.assertEqual(failures[0]["exception_type"], "RuntimeError")
+            self.assertIn("[REDACTED_BY_BB_AGENT]", failures[0]["diagnostic"])
+            self.assertNotIn(secret_token, failures[0]["diagnostic"])
+
+            # Stage 2: discard diagnostic safely fell back to type name due to __str__ crash
+            self.assertEqual(failures[1]["stage"], "observation discard")
+            self.assertEqual(failures[1]["exception_type"], "BrokenDiagnosticException")
+            self.assertEqual(failures[1]["diagnostic"], "BrokenDiagnosticException")
+
+            # Stage 3: release diagnostic safely recorded despite earlier discard diagnostic issue
+            self.assertEqual(failures[2]["stage"], "measurement lock release")
+            self.assertEqual(failures[2]["exception_type"], "KeyError")
+            self.assertIn("[REDACTED_BY_BB_AGENT]", failures[2]["diagnostic"])
+            self.assertNotIn(secret_key, failures[2]["diagnostic"])
+
+            # Check that no raw exception objects or tracebacks exist
+            for f in failures:
+                self.assertNotIn("exception", f)
+                self.assertNotIn("traceback", f)
+                self.assertNotIn("context", f)
+                self.assertNotIn("cause", f)
+                for k, v in f.items():
+                    self.assertNotIsInstance(v, BaseException)
+
+            # Notes verification: all 3 stages present
+            notes = getattr(ctx.exception, "__notes__", [])
+            self.assertEqual(len(notes), 3)
+            self.assertTrue(any("observation inspection" in n and "[REDACTED_BY_BB_AGENT]" in n for n in notes))
+            self.assertTrue(any("observation discard" in n and "BrokenDiagnosticException" in n for n in notes))
+            self.assertTrue(any("measurement lock release" in n and "[REDACTED_BY_BB_AGENT]" in n for n in notes))
+
+            # 3. Lock state: lock release failed, so lab remains locked
+            self.assertTrue(self.lab.is_measurement_locked())
+        finally:
+            # Ensure real lock state is restored even if assertions fail
+            try:
+                real_release()
+            except Exception:
+                pass
+            self.lab.reset_state()
+
 
 if __name__ == "__main__":
     unittest.main()

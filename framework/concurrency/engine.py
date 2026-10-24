@@ -80,15 +80,42 @@ def _classify_request_exception(exc: Exception) -> str:
 def _sanitize_cleanup_diagnostic(exc: BaseException) -> str:
     """
     Returns a safe diagnostic representation of a cleanup exception without leaking raw secrets.
+    Safely falls back to the exception's type name if string conversion, sanitization, or formatting fails.
+    Never exposes unsanitized exception messages.
     """
-    exc_type = type(exc).__name__
-    raw_msg = str(exc)
+    try:
+        exc_type = type(exc).__name__
+    except BaseException:
+        exc_type = "CleanupException"
+
+    if not exc_type:
+        exc_type = "CleanupException"
+
+    try:
+        raw_msg = str(exc)
+    except BaseException:
+        return exc_type
+
     if not raw_msg or raw_msg == exc_type:
         return exc_type
-    sanitized_msg = sanitize_sensitive_data(raw_msg)
-    if len(sanitized_msg) > 256:
-        sanitized_msg = sanitized_msg[:253] + "..."
-    return f"{exc_type}: {sanitized_msg}"
+
+    try:
+        sanitized_msg = sanitize_sensitive_data(raw_msg)
+    except BaseException:
+        # Never fall back to raw_msg if sanitization fails
+        return exc_type
+
+    try:
+        if not isinstance(sanitized_msg, str):
+            return exc_type
+        if len(sanitized_msg) > 256:
+            sanitized_msg = sanitized_msg[:253] + "..."
+        formatted = f"{exc_type}: {sanitized_msg}"
+        if len(formatted) > 300:
+            formatted = formatted[:297] + "..."
+        return formatted
+    except BaseException:
+        return exc_type
 
 
 def _attach_cleanup_diagnostic(primary: BaseException, stage: str, exc: BaseException) -> None:
@@ -97,10 +124,30 @@ def _attach_cleanup_diagnostic(primary: BaseException, stage: str, exc: BaseExce
     without altering its type or primary message.
     Uses exception notes (PEP 678 / Python 3.11+) and structured diagnostic attributes.
     Stores only minimal, sanitized, bounded diagnostic information without retaining raw exception objects.
+    Ensures diagnostic generation or attachment failures can never replace or mask the primary exception.
     """
-    diagnostic = _sanitize_cleanup_diagnostic(exc)
-    note = f"Secondary cleanup failure during {stage}: {diagnostic}"
     try:
+        safe_stage = str(stage) if stage else "cleanup"
+    except BaseException:
+        safe_stage = "cleanup"
+
+    try:
+        exc_type = type(exc).__name__
+    except BaseException:
+        exc_type = "CleanupException"
+
+    if not exc_type:
+        exc_type = "CleanupException"
+
+    try:
+        diagnostic = _sanitize_cleanup_diagnostic(exc)
+    except BaseException:
+        diagnostic = exc_type
+
+    try:
+        note = f"Secondary cleanup failure during {safe_stage}: {diagnostic}"
+        if len(note) > 350:
+            note = note[:347] + "..."
         if hasattr(primary, "add_note"):
             primary.add_note(note)
         else:
@@ -109,7 +156,7 @@ def _attach_cleanup_diagnostic(primary: BaseException, stage: str, exc: BaseExce
                 notes = []
                 setattr(primary, "__notes__", notes)
             notes.append(note)
-    except Exception:
+    except BaseException:
         pass
 
     try:
@@ -118,11 +165,11 @@ def _attach_cleanup_diagnostic(primary: BaseException, stage: str, exc: BaseExce
             cleanup_failures = []
             setattr(primary, "__cleanup_failures__", cleanup_failures)
         cleanup_failures.append({
-            "stage": stage,
-            "exception_type": type(exc).__name__,
+            "stage": safe_stage,
+            "exception_type": exc_type,
             "diagnostic": diagnostic,
         })
-    except Exception:
+    except BaseException:
         pass
 
 
@@ -606,11 +653,20 @@ class RaceIntelligenceEngine:
             #    Record any secondary cleanup failures as diagnostic notes on the primary exception.
             if primary_exc is not None:
                 if cleanup_inspect_exc is not None:
-                    _attach_cleanup_diagnostic(primary_exc, "observation inspection", cleanup_inspect_exc)
+                    try:
+                        _attach_cleanup_diagnostic(primary_exc, "observation inspection", cleanup_inspect_exc)
+                    except BaseException:
+                        pass
                 if cleanup_discard_exc is not None:
-                    _attach_cleanup_diagnostic(primary_exc, "observation discard", cleanup_discard_exc)
+                    try:
+                        _attach_cleanup_diagnostic(primary_exc, "observation discard", cleanup_discard_exc)
+                    except BaseException:
+                        pass
                 if cleanup_release_exc is not None:
-                    _attach_cleanup_diagnostic(primary_exc, "measurement lock release", cleanup_release_exc)
+                    try:
+                        _attach_cleanup_diagnostic(primary_exc, "measurement lock release", cleanup_release_exc)
+                    except BaseException:
+                        pass
             else:
                 # 2. If NO primary exception exists and cleanup failed, propagate the cleanup failure.
                 # 3. If both observation cleanup and lock release fail without a primary exception:
