@@ -2894,6 +2894,191 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
         self.assertEqual(self.lab.active_observation_count(), 0)
         self.assertFalse(self.lab.is_measurement_locked())
 
+    def test_cleanup_observation_state_inspection_failure_without_primary_exception(self):
+        """
+        Section 3.A: Mock is_observation_active() to raise during cleanup.
+        Verify:
+        - The lock-release method is called.
+        - The inspection failure is not silently discarded.
+        - With no primary exception, the appropriate cleanup exception propagates.
+        - No false confirmed finding is created because cleanup failed.
+        """
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        with patch.object(self.lab, "is_observation_active", side_effect=RuntimeError("Simulated inspection error")) as mock_inspect:
+            with patch.object(self.lab, "release_measurement_lock", wraps=self.lab.release_measurement_lock) as spy_release:
+                with self.assertRaises(RuntimeError) as ctx:
+                    self.engine.execute_hypothesis(hyp, auto_approve=True)
+                self.assertIn("Simulated inspection error", str(ctx.exception))
+                mock_inspect.assert_called()
+                spy_release.assert_called_once()
+
+        self.assertFalse(self.lab.is_measurement_locked())
+        self.lab.reset_state()
+
+        # Verify no false confirmed finding was created or stored in findings/tests
+        st = self.engine.state_mgr.load_state()
+        self.assertEqual(len(st.get("findings", [])), 0)
+        self.assertEqual(len(st.get("tests", [])), 0)
+
+    def test_cleanup_observation_state_inspection_failure_during_primary_exception(self):
+        """
+        Section 3.B: Cause hypothesis dispatch to raise a distinctive primary exception
+        and make is_observation_active() raise during cleanup.
+        Verify:
+        - The original dispatch exception remains the propagated primary exception.
+        - Lock release is still attempted.
+        - Cleanup failure diagnostics remain available.
+        """
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        with patch.object(self.engine.synchronizer, "dispatch_burst", side_effect=ValueError("Distinctive primary dispatch error")):
+            with patch.object(self.lab, "is_observation_active", side_effect=RuntimeError("Secondary inspection error")) as mock_inspect:
+                with patch.object(self.lab, "release_measurement_lock", wraps=self.lab.release_measurement_lock) as spy_release:
+                    with self.assertRaises(ValueError) as ctx:
+                        self.engine.execute_hypothesis(hyp, auto_approve=True)
+                    self.assertIn("Distinctive primary dispatch error", str(ctx.exception))
+                    mock_inspect.assert_called()
+                    spy_release.assert_called_once()
+
+        self.assertFalse(self.lab.is_measurement_locked())
+        self.lab.reset_state()
+
+    def test_cleanup_observation_state_inspection_and_lock_release_both_fail(self):
+        """
+        Section 3.C: Make both observation-state inspection and lock release fail deterministically.
+        Verify:
+        - Lock release is attempted even though observation-state inspection failed.
+        - The documented exception-precedence policy is followed.
+        - Both failures remain diagnostically accessible.
+        - No subsequent execution incorrectly assumes that a failed release succeeded.
+        """
+        hyp = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        real_release = self.lab.release_measurement_lock
+        with patch.object(self.lab, "is_observation_active", side_effect=ValueError("Inspection check failed")) as mock_inspect:
+            with patch.object(self.lab, "release_measurement_lock", side_effect=KeyError("Lock release failed")) as mock_release:
+                with self.assertRaises(ValueError) as ctx:
+                    self.engine.execute_hypothesis(hyp, auto_approve=True)
+                self.assertIn("Inspection check failed", str(ctx.exception))
+                self.assertIsInstance(ctx.exception.__context__, KeyError)
+                self.assertIn("Lock release failed", str(ctx.exception.__context__))
+                mock_inspect.assert_called()
+                mock_release.assert_called_once()
+
+        # The real lock remains locked because release failed
+        self.assertTrue(self.lab.is_measurement_locked())
+        # Clean up real lock for subsequent test isolation
+        real_release()
+        self.assertFalse(self.lab.is_measurement_locked())
+        self.lab.reset_state()
+
+    def test_cleanup_all_three_stages_fail_preserves_deterministic_precedence(self):
+        """
+        Section 3.D: Exercise observation inspection, discard, and lock release failures.
+        Verify:
+        - Every required cleanup stage is attempted.
+        - Exception precedence is deterministic.
+        - No cleanup failure silently replaces a primary exception.
+        - The test does not falsely report a successfully released lock.
+        """
+        real_release = self.lab.release_measurement_lock
+
+        # Part A: With primary exception
+        hyp1 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        with patch.object(self.engine.synchronizer, "dispatch_burst", side_effect=TypeError("Primary burst dispatch failure")):
+            with patch.object(self.lab, "is_observation_active", side_effect=RuntimeError("Stage 1 inspection failure")) as mock_insp:
+                with patch.object(self.lab, "discard_observation", side_effect=ValueError("Stage 1 discard failure")) as mock_disc:
+                    with patch.object(self.lab, "release_measurement_lock", side_effect=KeyError("Stage 2 release failure")) as mock_rel:
+                        with self.assertRaises(TypeError) as ctx1:
+                            self.engine.execute_hypothesis(hyp1, auto_approve=True)
+                        self.assertIn("Primary burst dispatch failure", str(ctx1.exception))
+                        mock_insp.assert_called()
+                        mock_disc.assert_called()
+                        mock_rel.assert_called_once()
+
+        # Real lock was not released
+        self.assertTrue(self.lab.is_measurement_locked())
+        real_release()
+        self.assertFalse(self.lab.is_measurement_locked())
+        self.lab.reset_state()
+
+        # Part B: Without primary exception (all three cleanup stages fail)
+        hyp2 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/coupon-race",
+            RaceCategory.DOUBLE_SPEND,
+            burst_size=2,
+            allowed_limit=1,
+        )
+        with patch.object(self.lab, "complete_observation", return_value=None):
+            with patch.object(self.lab, "is_observation_active", side_effect=RuntimeError("Stage 1 inspection failure")) as mock_insp2:
+                with patch.object(self.lab, "discard_observation", side_effect=ValueError("Stage 1 discard failure")) as mock_disc2:
+                    with patch.object(self.lab, "release_measurement_lock", side_effect=KeyError("Stage 2 release failure")) as mock_rel2:
+                        with self.assertRaises(ValueError) as ctx2:
+                            self.engine.execute_hypothesis(hyp2, auto_approve=True)
+                        self.assertIn("Stage 1 discard failure", str(ctx2.exception))
+                        self.assertIsInstance(ctx2.exception.__context__, RuntimeError)
+                        self.assertIn("Stage 1 inspection failure", str(ctx2.exception.__context__))
+                        self.assertIsInstance(ctx2.exception.__cause__, KeyError)
+                        self.assertIn("Stage 2 release failure", str(ctx2.exception.__cause__))
+                        mock_insp2.assert_called()
+                        mock_disc2.assert_called()
+                        mock_rel2.assert_called_once()
+
+        self.assertTrue(self.lab.is_measurement_locked())
+        real_release()
+        self.assertFalse(self.lab.is_measurement_locked())
+        self.lab.reset_state()
+
+    def test_normal_execution_and_recovery_after_cleanup(self):
+        """
+        Section 3.E: Verify normal execution succeeds, observation lifecycle remains correct,
+        and subsequent executions can acquire the lock after successful cleanup.
+        """
+        hyp1 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/voting-limit",
+            RaceCategory.LIMIT_OVERRUN,
+            burst_size=4,
+            allowed_limit=1,
+        )
+        res1, fnd1 = self.engine.execute_hypothesis(hyp1, auto_approve=True)
+        self.assertTrue(res1.is_vulnerable)
+        self.assertEqual(res1.confidence, RaceConfidence.CONFIRMED)
+        self.assertIsNotNone(fnd1)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
+        # Immediately execute second hypothesis to confirm clean state and lock acquisition
+        hyp2 = self.engine.add_hypothesis(
+            f"{self.base_url}/scenario/coupon-race",
+            RaceCategory.DOUBLE_SPEND,
+            burst_size=4,
+            allowed_limit=1,
+        )
+        res2, fnd2 = self.engine.execute_hypothesis(hyp2, auto_approve=True)
+        self.assertTrue(res2.is_vulnerable)
+        self.assertEqual(res2.confidence, RaceConfidence.CONFIRMED)
+        self.assertIsNotNone(fnd2)
+        self.assertEqual(self.lab.active_observation_count(), 0)
+        self.assertFalse(self.lab.is_measurement_locked())
+
 
 if __name__ == "__main__":
     unittest.main()

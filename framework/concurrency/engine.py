@@ -477,29 +477,73 @@ class RaceIntelligenceEngine:
                 primary_exc = exc
                 raise
         finally:
-            cleanup_discard_exc: Optional[BaseException] = None
+            cleanup_obs_exc: Optional[BaseException] = None
             cleanup_release_exc: Optional[BaseException] = None
 
-            # Stage 1: Discard active observation if not completed cleanly
-            if lab and hasattr(lab, "discard_observation"):
-                needs_discard = (
-                    (observation_started and not observation_completed)
-                    or (hasattr(lab, "is_observation_active") and lab.is_observation_active(observation_id))
-                )
-                if needs_discard:
-                    try:
-                        lab.discard_observation(observation_id)
-                    except BaseException as exc:
-                        cleanup_discard_exc = exc
-                        logger.debug("Error discarding observation %s during cleanup: %s", observation_id, _classify_request_exception(exc))
+            # Stage 1: Observation-state inspection and discard
+            # Enclosed to guarantee that ANY failure during observation inspection or discard
+            # can NEVER bypass Stage 2 (measurement-lock release).
+            try:
+                if lab:
+                    is_active = False
+                    if hasattr(lab, "is_observation_active"):
+                        try:
+                            is_active = bool(lab.is_observation_active(observation_id))
+                        except BaseException as exc:
+                            cleanup_obs_exc = exc
+                            try:
+                                logger.debug(
+                                    "Error inspecting observation state for %s during cleanup: %s",
+                                    observation_id,
+                                    _classify_request_exception(exc),
+                                )
+                            except Exception:
+                                pass
 
-            # Stage 2: Release measurement lock if held by this execution, ALWAYS attempted even if discard failed
+                    # If observation was started and not completed, or is confirmed active,
+                    # or inspection failed: attempt safe cleanup where possible
+                    # (never assume the observation is inactive if inspection failed)
+                    needs_discard = (
+                        (observation_started and not observation_completed)
+                        or is_active
+                        or (cleanup_obs_exc is not None)
+                    )
+
+                    if needs_discard and hasattr(lab, "discard_observation"):
+                        try:
+                            lab.discard_observation(observation_id)
+                        except BaseException as exc:
+                            if cleanup_obs_exc is not None:
+                                # Both inspection and discard failed: chain discard error to inspection error
+                                exc.__context__ = cleanup_obs_exc
+                            cleanup_obs_exc = exc
+                            try:
+                                logger.debug(
+                                    "Error discarding observation %s during cleanup: %s",
+                                    observation_id,
+                                    _classify_request_exception(exc),
+                                )
+                            except Exception:
+                                pass
+            except BaseException as unhandled_stage1_exc:
+                if cleanup_obs_exc is not None:
+                    unhandled_stage1_exc.__context__ = cleanup_obs_exc
+                cleanup_obs_exc = unhandled_stage1_exc
+
+            # Stage 2: Release measurement lock if held by this execution, ALWAYS attempted
+            # even if observation inspection or discard failed
             if measurement_locked and lab and hasattr(lab, "release_measurement_lock"):
                 try:
                     lab.release_measurement_lock()
                 except BaseException as exc:
                     cleanup_release_exc = exc
-                    logger.debug("Error releasing measurement lock during cleanup: %s", _classify_request_exception(exc))
+                    try:
+                        logger.debug(
+                            "Error releasing measurement lock during cleanup: %s",
+                            _classify_request_exception(exc),
+                        )
+                    except Exception:
+                        pass
                 finally:
                     measurement_locked = False
 
@@ -507,13 +551,18 @@ class RaceIntelligenceEngine:
             # 1. If a primary execution exception was already propagating, preserve it as the primary failure.
             #    Do not let cleanup failures mask the original dispatch, observation, or evaluation error.
             # 2. If NO primary exception exists and cleanup failed, propagate the cleanup failure.
-            # 3. If both cleanup stages fail without a primary exception, propagate the discard failure with the release failure chained.
+            # 3. If both observation cleanup and lock release fail without a primary exception:
+            #    propagate the observation cleanup failure with the lock release failure chained,
+            #    ensuring diagnostic information about all failures remains accessible.
             if primary_exc is None:
-                if cleanup_discard_exc is not None and cleanup_release_exc is not None:
-                    cleanup_discard_exc.__context__ = cleanup_release_exc
-                    raise cleanup_discard_exc
-                elif cleanup_discard_exc is not None:
-                    raise cleanup_discard_exc
+                if cleanup_obs_exc is not None and cleanup_release_exc is not None:
+                    if cleanup_obs_exc.__context__ is None:
+                        cleanup_obs_exc.__context__ = cleanup_release_exc
+                    else:
+                        cleanup_obs_exc.__cause__ = cleanup_release_exc
+                    raise cleanup_obs_exc
+                elif cleanup_obs_exc is not None:
+                    raise cleanup_obs_exc
                 elif cleanup_release_exc is not None:
                     raise cleanup_release_exc
 
