@@ -2102,19 +2102,21 @@ def test_proxy_no_upstream_connection_before_authorization():
     proxy = ValidatingEgressProxy(scope_engine=mock_scope, timeout=2.0)
     port = proxy.start()
     try:
-        with patch.object(proxy, "_connect_upstream") as mock_connect:
-            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client.settimeout(2.0)
-            client.connect(("127.0.0.1", port))
-            client.sendall(
-                b"CONNECT secure.example.com:443 HTTP/1.1\r\n"
-                b"Host: secure.example.com:443\r\n\r\n"
-            )
-            resp = client.recv(1024)
-            client.close()
+        with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]):
+            with patch.object(proxy, "_connect_upstream") as mock_connect:
+                client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                client.settimeout(2.0)
+                client.connect(("127.0.0.1", port))
+                client.sendall(
+                    b"CONNECT secure.example.com:443 HTTP/1.1\r\n"
+                    b"Host: secure.example.com:443\r\n\r\n"
+                )
+                resp = client.recv(1024)
+                client.close()
 
-            assert b"403 Forbidden" in resp
-            mock_connect.assert_not_called()
+                assert b"403 Forbidden" in resp
+                mock_connect.assert_not_called()
+                assert mock_scope.check.call_count == 1
     finally:
         proxy.stop()
 

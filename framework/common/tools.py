@@ -96,12 +96,25 @@ class ToolDetector:
 
         if info is None:
             reg = cls._get_registry()
-            if reg and tool_name in reg:
-                t = reg.get(tool_name)
+            t = reg.get_tool(tool_name) if reg else None
+            if t:
+                install_hint = ""
+                if isinstance(t.install, dict):
+                    pref = t.install.get("preferred")
+                    if isinstance(pref, dict):
+                        install_hint = pref.get("command", "")
+                    elif t.install.get("apt_package"):
+                        install_hint = f"sudo apt install {t.install['apt_package']}"
+                    elif t.install.get("go_package"):
+                        install_hint = f"go install -v {t.install['go_package']}"
+                    elif t.install.get("pip_package"):
+                        install_hint = f"pipx install {t.install['pip_package']}"
+                    elif pref:
+                        install_hint = str(pref)
                 info = {
                     "category": t.category,
                     "description": t.description,
-                    "install_hint": t.install.get("preferred", {}).get("command", ""),
+                    "install_hint": install_hint,
                 }
             else:
                 info = {"category": "custom", "description": "Custom utility"}
@@ -121,7 +134,7 @@ class ToolDetector:
         """Scans PATH for registered security tools."""
         report = {}
         reg = cls._get_registry()
-        tool_names = list(reg.tools.keys()) if reg else list(KNOWN_TOOLS.keys())
+        tool_names = [t.name for t in reg.all_tools()] if reg else list(KNOWN_TOOLS.keys())
         for name in tool_names:
             report[name] = cls.check_tool(name)
         return report

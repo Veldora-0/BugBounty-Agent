@@ -1,9 +1,12 @@
 """
 System Health and Diagnostic Engine (Doctor) for BugBounty-Agent.
 
-Inspects system readiness across 9 categories:
-SYSTEM, DEPENDENCIES, TOOLS, PROVIDERS, BROWSER, WORDLISTS, CONFIGURATION,
-SCOPE ENGINE, OPEN CODE INTEGRATION.
+Inspects system readiness across 25 categories:
+System, Dependencies, Tools, Providers, Browser, Wordlists, Configuration,
+Scope Engine, Asset Engine, Recon Engine, WebApp Engine, JavaScript Engine,
+API Engine, Validation Engine, XSS Engine, Authz Engine, SSRF Engine,
+Injection Engine, HTTP Trust Engine, Business Logic Engine, Cloud Security Engine,
+Authentication Engine, Infrastructure Engine, Concurrency Engine, OpenCode Integration.
 """
 
 from __future__ import annotations

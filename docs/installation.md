@@ -71,7 +71,7 @@ go install -v github.com/tomnomnom/assetfinder@latest
 To verify which tools are detected:
 
 ```bash
-python3 -c "from framework.common.tools import ToolDetector; print(ToolDetector.get_summary())"
+python3 -c "from framework.tools.detector import ToolDetector; print(ToolDetector().get_summary())"
 ```
 
 ---

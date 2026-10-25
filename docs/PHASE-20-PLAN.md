@@ -242,8 +242,8 @@ Global or engine-level request counters allowed concurrent or sequential test ex
 2. **Diagnostic Health**:
    - `bb-doctor` Category 25 (`check_concurrency_engine`) reports `[HEALTHY]` (all 17 framework engines healthy).
 3. **Cross-Platform Parity**:
-   - Verified on Windows 11 (128/128 concurrency tests, 175/175 total test discovery suite).
-   - Verified on Kali Linux VM (`ssh veldora@127.0.0.1 -p 2222`).
+   - Verified on Windows 11 (128/128 concurrency tests; 175/175 tests under standard unittest discovery across the 2 TestCase modules; 911/913 passed, 2 skipped under pytest across all 45 modules).
+   - Verified on Kali Linux VM (`ssh veldora@127.0.0.1 -p 2222`; 128/128 concurrency tests; 175/175 unittest subset; 913/913 passed under pytest across all 45 modules).
 
 ---
 

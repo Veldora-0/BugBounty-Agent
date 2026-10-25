@@ -99,6 +99,7 @@ BugBounty-Agent/
 │   ├── bb-auth                # Authentication, session & identity security intelligence engine
 │   ├── bb-infra               # Infrastructure & configuration exposure intelligence engine
 │   ├── bb-race                # Concurrency & distributed workflows intelligence engine
+│   ├── bb-webapp              # Web application intelligence & surface mapping engine
 │   ├── bb-content             # Controlled content fuzzer wrapper (ffuf)
 │   ├── bb-js                  # JavaScript endpoint & secret analyzer
 │   ├── bb-api                 # REST/GraphQL API method and schema prober
@@ -121,7 +122,7 @@ BugBounty-Agent/
 │   ├── report.md              # 17-section markdown report template
 │   └── config.example.yaml    # Global framework configuration template
 │
-├── tests/                     # Automated regression test suite (representative selection; 43+ test modules)
+├── tests/                     # Automated regression test suite (45 test modules; 913 tests under pytest)
 │   ├── test_scope.py          # Scope boundaries and DNS resolution tests
 │   ├── test_asset_engine.py   # Asset graph and subdomain intelligence tests
 │   ├── test_api_engine.py     # OpenAPI, GraphQL, and streaming byte budget tests
@@ -340,9 +341,9 @@ If a preferred tool is unavailable:
 
 ---
 
-## Implemented Research Capabilities & Security Subsystems (Phases 1–18)
+## Implemented Research Capabilities & Security Subsystems (Phases 1–20)
 
-BugBounty-Agent has delivered 18 cohesive security research phases, establishing a comprehensive, non-destructive intelligence and validation pipeline:
+BugBounty-Agent has delivered 20 cohesive security research phases, establishing a comprehensive, non-destructive intelligence and validation pipeline:
 
 ### 1. Asset Intelligence, Graph & Reconnaissance (Phases 1–3)
 * **Arbitrary-Depth Asset Graph (`bb-assets`)**: Traverses subdomains recursively without artificial depth caps (`example.com` $\to$ `sub` $\to$ `dev` $\to$ `api` $\to$ `internal`). Maps directional infrastructure relationships (`HAS_SUBDOMAIN`, `RESOLVES_TO`, `CNAME_TO`, `PRESENT_IN_CERT`, `HOSTED_BY`, `BELONGS_TO_ASN`), detects wildcard DNS, extracts X.509 TLS certificate SANs, identifies CDN/cloud reverse proxies, and calibrates multi-source provenance confidence (`LOW`, `MEDIUM`, `HIGH`, `CONFIRMED`).
@@ -407,7 +408,16 @@ BugBounty-Agent has delivered 18 cohesive security research phases, establishing
 * **Opt-In Headless Automation**: Disabled by default (`browser_enabled=False`); truth-first capability detection evaluates actual browser launchability before dispatch.
 * **Validating Egress Proxy & Pre-Handshake WebSocket Routing**: Chunnels browser egress through an ephemeral loopback proxy (`127.0.0.1:<port>`) with `--proxy-bypass-list=<-loopback>` and numeric IP pinning. Playwright route interception (`BrowserContext.route_web_socket`) blocks unauthorized `ws://` and `wss://` connections before handshakes reach upstream servers. Enforces strict execution budgets (5s timeout, max 50 requests, max 5 redirects).
 
-### 15. Deterministic Local Security Labs
+### 15. Infrastructure & Configuration Exposure Intelligence (Phase 19)
+* **Differential Soft-404 Calibration (`bb-infra`)**: Calibrates target-specific non-standard 404 responses (status code, body hash, structural length differential) to prevent false-positive exposure findings across dynamic cloud environments.
+* **Safe Configuration & Backup Probing**: Probes for exposed version control repositories (`.git/HEAD`, `.svn/entries`), server configuration files (`web.config`, `.env`), and temporary editor backups using bounded byte ceilings (32 KB response, 8 KB config, 1 KB binary magic bytes) and cryptographic canary validation without downloading entire directories or private keys.
+
+### 16. Concurrency & Race Conditions Intelligence (Phase 20)
+* **Precision Barrier Synchronization (`bb-race`)**: Implements coordinated multi-worker burst probing using precision synchronization barriers to execute requests within sub-millisecond arrival windows.
+* **Invariant & TOCTOU State Modeling**: Tests concurrency hypotheses (e.g., balance overdrafts, coupon multi-use, rate limit exhaustion, resource double-allocation) through strictly bounded replay cycles with atomic measurement locks and deterministic state rollback in `LocalConcurrencyLab`.
+* **Safe Diagnostic Isolation**: Preserves primary execution exceptions while safely sanitizing and isolating secondary cleanup failures.
+
+### 17. Deterministic Local Security Labs
 * In-memory offline simulation environments for deterministic verification with zero external network traffic:
   * `LocalXxeLab`: Reflection, secure DTD reject, parser error, and mock OOB modes.
   * `LocalSsrfLab`: Direct, blind, redirect, and header SSRF scenarios.
@@ -417,7 +427,7 @@ BugBounty-Agent has delivered 18 cohesive security research phases, establishing
   * `LocalInfrastructureLab`: 16 infrastructure, version control, and backup exposure scenarios.
   * `LocalConcurrencyLab`: 8 deterministic race condition, TOCTOU, limit overrun, and distributed workflow scenarios.
 
-### 16. Roadmap Status & Verification Baseline
+### 18. Roadmap Status & Verification Baseline
 * **Accepted Baseline**: Phase 19 (Infrastructure Exposure) and Phase 20 (Race Conditions & Distributed Workflows) complete and verified across Windows 11 and Kali Linux.
 * **Next Planned Phase**: Phase 21 (Authentication & Authorization Correlation).
 * **Full Roadmap**: Refer to [`docs/ROADMAP-24-PHASES-TEMP.md`](docs/ROADMAP-24-PHASES-TEMP.md) for the detailed 24-phase roadmap, architectural specifications, and historical verification records.
@@ -470,7 +480,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 
 ### 3. Environment & Runtime Status
 * **Development & Evaluation Environments**: Validated and synchronized across Windows 11 x86_64 and Kali/Debian Linux workstations with Python 3.10+.
-* **Cross-Platform Test Coverage**: 729 tests passing on Windows 11 (2 skipped for interactive PTY tests requiring terminal attach); 731 tests passing on Kali Linux (0 skipped).
+* **Cross-Platform Test Coverage**: 45 test modules with 913 tests collected under pytest (911 passed, 2 skipped on Windows 11 due to headless browser environment requirements; 913 passed on Kali Linux).
 * **Target Runtime**: Kali/Debian Linux with OpenCode installed, deploying `Bug-Bounty` globally via `bb-deploy`.
 
 ---

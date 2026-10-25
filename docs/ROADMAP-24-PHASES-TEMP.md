@@ -2,7 +2,7 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Repository baseline:** `1fcd552d53f99cf0a06802ddae45197796ec74c5`  
+> **Repository baseline:** `3759f1ecb59168a6d4bb5ddaba7674d98afff24f` (Phases 1–20 verified and accepted; pre-Phase 21 remediation)
 > **Current phase:** Phase 20 — Race Conditions & Distributed Workflows (Complete; Next Phase: Phase 21)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
@@ -15,8 +15,8 @@
 | 16 | Browser Runtime & Client-Side Security | High | Complete (accepted with documented limitations) |
 | 17 | Advanced API Security | High | Complete (accepted at `5502633bf4828e1c3a7493f36cdccbf435a1ebbf` with documented limitations) |
 | 18 | SSRF, XXE & Server-Side Parser Expansion | High | Complete (accepted at `1fcd552d53f99cf0a06802ddae45197796ec74c5` with documented limitations) |
-| 19 | Infrastructure & Configuration Exposure | Medium–High | Complete (accepted with documented limitations) |
-| 20 | Race Conditions & Distributed Workflows | Medium–High | Complete (accepted with documented limitations) |
+| 19 | Infrastructure & Configuration Exposure | Medium–High | Complete (accepted at `78f949a6d3b614ca60a82d7f776641787a6bebaa` with documented limitations) |
+| 20 | Race Conditions & Distributed Workflows | Medium–High | Complete (accepted at `3759f1ecb59168a6d4bb5ddaba7674d98afff24f` with documented limitations) |
 | 21 | Authentication & Authorization Correlation | Medium | Planned (Next Phase) |
 | 22 | Cross-Engine Attack-Path Correlation | Very High | Planned |
 | 23 | Autonomous Research Planning & Coverage Intelligence | High | Planned |
