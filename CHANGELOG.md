@@ -167,6 +167,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **Deterministic Test Suite (`tests/test_phase16_browser_runtime.py`)**:
   * Added 101 comprehensive unit and integration tests across Sections 15–19 verifying proxy fail-closed startup, anti-SSRF IP pinning, pre-handshake WebSocket routing, and Unicode truncation.
 
+### Phase 15: File Handling, Path Traversal & Upload Security (Accepted with Documented Limitations)
+
+#### Added & Hardened
+* **File Handling & Path Traversal Validators (`framework/validation/validator.py`)**:
+  * Implemented `PathTraversalValidator`, `LocalFileExposureValidator`, and `FileUploadValidator` plugins in `SecurityValidationEngine`.
+  * Added `PATH_TRAVERSAL`, `LOCAL_FILE_EXPOSURE`, and `FILE_UPLOAD` to `VulnerabilityFamily` with bounded payload mutations.
+  * Strict non-destructive testing: traversal markers use benign target boundaries (benign canonical markers, zero destructive file writing or deletion).
+  * Safe file upload testing with synthetic harmless content (benign magic bytes, harmless test markers, strictly zero webshells or executable code execution).
+* **State Management & Deduplication**:
+  * Integrated finding models into lifecycle state tracking (`state/validation.json`) and SHA-256 evidence captures.
+
 ---
 
 ## [1.14.2] - 2026-10-10

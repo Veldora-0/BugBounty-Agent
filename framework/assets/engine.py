@@ -105,16 +105,17 @@ class AssetIntelligenceEngine:
 
     # ---------------- Scope Verification ----------------
 
-    def evaluate_scope(self, target: str) -> ScopeDecision:
-        """Evaluates target scope using the configured ScopeEngine."""
+    def evaluate_scope(self, target: Union[str, Asset]) -> ScopeDecision:
+        """Evaluates target scope using the configured ScopeEngine. Fails closed if missing."""
+        target_str = target.value if hasattr(target, "value") else str(target)
         if not self.scope_engine:
             return ScopeDecision(
-                status=ScopeStatus.IN_SCOPE,
-                reason="No ScopeEngine attached; defaulting to permissive in-scope.",
-                target=target,
-                normalized_target=target.strip().lower(),
+                status=ScopeStatus.OUT_OF_SCOPE,
+                reason="Fail-closed: No ScopeEngine configured; target unauthorized.",
+                target=target_str,
+                normalized_target=target_str.strip().lower() if target_str else "",
             )
-        return self.scope_engine.check(target)
+        return self.scope_engine.check(target_str)
 
     # ---------------- DNS & Infrastructure Resolvers ----------------
 
@@ -135,6 +136,14 @@ class AssetIntelligenceEngine:
 
         # Safe fallback without external third-party library dependency
         results: Dict[str, List[str]] = {"A": [], "AAAA": [], "CNAME": []}
+        # SEC-01: Disallow live network socket resolution without an active scope engine
+        # and enforce that the exact requested hostname is authorized in-scope.
+        if not self.scope_engine:
+            return results
+
+        if self.evaluate_scope(hostname).status != ScopeStatus.IN_SCOPE:
+            return results
+
         try:
             _, aliases, ips = socket.gethostbyname_ex(hostname)
             results["A"] = [ip for ip in ips if ":" not in ip]
@@ -151,6 +160,14 @@ class AssetIntelligenceEngine:
         """
         if domain in self.wildcard_domains:
             return True, self.wildcard_domains[domain]
+
+        # SEC-01: Disallow live wildcard probes without an active scope engine or if domain is out of scope.
+        # Preserve offline simulation when dns_resolver_hook is set.
+        if not self.dns_resolver_hook:
+            if not self.scope_engine:
+                return False, set()
+            if self.evaluate_scope(domain).status != ScopeStatus.IN_SCOPE:
+                return False, set()
 
         probe1 = f"_bb_probe_{uuid.uuid4().hex[:8]}.{domain}"
         probe2 = f"_bb_probe_{uuid.uuid4().hex[:8]}.{domain}"
@@ -233,6 +250,13 @@ class AssetIntelligenceEngine:
         # Queue items: (hostname, root_domain, parent_hostname, depth, source_tool)
         queue: deque[Tuple[str, str, Optional[str], int, str]] = deque()
 
+        # Determine offline simulation mode: strictly for in-memory unit tests when mock hooks are registered.
+        # Live network probing is never permitted when scope_engine is None.
+        is_offline_simulation = (
+            self.scope_engine is None
+            and bool(self.subdomain_discovery_hook or self.tls_san_hook or self.dns_resolver_hook)
+        )
+
         # Initialize roots
         for raw_root in root_domains:
             try:
@@ -256,9 +280,9 @@ class AssetIntelligenceEngine:
             self.graph.add_asset(root_asset)
             self.visited_hostnames.add(root_norm)
 
-            if root_scope.status == ScopeStatus.IN_SCOPE:
-                # Check wildcard DNS on root
-                if self.detect_wildcards and not self.passive_only:
+            if root_scope.status == ScopeStatus.IN_SCOPE or is_offline_simulation:
+                # Check wildcard DNS on root only with configured scope engine
+                if self.scope_engine and self.detect_wildcards and not self.passive_only:
                     is_wc, _ = self.check_wildcard(root_norm)
                     if is_wc:
                         root_asset.attributes["is_wildcard"] = True
@@ -351,7 +375,7 @@ class AssetIntelligenceEngine:
                 )
 
             # If out of scope or ambiguous, do NOT probe actively or recurse deeper
-            if scope_dec.status != ScopeStatus.IN_SCOPE:
+            if scope_dec.status != ScopeStatus.IN_SCOPE and not is_offline_simulation:
                 asset.status = AssetStatus.SKIPPED.value
                 continue
 

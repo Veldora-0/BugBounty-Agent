@@ -77,14 +77,11 @@ class WebApplicationIntelligenceEngine:
         self.fetch_hook: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None
 
     def _is_in_scope(self, url_or_host: str) -> bool:
-        """Enforces ScopeEngine checks before ANY HTTP request or crawl queuing."""
+        """Enforces ScopeEngine checks before ANY HTTP request or crawl queuing. Fails closed if missing."""
         if not self.scope_engine:
-            return True
-        # Extract hostname if given full URL
-        target = url_or_host
-        if "://" in target:
-            target = urlsplit(target).hostname or target
-        decision = self.scope_engine.check(target)
+            return bool(self.fetch_hook)
+        # Preserve full URL so path-based exclusions and rules are enforced (ARCH-02)
+        decision = self.scope_engine.check(url_or_host)
         return decision.status == ScopeStatus.IN_SCOPE
 
     # ==========================================================================
@@ -123,39 +120,29 @@ class WebApplicationIntelligenceEngine:
                 "final_url": canonicalize_url(final_url),
             }
 
-        # 2. Live HTTP Fetch using standard library urllib safely
-        import urllib.request
-        try:
-            req = urllib.request.Request(
-                canon_url,
-                headers={"User-Agent": self.policy.user_agent},
-                method=method.upper(),
-            )
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
-            with urllib.request.urlopen(req, timeout=5.0, context=ctx if canon_url.startswith("https://") else None) as resp:
-                final_url = canonicalize_url(resp.geturl())
-                # Enforce scope check on redirected URL
-                if not self._is_in_scope(final_url):
-                    if self.webapp_state and not self.dry_run:
-                        self.webapp_state.mark_rejected(final_url)
-                    return None
-
-                status = resp.status
-                headers = dict(resp.headers)
-                # Bounded read
-                raw_bytes = resp.read(self.policy.max_response_bytes)
-                body = raw_bytes.decode("utf-8", errors="ignore")
-                return {
-                    "status_code": status,
-                    "headers": headers,
-                    "body": body,
-                    "final_url": final_url,
-                }
-        except Exception:
+        # 2. Live HTTP Fetch using unified secure transport (ARCH-01, SEC-02)
+        from framework.common.transport import safe_fetch_url
+        res = safe_fetch_url(
+            canon_url,
+            method=method.upper(),
+            headers={"User-Agent": self.policy.user_agent},
+            timeout=5.0,
+            max_bytes=self.policy.max_response_bytes,
+            scope_engine=self.scope_engine,
+        )
+        if not res:
             return None
+        final_url = canonicalize_url(res["final_url"])
+        if not self._is_in_scope(final_url):
+            if self.webapp_state and not self.dry_run:
+                self.webapp_state.mark_rejected(final_url)
+            return None
+        return {
+            "status_code": res["status_code"],
+            "headers": res["headers"],
+            "body": res["body"],
+            "final_url": final_url,
+        }
 
     # ==========================================================================
     # 2. COOKIE EXTRACTION

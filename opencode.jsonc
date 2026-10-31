@@ -71,6 +71,12 @@
     },
     {
       "action": "shell",
+      "resource": "*bb-webapp*",
+      "effect": "ask",
+      "description": "Require human confirmation before launching active web application surface analysis"
+    },
+    {
+      "action": "shell",
       "resource": "*bb-js*",
       "effect": "ask",
       "description": "Require human confirmation before running active JavaScript endpoint extraction"
@@ -185,19 +191,19 @@
     },
     {
       "action": "shell",
-      "resource": "git status *",
+      "resource": "git status*",
       "effect": "allow",
       "description": "Permit local repository status inspection without prompt"
     },
     {
       "action": "shell",
-      "resource": "git diff *",
+      "resource": "git diff*",
       "effect": "allow",
       "description": "Permit local repository diff inspection without prompt"
     },
     {
       "action": "shell",
-      "resource": "git log *",
+      "resource": "git log*",
       "effect": "allow",
       "description": "Permit local git commit log inspection without prompt"
     },
@@ -242,6 +248,36 @@
       "resource": "*bb-update --check*",
       "effect": "allow",
       "description": "Permit inspecting tool updates without host changes"
+    },
+    {
+      "action": "shell",
+      "resource": "*&&*",
+      "effect": "ask",
+      "description": "Require human confirmation for chained shell commands using AND operator"
+    },
+    {
+      "action": "shell",
+      "resource": "*;*",
+      "effect": "ask",
+      "description": "Require human confirmation for chained shell commands using semicolon separator"
+    },
+    {
+      "action": "shell",
+      "resource": "*|*",
+      "effect": "ask",
+      "description": "Require human confirmation for shell pipeline commands"
+    },
+    {
+      "action": "shell",
+      "resource": "*$(*",
+      "effect": "ask",
+      "description": "Require human confirmation for shell command substitution"
+    },
+    {
+      "action": "shell",
+      "resource": "*`*",
+      "effect": "ask",
+      "description": "Require human confirmation for shell backtick command substitution"
     },
     {
       "action": "shell",

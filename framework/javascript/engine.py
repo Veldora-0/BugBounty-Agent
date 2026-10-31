@@ -73,11 +73,11 @@ class JavaScriptIntelligenceEngine:
         self.fetch_js_hook: Optional[Callable[[str], Optional[str]]] = None
 
     def _is_in_scope(self, url: str) -> bool:
-        """Enforces ScopeEngine checks before ANY HTTP request or file ingestion."""
+        """Enforces ScopeEngine checks before ANY HTTP request or file ingestion. Fails closed if missing."""
         if not self.scope_engine:
-            return True
-        host = urlsplit(url).hostname or url
-        decision = self.scope_engine.check(host)
+            return bool(self.fetch_js_hook)
+        # Preserve full URL so path-based exclusions and rules are enforced (ARCH-02)
+        decision = self.scope_engine.check(url)
         return decision.status == ScopeStatus.IN_SCOPE
 
     def acquire_script(self, url: str) -> Optional[str]:
@@ -106,25 +106,23 @@ class JavaScriptIntelligenceEngine:
             self.total_bytes_downloaded += b_len
             return content
 
-        # 2. Live HTTP Fetch using standard library safely
-        import urllib.request
-        try:
-            req = urllib.request.Request(
-                canon_url,
-                headers={"User-Agent": self.policy.user_agent},
-            )
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
-            with urllib.request.urlopen(req, timeout=6.0, context=ctx if canon_url.startswith("https://") else None) as resp:
-                raw = resp.read(self.policy.max_bytes_per_file)
-                self.total_bytes_downloaded += len(raw)
-                return raw.decode("utf-8", errors="ignore")
-        except Exception:
+        # 2. Live HTTP Fetch using unified secure transport (ARCH-01, SEC-02)
+        from framework.common.transport import safe_fetch_url
+        res = safe_fetch_url(
+            canon_url,
+            method="GET",
+            headers={"User-Agent": self.policy.user_agent},
+            timeout=6.0,
+            max_bytes=self.policy.max_bytes_per_file,
+            scope_engine=self.scope_engine,
+        )
+        if not res:
             if self.js_state and not self.dry_run:
                 self.js_state.mark_failed(canon_url)
             return None
+        raw_b = res.get("raw_bytes", b"")
+        self.total_bytes_downloaded += len(raw_b)
+        return res["body"]
 
     def get_candidate_js_resources(self) -> List[ResourceObservation]:
         """Collects JavaScript resources from Phase 3 WebAppStateManager."""

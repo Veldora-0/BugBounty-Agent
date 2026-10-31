@@ -72,8 +72,8 @@ class InjectionIntelligenceEngine:
                 self.scope_engine = ScopeEngine({
                     "program": {"name": os.path.basename(self.program_dir)},
                     "targets": {
-                        "domains": ["lab.local", "*.local", "localhost", "127.0.0.1", "*.example.com", "example.com"],
-                        "urls": ["http://lab.local/", "https://lab.local/"],
+                        "domains": [],
+                        "urls": [],
                     },
                 })
         self.validation_engine = validation_engine or SecurityValidationEngine(

@@ -230,6 +230,11 @@ def main() -> None:
         fetch_source_maps=args.source_maps,
     )
 
+    # CLI Fail-Closed Scope Gate
+    if not scope_engine and not args.passive_only and not args.tree and not args.json:
+        print("[!] Error: No scope configuration provided or resolved. Active JavaScript analysis requires explicit scope.", file=sys.stderr)
+        sys.exit(1)
+
     engine = JavaScriptIntelligenceEngine(
         scope_engine=scope_engine,
         webapp_state=webapp_state,

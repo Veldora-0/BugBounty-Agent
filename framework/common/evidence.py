@@ -18,11 +18,11 @@ from typing import Any, Dict, Optional
 # Regex patterns to sanitize sensitive tokens
 _SENSITIVE_PATTERNS = [
     # Authorization headers (Bearer, Basic, Token, or raw credentials)
-    (re.compile(r"((?:Authorization|Proxy-Authorization)\s*:\s*(?:Bearer|Basic|Token)?\s*)[^\r\n\s]+", re.IGNORECASE), r"\1[REDACTED_BY_BB_AGENT]"),
+    (re.compile(r"((?:Authorization|Proxy-Authorization|X-Auth-Token|X-Api-Key)\s*:\s*(?:Bearer|Basic|Token)?\s*)[^\r\n\s]+", re.IGNORECASE), r"\1[REDACTED_BY_BB_AGENT]"),
     # Cookie session tokens and identifiers
     (re.compile(r"((?<![a-zA-Z0-9_-])(?:session|sessionid|sess|jwt|token|access_token|auth|phpsessid|jsessionid|connect\.sid|sid)=)(?!(?:true|false|null|none|undefined)\b)[^;\r\n\s&]+", re.IGNORECASE), r"\1[REDACTED_BY_BB_AGENT]"),
     # API key patterns in headers / params
-    (re.compile(r"((?<![a-zA-Z0-9_-])(?:x-api-key|api[_-]?key|secret[_-]?key|client[_-]?secret|token|access_token|jwt|auth)\s*[:=]\s*)(?!(?:true|false|null|none|undefined)\b)[^\r\n\s,;\"'&]+", re.IGNORECASE), r"\1[REDACTED_BY_BB_AGENT]"),
+    (re.compile(r"((?<![a-zA-Z0-9_-])(?:x-api-key|x-auth-token|api[_-]?key|api[_-]?token|secret[_-]?key|client[_-]?secret|token|access_token|auth_token|id_token|jwt|auth)\s*[:=]\s*)(?!(?:true|false|null|none|undefined)\b)[^\r\n\s,;\"'&]+", re.IGNORECASE), r"\1[REDACTED_BY_BB_AGENT]"),
     # Standalone JSON Web Tokens / tokens starting with eyJ (2 or 3 segments)
     (re.compile(r"\beyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)?\b"), "[REDACTED_JWT_BY_BB_AGENT]"),
     # Passwords and credentials in query params or form bodies
@@ -30,9 +30,9 @@ _SENSITIVE_PATTERNS = [
     # URL embedded credentials (e.g. http://user:password@domain)
     (re.compile(r"((?:https?|wss?|ftp)://[^:/?#\s]+:)[^@/?#\s]+(@)", re.IGNORECASE), r"\1[REDACTED_BY_BB_AGENT]\2"),
     # Sensitive URL query parameters in plain strings
-    (re.compile(r"([?&](?:access_token|api[_-]?key|apikey|token|auth|secret|password|pwd|jwt)=)[^&#\s]+", re.IGNORECASE), r"\1[REDACTED_BY_BB_AGENT]"),
-    # JSON / quoted credentials and secrets
-    (re.compile(r"((?:\"(?:password|passwd|pwd|pass|client_secret|access_key|secret_key|api[_-]?key|apikey|reset_token|refresh_token|token|access_token)\"|'(?:password|passwd|pwd|pass|client_secret|access_key|secret_key|api[_-]?key|apikey|reset_token|refresh_token|token|access_token)')\s*:\s*[\"'])(?!(?:true|false|null|none|undefined)[\"'])[^\r\n\"']+([\"'])", re.IGNORECASE), r"\1[REDACTED_BY_BB_AGENT]\2"),
+    (re.compile(r"([?&](?:access_token|api[_-]?key|apikey|x-auth-token|api[_-]?token|auth_token|id_token|token|auth|secret|password|pwd|jwt)=)[^&#\s]+", re.IGNORECASE), r"\1[REDACTED_BY_BB_AGENT]"),
+    # JSON / quoted credentials, headers, and secrets
+    (re.compile(r"((?:\"(?:Authorization|Proxy-Authorization|X-Auth-Token|X-Api-Key|password|passwd|pwd|pass|client_secret|access_key|secret_key|api[_-]?key|apikey|api[_-]?token|auth_token|id_token|reset_token|refresh_token|token|access_token)\"|'(?:Authorization|Proxy-Authorization|X-Auth-Token|X-Api-Key|password|passwd|pwd|pass|client_secret|access_key|secret_key|api[_-]?key|apikey|api[_-]?token|auth_token|id_token|reset_token|refresh_token|token|access_token)')\s*:\s*[\"'])(?!(?:true|false|null|none|undefined)[\"'])[^\r\n\"']+([\"'])", re.IGNORECASE), r"\1[REDACTED_BY_BB_AGENT]\2"),
     # Private keys (RSA, EC, OPENSSH, DSA, ENCRYPTED, or any PEM private key)
     (re.compile(r"-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9_-]+ )?PRIVATE KEY-----", re.IGNORECASE), "[REDACTED_PRIVATE_KEY_BY_BB_AGENT]"),
 ]

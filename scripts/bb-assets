@@ -162,6 +162,11 @@ def main() -> None:
         except Exception:
             pass
 
+    # CLI Fail-Closed Scope Gate
+    if not scope_engine and not args.passive_only and not args.tree and not args.json:
+        print("[!] Error: No scope configuration provided or resolved. Active asset discovery requires explicit scope.", file=sys.stderr)
+        sys.exit(1)
+
     # Instantiate Asset Intelligence Engine
     engine = AssetIntelligenceEngine(
         scope_engine=scope_engine,

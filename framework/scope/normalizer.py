@@ -43,6 +43,9 @@ def normalize_hostname(raw_host: str) -> str:
     if not host:
         raise NormalizationError("Hostname cannot be empty after stripping.")
 
+    if host == "*":
+        return "*"
+
     # Remove leading wildcard if checking a pattern
     is_wildcard = False
     validation_host = host
@@ -118,10 +121,12 @@ def normalize_url(raw_url: str) -> str:
     norm_host = normalize_hostname(hostname)
 
     port = parsed.port
-    netloc = norm_host
+    is_ipv6 = ":" in norm_host
+    host_str = f"[{norm_host}]" if is_ipv6 else norm_host
+    netloc = host_str
     if port is not None:
         if (scheme in ("http", "ws") and port != 80) or (scheme in ("https", "wss") and port != 443):
-            netloc = f"{norm_host}:{port}"
+            netloc = f"{host_str}:{port}"
 
     path = parsed.path
     if not path:
@@ -167,7 +172,7 @@ def is_dns_label_descendant(child_host: str, parent_host: str) -> bool:
     norm_child = normalize_hostname(child_host)
     norm_parent = normalize_hostname(parent_host)
 
-    if norm_child == norm_parent:
+    if norm_parent == "*" or norm_child == norm_parent:
         return True
 
     # Must end with dot + parent_host to respect label boundary

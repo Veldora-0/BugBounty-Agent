@@ -70,12 +70,20 @@ class HttpTrustEngine:
             scope_yaml = os.path.join(self.program_dir, "scope.yaml")
             if os.path.isfile(scope_yaml):
                 self.scope_engine = ScopeEngine.from_file(scope_yaml)
+            elif self.lab_mode:
+                self.scope_engine = ScopeEngine({
+                    "program": {"name": self.program_name},
+                    "targets": {
+                        "domains": ["lab.local", "localhost", "127.0.0.1"],
+                        "urls": ["http://lab.local/", "http://127.0.0.1/"],
+                    },
+                })
             else:
                 self.scope_engine = ScopeEngine({
                     "program": {"name": self.program_name},
                     "targets": {
-                        "domains": ["lab.local", "*.local", "localhost", "127.0.0.1", "*.example.com", "example.com"],
-                        "urls": ["http://lab.local/", "https://lab.local/"],
+                        "domains": [],
+                        "urls": [],
                     },
                 })
 

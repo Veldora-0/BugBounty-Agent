@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from typing import Any, Dict, List, Optional
 
 from framework.xxe.model import (
@@ -78,7 +79,14 @@ class XxeStateManager:
             tf.write(final_serialized)
             temp_name = tf.name
 
-        os.replace(temp_name, self.xxe_file)
+        for attempt in range(10):
+            try:
+                os.replace(temp_name, self.xxe_file)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.02)
 
     def save_candidate(self, candidate: XxeCandidate) -> None:
         """Saves or updates an XXE candidate."""

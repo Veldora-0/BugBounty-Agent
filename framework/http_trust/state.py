@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 import uuid
 
@@ -79,7 +80,14 @@ class HttpTrustStateManager:
         with open(temp_path, "w", encoding="utf-8") as tf:
             tf.write(final_str)
 
-        os.replace(temp_path, self.state_file)
+        for attempt in range(10):
+            try:
+                os.replace(temp_path, self.state_file)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.02)
 
     def load_state(self) -> Dict[str, Any]:
         """Loads and returns current http-trust state."""

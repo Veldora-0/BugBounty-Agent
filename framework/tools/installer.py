@@ -16,6 +16,7 @@ Security Invariants:
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import shutil
@@ -321,16 +322,68 @@ class ToolInstaller:
             archive_path = os.path.join(tmp_dir, "release_archive")
             urllib.request.urlretrieve(download_url, archive_path)
 
-            # Extract binary
+            # Check SHA-256 digest with mandatory format and authenticity enforcement (SEC-07)
+            expected_sha256 = tool.install.get("sha256")
+            if isinstance(expected_sha256, dict):
+                asset_name = matched_asset.get("name", "")
+                arch_key = f"{os_name}_{arch}"
+                expected_sha256 = (
+                    expected_sha256.get(asset_name)
+                    or expected_sha256.get(arch_key)
+                    or expected_sha256.get(os_name)
+                )
+
+            # FAIL-CLOSED: Release archive downloads require verified, trusted checksum provenance (SEC-07)
+            if not expected_sha256 or not isinstance(expected_sha256, str):
+                raise InstallerSecurityError(
+                    f"Missing trusted SHA-256 checksum for tool '{tool_name}'. "
+                    f"Automated installation of release archives requires pinned checksum provenance in tools.yaml. "
+                    f"Please install '{tool_name}' via system package manager (apt/go/pipx) or configure sha256."
+                )
+
+            clean_expected = expected_sha256.strip().lower()
+            if len(clean_expected) != 64 or not all(c in "0123456789abcdef" for c in clean_expected):
+                raise InstallerSecurityError(
+                    f"Malformed expected SHA-256 checksum for tool '{tool_name}': must be a 64-character hexadecimal string."
+                )
+
+            with open(archive_path, "rb") as af:
+                actual_sha256 = hashlib.sha256(af.read()).hexdigest()
+
+            if actual_sha256.lower() != clean_expected:
+                raise InstallerSecurityError(
+                    f"SHA-256 checksum mismatch for {tool_name} archive: expected {clean_expected}, got {actual_sha256}"
+                )
+
+            # Extract binary safely preventing path traversal, symlink escapes, and special files (SEC-07)
             target_binary = tool.binary
             extracted_bin = None
 
             if download_url.endswith(".zip"):
                 with zipfile.ZipFile(archive_path, "r") as zf:
+                    for member in zf.infolist():
+                        target_p = os.path.abspath(os.path.join(tmp_dir, member.filename))
+                        if not (target_p == tmp_dir or target_p.startswith(tmp_dir + os.sep)):
+                            raise InstallerSecurityError(f"Zip Slip path traversal detected in archive: {member.filename}")
+                        if (member.external_attr >> 16) & 0o120000 == 0o120000:
+                            raise InstallerSecurityError(f"Symlinks not permitted in release archive: {member.filename}")
                     zf.extractall(tmp_dir)
             else:
                 with tarfile.open(archive_path, "r:*") as tf:
-                    tf.extractall(tmp_dir)
+                    for member in tf.getmembers():
+                        target_p = os.path.abspath(os.path.join(tmp_dir, member.name))
+                        if not (target_p == tmp_dir or target_p.startswith(tmp_dir + os.sep)):
+                            raise InstallerSecurityError(f"Tar Slip path traversal detected in archive: {member.name}")
+                        if member.isdev() or member.ischr() or member.isblk() or member.isfifo():
+                            raise InstallerSecurityError(f"Special device file detected in archive: {member.name}")
+                        if member.issym() or member.islnk():
+                            link_target = os.path.abspath(os.path.join(os.path.dirname(target_p), member.linkname))
+                            if not (link_target == tmp_dir or link_target.startswith(tmp_dir + os.sep)):
+                                raise InstallerSecurityError(f"Malicious symlink detected in archive: {member.name} -> {linkname}")
+                    if hasattr(tarfile, "data_filter"):
+                        tf.extractall(tmp_dir, filter="data")
+                    else:
+                        tf.extractall(tmp_dir)
 
             for root, _, files in os.walk(tmp_dir):
                 for f in files:

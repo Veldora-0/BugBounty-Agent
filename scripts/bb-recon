@@ -228,6 +228,11 @@ def main() -> None:
     print(f"[*] Mode: {'Passive Only' if args.passive_only else 'Full Active/Passive'}")
     print(f"[*] Host budget ceiling: {max_hosts} | Request ceiling: {args.max_requests}")
 
+    # CLI Fail-Closed Scope Gate
+    if not scope_engine and not args.passive_only and not args.tree and not args.json:
+        print("[!] Error: No scope configuration provided or resolved. Active reconnaissance requires explicit scope.", file=sys.stderr)
+        sys.exit(1)
+
     engine = ReconnaissanceEngine(
         scope_engine=scope_engine,
         graph=graph,

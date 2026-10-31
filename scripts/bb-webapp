@@ -239,6 +239,11 @@ def main() -> None:
     print(f"[*] Mode: {'Passive Analysis Only' if args.passive_only else 'Full Active Crawl'}")
     print(f"[*] Max pages: {args.max_pages} | Max depth: {args.max_depth} | Max requests: {args.max_requests}")
 
+    # CLI Fail-Closed Scope Gate
+    if not scope_engine and not args.passive_only and not args.tree and not args.json:
+        print("[!] Error: No scope configuration provided or resolved. Active web surface crawling requires explicit scope.", file=sys.stderr)
+        sys.exit(1)
+
     engine = WebApplicationIntelligenceEngine(
         scope_engine=scope_engine,
         asset_graph=asset_graph,

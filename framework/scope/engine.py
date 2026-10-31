@@ -10,8 +10,9 @@ from __future__ import annotations
 from enum import Enum
 import ipaddress
 import os
+import posixpath
 from typing import Any, Dict, List, Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, unquote, urlparse
 import yaml
 
 from framework.scope.normalizer import (
@@ -24,6 +25,11 @@ from framework.scope.normalizer import (
     parse_and_normalize_target,
     NormalizationError,
 )
+
+
+class ScopeConfigurationError(ValueError):
+    """Raised when scope configuration contains invalid syntax, schema, or values."""
+    pass
 
 
 class ScopeStatus(str, Enum):
@@ -89,23 +95,47 @@ class ScopeEngine:
     """
 
     def __init__(self, scope_config: Dict[str, Any]):
-        self.config = scope_config or {}
+        if not isinstance(scope_config, dict):
+            raise ScopeConfigurationError(f"Scope configuration must be a dictionary, got {type(scope_config).__name__}")
+        self.config = scope_config
+
+        prog = self.config.get("program")
+        if prog is not None and not isinstance(prog, dict):
+            raise ScopeConfigurationError(f"'program' section must be a dictionary, got {type(prog).__name__}")
         self.program_name = self.config.get("program", {}).get("name", "unnamed-program")
 
         # Inclusions
-        targets = self.config.get("targets", {})
+        targets = self.config.get("targets") or {}
+        if not isinstance(targets, dict):
+            raise ScopeConfigurationError(f"'targets' section must be a dictionary, got {type(targets).__name__}")
+
+        for key in ("domains", "urls", "cidrs"):
+            val = targets.get(key)
+            if val is not None and not isinstance(val, list):
+                raise ScopeConfigurationError(f"targets.{key} must be a list, got {type(val).__name__}")
+
         self.included_domains: List[str] = [str(d) for d in targets.get("domains", [])]
         self.included_urls: List[str] = [str(u) for u in targets.get("urls", [])]
         self.included_cidrs: List[str] = [str(c) for c in targets.get("cidrs", [])]
 
         # Recursive subdomain configuration
-        rec_conf = targets.get("recursive_subdomains", {})
+        rec_conf = targets.get("recursive_subdomains") or {}
+        if not isinstance(rec_conf, dict):
+            raise ScopeConfigurationError(f"targets.recursive_subdomains must be a dictionary, got {type(rec_conf).__name__}")
         self.recursive_enabled: bool = bool(rec_conf.get("enabled", False))
         # max_depth: 0 means unlimited
         self.max_depth: int = int(rec_conf.get("max_depth", 0))
 
         # Exclusions (Explicit Out-of-Scope)
-        oos = self.config.get("out_of_scope", {})
+        oos = self.config.get("out_of_scope") or {}
+        if not isinstance(oos, dict):
+            raise ScopeConfigurationError(f"'out_of_scope' section must be a dictionary, got {type(oos).__name__}")
+
+        for key in ("domains", "urls", "cidrs"):
+            val = oos.get(key)
+            if val is not None and not isinstance(val, list):
+                raise ScopeConfigurationError(f"out_of_scope.{key} must be a list, got {type(val).__name__}")
+
         self.excluded_domains: List[str] = [str(d) for d in oos.get("domains", [])]
         self.excluded_urls: List[str] = [str(u) for u in oos.get("urls", [])]
         self.excluded_cidrs: List[str] = [str(c) for c in oos.get("cidrs", [])]
@@ -128,51 +158,63 @@ class ScopeEngine:
         # Process exclusions
         self._parsed_excluded_domains = []
         for d in self.excluded_domains:
+            if not isinstance(d, str) or not d.strip():
+                raise ScopeConfigurationError(f"Malformed domain in out_of_scope.domains: {d!r}")
             try:
                 norm = normalize_hostname(d)
                 clean = norm[2:] if norm.startswith("*.") else norm
                 self._parsed_excluded_domains.append((norm, clean, norm.startswith("*.")))
-            except Exception:
-                pass
+            except Exception as e:
+                raise ScopeConfigurationError(f"Invalid domain in out_of_scope.domains: {d!r} ({e})") from e
 
         self._parsed_excluded_urls = []
         for u in self.excluded_urls:
+            if not isinstance(u, str) or not u.strip():
+                raise ScopeConfigurationError(f"Malformed URL in out_of_scope.urls: {u!r}")
             try:
                 self._parsed_excluded_urls.append(normalize_url(u))
-            except Exception:
-                pass
+            except Exception as e:
+                raise ScopeConfigurationError(f"Invalid URL in out_of_scope.urls: {u!r} ({e})") from e
 
         self._parsed_excluded_networks = []
         for c in self.excluded_cidrs:
+            if not isinstance(c, str) or not c.strip():
+                raise ScopeConfigurationError(f"Malformed CIDR in out_of_scope.cidrs: {c!r}")
             try:
                 self._parsed_excluded_networks.append(ipaddress.ip_network(c.strip(), strict=False))
-            except Exception:
-                pass
+            except Exception as e:
+                raise ScopeConfigurationError(f"Invalid CIDR in out_of_scope.cidrs: {c!r} ({e})") from e
 
         # Process inclusions
         self._parsed_included_domains = []
         for d in self.included_domains:
+            if not isinstance(d, str) or not d.strip():
+                raise ScopeConfigurationError(f"Malformed domain in targets.domains: {d!r}")
             try:
                 norm = normalize_hostname(d)
                 clean = norm[2:] if norm.startswith("*.") else norm
                 is_wildcard = norm.startswith("*.")
                 self._parsed_included_domains.append((norm, clean, is_wildcard))
-            except Exception:
-                pass
+            except Exception as e:
+                raise ScopeConfigurationError(f"Invalid domain in targets.domains: {d!r} ({e})") from e
 
         self._parsed_included_urls = []
         for u in self.included_urls:
+            if not isinstance(u, str) or not u.strip():
+                raise ScopeConfigurationError(f"Malformed URL in targets.urls: {u!r}")
             try:
                 self._parsed_included_urls.append(normalize_url(u))
-            except Exception:
-                pass
+            except Exception as e:
+                raise ScopeConfigurationError(f"Invalid URL in targets.urls: {u!r} ({e})") from e
 
         self._parsed_included_networks = []
         for c in self.included_cidrs:
+            if not isinstance(c, str) or not c.strip():
+                raise ScopeConfigurationError(f"Malformed CIDR in targets.cidrs: {c!r}")
             try:
                 self._parsed_included_networks.append(ipaddress.ip_network(c.strip(), strict=False))
-            except Exception:
-                pass
+            except Exception as e:
+                raise ScopeConfigurationError(f"Invalid CIDR in targets.cidrs: {c!r} ({e})") from e
 
     def is_in_scope(self, target: str) -> bool:
         """Returns True if the target evaluates strictly to IN_SCOPE."""
@@ -218,6 +260,53 @@ class ScopeEngine:
                 normalized_target=parsed.get("normalized", ""),
             )
 
+    @staticmethod
+    def _is_url_path_contained(target_url: str, rule_url: str) -> bool:
+        """
+        Determines if target_url matches or is contained under rule_url.
+        Enforces strict scheme, host, port, canonical path containment, and query constraints:
+        - Path decomposition with posixpath.normpath(unquote(...))
+        - Strict directory hierarchy (/api matches /api, /api/, /api/users, but NOT /api-v2 or /api2)
+        - Matrix parameter (;) and traversal (..) normalization
+        - Query parameters ignored unless rule explicitly specifies them
+        """
+        t_parsed = urlparse(target_url)
+        r_parsed = urlparse(rule_url)
+
+        if t_parsed.scheme.lower() != r_parsed.scheme.lower():
+            return False
+        if t_parsed.netloc.lower() != r_parsed.netloc.lower():
+            return False
+
+        t_raw_path = t_parsed.path.split(";")[0] if t_parsed.path else "/"
+        r_raw_path = r_parsed.path.split(";")[0] if r_parsed.path else "/"
+
+        t_path = posixpath.normpath(unquote(t_raw_path))
+        r_path = posixpath.normpath(unquote(r_raw_path))
+
+        if not t_path.startswith("/"):
+            t_path = "/" + t_path.lstrip("/")
+        if not r_path.startswith("/"):
+            r_path = "/" + r_path.lstrip("/")
+
+        if r_path == "/":
+            path_matches = True
+        elif t_path == r_path or t_path.startswith(r_path.rstrip("/") + "/"):
+            path_matches = True
+        else:
+            path_matches = False
+
+        if not path_matches:
+            return False
+
+        if r_parsed.query:
+            r_params = set(parse_qsl(r_parsed.query, keep_blank_values=True))
+            t_params = set(parse_qsl(t_parsed.query, keep_blank_values=True))
+            if not r_params.issubset(t_params):
+                return False
+
+        return True
+
     def _check_url(self, parsed: Dict[str, Any]) -> ScopeDecision:
         """Evaluates a URL target."""
         norm_url = parsed["normalized"]
@@ -225,7 +314,7 @@ class ScopeEngine:
 
         # 1. Check explicit URL exclusions
         for ex_url in self._parsed_excluded_urls:
-            if norm_url == ex_url or norm_url.startswith(ex_url.rstrip("/") + "/"):
+            if self._is_url_path_contained(norm_url, ex_url):
                 return ScopeDecision(
                     status=ScopeStatus.OUT_OF_SCOPE,
                     reason=f"Matches explicit excluded URL: {ex_url}",
@@ -263,7 +352,7 @@ class ScopeEngine:
 
         # 3. Check explicit URL inclusions
         for inc_url in self._parsed_included_urls:
-            if norm_url == inc_url or norm_url.startswith(inc_url.rstrip("/") + "/"):
+            if self._is_url_path_contained(norm_url, inc_url):
                 return ScopeDecision(
                     status=ScopeStatus.IN_SCOPE,
                     reason=f"Matches included URL: {inc_url}",

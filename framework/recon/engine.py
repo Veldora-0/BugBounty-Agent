@@ -107,9 +107,15 @@ class ReconnaissanceEngine:
         self.endpoint_probe_hook: Optional[Callable[[str], List[Dict[str, Any]]]] = None
 
     def _is_in_scope(self, target: str) -> bool:
-        """Enforces ScopeEngine checks before ANY active or passive probing."""
+        """Enforces ScopeEngine checks before ANY active or passive probing. Fails closed if missing."""
         if not self.scope_engine:
-            return True
+            return bool(
+                self.dns_probe_hook
+                or self.tls_probe_hook
+                or self.http_probe_hook
+                or self.port_scan_hook
+                or self.endpoint_probe_hook
+            )
         decision = self.scope_engine.check(target)
         return decision.status == ScopeStatus.IN_SCOPE
 
@@ -291,52 +297,51 @@ class ReconnaissanceEngine:
                 ],
             )
 
-        # Fallback using urllib.request with bounded read and timeout
-        import urllib.request
-        try:
-            req = urllib.request.Request(
-                raw_url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) BugBounty-Agent/2.0"},
-            )
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
-            with urllib.request.urlopen(req, timeout=4.0, context=ctx if scheme == "https" else None) as resp:
-                status = resp.status
-                headers = dict(resp.headers)
-                body = resp.read(8192).decode("utf-8", errors="ignore")
-
-                title_match = re.search(r"<title[^>]*>(.*?)</title>", body, re.IGNORECASE | re.DOTALL)
-                title = title_match.group(1).strip() if title_match else None
-
-                server = headers.get("Server") or headers.get("server")
-                ct = headers.get("Content-Type") or headers.get("content-type")
-                cl = None
-                cl_header = headers.get("Content-Length") or headers.get("content-length")
-                if cl_header and cl_header.isdigit():
-                    cl = int(cl_header)
-
-                return HttpObservation(
-                    url=raw_url,
-                    scheme=scheme,
-                    host=host,
-                    port=port,
-                    status_code=status,
-                    title=title,
-                    content_type=ct,
-                    content_length=cl,
-                    server_header=server,
-                    provenance=[
-                        ObservationProvenance(
-                            source="urllib",
-                            method="http-get",
-                            confidence="CONFIRMED",
-                        )
-                    ],
-                )
-        except Exception:
+        # Fallback using unified safe transport (ARCH-01, SEC-02)
+        from framework.common.transport import safe_fetch_url
+        res = safe_fetch_url(
+            raw_url,
+            method="GET",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) BugBounty-Agent/2.0"},
+            timeout=4.0,
+            max_bytes=8192,
+            scope_engine=self.scope_engine,
+        )
+        if not res:
             return None
+
+        status = res["status_code"]
+        headers = res["headers"]
+        body = res["body"]
+
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", body, re.IGNORECASE | re.DOTALL)
+        title = title_match.group(1).strip() if title_match else None
+
+        server = headers.get("Server") or headers.get("server")
+        ct = headers.get("Content-Type") or headers.get("content-type")
+        cl = None
+        cl_header = headers.get("Content-Length") or headers.get("content-length")
+        if cl_header and cl_header.isdigit():
+            cl = int(cl_header)
+
+        return HttpObservation(
+            url=raw_url,
+            scheme=scheme,
+            host=host,
+            port=port,
+            status_code=status,
+            title=title,
+            content_type=ct,
+            content_length=cl,
+            server_header=server,
+            provenance=[
+                ObservationProvenance(
+                    source="safe_transport",
+                    method="http-get",
+                    confidence="CONFIRMED",
+                )
+            ],
+        )
 
     # ==========================================================================
     # 4. TECHNOLOGY EXTRACTION

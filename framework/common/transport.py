@@ -13,7 +13,7 @@ import http.client
 import ipaddress
 import socket
 import ssl
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 import urllib.request
 
 
@@ -307,3 +307,331 @@ class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
                 **kwargs,
             )
         return self.do_open(connection_factory, req)
+
+
+# Comprehensive IP ranges for SSRF prevention
+PRIVATE_NETWORKS = [
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local / Cloud metadata
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("100.64.0.0/10"),  # Carrier-grade NAT
+    ipaddress.ip_network("192.0.0.0/24"),
+    ipaddress.ip_network("192.0.2.0/24"),   # TEST-NET-1
+    ipaddress.ip_network("198.51.100.0/24"), # TEST-NET-2
+    ipaddress.ip_network("203.0.113.0/24"), # TEST-NET-3
+    ipaddress.ip_network("224.0.0.0/4"),    # Multicast
+    ipaddress.ip_network("240.0.0.0/4"),    # Reserved
+    ipaddress.ip_network("::1/128"),        # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),       # IPv6 unique-local
+    ipaddress.ip_network("fe80::/10"),      # IPv6 link-local
+]
+
+
+def is_ssrf_prohibited_ip(ip_input: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address]) -> Tuple[bool, str]:
+    """
+    Evaluates whether an IP address belongs to private, loopback, link-local,
+    reserved, or IPv4-mapped private address space.
+    """
+    if isinstance(ip_input, str):
+        ip_obj = parse_alternate_ip(ip_input)
+        if ip_obj is None:
+            try:
+                ip_obj = ipaddress.ip_address(ip_input)
+            except ValueError:
+                return False, ""
+    else:
+        ip_obj = ip_input
+
+    # Check unspecified address (0.0.0.0 or ::)
+    if ip_obj.is_unspecified:
+        return True, "Unspecified address range"
+
+    # Check IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1 or ::ffff:169.254.169.254)
+    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
+        mapped = ip_obj.ipv4_mapped
+        is_bad, reason = is_ssrf_prohibited_ip(mapped)
+        if is_bad:
+            return True, f"IPv4-mapped {mapped} is prohibited ({reason})"
+
+    if ip_obj.is_loopback:
+        return True, "Loopback address range"
+    if ip_obj.is_private:
+        return True, "Private address range"
+    if ip_obj.is_link_local:
+        return True, "Link-local address range"
+    if ip_obj.is_reserved:
+        return True, "Reserved address range"
+    if ip_obj.is_multicast:
+        return True, "Multicast address range"
+
+    for net in PRIVATE_NETWORKS:
+        if ip_obj in net:
+            return True, f"Matched forbidden network {net}"
+
+    return False, ""
+
+
+class ScopeViolationError(ValueError):
+    """Raised when a request target falls outside authorized scope."""
+    pass
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """
+    HTTP redirect handler that enforces scope, anti-SSRF policies, protocol downgrade prevention,
+    request limits, global byte budget ceilings, and destination-IP pinning on each redirection hop.
+    """
+
+    def __init__(
+        self,
+        check_scope_fn: Callable[[str], Any],
+        ip_map: Optional[Dict[str, Any]] = None,
+        max_redirects: int = 5,
+        original_url: Optional[str] = None,
+        engine: Optional[Any] = None,
+    ):
+        super().__init__()
+        self.check_scope_fn = check_scope_fn
+        self.ip_map = ip_map if ip_map is not None else {}
+        self.max_redirects = max_redirects
+        self.redirect_count = 0
+        self.current_url = original_url
+        self.engine = engine
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        from urllib.parse import urlparse
+
+        self.redirect_count += 1
+        if self.redirect_count > self.max_redirects:
+            raise ScopeViolationError(f"Too many redirects (exceeded maximum of {self.max_redirects})")
+
+        # Validate URL input
+        if not newurl or not isinstance(newurl, str):
+            raise ScopeViolationError(f"Invalid redirect target URL: {newurl}")
+
+        parsed_new = urlparse(newurl)
+        new_scheme = (parsed_new.scheme or "").lower()
+        if new_scheme not in ("http", "https"):
+            raise ScopeViolationError(f"Redirect to unsupported scheme: {new_scheme}")
+
+        # Determine original scheme for protocol downgrade verification
+        orig_url = None
+        if req is not None:
+            if hasattr(req, "get_full_url"):
+                orig_url = req.get_full_url()
+            elif isinstance(req, str):
+                orig_url = req
+            else:
+                raise ScopeViolationError(f"Unexpected request object type in redirect handler: {type(req).__name__}")
+        elif self.current_url:
+            orig_url = self.current_url
+
+        if not orig_url:
+            raise ScopeViolationError("Missing request context in redirect handler: protocol downgrade cannot be verified")
+
+        orig_scheme = urlparse(orig_url).scheme.lower()
+        if orig_scheme == "https" and new_scheme == "http":
+            raise ScopeViolationError("Protocol downgrade from HTTPS to HTTP forbidden")
+
+        # Request count and byte budget enforcement during redirect hop
+        if self.engine is not None:
+            if hasattr(self.engine, "request_count") and hasattr(self.engine, "policy"):
+                max_reqs = getattr(self.engine.policy, "max_requests_per_program", 200)
+                if self.engine.request_count >= max_reqs:
+                    raise ScopeViolationError(
+                        f"Program request budget exhausted during redirect ({self.engine.request_count}/{max_reqs})"
+                    )
+                self.engine.request_count += 1
+
+            if hasattr(self.engine, "total_bytes_transferred") and hasattr(self.engine, "policy"):
+                max_bytes = getattr(self.engine.policy, "max_total_bytes", 10 * 1024 * 1024)
+                effective_transferred = max(
+                    getattr(self.engine, "total_bytes_transferred", 0),
+                    getattr(self.engine, "total_bytes", 0),
+                )
+                if effective_transferred >= max_bytes:
+                    raise ScopeViolationError(
+                        f"Global byte budget exhausted during redirect ({effective_transferred}/{max_bytes})"
+                    )
+
+        # Revalidate redirect destination against scope and anti-SSRF rules; obtain pinned IP(s)
+        pinned = self.check_scope_fn(newurl)
+        new_host = (parsed_new.hostname or "").lower()
+        if new_host and pinned:
+            self.ip_map[new_host] = pinned
+
+        # Track current URL for subsequent redirect hops
+        self.current_url = newurl
+
+        if req is None or isinstance(req, str):
+            return urllib.request.Request(newurl)
+
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def safe_fetch_url(
+    url: str,
+    method: str = "GET",
+    headers: Optional[Dict[str, str]] = None,
+    body: Optional[Union[str, bytes]] = None,
+    timeout: float = 5.0,
+    max_bytes: Optional[int] = None,
+    scope_engine: Optional[Any] = None,
+    custom_ssl_context: Optional[ssl.SSLContext] = None,
+    max_redirects: int = 5,
+) -> Optional[Dict[str, Any]]:
+    """
+    Executes a bounded, secure HTTP/HTTPS request through pinned transport.
+    Validates scope, blocks SSRF to private/loopback/metadata destinations,
+    validates redirects, prevents protocol downgrade, and enforces strict TLS verification.
+    """
+    import os
+    from urllib.parse import urlparse
+
+    if not url or not isinstance(url, str):
+        return None
+
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return None
+
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return None
+
+    port = parsed.port or (443 if scheme == "https" else 80)
+
+    # Fail closed if scope_engine is provided and target is not in scope
+    if scope_engine is not None:
+        dec = scope_engine.check(url)
+        if getattr(dec, "status", None) != "IN_SCOPE":
+            return None
+
+    # Anti-SSRF hostname checks
+    metadata_hosts = {
+        "localhost",
+        "169.254.169.254",
+        "instance-data",
+        "metadata.google.internal",
+    }
+    if host in metadata_hosts or host.endswith(".metadata.google.internal"):
+        return None
+
+    alt_ip = parse_alternate_ip(host)
+    if alt_ip is not None:
+        bad, _ = is_ssrf_prohibited_ip(alt_ip)
+        if bad:
+            return None
+        pinned_ips = [str(alt_ip)]
+    else:
+        try:
+            addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            candidate_ips: List[str] = []
+            for _, _, _, _, sa in addr_info:
+                c_ip = sa[0]
+                if c_ip not in candidate_ips:
+                    candidate_ips.append(c_ip)
+            for c_ip in candidate_ips:
+                cand_obj = parse_alternate_ip(c_ip) or ipaddress.ip_address(c_ip)
+                bad, _ = is_ssrf_prohibited_ip(cand_obj)
+                if bad:
+                    return None
+            pinned_ips = candidate_ips
+        except (socket.gaierror, OSError):
+            return None
+
+    if not pinned_ips:
+        return None
+
+    ip_map: Dict[str, Any] = {host: pinned_ips}
+
+    def check_scope_redirect(new_url: str) -> List[str]:
+        if scope_engine is not None:
+            r_dec = scope_engine.check(new_url)
+            if getattr(r_dec, "status", None) != "IN_SCOPE":
+                raise ScopeViolationError(f"Redirect target '{new_url}' is OUT_OF_SCOPE")
+        r_p = urlparse(new_url)
+        r_h = (r_p.hostname or "").lower()
+        r_pt = r_p.port or (443 if r_p.scheme == "https" else 80)
+        if r_h in metadata_hosts or r_h.endswith(".metadata.google.internal"):
+            raise ScopeViolationError(f"Redirect target '{r_h}' is prohibited")
+        r_alt = parse_alternate_ip(r_h)
+        if r_alt is not None:
+            r_bad, r_reason = is_ssrf_prohibited_ip(r_alt)
+            if r_bad:
+                raise ScopeViolationError(f"Redirect host '{r_h}' prohibited: {r_reason}")
+            return [str(r_alt)]
+        r_ai = socket.getaddrinfo(r_h, r_pt, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        r_cands: List[str] = []
+        for _, _, _, _, r_sa in r_ai:
+            if r_sa[0] not in r_cands:
+                r_cands.append(r_sa[0])
+        for r_ci in r_cands:
+            r_co = parse_alternate_ip(r_ci) or ipaddress.ip_address(r_ci)
+            r_bad, r_reason = is_ssrf_prohibited_ip(r_co)
+            if r_bad:
+                raise ScopeViolationError(f"Redirect host '{r_h}' resolves to prohibited {r_ci}")
+        return r_cands
+
+    req_headers = dict(headers or {})
+    host_hdr = f"{host}:{port}" if (scheme == "http" and port != 80) or (scheme == "https" and port != 443) else host
+    if "Host" not in req_headers and "host" not in req_headers:
+        req_headers["Host"] = host_hdr
+
+    payload_bytes = None
+    if body is not None:
+        payload_bytes = body.encode("utf-8") if isinstance(body, str) else body
+
+    req = urllib.request.Request(
+        url,
+        data=payload_bytes,
+        headers=req_headers,
+        method=method.upper(),
+    )
+
+    ctx: Optional[ssl.SSLContext] = None
+    if scheme == "https":
+        if custom_ssl_context:
+            ctx = custom_ssl_context
+        else:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = True
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ca_bundle = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
+            if ca_bundle and os.path.isfile(ca_bundle):
+                ctx.load_verify_locations(cafile=ca_bundle)
+
+    redirect_handler = SafeRedirectHandler(
+        check_scope_fn=check_scope_redirect,
+        ip_map=ip_map,
+        max_redirects=max_redirects,
+        original_url=url,
+    )
+    http_handler = PinnedHTTPHandler(ip_map=ip_map)
+    https_handler = PinnedHTTPSHandler(ip_map=ip_map, context=ctx, check_hostname=True if ctx else None)
+    opener = urllib.request.build_opener(redirect_handler, http_handler, https_handler)
+
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            final_url = resp.geturl()
+            if scope_engine is not None:
+                dec = scope_engine.check(final_url)
+                if getattr(dec, "status", None) != "IN_SCOPE":
+                    return None
+            status = resp.status
+            res_headers = dict(resp.headers)
+            raw = resp.read(max_bytes) if max_bytes is not None else resp.read()
+            body_text = raw.decode("utf-8", errors="ignore")
+            return {
+                "status_code": status,
+                "headers": res_headers,
+                "body": body_text,
+                "raw_bytes": raw,
+                "final_url": final_url,
+            }
+    except Exception:
+        return None
