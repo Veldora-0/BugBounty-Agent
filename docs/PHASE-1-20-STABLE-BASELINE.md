@@ -72,15 +72,15 @@ The repository has successfully completed all Phase 1–20 milestones, verified 
 ### Verification Classification Analysis & Reconciled Criteria
 
 An audit of historical reports reveals a discrepancy between:
-* **The Stage B/C Operational Boundary Classification** (11 VERIFIED, 9 VERIFIED WITH DOCUMENTED LIMITATIONS).
-* **The Initial Unit Test Pass Classification** (14 VERIFIED, 6 VERIFIED WITH LIMITATIONS).
+* **The Stage B/C Historical Documentation** (previously cited as 11 VERIFIED, 9 VERIFIED WITH DOCUMENTED LIMITATIONS due to an aggregation calculation error in an earlier audit draft).
+* **The Actual Empirical Phase-by-Phase Verification** (exactly 10 VERIFIED, 10 VERIFIED WITH DOCUMENTED LIMITATIONS across the 20 canonical roadmap phases).
 
 #### Reconciled Assessment
 A phase must **NEVER** be classified as unconditionally "VERIFIED" merely because its unit test suite achieves 100% pass rates. Unit tests execute against local mock fixtures and deterministic in-memory labs. Real-world security testing involves ethical, protocol, environmental, and credential boundaries:
 
-1. **Passive/Discovery Phases** (`1, 3, 4, 6, 11, 14, 15, 17, 18, 19`):
+1. **Passive/Discovery Phases** (`1, 3, 4, 6, 11, 14, 15, 17, 18, 19` — Exactly 10 Phases):
    Phases that perform read-only schema analysis, passive DNS/TLS attribution, client AST inspection, structural validation, protocol header analysis, or simulation labs with zero missing environmental binaries are classified as **VERIFIED**.
-2. **Operational Testing Phases with Intrinsic Boundaries** (`2, 5, 7, 8, 9, 10, 12, 13, 16, 20`):
+2. **Operational Testing Phases with Intrinsic Boundaries** (`2, 5, 7, 8, 9, 10, 12, 13, 16, 20` — Exactly 10 Phases):
    Phases that interact with active targets, execute live socket connections, evaluate cross-principal permissions, require external OOB callbacks, enforce non-destructive arithmetic markers, or depend on browser binaries are formally classified as **VERIFIED WITH DOCUMENTED LIMITATIONS**.
 
 To ensure full transparency, the matrix below details both the operational limitations and acceptance status:
@@ -108,7 +108,7 @@ To ensure full transparency, the matrix below details both the operational limit
 | **19** | Infrastructure & Config Exposure | `framework/infrastructure/` | `reconnaissance`, `web-security` | `InfrastructureIntelligenceEngine`, `DifferentialSoft404Engine` | `bb-infra`, `bb-doctor` | `test_infrastructure_engine.py` (47 tests) | Differential soft-404 token Jaccard similarity, response caps (32 KB, 8 KB config, 1 KB binary magic). Safe read-only methods (`GET`, `HEAD`, `OPTIONS`) only. | **VERIFIED** |
 | **20** | Race Conditions & Concurrency | `framework/concurrency/` | `business-logic` | `RaceIntelligenceEngine`, `BarrierSynchronizer` | `bb-race`, `bb-doctor` | `test_concurrency_engine.py` (128 tests) | Microsecond barrier synchronization (`threading.Barrier`), bounded bursts (2–5 reqs, max cap 10). Volumetric flooding strictly prohibited; out-of-scope targets fail closed. | **VERIFIED WITH DOCUMENTED LIMITATIONS** |
 
-*Reconciled Summary: Exactly 11 phases VERIFIED without operational limitations; 9 phases VERIFIED WITH DOCUMENTED LIMITATIONS (Phases 2, 5, 7, 8, 9, 10, 12, 13, 16, 20). 0 phases unverified, partial, or failed.*
+*Reconciled Summary: Exactly 10 phases VERIFIED without operational limitations (Phases 1, 3, 4, 6, 11, 14, 15, 17, 18, 19); exactly 10 phases VERIFIED WITH DOCUMENTED LIMITATIONS (Phases 2, 5, 7, 8, 9, 10, 12, 13, 16, 20). 0 phases unverified, partial, or failed. Total: 20 Phases.*
 
 ---
 

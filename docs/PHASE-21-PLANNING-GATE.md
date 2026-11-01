@@ -201,26 +201,63 @@ In multi-tenant systems, tenant identity is expressed across 4 channels:
 
 ---
 
-## 8. State Schema & Persistence Architecture
+## 8. State Schema, Persistence & Credential Security Architecture
 
-### Strict Credential Persistence Prohibition
+### Strict Credential Persistence & Logging Prohibition
 > [!CRITICAL]
 > **`state/auth_correlation.json` must NEVER persist raw or reusable authentication credentials.**
-> Prohibited fields include raw JWTs, session cookies, Set-Cookie headers, raw Authorization headers, passwords, MFA secrets/TOTP seeds, and API keys.
+> Prohibited fields include raw JWTs, session cookies, Set-Cookie headers, raw Authorization headers, passwords, MFA secrets/TOTP seeds, API keys, or private key material.
+>
+> **Raw credentials must NEVER be logged to stdout, stderr, diagnostic logs, or exception stack traces.** All error representations, exception messages, and debug dumps must reference sessions exclusively by their opaque identifier or keyed HMAC digest.
 
-The correlation state file stores only sanitized metadata, non-reversible token references, and deterministic SHA-256 fingerprints:
-* **Token Representation**: Stored strictly as masked references (`tok_...4a9f`) or non-reversible SHA-256 digests (`sha256(token)[:16]`).
-* **Session Metadata**: Stores lifecycle state (`ACTIVE`, `EXPIRED`, `INVALIDATED`), issuance timestamps, expiry timestamps, health status, and observed privilege tiers.
-* **Principal Identifiers**: Stores operator-assigned test IDs (`user_a`, `user_b`, `tenant_1`, `tenant_2`) without credential payloads.
+### Credential-Reference Architecture (Keyed HMAC & Ephemeral Opaque References)
+
+#### 1. The Limitation of Unsalted Hashes
+Ordinary unsalted hashes (such as `sha256(token)` or truncated `sha256(token)[:16]`) must **NEVER** be described as universally non-reversible. Because session tokens and JWTs frequently share common structural headers, predictable timestamps, or constrained entropy spaces, unsalted digests are susceptible to precomputation, rainbow table attacks, and dictionary correlation.
+
+#### 2. Elimination of Masked Token Suffixes
+Retaining masked token slices (such as `tok_...4a9f` or prefix/suffix substrings) in state files or logs introduces subtle credential leakage by revealing high-entropy character sequences or identifiable token fragments. All masked token suffixes are **strictly prohibited** from persistent state and logging.
+
+#### 3. Keyed Cryptographic MAC Design (HMAC-SHA256)
+When deterministic cross-run correlation is required (allowing the engine to recognize when the same session is referenced across separate test executions without storing the credential), tokens are referenced strictly via a keyed cryptographic message authentication code:
+$$\text{session\_fingerprint} = \text{HMAC-SHA256}(K_{\text{local}}, \text{raw\_token}).\text{hexdigest}()[:32]$$
+
+* **Key Isolation**: The secret key $K_{\text{local}}$ is stored exclusively in `~/.config/opencode/auth_correlation.key` (or a local `.opencode/auth_correlation.key` strictly excluded by `.gitignore`).
+* **Strict Key Separation**: The key must **NEVER** be committed to Git or stored inside `state/auth_correlation.json`.
+* **Key Generation**: Generated on first initialization using cryptographically secure pseudorandomness: `secrets.token_bytes(32)`.
+* **Key Rotation**:
+  * The state file records a public, non-sensitive key identifier (`key_id: sha256(key)[:8]`).
+  * If the key is rotated, the state manager detects key ID mismatch, safely invalidates obsolete HMAC fingerprints, and requires fresh session observation.
+* **Failure Behavior**: If the key file cannot be read or created with verified restrictive permissions, the engine fails closed with `KeySecurityError` and falls back to **in-memory ephemeral opaque references**.
+
+#### 4. Ephemeral Opaque References (Default In-Memory Runtime Strategy)
+For standard in-session execution, sessions are referenced using cryptographically random UUIDv4 opaque tokens:
+$$\text{session\_ref} = \text{"sess\_"} + \text{uuid.uuid4}().\text{hex}$$
+* **Volatile Memory Mapping**: The mapping between the ephemeral reference and live in-memory token headers exists exclusively in volatile process memory and is destroyed upon process termination.
+* **State Decoupling**: In `state/auth_correlation.json`, only the opaque `session_ref`, keyed `session_fingerprint`, lifecycle state, and non-sensitive metadata (role tier, tenant ID, expiry timestamp) are persisted.
+* **Documented Limitation**: Ephemeral references alone cannot correlate sessions across process restarts without the local keyed HMAC key.
+
+### Cross-Platform File Security (Windows & Linux)
+
+The framework enforces strict least-privilege access across both operating environments. It checks the host OS (`os.name == 'nt'` vs POSIX) and applies the corresponding native security mechanism:
+
+* **Kali Linux / POSIX**:
+  * **File Mode**: Owner-only read/write (`0600` / `stat.S_IRUSR | stat.S_IWUSR`).
+  * **Directory Mode**: Owner-only read/write/execute (`0700` / `stat.S_IRWXU`).
+  * **Creation Protocol**: Files are opened via `os.open` with flags `O_CREAT | O_WRONLY | O_TRUNC` and mode `0o600`, with process umask set to `0o077`.
+* **Windows / NTFS**:
+  * **Discretionary Access Control Lists (DACLs)**: Enforced via restrictive NTFS ACLs. POSIX permissions on Windows only toggle the read-only flag and do not provide multi-user security.
+  * **Inheritance Removal**: Inheritance from parent directories is stripped (`/inheritance:r`).
+  * **Exclusive Grant**: Access is explicitly granted exclusively to the current executing user (`%USERNAME%:(F)`) and `NT AUTHORITY\SYSTEM:(F)`.
+  * **Explicit Denial**: Access is blocked for `Everyone`, `Users`, and other local accounts.
+  * **Implementation**: Applied via native Windows security APIs or `icacls.exe`.
 
 ### Atomic State Replacement & Schema Versioning
 * **Schema Version**: Mandatory top-level field `schema_version: "1.0.0"`.
-* **Atomic Replacement**: Serializes state to a temporary file (`state/auth_correlation.json.tmp.<pid>`) and executes an atomic replacement via `os.replace` to prevent file corruption if interrupted.
-* **File Permissions**: On POSIX/Linux workstations, `state/auth_correlation.json` is created with restricted owner-only permissions (`0o600`).
-* **Safe Handling of Corrupted State**: If `state/auth_correlation.json` contains malformed JSON or invalid schema, the engine must quarantine the corrupted file (renaming to `state/auth_correlation.json.corrupt.<timestamp>`), log a warning, and initialize a fresh clean schema failing closed.
-* **Sanitization Before Persistence**: All state structures must pass through `sanitize_sensitive_data()` before disk serialization.
-* **Zero Credential Leakage**: Exceptions, logs, and CLI representations must use masked representations to prevent credential leakage in crash reports or terminal logs.
-* **Zero New Dependencies**: Pure standard library implementation (`json`, `os`, `hashlib`, `stat`).
+* **Atomic Replacement**: Serializes state to a temporary file (`state/auth_correlation.json.tmp.<pid>`) and executes an atomic replacement via `os.replace` to prevent file corruption during unexpected termination.
+* **Corrupted State Quarantine**: If `state/auth_correlation.json` contains malformed JSON or invalid schema, the engine must quarantine the corrupted file (renaming to `state/auth_correlation.json.corrupt.<timestamp>`), log a warning, and initialize a fresh clean schema failing closed.
+* **Mandatory Sanitization**: All state structures must pass through `sanitize_sensitive_data()` before serialization.
+* **Zero New Dependencies**: Pure Python standard library implementation (`json`, `os`, `hashlib`, `hmac`, `secrets`, `uuid`, `stat`).
 
 ---
 
@@ -254,7 +291,7 @@ flowchart LR
   * `framework/auth_correlation/model.py` (`CorrelatedPrincipalContext`, `CorrelatedSessionContext`, `CorrelationHypothesis`, `CorrelationFinding`)
   * `framework/auth_correlation/matrix.py` (`PrincipalSessionMatrix`)
   * `tests/test_phase21_models.py`
-* **Security & Negative Tests**: Prove immutable principal IDs, token masking, and rejection of invalid session lifecycle states.
+* **Security & Negative Tests**: Prove immutable principal IDs, keyed HMAC-SHA256 fingerprinting, ephemeral opaque references, rejection of raw credential persistence, and rejection of invalid session lifecycle states.
 * **Acceptance Criteria**: 100% test pass rate; zero credential retention in serialized models.
 
 ### Stage 2: Dual-Control Preflight & Post-Revocation Resource Probing
