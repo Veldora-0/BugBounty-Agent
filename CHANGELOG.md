@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Stage C Security Reconciliation & Repository Audit Baseline
+
+#### Original Security Findings Remediation (SEC-01 to SEC-08)
+* **SEC-01 (Critical - Fail-Open Scope Gating in Mapping Engines)**:
+  * *Original Defect*: When mapping engines (`framework/assets/`, `framework/recon/`, `framework/webapp/`, `framework/javascript/`) were initialized without an explicit `ScopeEngine`, targets defaulted to `IN_SCOPE`, allowing unapproved network egress.
+  * *Remediation*: Strict fail-closed scope enforcement across all engines (`_is_in_scope()` returns `False` / raises `ScopeAuthorizationError` when `scope_engine` is absent).
+  * *ReconEngine Hook Isolation Remediation*: Enforced method-level hook isolation across `probe_dns`, `probe_tls`, `probe_http`, `probe_ports`, and `probe_endpoints`. Offline simulation hooks execute only when their specific, dedicated hook is configured. Unhooked probes never fall through to unauthenticated live network calls.
+* **SEC-02 (High - Unvalidated HTTP Redirects to Private/Metadata IPs & Insecure TLS)**:
+  * *Original Defect*: Legacy engines followed HTTP 302 redirects blindly to RFC 1918 or AWS/GCP cloud metadata IP addresses (`169.254.169.254`) and used unverified TLS contexts (`ssl.CERT_NONE`).
+  * *Remediation*: Unified HTTP transport onto `framework/common/transport.py` (`safe_fetch_url()`, `PinnedHTTPConnection`, `PinnedHTTPSConnection`, `SafeRedirectHandler`), enforcing destination-IP pinning, preflight anti-SSRF checks, redirect re-validation, and strict TLS certificate verification.
+* **SEC-03 (Medium-High - OpenCode Command Permission Wildcard & Chaining Weakness)**:
+  * *Original Defect*: Unanchored wildcard patterns (`*bb-doctor*`) in `opencode.jsonc` matched chained commands under the test permission model.
+  * *Remediation*: Hardened command permission matching in `opencode.jsonc` against shell chaining operators (`&&`, `||`, `;`, `|`, backticks, `$()`).
+* **SEC-04 (High - Silent Ingestion Failure on Malformed Scope Exclusions)**:
+  * *Original Defect*: A bare `except Exception: pass` in `ScopeEngine._preprocess_rules()` silently dropped malformed exclusion rules, causing excluded targets to be evaluated as in-scope.
+  * *Remediation*: Hardened `framework/scope/engine.py` schema validation: invalid or malformed target/exclusion definitions raise `ScopeConfigurationError` and fail closed instead of being silently ignored.
+* **SEC-05 (High - Scope Exclusion Prefix Matching Bypass via Query Strings & Semicolons)**:
+  * *Original Defect*: URL-level exclusions matching on prefixes were bypassed when targets contained query strings (`?`) or matrix parameters (`;`).
+  * *Remediation*: Hierarchical URL path normalization in `framework/scope/normalizer.py` strips queries, fragments, and matrix parameter semicolons before path-based exclusion matching, preventing scope bypasses like `/api/secret;param=1`.
+* **SEC-06 (Medium-High - Evidence Credential-Redaction Gaps in Sensitive Data Sanitizer)**:
+  * *Original Defect*: `sanitize_sensitive_data()` failed to redact `X-Auth-Token`, quoted JSON authorization headers, Bearer tokens, and API keys.
+  * *Remediation*: Expanded regex patterns in `sanitize_sensitive_data()` (`framework/common/evidence.py`) to scrub Bearer tokens, JWTs, AWS credentials, basic auth headers, and session cookies across state, logs, and evidence artifacts.
+* **SEC-07 (Medium - Insecure Tool Installation, Missing Cryptographic Authenticity Verification & Archive Extraction / Zip Slip)**:
+  * *Original Defect*: `ToolInstaller` extracted downloaded GitHub release archives without directory traversal protection and lacked independent cryptographic authenticity verification.
+  * *Remediation*: Pinned SHA-256 integrity verification is strictly mandatory for all binary archive downloads in `framework/tools/installer.py`. Missing or invalid hashes fail closed with `InstallerSecurityError`. Hardened tarfile and zipfile extraction filters reject directory traversal (Zip Slip) and dangerous file types (device nodes, FIFOs, absolute symlinks).
+  * *Documented Limitation*: 24 GitHub-release tools currently lack pinned upstream SHA-256 hashes in `config/tools.yaml` and cannot use automatic archive installation.
+* **SEC-08 (Medium - IPv6 URL Normalization Bracket Stripping)**:
+  * *Original Defect*: `framework/scope/normalizer.py:normalize_url()` stripped RFC 3986 mandatory brackets from IPv6 URLs with port numbers (`http://[2001:db8::1]:8080/test`), triggering unhandled `ValueError` crashes in downstream consumers accessing `.port`.
+  * *Remediation*: Preserves bracketed netloc formatting for IPv6 addresses (`[2001:db8::1]:8080`) during URL reconstruction.
+
+#### Additional Security, Architectural & Packaging Findings (ADD-*)
+* **ADD-SEC-01 (CLI Shell Subprocess Command Injection)**:
+  * Verified CLI shell wrappers in `scripts/` (`bb-recon`, `bb-assets`, `bb-js`, `bb-webapp`) tokenize argument vectors and invoke utilities without shell interpretation or unescaped string concatenation.
+* **ADD-SEC-02 (HTTP Trust Subprocess Insecure Fallback)**:
+  * Removed unmediated `curl` subprocess fallback in `HttpTrustEngine` (`framework/http_trust/engine.py`); all transport routed through secure transport layer with fail-closed bounds.
+* **ADD-SEC-03 (XXE Entity Expansion DoS / Billion Laughs)**:
+  * Hardened XML parser in `framework/common/xml_safe.py` and `framework/injection/engine.py` to enforce entity expansion budgets, protect against quadratic/exponential blowup attacks, and safely handle BOM and malformed XML.
+* **ADD-ARCH-01 (Transport Architecture Divergence / Unification)**:
+  * Unified divergent HTTP clients across legacy engines onto `framework/common/transport.py` with consistent timeouts, TLS certificate validation, destination-IP pinning, and fail-closed scope gating.
+* **ADD-PKG-01 (Missing Python Declarative Packaging Manifest)**:
+  * Created standard `pyproject.toml` with build system requirements, package metadata, dependencies, and optional test/dev dependencies.
+* **ADD-CFG-01 (Missing Explicit bb-webapp OpenCode Permission)**:
+  * Added explicit regex rule for `bb-webapp` CLI wrapper in `opencode.jsonc` to enforce consistent tool execution policy.
+* **ADD-DOC-01 (Roadmap Baseline Commit Hash Synchronization)**:
+  * Synchronized commit hash and verification metrics in `docs/ROADMAP-24-PHASES-TEMP.md`.
+* **ADD-DOC-02 (Changelog Phase 15 Completeness)**:
+  * Reconciled Phase 15 deliverables, validation engines, and test counts in `CHANGELOG.md`.
+* **Cross-Platform Test Verification**:
+  * Windows 11: 939 passed, 2 skipped (Playwright headless browser requirement) out of 941 tests across 46 modules.
+  * Kali Linux VM: 941 passed, 0 failures, 0 skipped out of 941 tests across 46 modules.
+
 ### Phase 20: Race Conditions & Distributed Workflows Intelligence (Accepted with Documented Limitations)
 
 #### Added & Hardened
@@ -83,7 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Extended `framework/state/manager.py` with `DEFAULT_CONCURRENCY` and synchronized `concurrency.json` into canonical findings.
   * Linked `bb-race` across deployment utilities (total 28 utilities).
 * **Automated Test Suite**:
-  * Expanded to 128 unit and integration tests in `tests/test_concurrency_engine.py` (and 175 tests across the full repository test suite) covering taxonomy, barrier timing, invariant rules, evidence classification hardening, full-envelope HMAC attestation, pre-state baselines, counter deltas, observation lifecycle integrity, execution-bound unique observation IDs, cross-run baseline isolation, measurement window serialization, measurement lock exception-safe release, failed lock acquisition guards, fail-closed `has_overlap` attribution guards on overlapping observations, primary exception preservation during cleanup failures with diagnostic note attachments, observation-state inspection safety, deterministic cleanup exception precedence across inspection/discard/release, structured cleanup diagnostic safety without raw exception retention, fail-safe diagnostic isolation against string conversion and sanitizer crashes, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
+  * Expanded to 128 unit and integration tests in `tests/test_concurrency_engine.py` (and 175 tests across the TestCase unittest discovery subset; 913 tests collected under pytest across all 45 modules at Phase 20 completion; currently 941 tests across 46 modules following Stage C hardening) covering taxonomy, barrier timing, invariant rules, evidence classification hardening, full-envelope HMAC attestation, pre-state baselines, counter deltas, observation lifecycle integrity, execution-bound unique observation IDs, cross-run baseline isolation, measurement window serialization, measurement lock exception-safe release, failed lock acquisition guards, fail-closed `has_overlap` attribution guards on overlapping observations, primary exception preservation during cleanup failures with diagnostic note attachments, observation-state inspection safety, deterministic cleanup exception precedence across inspection/discard/release, structured cleanup diagnostic safety without raw exception retention, fail-safe diagnostic isolation against string conversion and sanitizer crashes, scope fail-closed architecture, request budget bounds, worker lifecycle timeout handling, all 8 lab scenarios, secret scrubbing, and disk report inspection.
 
 ### Phase 19: Infrastructure & Configuration Exposure (Accepted with Documented Limitations)
 

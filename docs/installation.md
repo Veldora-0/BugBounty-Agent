@@ -26,14 +26,20 @@ cd BugBounty-Agent
 
 ## 3. Python Environment Setup
 
-Install the lightweight framework dependencies:
+Install dependencies using the standard PEP 517/621 packaging specification (`pyproject.toml`):
 
 ```bash
 # Optional: create a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install required packages
+# Standard editable installation (core runtime dependencies: pyyaml, playwright)
+pip install -e .
+
+# Or for full development and testing (adds pytest, etc.):
+pip install -e ".[dev]"
+
+# Or minimal standalone dependencies:
 pip install pyyaml pytest
 ```
 

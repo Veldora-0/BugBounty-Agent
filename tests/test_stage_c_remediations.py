@@ -71,6 +71,235 @@ def test_sec01_recon_engine_fail_closed():
     assert engine.probe_tls("example.com", 443) is None
 
 
+def test_sec01_recon_engine_hook_isolation_and_network_gating():
+    """
+    Adversarial verification of ReconnaissanceEngine network boundaries (Gate 3).
+    Exhaustively verifies all 15 security scenarios:
+    1. No ScopeEngine and no hooks.
+    2. No ScopeEngine with only DNS hook.
+    3. No ScopeEngine with only TLS hook.
+    4. No ScopeEngine with only HTTP hook.
+    5. No ScopeEngine with only port hook.
+    6. No ScopeEngine with only endpoint hook.
+    7. Cross-method hook combinations.
+    8. Out-of-scope targets.
+    9. Excluded targets.
+    10. Sibling domains.
+    11. Malformed targets.
+    12. ScopeEngine exceptions.
+    13. Authorized targets.
+    14. Offline deterministic hook behavior.
+    15. Candidate asset filtering.
+    """
+    import socket
+    import subprocess
+    import urllib.request
+
+    socket_connect_calls = []
+    gethost_calls = []
+    getaddrinfo_calls = []
+    subprocess_calls = []
+    urlopen_calls = []
+
+    def mock_create_conn(addr, timeout=None):
+        socket_connect_calls.append((addr, timeout))
+        raise ConnectionRefusedError()
+
+    def mock_gethost_ex(host):
+        gethost_calls.append(host)
+        return (host, [], ["93.184.216.34"])
+
+    def mock_getaddr(host, port, *args, **kwargs):
+        getaddrinfo_calls.append((host, port))
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    def mock_subprocess(*args, **kwargs):
+        subprocess_calls.append((args, kwargs))
+        raise RuntimeError("Subprocess execution attempted!")
+
+    def mock_urlopen(*args, **kwargs):
+        urlopen_calls.append((args, kwargs))
+        raise RuntimeError("urllib.request.urlopen attempted!")
+
+    with patch("socket.create_connection", side_effect=mock_create_conn), \
+         patch("socket.gethostbyname_ex", side_effect=mock_gethost_ex), \
+         patch("socket.gethostbyname", side_effect=lambda h: "93.184.216.34"), \
+         patch("socket.getaddrinfo", side_effect=mock_getaddr), \
+         patch("subprocess.run", side_effect=mock_subprocess), \
+         patch("subprocess.Popen", side_effect=mock_subprocess), \
+         patch("os.system", side_effect=mock_subprocess), \
+         patch("os.popen", side_effect=mock_subprocess), \
+         patch("urllib.request.urlopen", side_effect=mock_urlopen):
+
+        # Scenario 1: No ScopeEngine and no hooks
+        engine_bare = ReconnaissanceEngine(scope_engine=None)
+        assert engine_bare.probe_dns("unauthorized.example") == []
+        assert engine_bare.probe_tls("unauthorized.example", 443) is None
+        assert engine_bare.probe_http("unauthorized.example", 80, "http") is None
+        assert engine_bare.probe_ports("unauthorized.example", [80]) == []
+        assert engine_bare.probe_endpoints("http://unauthorized.example/") == []
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+        assert len(getaddrinfo_calls) == 0
+
+        # Scenario 2: No ScopeEngine, only DNS hook registered
+        engine_dns = ReconnaissanceEngine(scope_engine=None)
+        engine_dns.dns_probe_hook = lambda h, r: ["93.184.216.34"] if r == "A" else []
+        dns_res = engine_dns.probe_dns("unauthorized.example")
+        assert len(dns_res) == 1 and dns_res[0].values == ["93.184.216.34"]
+        assert engine_dns.probe_ports("unauthorized.example", [80]) == []
+        assert engine_dns.probe_tls("unauthorized.example", 443) is None
+        assert engine_dns.probe_http("unauthorized.example", 80, "http") is None
+        assert engine_dns.probe_endpoints("http://unauthorized.example/") == []
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # Scenario 3: No ScopeEngine, only TLS hook registered
+        engine_tls = ReconnaissanceEngine(scope_engine=None)
+        engine_tls.tls_probe_hook = lambda h, p: {"san_names": ["mock.com"], "issuer": "Mock"}
+        tls_res = engine_tls.probe_tls("unauthorized.example", 443)
+        assert tls_res is not None and tls_res.san_names == ["mock.com"]
+        assert engine_tls.probe_ports("unauthorized.example", [80]) == []
+        assert engine_tls.probe_dns("unauthorized.example") == []
+        assert engine_tls.probe_http("unauthorized.example", 80, "http") is None
+        assert engine_tls.probe_endpoints("http://unauthorized.example/") == []
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # Scenario 4: No ScopeEngine, only HTTP hook registered
+        engine_http = ReconnaissanceEngine(scope_engine=None)
+        engine_http.http_probe_hook = lambda h, p, s: {"status_code": 200, "title": "Mock"}
+        http_res = engine_http.probe_http("unauthorized.example", 80, "http")
+        assert http_res is not None and http_res.title == "Mock"
+        assert engine_http.probe_ports("unauthorized.example", [80]) == []
+        assert engine_http.probe_tls("unauthorized.example", 443) is None
+        assert engine_http.probe_dns("unauthorized.example") == []
+        assert engine_http.probe_endpoints("http://unauthorized.example/") == []
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # Scenario 5: No ScopeEngine, only Port hook registered
+        engine_ports = ReconnaissanceEngine(scope_engine=None)
+        engine_ports.port_scan_hook = lambda h, pts: [{"port": 80, "protocol": "tcp", "service": "http"}]
+        port_res = engine_ports.probe_ports("unauthorized.example", [80])
+        assert len(port_res) == 1 and port_res[0].port == 80
+        assert engine_ports.probe_tls("unauthorized.example", 443) is None
+        assert engine_ports.probe_dns("unauthorized.example") == []
+        assert engine_ports.probe_http("unauthorized.example", 80, "http") is None
+        assert engine_ports.probe_endpoints("http://unauthorized.example/") == []
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # Scenario 6: No ScopeEngine, only Endpoint hook registered
+        engine_ep = ReconnaissanceEngine(scope_engine=None)
+        engine_ep.endpoint_probe_hook = lambda u: [{"url": u + "login", "method": "GET", "status_code": 200}]
+        ep_res = engine_ep.probe_endpoints("http://unauthorized.example/")
+        assert len(ep_res) == 1 and ep_res[0].path == "/login"
+        assert engine_ep.probe_ports("unauthorized.example", [80]) == []
+        assert engine_ep.probe_tls("unauthorized.example", 443) is None
+        assert engine_ep.probe_dns("unauthorized.example") == []
+        assert engine_ep.probe_http("unauthorized.example", 80, "http") is None
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # Scenario 7: Cross-method hook combinations (DNS + Port registered, TLS + HTTP missing)
+        engine_cross = ReconnaissanceEngine(scope_engine=None)
+        engine_cross.dns_probe_hook = lambda h, r: ["1.2.3.4"] if r == "A" else []
+        engine_cross.port_scan_hook = lambda h, pts: [{"port": 443, "protocol": "tcp", "service": "https"}]
+        assert len(engine_cross.probe_dns("unauthorized.example")) == 1
+        assert len(engine_cross.probe_ports("unauthorized.example", [443])) == 1
+        assert engine_cross.probe_tls("unauthorized.example", 443) is None
+        assert engine_cross.probe_http("unauthorized.example", 80, "http") is None
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # ScopeEngine Configuration for Scenarios 8-15
+        scope_conf = {
+            "targets": {"domains": ["*.authorized.com", "exact-target.com"]},
+            "out_of_scope": {"domains": ["evil.com", "admin.authorized.com"]},
+        }
+        se = ScopeEngine(scope_conf)
+        engine_live = ReconnaissanceEngine(scope_engine=se)
+
+        # Scenario 8: Out-of-scope targets MUST make zero network calls
+        assert engine_live.probe_dns("evil.com") == []
+        assert engine_live.probe_tls("evil.com", 443) is None
+        assert engine_live.probe_ports("evil.com", [80]) == []
+        assert engine_live.probe_http("evil.com", 80, "http") is None
+        assert engine_live.probe_endpoints("http://evil.com/") == []
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # Scenario 9: Excluded targets MUST make zero network calls
+        assert engine_live.probe_dns("admin.authorized.com") == []
+        assert engine_live.probe_tls("admin.authorized.com", 443) is None
+        assert engine_live.probe_ports("admin.authorized.com", [80]) == []
+        assert engine_live.probe_http("admin.authorized.com", 80, "http") is None
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # Scenario 10: Sibling domains MUST make zero network calls
+        assert engine_live.probe_dns("authorized.org") == []
+        assert engine_live.probe_ports("authorized.org", [80]) == []
+        assert engine_live.probe_tls("authorized.org", 443) is None
+        assert engine_live.probe_http("authorized.org", 80, "http") is None
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # Scenario 11: Malformed targets MUST fail closed with zero network calls
+        for bad_host in ["bad..host..name", "http://[invalid", "foo\x00bar.com", "-invalid-.com"]:
+            assert engine_live.probe_dns(bad_host) == []
+            assert engine_live.probe_ports(bad_host, [80]) == []
+            assert engine_live.probe_tls(bad_host, 443) is None
+            assert engine_live.probe_http(bad_host, 80, "http") is None
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # Scenario 12: ScopeEngine exceptions fail closed with zero network calls
+        mock_crashing_se = MagicMock()
+        mock_crashing_se.check.side_effect = RuntimeError("Simulated scope engine crash")
+        engine_crash = ReconnaissanceEngine(scope_engine=mock_crashing_se)
+        assert engine_crash.probe_dns("api.authorized.com") == []
+        assert engine_crash.probe_ports("api.authorized.com", [80]) == []
+        assert engine_crash.probe_tls("api.authorized.com", 443) is None
+        assert engine_crash.probe_http("api.authorized.com", 80, "http") is None
+        assert len(socket_connect_calls) == 0
+        assert len(gethost_calls) == 0
+
+        # Scenario 13: Authorized targets execute genuine probe attempts
+        dns_res = engine_live.probe_dns("api.authorized.com")
+        assert len(dns_res) > 0
+        assert len(gethost_calls) == 1
+        assert gethost_calls[0] == "api.authorized.com"
+
+        engine_live.probe_ports("api.authorized.com", [80])
+        assert len(socket_connect_calls) == 1
+        assert socket_connect_calls[0][0] == ("api.authorized.com", 80)
+
+        # Scenario 14: Offline deterministic hook behavior suppresses live network even for in-scope
+        engine_mocked_in_scope = ReconnaissanceEngine(scope_engine=se)
+        engine_mocked_in_scope.dns_probe_hook = lambda h, r: ["10.0.0.1"] if r == "A" else []
+        engine_mocked_in_scope.port_scan_hook = lambda h, pts: [{"port": 80, "protocol": "tcp", "service": "http"}]
+        mock_dns = engine_mocked_in_scope.probe_dns("api.authorized.com")
+        assert len(mock_dns) == 1 and mock_dns[0].values == ["10.0.0.1"]
+        mock_ports = engine_mocked_in_scope.probe_ports("api.authorized.com", [80])
+        assert len(mock_ports) == 1 and mock_ports[0].port == 80
+        # No additional live network calls made for hooked operations
+        assert len(gethost_calls) == 1  # Still 1 from scenario 13
+        assert len(socket_connect_calls) == 1  # Still 1 from scenario 13
+
+        # Scenario 15: Candidate asset filtering in run_reconnaissance
+        out_asset = Asset.create(AssetType.SUBDOMAIN, "evil.com")
+        stats = engine_live.run_reconnaissance(assets=[out_asset])
+        assert stats["hosts_processed"] == 0
+        assert len(socket_connect_calls) == 1  # Still 1 from scenario 13
+        assert len(gethost_calls) == 1  # Still 1 from scenario 13
+
+        # Subprocess and external HTTP client invariant: ZERO unauthorized subprocess or unvetted urlopen calls
+        assert len(subprocess_calls) == 0, f"Unauthorized subprocess calls detected: {subprocess_calls}"
+        assert len(urlopen_calls) == 0, f"Unauthorized urllib.request.urlopen calls detected: {urlopen_calls}"
+
+
 def test_sec01_webapp_engine_fail_closed():
     """Verifies WebApplicationIntelligenceEngine fails closed when ScopeEngine is missing and no mock hook is registered."""
     engine = WebApplicationIntelligenceEngine(scope_engine=None)
@@ -695,11 +924,12 @@ def test_pkg01_pyproject_toml():
 
 
 def test_doc01_roadmap_baseline_hash():
-    """Verifies docs/ROADMAP-24-PHASES-TEMP.md contains the correct starting baseline hash."""
+    """Verifies docs/ROADMAP-24-PHASES-TEMP.md contains the correct starting baseline hash and current Stage C baseline."""
     roadmap_path = os.path.join(REPO_ROOT, "docs", "ROADMAP-24-PHASES-TEMP.md")
     with open(roadmap_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
     assert len(lines) >= 5
+    assert "c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae" in lines[4]
     assert "1841280b2f71b103b0e9217b961f1d859bd94272" in lines[4]
 
 

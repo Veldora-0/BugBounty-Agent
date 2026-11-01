@@ -1,7 +1,8 @@
 # BugBounty-Agent — Phase 20 Implementation Plan
 ## Race Conditions & Distributed Workflows Intelligence
 
-**Accepted Baseline**: `3ab5f7b657e8bcb9c66ffef5db665c7b1f90b121`
+**Implementation & Hardening Baseline**: `3ab5f7b657e8bcb9c66ffef5db665c7b1f90b121`
+**Final Acceptance Commit**: `3759f1ecb59168a6d4bb5ddaba7674d98afff24f`
 **Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 20)
 **Status**: Complete — Hardened, Corrected & Verified (Evidence Trust, Invariant Accuracy, Counter Baselines)
 **Architecture Model**: Single primary OpenCode agent (`Bug-Bounty`) with 18 modular skills (`subagent_depth: 1`)

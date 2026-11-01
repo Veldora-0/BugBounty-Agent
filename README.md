@@ -37,6 +37,7 @@ BugBounty-Agent/
 ├── SECURITY.md                # Responsible disclosure and ethical safety policy
 ├── .gitignore                 # Enforces exclusion of runtime, target, and secret data
 ├── opencode.jsonc             # OpenCode native project configuration & permissions
+├── pyproject.toml             # Standard PEP 517/621 Python packaging specification
 │
 ├── agents/                    # Canonical Bug-Bounty agent definition
 │   └── Bug-Bounty.md          # Primary orchestrator (deployed globally to ~/.config/opencode/agents/)
@@ -89,6 +90,9 @@ BugBounty-Agent/
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
 │   ├── bb-doctor              # Diagnostics utility across 25 system categories
+│   ├── bb-install             # Automated tool installer using declared registry tiers
+│   ├── bb-update              # Repository and global skill synchronization updater
+│   ├── bb-report              # Standalone disclosure report compiler
 │   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
@@ -122,7 +126,7 @@ BugBounty-Agent/
 │   ├── report.md              # 17-section markdown report template
 │   └── config.example.yaml    # Global framework configuration template
 │
-├── tests/                     # Automated regression test suite (45 test modules; 913 tests under pytest)
+├── tests/                     # Automated regression test suite (46 test modules; 941 tests under pytest)
 │   ├── test_scope.py          # Scope boundaries and DNS resolution tests
 │   ├── test_asset_engine.py   # Asset graph and subdomain intelligence tests
 │   ├── test_api_engine.py     # OpenAPI, GraphQL, and streaming byte budget tests
@@ -160,7 +164,11 @@ BugBounty-Agent/
 git clone https://github.com/Veldora-0/BugBounty-Agent.git
 cd BugBounty-Agent
 
-# Install lightweight dependencies
+# Install dependencies (standard editable install via pyproject.toml)
+pip install -e .
+# Or for full development and testing:
+pip install -e ".[dev]"
+# Or minimal dependencies:
 pip install pyyaml pytest
 
 # Run the test suite
@@ -480,7 +488,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 
 ### 3. Environment & Runtime Status
 * **Development & Evaluation Environments**: Validated and synchronized across Windows 11 x86_64 and Kali/Debian Linux workstations with Python 3.10+.
-* **Cross-Platform Test Coverage**: 45 test modules with 913 tests collected under pytest (911 passed, 2 skipped on Windows 11 due to headless browser environment requirements; 913 passed on Kali Linux).
+* **Cross-Platform Test Coverage**: 46 test modules with 941 tests collected under pytest (939 passed, 2 skipped on Windows 11 due to headless browser environment requirements; 941 passed on Kali Linux).
 * **Target Runtime**: Kali/Debian Linux with OpenCode installed, deploying `Bug-Bounty` globally via `bb-deploy`.
 
 ---

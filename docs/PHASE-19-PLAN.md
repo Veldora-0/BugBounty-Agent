@@ -1,9 +1,10 @@
 # BugBounty-Agent — Phase 19 Implementation Plan
 ## Infrastructure & Configuration Exposure
 
-**Accepted Baseline**: `ca27208de5bd5789230f5c736f497c10a726748f`  
-**Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 19)  
-**Status**: Planned — Not Started (Planning Gate & Technical Design)  
+**Planning Baseline**: `ca27208de5bd5789230f5c736f497c10a726748f`
+**Completion & Acceptance Commit**: `78f949a6d3b614ca60a82d7f776641787a6bebaa`
+**Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 19)
+**Status**: Complete — Implemented & Accepted (accepted with documented limitations)
 **Architecture Model**: Single primary OpenCode agent (`Bug-Bounty`) with 18 modular skills (`subagent_depth: 1`)
 
 ---
@@ -444,14 +445,20 @@ Phase 19 will be accepted only when all of the following measurable conditions a
 
 ## 12. Implementation-Stage Documentation Checklist
 
-The following documentation updates are explicitly designated as **deliverables during Phase 19 implementation**, and will NOT be modified until implementation code is built and tested:
+The following documentation updates have been completed upon Phase 19 implementation and acceptance:
 
-- [ ] `docs/ROADMAP-24-PHASES-TEMP.md`: Update Phase 19 status from Planned to Complete/Accepted, documenting delivery notes, commit hash, and verified test metrics. Set Phase 20 as Current Active Phase.
-- [ ] `README.md`: Add `framework/infrastructure/` to repository architecture tree; add `bb-infra` to CLI tools catalog; update `bb-doctor` category count.
-- [ ] `docs/architecture.md`: Document `framework/infrastructure/` within Core Intelligence layer.
-- [ ] `docs/security.md`: Document Phase 19 streaming response caps, secret redaction, and non-destructive exposure testing principles.
-- [ ] `skills/web-security/SKILL.md`: Add Section on Infrastructure & Configuration Exposure (`bb-infra` usage and methodology).
-- [ ] `CHANGELOG.md`: Record Phase 19 release notes.
+- [x] `docs/ROADMAP-24-PHASES-TEMP.md`: Update Phase 19 status from Planned to Complete/Accepted, documenting delivery notes, commit hash (`78f949a6d3b614ca60a82d7f776641787a6bebaa`), and verified test metrics.
+- [x] `README.md`: Add `framework/infrastructure/` to repository architecture tree; add `bb-infra` to CLI tools catalog; update `bb-doctor` category count.
+- [x] `docs/architecture.md`: Document `framework/infrastructure/` within Core Intelligence layer.
+- [x] `docs/security.md`: Document Phase 19 streaming response caps, secret redaction, and non-destructive exposure testing principles.
+- [x] `skills/web-security/SKILL.md`: Add Section on Infrastructure & Configuration Exposure (`bb-infra` usage and methodology).
+- [x] `CHANGELOG.md`: Record Phase 19 release notes.
+
+### Documented Acceptance Limitations
+1. **Safe-Method Boundary**: Testing strictly limited to non-destructive HTTP methods (`GET`, `HEAD`, `OPTIONS`); active `TRACE` testing is excluded.
+2. **Differential Soft-404 Heuristics**: Multi-factor differential comparison (Content-Type, status code, dynamic token stripping, token similarity) handles SPAs and custom error pages without naive zero-false-positive guarantees.
+3. **Evidence-Sufficiency Streaming Limits**: Strict response caps (32 KB global, 8 KB config/manifest, 1 KB archive magic byte) with immediate stream truncation upon signature validation.
+4. **Non-Destructive Observation**: Discovered administrative surfaces, configuration files, and credentials are authenticated and sanitized; automated exploitation, login attempts, or full archive extraction are prohibited.
 
 ---
 

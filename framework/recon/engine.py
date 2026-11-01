@@ -109,15 +109,14 @@ class ReconnaissanceEngine:
     def _is_in_scope(self, target: str) -> bool:
         """Enforces ScopeEngine checks before ANY active or passive probing. Fails closed if missing."""
         if not self.scope_engine:
-            return bool(
-                self.dns_probe_hook
-                or self.tls_probe_hook
-                or self.http_probe_hook
-                or self.port_scan_hook
-                or self.endpoint_probe_hook
-            )
-        decision = self.scope_engine.check(target)
-        return decision.status == ScopeStatus.IN_SCOPE
+            return False
+        try:
+            from framework.scope.normalizer import normalize_hostname
+            clean_host = normalize_hostname(target)
+            decision = self.scope_engine.check(clean_host)
+            return decision.status == ScopeStatus.IN_SCOPE
+        except Exception:
+            return False
 
     # ==========================================================================
     # 1. DNS RESOLUTION & ENRICHMENT
@@ -125,11 +124,12 @@ class ReconnaissanceEngine:
 
     def probe_dns(self, host: str) -> List[DnsRecordObservation]:
         """Collects DNS record observations for host (A, AAAA, CNAME)."""
-        if not self._is_in_scope(host):
+        if self.scope_engine and not self._is_in_scope(host):
             return []
 
         observations: List[DnsRecordObservation] = []
 
+        # 1. Dedicated offline simulation hook
         if self.dns_probe_hook:
             for rtype in ["A", "AAAA", "CNAME", "MX", "NS"]:
                 vals = self.dns_probe_hook(host, rtype)
@@ -149,40 +149,42 @@ class ReconnaissanceEngine:
                     observations.append(obs)
             return observations
 
-        # Live fallback using standard socket safely
-        if not self.passive_only:
-            try:
-                _, aliases, ips = socket.gethostbyname_ex(host)
-                if ips:
-                    obs_a = DnsRecordObservation(
-                        host=host,
-                        record_type="A",
-                        values=[ip for ip in ips if ":" not in ip],
-                        provenance=[
-                            ObservationProvenance(
-                                source="socket",
-                                method="gethostbyname_ex",
-                                confidence="CONFIRMED",
-                            )
-                        ],
-                    )
-                    observations.append(obs_a)
-                if aliases:
-                    obs_cname = DnsRecordObservation(
-                        host=host,
-                        record_type="CNAME",
-                        values=aliases,
-                        provenance=[
-                            ObservationProvenance(
-                                source="socket",
-                                method="gethostbyname_ex",
-                                confidence="CONFIRMED",
-                            )
-                        ],
-                    )
-                    observations.append(obs_cname)
-            except (socket.gaierror, socket.herror, OSError):
-                pass
+        # 2. Live fallback: strictly requires configured ScopeEngine, authorized in-scope target, and non-passive mode
+        if not self.scope_engine or not self._is_in_scope(host) or self.passive_only:
+            return []
+
+        try:
+            _, aliases, ips = socket.gethostbyname_ex(host)
+            if ips:
+                obs_a = DnsRecordObservation(
+                    host=host,
+                    record_type="A",
+                    values=[ip for ip in ips if ":" not in ip],
+                    provenance=[
+                        ObservationProvenance(
+                            source="socket",
+                            method="gethostbyname_ex",
+                            confidence="CONFIRMED",
+                        )
+                    ],
+                )
+                observations.append(obs_a)
+            if aliases:
+                obs_cname = DnsRecordObservation(
+                    host=host,
+                    record_type="CNAME",
+                    values=aliases,
+                    provenance=[
+                        ObservationProvenance(
+                            source="socket",
+                            method="gethostbyname_ex",
+                            confidence="CONFIRMED",
+                        )
+                    ],
+                )
+                observations.append(obs_cname)
+        except (socket.gaierror, socket.herror, OSError):
+            pass
 
         return observations
 
@@ -192,9 +194,10 @@ class ReconnaissanceEngine:
 
     def probe_tls(self, host: str, port: int = 443) -> Optional[TlsObservation]:
         """Extracts TLS SAN names, issuer, and validity details."""
-        if not self._is_in_scope(host) or self.passive_only:
+        if self.scope_engine and not self._is_in_scope(host):
             return None
 
+        # 1. Dedicated offline simulation hook
         if self.tls_probe_hook:
             res = self.tls_probe_hook(host, port)
             if not res:
@@ -219,7 +222,10 @@ class ReconnaissanceEngine:
                 ],
             )
 
-        # Safe fallback standard ssl context
+        # 2. Live fallback: strictly requires configured ScopeEngine, authorized in-scope target, and non-passive mode
+        if not self.scope_engine or not self._is_in_scope(host) or self.passive_only:
+            return None
+
         try:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
@@ -259,16 +265,17 @@ class ReconnaissanceEngine:
 
     def probe_http(self, host: str, port: int, scheme: str) -> Optional[HttpObservation]:
         """Probes an HTTP/HTTPS service, extracting status, headers, title, and fingerprints."""
-        if not self._is_in_scope(host) or self.passive_only:
-            return None
-
         if self.request_count >= self.max_requests:
             return None
 
-        self.request_count += 1
+        if self.scope_engine and not self._is_in_scope(host):
+            return None
+
         raw_url = f"{scheme}://{host}:{port}/" if (scheme == "http" and port != 80) or (scheme == "https" and port != 443) else f"{scheme}://{host}/"
 
+        # 1. Dedicated offline simulation hook
         if self.http_probe_hook:
+            self.request_count += 1
             res = self.http_probe_hook(host, port, scheme)
             if not res:
                 return None
@@ -297,7 +304,12 @@ class ReconnaissanceEngine:
                 ],
             )
 
-        # Fallback using unified safe transport (ARCH-01, SEC-02)
+        # 2. Live fallback using unified safe transport (ARCH-01, SEC-02)
+        # Strictly requires configured ScopeEngine, authorized in-scope target, and non-passive mode
+        if not self.scope_engine or not self._is_in_scope(host) or self.passive_only:
+            return None
+
+        self.request_count += 1
         from framework.common.transport import safe_fetch_url
         res = safe_fetch_url(
             raw_url,
@@ -410,12 +422,13 @@ class ReconnaissanceEngine:
 
     def probe_ports(self, host: str, ports: Optional[List[int]] = None) -> List[PortServiceObservation]:
         """Probes specified ports for open TCP services."""
-        if not self._is_in_scope(host) or self.passive_only:
+        if self.scope_engine and not self._is_in_scope(host):
             return []
 
         target_ports = ports or DEFAULT_HTTP_PORTS
         observations: List[PortServiceObservation] = []
 
+        # 1. Dedicated offline simulation hook
         if self.port_scan_hook:
             res_list = self.port_scan_hook(host, target_ports)
             for res in res_list:
@@ -438,7 +451,10 @@ class ReconnaissanceEngine:
                 observations.append(obs)
             return observations
 
-        # Live bounded socket connect
+        # 2. Live fallback bounded socket connect: strictly requires configured ScopeEngine, authorized in-scope target, and non-passive mode
+        if not self.scope_engine or not self._is_in_scope(host) or self.passive_only:
+            return []
+
         for p in target_ports:
             if self.request_count >= self.max_requests:
                 break
@@ -472,7 +488,10 @@ class ReconnaissanceEngine:
         """Collects discovered endpoints/paths for a web service."""
         parsed = urlparse(base_url)
         host = parsed.hostname or ""
-        if not self._is_in_scope(host):
+        if self.scope_engine and not self._is_in_scope(host):
+            return []
+
+        if not self.endpoint_probe_hook:
             return []
 
         observations: List[EndpointObservation] = []
@@ -553,7 +572,17 @@ class ReconnaissanceEngine:
 
         for asset in candidates:
             host = asset.value.strip().lower()
-            if not self._is_in_scope(host):
+            # Enforce ScopeEngine boundary; allow offline simulation only when mock hooks are present
+            if not self._is_in_scope(host) and not (
+                not self.scope_engine
+                and (
+                    self.dns_probe_hook
+                    or self.tls_probe_hook
+                    or self.http_probe_hook
+                    or self.port_scan_hook
+                    or self.endpoint_probe_hook
+                )
+            ):
                 continue
 
             self.hosts_processed += 1
