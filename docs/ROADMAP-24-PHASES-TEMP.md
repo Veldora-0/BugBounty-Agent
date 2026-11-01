@@ -2,7 +2,7 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Repository baseline:** `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae` (Stage C security remediation accepted; pre-Phase 21 baseline; historical Phase 1–20 baseline `1841280b2f71b103b0e9217b961f1d859bd94272`)
+> **Current Repository Baseline:** `e740666759c85637cefe20d171acadaa69b567f3` (Phase 1–20 baseline & Phase 21 planning gate documentation reconciled; pre-Phase 21 implementation baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`; historical Stage C audit baseline: `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae`; historical pre-remediation baseline: `1841280b2f71b103b0e9217b961f1d859bd94272`)
 > **Current phase:** Phase 20 — Race Conditions & Distributed Workflows (Complete; Next Phase: Phase 21)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
@@ -188,7 +188,7 @@ Safety boundaries:
 
 ## 4. Recommended execution strategy
 
-1. **Start with Phase 15.** Do not replace it with a general orchestration phase.
+1. **Execution Order**: Phases 1–20 are complete and verified. The current active roadmap execution point is Phase 21 (Authentication & Authorization Correlation). Do not replace individual security phases with premature general orchestration.
 2. For each phase, do a focused gap review of relevant code/tests before implementation. Avoid a repeated repository-wide audit unless new evidence warrants it.
 3. Write acceptance criteria and negative/security tests before coding.
 4. Reuse shared scope, transport, policy, state, evidence, finding lifecycle, deduplication, and reporting components.
@@ -201,14 +201,13 @@ Safety boundaries:
 
 ## 5. Priority interpretation
 
-The initial priority recommendation is:
-1. Phase 15 — file handling coverage.
-2. Phase 16 — reliable browser capability and client-side analysis.
-3. Phase 22 — high-value cross-engine reasoning; prepare compatible identifiers during Phases 15–21.
-4. Phase 23 — research planning once capability and correlation signals are trustworthy.
-5. Phase 24 — final acceptance.
+With Phases 1–20 verified and complete, the sequential roadmap priority is:
+1. Phase 21 — Authentication & Authorization Correlation (Active Planning Gate).
+2. Phase 22 — Cross-Engine Attack-Path Correlation.
+3. Phase 23 — Autonomous Research Planning & Coverage Intelligence.
+4. Phase 24 — Final Integration & Production Readiness.
 
-Phases 17–21 remain in the roadmap and should be ordered by demonstrated coverage gaps and dependencies. The numeric sequence remains the default execution order unless a focused audit provides a clear, documented reason to change it.
+The numeric sequence remains the authoritative execution order. Each phase must be completed and accepted before the subsequent phase begins.
 
 ## 6. Project objective
 

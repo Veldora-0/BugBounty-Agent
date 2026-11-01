@@ -1,388 +1,331 @@
 # BugBounty-Agent — Phase 21 Planning Gate
-## Authentication & Authorization Correlation Implementation Plan & Strategic Roadmap (Phases 22–24)
-
-> [!IMPORTANT]
-> **PLANNING GATE ONLY — IMPLEMENTATION NOT AUTHORIZED**  
-> This document establishes the formal architecture, technical requirements, component designs, and acceptance criteria for Phase 21. No production code, tests, or skill modifications are authorized until explicit human operator approval is granted.
+## Authentication & Authorization Correlation Engine
 
 ---
 
-## 1. Phase 21 Canonical Identity & Core Objectives
+## 1. Executive Summary & Authorization Status
 
-### Canonical Identity
-* **Phase Number**: Phase 21
-* **Canonical Title**: **Authentication & Authorization Correlation**
-* **Canonical Roadmap Reference**: `docs/ROADMAP-24-PHASES-TEMP.md` (Line 173)
-* **Current Status**: **PLANNED / NOT STARTED**
+* **Target Phase**: **Phase 21 — Authentication & Authorization Correlation**
+* **Repository**: `Veldora-0/BugBounty-Agent`
+* **Branch**: `main`
+* **Planning Baseline HEAD**: `e740666759c85637cefe20d171acadaa69b567f3`
+* **Phase Status**: Strictly **PLANNED / NOT STARTED**
+* **Implementation Authorization**: **PENDING OPERATOR APPROVAL (PHASE 0 GATE)**
 
-### Primary Objective
-To construct an empirical correlation engine linking the existing **Authentication, Session & Identity Security Engine** (`framework/authentication/`, Phase 14) with the **Authorization & Access Control Engine** (`framework/authz/`, Phase 8), establishing a unified model of principal identities, roles, tenant boundaries, dynamic session lifecycles, and resource ownership to eliminate false positives and identify subtle cross-state access-control vulnerabilities.
+### Problem Statement
+In the existing Phase 1–20 implementation, authentication intelligence (`framework/authentication/`, Phase 14) and authorization intelligence (`framework/authz/`, Phase 8) operate as decoupled subsystems:
+1. `framework/authz/` executes dual-principal comparative testing (User A vs. User B) using static token and cookie references. It lacks awareness of session state transitions, token expiration, logout invalidation, or MFA completion boundaries.
+2. `framework/authentication/` tracks credential lifecycles, session state machines, and token rotation, but does not correlate these transitions with downstream resource access controls or cross-tenant parameter boundaries.
+3. This decoupling introduces substantial risk of:
+   * **False Negatives**: Mistaking an expired or invalidated session for an intentional authorization rejection (e.g. reporting that User B is denied access to User A's invoice when in reality User B's session had simply expired).
+   * **False Positives**: Flagging an apparent privilege escalation when a target web application serves public landing pages, login redirects, or SPA shells returning `HTTP 200 OK`.
+   * **Flawed Multi-Tenant Probes**: Corrupting JWT claims without cryptographic re-signing, causing API gateways to reject signatures (HTTP 401) rather than evaluating multi-tenant access control logic.
 
-### Problems Addressed
-1. **Session Lifecycle Blindness in Authorization Testing**:
-   Current Phase 8 comparative testing (`AuthzEngine`) evaluates endpoints with static session tokens (`SessionProfile`). If a session token expires, invalidates, or encounters a rate-limit during testing, the endpoint returns `401 Unauthorized` or `403 Forbidden`. The current authorization engine misinterprets this session drop as an enforced authorization control, causing **false negatives** (missed BOLA/IDOR).
-2. **Ambiguous 401 vs. 403 Response Discrepancies**:
-   Modern microservices and API gateways frequently return `401 Unauthorized` for both missing authentication and unauthorized tenant access, or return `403 Forbidden` for expired authentication credentials. Without correlating session validity against principal permissions, access-control verdicts remain ambiguous.
-3. **Step-Up & Pre-MFA Privilege Leakage**:
-   In applications enforcing Multi-Factor Authentication (MFA), an identity transitions from `ANONYMOUS` to `PARTIALLY_AUTHENTICATED` (password verified, MFA challenge pending), and finally to `MFA_VERIFIED` / `AUTHENTICATED`. Current engines do not systematically test whether sensitive resource endpoints or tenant data leak to sessions in the intermediate `PARTIALLY_AUTHENTICATED` / `MFA_REQUIRED` state.
-4. **Multi-Tenant Identity & Header/Route desynchronization**:
-   Multi-tenant SaaS architectures frequently receive tenant context across three conflicting channels:
-   * URL route path: `/api/v1/tenants/{tenant_id}/documents`
-   * HTTP header: `X-Tenant-ID: tenant-B`
-   * JWT bearer claim: `{"tenant_id": "tenant-A"}`  
-   Current testing lacks a structured cross-channel correlation matrix to detect when an endpoint trusts a spoofed header or route parameter over the cryptographically signed session token.
-5. **Post-Logout & Post-Password-Reset Resource Invalidation Latency**:
-   Phase 14 verifies that `/auth/logout` or `/auth/password-reset` revokes the active session cookie on authentication endpoints. However, microservices architectures relying on cached stateless JWTs or distributed sessions often fail to propagate revocation to downstream resource APIs (`/api/v2/orders`, `/api/v1/user/profile`). A dedicated correlation engine is required to test resource endpoints using revoked session artifacts.
-
-### Expected Capabilities
-* **Dynamic Principal-Session Matrix (`PrincipalSessionMatrix`)**: Tracks active, expired, rotated, and revoked sessions across multiple test principals (User A, User B, Admin, Anonymous, Pre-MFA).
-* **Pre-Flight Session Health Probing**: Automatically validates session validity on a benign control endpoint prior to comparative authorization tests to guarantee observed 401/403 responses represent authorization decisions rather than session expiration.
-* **Pre-MFA Privilege Boundary Analysis**: Evaluates candidate resource endpoints against intermediate authentication states to detect premature data exposure before full MFA completion.
-* **Cross-Tenant Context Desynchronization Testing**: Evaluates parameter tampering across route path, query parameter, request header, and JWT claim channels to detect multi-tenant cross-talk.
-* **Post-Authentication Event Resource Invalidation Probing**: Automatically tests protected resource endpoints using session tokens captured immediately after logout and password-change events to verify distributed revocation latency.
-
-### Explicit Out-of-Scope Items
-* Automated credential brute-forcing, password spraying, or credential stuffing.
-* Automated OTP / TOTP token guessing or CAPTCHA bypassing.
-* Destructive data modification (all write/update probes must use synthetic test records owned by test accounts).
-* Single Sign-On (SSO) SAML identity provider spoofing against third-party IdPs.
-* Automatic submission of disclosure reports.
+### Phase 21 Objective
+Build a correlation layer (`framework/auth_correlation/`) that binds authentication session lifecycles to authorization testing policies:
+* **Dual-Control Preflight Validation**: Differential comparison verifying genuine session validity before executing comparative tests.
+* **Post-Revocation Resource Probing**: Testing resource access persistence after explicit logout, password rotation, or token invalidation.
+* **Pre-MFA Privilege Boundary Enforcement**: Auditing sensitive API endpoints exposed to partially authenticated sessions.
+* **Dual-Token Multi-Tenant Desynchronization**: Testing cross-tenant route, header, and query parameter substitution using two valid, cryptographically signed tenant identities.
 
 ---
 
-## 2. Existing Functionality Analysis & Reuse Mapping
+## 2. Core Architectural Invariants
 
-Phase 21 strictly adheres to the project invariant: **Avoid duplicate engines, models, and utilities; extend and integrate existing components.**
+Phase 21 strictly complies with all core BugBounty-Agent architectural invariants:
+
+1. **Single-Agent Model**: All capabilities are orchestrated directly by the primary agent `Bug-Bounty` (`agents/Bug-Bounty.md`). Zero subagents are spawned (`subagent_depth: 1`).
+2. **Preservation of 18 Modular Skills**: Phase 21 functionality is exposed through the existing `authentication` and `authorization` skills (`skills/authentication/` and `skills/authorization/`). No new skills or agents are created.
+3. **Mandatory Scope Authorization**: All active probes require an initialized, valid `ScopeEngine`. Probes against unverified or out-of-scope targets fail closed immediately with `ScopeViolationError`.
+4. **Destination-IP Pinning & Anti-SSRF (SEC-02)**: All HTTP requests route through `framework/common/transport.py` (`safe_fetch_url`, `PinnedHTTPConnection`, `PinnedHTTPSConnection`, `SafeRedirectHandler`), pre-resolving DNS, rejecting private RFC 1918 / loopback / cloud metadata (`169.254.169.254`) IPs, and pinning TCP connections.
+5. **Non-Destructive Testing Only**: Zero password spraying, brute-forcing, OTP flooding, or unauthorized credential modification. Testing is restricted to operator-provided test identities.
+6. **Strict Request & Byte Budgets**: All correlation testing enforces request ceilings ($\le 15$ requests per hypothesis) and depletes global byte budgets.
+7. **Strict Credential Hygiene**: Raw credentials (passwords, tokens, cookies, secrets) are never committed to Git, persisted in state files, or leaked in logs/exceptions.
+
+---
+
+## 3. Component Architecture & Canonical AST Binding
+
+To prevent architectural drift and eliminate redundant models, Phase 21 reuses established framework models and classes:
 
 ```mermaid
 flowchart TD
-    subgraph "Phase 14: Authentication Engine"
-        A1["AuthenticationIdentity"]
-        A2["SessionLifecycle"]
-        A3["MFAState"]
-        A4["AuthenticationTestExecutor"]
-        A5["TokenMetadata (JWT)"]
+    subgraph "Phase 14: Authentication Intelligence (Reuse)"
+        P14_Model["IdentityProfile & SessionProfile<br>(framework/authentication/models.py)"]
+        P14_Eng["AuthenticationSecurityEngine<br>(framework/authentication/engine.py)"]
+        P14_Hyp["AuthenticationHypothesisEngine<br>(framework/authentication/hypotheses.py)"]
     end
 
-    subgraph "Phase 8: Authorization Engine"
-        B1["PrincipalProfile"]
-        B2["SessionProfile"]
-        B3["ExpectedAccessPolicy"]
-        B4["AccessComparator"]
-        B5["ResourceAccessTarget"]
+    subgraph "Phase 8: Authorization Intelligence (Reuse)"
+        P8_Comp["AccessControlComparator<br>(framework/authz/comparator.py)"]
+        P8_Model["AuthzRequest, AuthzResponse, AuthzEvidence<br>(framework/authz/model.py)"]
+        P8_Eng["AuthorizationIntelligenceEngine<br>(framework/authz/engine.py)"]
     end
 
-    subgraph "Phase 5 & 17: API Intelligence"
-        C1["EndpointSchema"]
-        C2["ParameterClassification"]
+    subgraph "Phase 21: Auth Correlation Subsystem (New)"
+        P21_Ctx["CorrelatedPrincipalContext & CorrelatedSessionContext<br>(framework/auth_correlation/model.py)"]
+        P21_Eng["AuthCorrelationEngine<br>(framework/auth_correlation/engine.py)"]
+        P21_Preflight["DualControlPreflightValidator<br>(framework/auth_correlation/preflight.py)"]
+        P21_Tenant["MultiTenantDesyncValidator<br>(framework/auth_correlation/tenant.py)"]
+        P21_State["AuthCorrelationStateManager<br>(framework/auth_correlation/state.py)"]
     end
 
-    subgraph "Phase 21: Auth & Authz Correlation Subsystem"
-        D1["PrincipalSessionMatrix"] --> D2["AuthCorrelationEngine"]
-        D2 --> D3["PreFlightSessionValidator"]
-        D2 --> D4["PreMfaPrivilegeValidator"]
-        D2 --> D5["TenantDesyncValidator"]
-        D2 --> D6["PostRevocationResourceValidator"]
+    subgraph "Shared Framework Infrastructure (Reuse)"
+        Common_Transport["Pinned Transport<br>(framework/common/transport.py)"]
+        Common_Evidence["EvidenceStore & sanitize_sensitive_data<br>(framework/common/evidence.py)"]
+        Global_State["StateManager & FindingLifecycle<br>(framework/state/manager.py)"]
     end
 
-    A1 & B1 --> D1
-    A2 & B2 --> D1
-    A3 --> D4
-    A5 & C2 --> D5
-    B3 & B4 --> D2
-    D2 --> E1["SecurityValidationEngine (Transport & Evidence)"]
-    D2 --> E2["FindingLifecycle (Central Findings)"]
+    P14_Model --> P21_Ctx
+    P8_Model --> P21_Ctx
+    P21_Ctx --> P21_Eng
+    P21_Eng --> P21_Preflight
+    P21_Eng --> P21_Tenant
+    P21_Preflight --> P8_Comp
+    P21_Preflight --> Common_Transport
+    P21_Tenant --> P8_Comp
+    P21_Tenant --> Common_Transport
+    P21_Eng --> P21_State
+    P21_State --> Global_State
+    P21_Eng --> Common_Evidence
 ```
 
-### Component Reuse Matrix
+### Canonical Component Naming Matrix
 
-| Phase 21 Requirement | Existing Framework Component | Identified Gap | Proposed Action |
-| :--- | :--- | :--- | :--- |
-| **Principal Identity Representation** | `PrincipalProfile` (`framework/authz/model.py`), `AuthenticationIdentity` (`framework/authentication/models.py`) | Authz uses static strings; Auth uses dynamic lifecycle states. | Unify via `CorrelatedPrincipal` model referencing both static role and dynamic session state. |
-| **Session Lifecycle & Invalidation** | `SessionObservation`, `SessionLifecycle` (`framework/authentication/models.py`) | Tests `/logout` and `/reset` on auth endpoints only; does not test resource APIs. | Create `PostRevocationResourceValidator` to replay resource requests with invalidated tokens. |
-| **Comparative Response Evaluation** | `AccessComparator` (`framework/authz/comparator.py`) | Compares User A vs User B responses, but cannot detect when User B's session was invalid. | Extend comparator with `PreFlightSessionValidator` to verify session health before differential analysis. |
-| **Intermediate MFA State Testing** | `MFAState` (`framework/authentication/models.py`), `MFATransitionHypothesis` (`framework/authentication/hypotheses.py`) | Probes MFA verification endpoint only; does not test protected resource endpoints. | Create `PreMfaPrivilegeValidator` testing resource access under `PARTIALLY_AUTHENTICATED` sessions. |
-| **Multi-Tenant Cross-Channel Testing** | `ResourceAccessTarget` (`framework/authz/model.py`), `TokenMetadata` (`framework/authentication/models.py`) | Does not correlate tenant ID across JWT payload claims vs headers vs route params. | Create `TenantDesyncValidator` using `OpenApiParser` parameter definitions and JWT claims. |
-| **Safe HTTP Transport & IP Pinning** | `framework/common/transport.py` (`safe_fetch_url`, `PinnedHTTPConnection`) | Already implemented and hardened in SEC-02. | Fully reuse without modification; all active probes route through pinned transport. |
-| **Cryptographic Evidence Capture** | `EvidenceStore` (`framework/common/evidence.py`), `AuthzEvidence` (`framework/authz/model.py`) | Auth evidence and Authz evidence stored in separate formats. | Standardize evidence using unified `EvidenceEnvelope` and sanitize credentials. |
-| **State Persistence** | `state/auth.json`, `state/authz.json` | Correlation state not persisted. | Add `state/auth_correlation.json` managed by `AuthCorrelationStateManager`. |
-
----
-
-## 3. Phase 21 Architecture & System Design
-
-### A. Architectural Placement
-Phase 21 is implemented as a specialized correlation module located in:  
-📁 `framework/auth_correlation/`
-
-It integrates directly with existing engines without creating a separate agent or introducing a 19th skill:
-* **Primary Agent**: Orchestrated by `Bug-Bounty` (`agents/Bug-Bounty.md`).
-* **Modular Skills**: Coordinated between existing `skills/authentication/SKILL.md` and `skills/authorization/SKILL.md`.
-* **CLI Entry Points**: Accessible via `bb-authz --correlate` and dedicated script `scripts/bb-auth-correlate` (with Windows `scripts/bb-auth-correlate.cmd`).
-* **OpenCode Permissions**: Permitted via explicit rule in `opencode.jsonc`: `*bb-auth-correlate* -> ask`.
-
-### B. Subsystem Components
-
-1. **`framework/auth_correlation/model.py`**:
-   * `CorrelatedPrincipal`: Combines `principal_id`, `role`, `tenant_id`, `privilege_level`, and active `CorrelatedSession`.
-   * `CorrelatedSession`: Tracks `session_id`, `token_type` (Cookie, Bearer, API-Key), `lifecycle_state` (`ACTIVE`, `PARTIAL_MFA`, `LOGGED_OUT`, `EXPIRED`), `token_metadata`, and `health_check_endpoint`.
-   * `TenantContextMapping`: Maps tenant identifier representations across `route_path_param`, `query_param`, `header_name`, and `jwt_claim_path`.
-   * `CorrelationHypothesis`: Formal hypothesis structure for correlation testing (`PRE_MFA_EXPOSURE`, `POST_LOGOUT_ACCESS`, `TENANT_DESYNC_BOLA`, `SESSION_DECAY_FALSE_NEGATIVE`).
-   * `CorrelationFinding`: Structured finding object conforming to `framework/findings/schema.py`.
-2. **`framework/auth_correlation/matrix.py` (`PrincipalSessionMatrix`)**:
-   * Multi-dimensional state matrix tracking test identities and their valid/invalidated tokens.
-   * Provides deterministic test matrices:
-     * User A (Active, Tenant 1) vs User B (Active, Tenant 2) -> Cross-Tenant BOLA.
-     * User A (Pre-MFA) vs Protected Resource -> Step-Up Bypass.
-     * User A (Post-Logout) vs Protected Resource -> Distributed Session Latency.
-     * User A (Anonymous) vs Protected Resource -> Unauthenticated Boundary.
-3. **`framework/auth_correlation/preflight.py` (`PreFlightSessionValidator`)**:
-   * Evaluates session health on a known benign endpoint (e.g. `/api/v1/me` or `/api/v1/profile`) immediately prior to any comparative authorization probe.
-   * Fails closed: If User B's session returns 401 on the health-check endpoint, the comparative probe is aborted with status `SESSION_EXPIRED`, preventing false BOLA reports.
-4. **`framework/auth_correlation/engine.py` (`AuthCorrelationEngine`)**:
-   * Primary orchestrator executing correlation hypotheses against target endpoints.
-   * Coordinates request dispatch through `SecurityValidationEngine`, enforces `SecurityTestPolicy` request ceilings ($\le 15$ reqs/test), and writes structured evidence to `EvidenceStore`.
-5. **`framework/auth_correlation/lab.py` (`LocalAuthCorrelationLab`)**:
-   * Deterministic local HTTP simulation harness running on ephemeral loopback ports serving 6 representative test scenarios for automated regression testing.
-6. **`framework/auth_correlation/state.py` (`AuthCorrelationStateManager`)**:
-   * Persists correlated findings, principal matrices, and hypothesis outcomes to `state/auth_correlation.json`.
+| Role | Canonical Class Name | Source File | Status |
+| :--- | :--- | :--- | :---: |
+| **Authentication Identity Model** | `IdentityProfile` | `framework/authentication/models.py` | Existing (Phase 14) |
+| **Authentication Security Engine** | `AuthenticationSecurityEngine` | `framework/authentication/engine.py` | Existing (Phase 14) |
+| **Authentication Hypothesis Engine**| `AuthenticationHypothesisEngine` | `framework/authentication/hypotheses.py` | Existing (Phase 14) |
+| **Authentication Test Executor** | `AuthenticationTestExecutor` | `framework/authentication/engine.py` | Existing (Phase 14) |
+| **Authorization Intelligence Engine**| `AuthorizationIntelligenceEngine` | `framework/authz/engine.py` | Existing (Phase 8) |
+| **Access Control Comparator** | `AccessControlComparator` | `framework/authz/comparator.py` | Existing (Phase 8) |
+| **Authorization Evidence Model** | `AuthzEvidence` | `framework/authz/model.py` | Existing (Phase 8) |
+| **Correlation Context Wrapper** | `CorrelatedPrincipalContext` | `framework/auth_correlation/model.py` | Phase 21 New |
+| **Correlated Session Context** | `CorrelatedSessionContext` | `framework/auth_correlation/model.py` | Phase 21 New |
+| **Primary Correlation Engine** | `AuthCorrelationEngine` | `framework/auth_correlation/engine.py` | Phase 21 New |
+| **Dual-Control Preflight Validator**| `DualControlPreflightValidator` | `framework/auth_correlation/preflight.py`| Phase 21 New |
+| **Multi-Tenant Desync Validator** | `MultiTenantDesyncValidator` | `framework/auth_correlation/tenant.py` | Phase 21 New |
+| **Correlation State Manager** | `AuthCorrelationStateManager` | `framework/auth_correlation/state.py` | Phase 21 New |
 
 ---
 
-## 4. Detailed Implementation Breakdown
+## 4. Dynamic Session Lifecycle & Preflight Health Engine
 
-Phase 21 is structured into **5 incremental, reviewable implementation stages**:
+### Session Lifecycle State Machine
+Sessions transition through 6 formal lifecycle states:
+1. `ACTIVE`: Confirmed valid session possessing current, authenticated credentials.
+2. `EXPIRED`: Session whose token lifetime (`exp`) or idle timeout has lapsed.
+3. `ROTATED`: Prior session identifier superseded by a newly issued identifier during privilege transition.
+4. `LOGGED_OUT`: Session explicitly terminated via logout endpoint.
+5. `INVALIDATED`: Session revoked via password change, administrative revocation, or security reset.
+6. `UNKNOWN`: Unverified session state pending preflight health determination.
+
+### Dual-Control Preflight Validation Protocol
+> [!CRITICAL]
+> **HTTP 200, status differences, or body similarity alone must NEVER establish authenticated session validity.**
+> Modern single-page applications (SPAs) and API gateways frequently return `HTTP 200 OK` serving public HTML shells, login redirects, or generic JSON responses when receiving expired or invalid sessions.
+
+To establish genuine session validity, `DualControlPreflightValidator` enforces a **6-point verification protocol**:
+
+1. **Identity-Specific Endpoint**: Preflight must target an identity-bound endpoint (e.g. `/api/v1/users/me`, `/api/v1/profile`, `/api/v1/account`, `/api/v1/user/settings`) where authenticated responses are guaranteed to contain identity claims.
+2. **Expected Identity Verification**: The response body must be parsed for expected identity attributes belonging to the operator-controlled test account (e.g. expected username, email, user ID, or tenant ID matching User A or User B).
+3. **Differential Comparison Against Anonymous Control Request**: An identical request must be dispatched to the *same* endpoint without authentication credentials. If the probe response matches the anonymous control response (e.g. both return public landing page, login form, or SPA skeleton), the session is classified as invalid.
+4. **Checks for Cached or Public Responses**: The validator must inspect HTTP response headers for caching indicators (`Cache-Control: public`, `Age`, `CF-Cache-Status: HIT`, `X-Cache: HIT`, `ETag`, `Expires`) and verify that the endpoint is not serving a cached or static resource.
+5. **Meaningful Identity-Specific Response Attributes**: Attributes must be substantive data fields (e.g. JSON fields `{"user_id": "...", "email": "...", "tenant_id": "..."}`) that are strictly absent in the anonymous control request, proving real authenticated state.
+6. **Safe Handling of Ambiguous Responses**: If the endpoint returns an ambiguous status (e.g. HTTP 200 with unknown schema, missing identity attributes, non-JSON response where JSON was expected, or network timeouts), the session status MUST be set to `UNKNOWN` or `SESSION_HEALTH_FAILED`, **NEVER** `ACTIVE`.
+
+### Comparative Test Execution Gate
+Comparative authorization testing (BOLA, IDOR, BFLA) must **NEVER** proceed with an unverified or ambiguous session. If User B's session is `UNKNOWN` or `SESSION_HEALTH_FAILED`, the comparative test is immediately aborted with status `SESSION_HEALTH_FAILED`, preventing false-negative findings.
+
+---
+
+## 5. Pre-MFA & Step-Up Privilege Boundary Analysis
+
+### Resource Classification Taxonomy
+The correlation engine classifies application resources into 5 privilege tiers:
+1. `PUBLIC`: Accessible without authentication (e.g. `/`, `/login`, `/about`, `/health`).
+2. `PRE_AUTH`: Endpoints supporting initial credential submission (e.g. `/auth/login`, `/auth/forgot-password`).
+3. `PARTIALLY_AUTHENTICATED`: Endpoints restricted to identities that passed primary authentication but have not completed MFA (e.g. `/auth/mfa/challenge`, `/auth/mfa/verify`, `/auth/device-registration`).
+4. `FULLY_AUTHENTICATED`: Standard application resources requiring full authentication (e.g. `/api/v1/projects`, `/api/v1/reports`).
+5. `STEP_UP_REQUIRED`: High-privilege actions requiring secondary verification (e.g. `/api/v1/users/api-keys`, `/api/v1/billing/payout`, `/api/v1/security/password-change`).
+
+### Evidence-Sufficiency Rule for Pre-MFA Exposure
+> [!CRITICAL]
+> **HTTP 200 alone must NEVER establish a privilege-boundary vulnerability.**
+> The engine requires verifiable evidence of actual protected data exposure.
+
+A candidate endpoint is flagged as `PRE_MFA_PRIVILEGE_LEAK` if and only if:
+1. Request is dispatched using a session in `MFAState.REQUIRED` / `AuthenticationState.PARTIALLY_AUTHENTICATED`.
+2. Response returns status `200 OK`.
+3. The response body is **not** an MFA challenge or login prompt (verified via `AuthenticationFalsePositiveClassifier.is_login_page_false_positive`).
+4. The response body contains sensitive resource data (JSON records, tenant data, personal profile attributes) identical to the fully authenticated response (`MFAState.VERIFIED`).
+
+---
+
+## 6. Multi-Tenant Context Correlation (Dual-Token Validation)
+
+### Multi-Channel Tenant Parameter Architecture
+In multi-tenant systems, tenant identity is expressed across 4 channels:
+1. `ROUTE_PARAM`: URL path segment (e.g. `/api/v1/tenants/{tenant_id}/data`).
+2. `QUERY_PARAM`: URL parameter (e.g. `?tenant_id={tenant_id}`).
+3. `HEADER`: Custom request header (e.g. `X-Tenant-ID: {tenant_id}`).
+4. `JWT_CLAIM`: Payload claim within a cryptographically signed Bearer token (e.g. `{"tenant_id": "tenant-A"}`).
+
+### Preservation of JWT Cryptographic Integrity
+> [!CRITICAL]
+> **Never modify signed JWT claims without re-signing.**
+> Modifying payload bytes in a signed JWT invalidates the cryptographic signature, causing API gateways to return `401 Signature Verification Failed`. This tests signature verification, NOT multi-tenant authorization.
+
+### 6-Point Multi-Tenant Confirmation Protocol
+`MultiTenantDesyncValidator` conducts cross-tenant testing using **two valid, operator-controlled tenant identities**:
+
+1. **Two Operator-Controlled Tenant Identities**: Valid, cryptographically signed credentials for Tenant A (`IdentityProfile(tenant_id="tenant-A")`) and Tenant B (`IdentityProfile(tenant_id="tenant-B")`).
+2. **Known Test Resource Belonging to Tenant B**: An operator-controlled resource explicitly owned by Tenant B (e.g. `/api/v1/tenants/tenant-B/invoices/inv-101`).
+3. **Authorized Baseline Request**: An authorized baseline request is first sent using Tenant B's valid identity. The response is verified (e.g. HTTP 200, containing Tenant B's protected invoice data), establishing baseline ground truth.
+4. **Controlled Cross-Tenant Request**: A request is sent using Tenant A's valid, unaltered identity (Tenant A's valid JWT/cookie) while targeting Tenant B's resource identifier (via route parameter, header, or query parameter).
+5. **Evidence of Actual Protected Data Exposure**: A multi-tenant vulnerability is confirmed if and only if Tenant A's request returns HTTP 200 AND the response body contains verifiable protected data matching Tenant B's baseline resource that Tenant A should not see.
+6. **Cache and Response-Context Checks**: The validator must verify that the response to Tenant A is not a cached artifact from Tenant B's earlier baseline request (checking `Age`, cache headers, or using unique cache-busting nonces where permitted).
+
+---
+
+## 7. Evidence Architecture & Cryptographic Integrity
+
+### Evidence Standards
+* **Do NOT Repurpose Phase 20's `EvidenceEnvelope`**: Phase 20's envelope is specialized for microsecond race-window synchronization, barrier release timing, and mutual observation overlap (`has_overlap`) attestation. Repurposing it for access control dilutes its guarantees.
+* **Phase 21 Evidence Subsystem**:
+  1. Raw HTTP transactions are sanitized via `sanitize_sensitive_data()` (`framework/common/evidence.py`), completely scrubbing passwords, Bearer tokens, and session cookies.
+  2. Stored via `EvidenceStore.save_http_capture()` in `evidence/`, generating unique cryptographic SHA-256 digests (`EVID-<SHA256[:12]>`).
+  3. Paired with structured `AuthzEvidence` (`framework/authz/model.py`) documenting baseline owner status, test principal status, baseline invalid status, and comparative signals.
+  4. Formatted as standard `Finding` objects adhering to `framework/findings/schema.py:Finding` with `family: VulnerabilityFamily.AUTHORIZATION` or `AUTHENTICATION`.
+
+---
+
+## 8. State Schema & Persistence Architecture
+
+### Strict Credential Persistence Prohibition
+> [!CRITICAL]
+> **`state/auth_correlation.json` must NEVER persist raw or reusable authentication credentials.**
+> Prohibited fields include raw JWTs, session cookies, Set-Cookie headers, raw Authorization headers, passwords, MFA secrets/TOTP seeds, and API keys.
+
+The correlation state file stores only sanitized metadata, non-reversible token references, and deterministic SHA-256 fingerprints:
+* **Token Representation**: Stored strictly as masked references (`tok_...4a9f`) or non-reversible SHA-256 digests (`sha256(token)[:16]`).
+* **Session Metadata**: Stores lifecycle state (`ACTIVE`, `EXPIRED`, `INVALIDATED`), issuance timestamps, expiry timestamps, health status, and observed privilege tiers.
+* **Principal Identifiers**: Stores operator-assigned test IDs (`user_a`, `user_b`, `tenant_1`, `tenant_2`) without credential payloads.
+
+### Atomic State Replacement & Schema Versioning
+* **Schema Version**: Mandatory top-level field `schema_version: "1.0.0"`.
+* **Atomic Replacement**: Serializes state to a temporary file (`state/auth_correlation.json.tmp.<pid>`) and executes an atomic replacement via `os.replace` to prevent file corruption if interrupted.
+* **File Permissions**: On POSIX/Linux workstations, `state/auth_correlation.json` is created with restricted owner-only permissions (`0o600`).
+* **Safe Handling of Corrupted State**: If `state/auth_correlation.json` contains malformed JSON or invalid schema, the engine must quarantine the corrupted file (renaming to `state/auth_correlation.json.corrupt.<timestamp>`), log a warning, and initialize a fresh clean schema failing closed.
+* **Sanitization Before Persistence**: All state structures must pass through `sanitize_sensitive_data()` before disk serialization.
+* **Zero Credential Leakage**: Exceptions, logs, and CLI representations must use masked representations to prevent credential leakage in crash reports or terminal logs.
+* **Zero New Dependencies**: Pure standard library implementation (`json`, `os`, `hashlib`, `stat`).
+
+---
+
+## 9. Transport & Scope Authorization Invariants
+
+* **Initialized ScopeEngine Mandatory**: Active correlation probes require an active, initialized `ScopeEngine`. If absent, all probes fail closed immediately with `ScopeViolationError`.
+* **Destination-IP Pinning Enforced**: All HTTP requests execute via `framework/common/transport.py` (`safe_fetch_url`, `PinnedHTTPConnection`, `PinnedHTTPSConnection`, `SafeRedirectHandler`). Zero DNS rebinding, zero unpinned raw socket connections.
+* **Anti-SSRF Address Resolution**: Preflight DNS resolution validates candidate IPs against private RFC 1918, loopback, link-local, carrier-grade NAT, and cloud metadata (`169.254.169.254`). Alternate numeric IP representations (hex, octal, integer, IPv4-mapped IPv6) fail closed.
+* **Strict Request & Byte Budgets**:
+  * Maximum **15 requests per test hypothesis**.
+  * Continuous response byte accounting depleting global program budget.
+  * Rate-limiting delay enforced between consecutive probes (default 0.1s) to prevent target denial-of-service.
+
+---
+
+## 10. Revised 5-Stage Implementation Plan
 
 ```mermaid
 flowchart LR
-    Stage1["Stage 1: Core Models & Matrix Tracker"] --> Stage2["Stage 2: Preflight Session Health & Post-Logout Resource Probing"]
+    Stage1["Stage 1: Context Models & Matrix Tracker"] --> Stage2["Stage 2: Preflight Dual-Control & Post-Revocation Resource Probing"]
     Stage2 --> Stage3["Stage 3: Pre-MFA & Step-Up Privilege Boundary Testing"]
-    Stage3 --> Stage4["Stage 4: Multi-Tenant Cross-Channel Desynchronization"]
-    Stage4 --> Stage5["Stage 5: Orchestration Engine, Local Lab & CLI Integration"]
+    Stage3 --> Stage4["Stage 4: Multi-Tenant Dual-Token Cross-Channel Desynchronization"]
+    Stage4 --> Stage5["Stage 5: Orchestration Engine, Simulation Lab & CLI Integration"]
 ```
 
-### Stage 1: Data Model Unification & Core State Correlation
-* **Objective**: Define unified data models bridging Phase 14 (`authentication`) and Phase 8 (`authz`) without altering existing model schemas.
+### Stage 1: Context Models & Matrix Tracker
+* **Objective**: Define lightweight context binding models linking Phase 14 (`IdentityProfile`, `SessionProfile`) and Phase 8 (`PrincipalProfile`, `SessionProfile`) without altering existing schemas.
+* **Components to Reuse**: `IdentityProfile`, `PrincipalProfile`, `SessionLifecycle`, `MFAState`.
 * **Files to Create**:
-  * `framework/auth_correlation/model.py`
-  * `framework/auth_correlation/matrix.py`
+  * `framework/auth_correlation/__init__.py`
+  * `framework/auth_correlation/model.py` (`CorrelatedPrincipalContext`, `CorrelatedSessionContext`, `CorrelationHypothesis`, `CorrelationFinding`)
+  * `framework/auth_correlation/matrix.py` (`PrincipalSessionMatrix`)
   * `tests/test_phase21_models.py`
-* **Existing Components Reused**: `PrincipalProfile` (`authz`), `AuthenticationIdentity` (`authentication`), `SessionLifecycle` (`authentication`).
-* **Key Algorithms**: Deterministic Cartesian matrix generation; principal-session mapping with token redaction.
-* **Acceptance Criteria**: 100% unit test coverage; zero raw credentials in serialized models; immutable principal IDs.
+* **Security & Negative Tests**: Prove immutable principal IDs, token masking, and rejection of invalid session lifecycle states.
+* **Acceptance Criteria**: 100% test pass rate; zero credential retention in serialized models.
 
-### Stage 2: Pre-Flight Health Probing & Post-Logout Resource Invalidation
-* **Objective**: Eliminate session expiration false-positives and test resource endpoints with invalidated tokens.
+### Stage 2: Dual-Control Preflight & Post-Revocation Resource Probing
+* **Objective**: Eliminate session expiration false-positives and test resource endpoints with revoked/logged-out tokens.
+* **Components to Reuse**: `safe_fetch_url`, `SessionLifecycle`, `AuthenticationFalsePositiveClassifier`.
 * **Files to Create**:
-  * `framework/auth_correlation/preflight.py`
-  * `framework/auth_correlation/post_revocation.py`
+  * `framework/auth_correlation/preflight.py` (`DualControlPreflightValidator`)
+  * `framework/auth_correlation/revocation.py` (`PostRevocationResourceValidator`)
   * `tests/test_phase21_preflight_and_revocation.py`
-* **Existing Components Reused**: `safe_fetch_url` (`framework/common/transport.py`), `SessionLifecycle` (`authentication`).
-* **Key Algorithms**: Health-check assertion before comparative test; differential response comparison between active session vs revoked session.
-* **Acceptance Criteria**: Preflight aborts comparative test if session is invalid; post-logout access to resource returning 200 with identical body hash emits `CONFIRMED` finding.
+* **Security & Negative Tests**: Prove preflight aborts when session returns 401; prove 200 OK matching anonymous control is correctly classified as invalid; verify caching checks.
+* **Acceptance Criteria**: Replaying revoked session on resource API returning protected user data generates `CONFIRMED` finding.
 
-### Stage 3: Step-Up & Pre-MFA Privilege Boundary Testing
+### Stage 3: Pre-MFA & Step-Up Privilege Boundary Testing
 * **Objective**: Detect sensitive endpoints exposed to sessions in intermediate MFA states (`PARTIALLY_AUTHENTICATED`).
+* **Components to Reuse**: `MFAState`, `SecurityValidationEngine`, `AuthenticationFalsePositiveClassifier`.
 * **Files to Create**:
-  * `framework/auth_correlation/pre_mfa.py`
+  * `framework/auth_correlation/pre_mfa.py` (`PreMfaPrivilegeValidator`)
   * `tests/test_phase21_pre_mfa.py`
-* **Existing Components Reused**: `MFAState` (`authentication`), `SecurityValidationEngine` (`validation`).
-* **Key Algorithms**: Replay resource requests using intermediate pre-MFA session tokens; compare response status and body entropy against baseline anonymous and fully authenticated responses.
-* **Acceptance Criteria**: Any 200 OK returning sensitive user data to a pre-MFA session emits `HIGH` severity `PRE_MFA_PRIVILEGE_LEAK`.
+* **Security & Negative Tests**: Prove 200 OK on MFA challenge form does not emit a finding; prove access to protected profile data emits `HIGH` finding.
+* **Acceptance Criteria**: Accurately flags data exposure while rejecting false-positive login/MFA forms.
 
-### Stage 4: Multi-Tenant Cross-Channel Desynchronization
-* **Objective**: Evaluate parameter tampering across route path, query parameter, header, and JWT claims to identify tenant isolation breaches.
+### Stage 4: Multi-Tenant Dual-Token Cross-Channel Desynchronization
+* **Objective**: Evaluate parameter tampering across route path, query parameter, and request headers using two valid cryptographic tenant tokens.
+* **Components to Reuse**: `OpenApiParser`, `TokenMetadata`, `AccessControlComparator`.
 * **Files to Create**:
-  * `framework/auth_correlation/tenant_desync.py`
+  * `framework/auth_correlation/tenant.py` (`MultiTenantDesyncValidator`)
   * `tests/test_phase21_tenant_desync.py`
-* **Existing Components Reused**: `OpenApiParser` (`api`), `TokenMetadata` (`authentication`), `AccessComparator` (`authz`).
-* **Key Algorithms**: Cross-channel permutation: inject Tenant B into route parameter while supplying Tenant A's JWT; evaluate response ownership.
-* **Acceptance Criteria**: If Tenant B's data is returned to Tenant A's session, emit `CRITICAL` severity `MULTI_TENANT_ISOLATION_BYPASS`.
+* **Security & Negative Tests**: Prove JWT signatures are preserved; prove cross-tenant access with valid tokens emits `CRITICAL` finding; verify cache checks.
+* **Acceptance Criteria**: Identifies route and header tenant desynchronization; ignores unverified modified JWT signatures.
 
 ### Stage 5: Orchestration Engine, Simulation Lab & CLI Integration
-* **Objective**: Deliver the primary engine, state manager, deterministic local lab, CLI wrapper, and doctor checks.
+* **Objective**: Deliver primary correlation engine, state manager, deterministic local lab, CLI wrappers, and doctor diagnostics.
+* **Components to Reuse**: `AuthorizationIntelligenceEngine`, `AuthenticationSecurityEngine`, `StateManager`, `EvidenceStore`.
 * **Files to Create**:
-  * `framework/auth_correlation/engine.py`
-  * `framework/auth_correlation/state.py`
-  * `framework/auth_correlation/lab.py`
+  * `framework/auth_correlation/engine.py` (`AuthCorrelationEngine`)
+  * `framework/auth_correlation/state.py` (`AuthCorrelationStateManager`)
+  * `framework/auth_correlation/lab.py` (`LocalAuthCorrelationLab`)
   * `scripts/bb-auth-correlate`
   * `scripts/bb-auth-correlate.cmd`
   * `tests/test_phase21_engine.py`
 * **Files to Modify**:
-  * `framework/tools/doctor.py` (Register Category 26)
-  * `opencode.jsonc` (Register `bb-auth-correlate` permission)
-  * `skills/authentication/SKILL.md` (Document correlation capability)
-  * `skills/authorization/SKILL.md` (Document correlation capability)
-* **Acceptance Criteria**: Local lab serves 6 deterministic scenarios; full pytest suite passes across Windows and Kali; doctor diagnostics pass cleanly.
+  * `framework/tools/doctor.py` (Add Category 26: `check_auth_correlation_engine`)
+  * `opencode.jsonc` (Add `*bb-auth-correlate* -> ask`)
+  * `skills/authentication/SKILL.md`
+  * `skills/authorization/SKILL.md`
+* **Acceptance Criteria**: Local lab serves 6 deterministic scenarios on ephemeral loopback; full test suite passes on Windows and Kali; doctor checks pass cleanly.
 
 ---
 
-## 5. Security Design & Safety Boundaries
+## 11. Strategic Roadmap for Phases 22–24
 
-### Scope Authorization Enforcement
-* All active correlation probes strictly require a valid, initialized `ScopeEngine`.
-* If `scope_engine` is absent or the target URL/host falls outside authorized scope, the engine fails closed immediately, raising `ScopeViolationError` with zero network egress.
-
-### Credential Protection & Sensitive Data Hygiene
-* The engine **NEVER** stores plain-text passwords, raw session cookies, or raw authorization tokens in state files (`state/auth_correlation.json`), finding reports, or logs.
-* All session identifiers are masked using `sanitize_sensitive_data()` (`framework/common/evidence.py`).
-* All request and response bodies stored in evidence envelopes are scrubbed of Authorization headers, API keys, and session cookies.
-
-### Request & Rate Budget Ceilings
-* Bounded testing: Maximum **15 requests per test hypothesis**.
-* Maximum **500 total requests** per correlation program run.
-* Continuous byte accounting: All network bytes received deplete the global program byte budget (`max_bytes`).
-* Respects `SecurityTestPolicy.rate_limit_delay` (default: 0.1s delay between consecutive probes to prevent server denial-of-service).
-
-### Non-Destructive Invariant
-* Only `GET`, `HEAD`, and read-only `POST` operations against test-account resources are permitted.
-* Destructive methods (`DELETE`, state-modifying `PUT`, database drops) are strictly prohibited.
-* Cross-tenant testing operates strictly between pre-configured operator-controlled test accounts (e.g. Account A and Account B); never tests unauthorized third-party accounts.
+* **Phase 22 — Cross-Engine Attack-Path Correlation**: Directed Acyclic Graph (`AttackPathGraph`) relating findings across all previous phases into multi-step attack scenarios without artificial severity inflation.
+* **Phase 23 — Autonomous Research Planning & Coverage Intelligence**: Surface Coverage Index and coverage-driven hypothesis prioritization using existing approval gates (`ask`).
+* **Phase 24 — Final Integration & Production Readiness**: System-wide performance, resilience, packaging, and formal release validation across Windows and Kali environments. Capabilities such as multi-target workspace orchestration or background monitoring may be evaluated as potential capabilities within Phase 24, not as a replacement title.
 
 ---
 
-## 6. Phase 21 Acceptance Criteria
+## 12. `/Arise` — Future Feature Assessment (Design Only)
 
-A phase is not complete merely because source code exists. Phase 21 acceptance requires passing all 7 verification gates:
-
-1. **Gate 1: Unit & Functional Test Verification**:
-   * Minimum 40 new automated tests covering models, matrix generation, preflight checks, pre-MFA validation, and tenant desynchronization.
-   * 100% pass rate across new test suites.
-2. **Gate 2: Security Regression Verification**:
-   * Negative tests proving fail-closed scope enforcement when `scope_engine=None`.
-   * Negative tests proving session health failure aborts comparative testing.
-   * Evidence sanitization tests proving zero raw tokens or passwords leak into evidence envelopes or state files.
-3. **Gate 3: Deterministic Simulation Lab Verification**:
-   * `LocalAuthCorrelationLab` accurately simulates 6 distinct access scenarios:
-     1. Valid access control (secure baseline).
-     2. Cross-tenant BOLA leak.
-     3. Pre-MFA privilege exposure.
-     4. Post-logout session reuse.
-     5. Header vs JWT tenant desynchronization.
-     6. Expired session correctly classified as `SESSION_EXPIRED` (no false positive).
-4. **Gate 4: Dual-Platform Parity**:
-   * Full test suite execution on Windows 11 host with zero regressions.
-   * Full test suite execution on Kali Linux VM with zero regressions.
-   * 100% SHA-256 byte-for-byte parity across all new source and configuration files.
-5. **Gate 5: Doctor Diagnostics**:
-   * `bb-doctor` category 26 executes and passes cleanly on both platforms.
-6. **Gate 6: Documentation Completeness**:
-   * `docs/PHASE-21-PLAN.md` reconciled with delivered implementation.
-   * `CHANGELOG.md` updated with Phase 21 deliverable details.
-   * `ROADMAP-24-PHASES-TEMP.md` updated to mark Phase 21 Complete and Phase 22 Next.
-7. **Gate 7: Operational Invariant Check**:
-   * Zero unapproved dependencies added to `pyproject.toml`.
-   * Single-agent model (`Bug-Bounty`) and 18 skills catalog preserved.
+* **Concept**: Research public vulnerability disclosures (HackerOne, Bugcrowd, Google Bug Hunters, Intigriti, MSRC) matching discovered technology fingerprints to guide non-destructive hypothesis formulation.
+* **Skill Placement**: Must be implemented as an extension of the existing **`knowledge-research`** skill (`skills/knowledge-research/SKILL.md`) to preserve the 18-skill invariant.
+* **Data Hygiene**: Stores lightweight reference metadata only (`pattern_id`, `tech`, `version_range`, `root_cause`, `hypothesis_template`, `source_url`); strictly prohibits bulk report scraping.
+* **Execution Boundary**: Historical disclosure payloads are **NEVER** executed directly; all testing passes through `SecurityValidationEngine` using safe, parameterized payloads.
+* **Status**: **PROPOSED — DESIGN ONLY — NOT IMPLEMENTED**.
 
 ---
 
-## 7. Strategic Dependency Roadmap (Phases 22–24)
-
-```mermaid
-flowchart TD
-    P20["Phase 20: Race Conditions (Accepted)"] --> P21["Phase 21: Auth & Authz Correlation (Next)"]
-    P21 --> P22["Phase 22: Cross-Engine Attack-Path Correlation"]
-    P22 --> P23["Phase 23: Autonomous Research Planning & Coverage"]
-    P23 --> P24["Phase 24: Final Integration & Production Readiness"]
-
-    subgraph "Shared Infrastructure Layer"
-        SI1["FindingLifecycle & Graph"]
-        SI2["EvidenceEnvelope & Hashes"]
-        SI3["Unified Scope & Pinned Transport"]
-    end
-
-    P21 -.-> SI1
-    P22 -.-> SI1
-    P23 -.-> SI1
-```
-
-### Phase 22 — Cross-Engine Attack-Path Correlation
-* **Strategic Objective**: Construct a unified finding relationship graph that correlates discoveries across all 20 previous phases (e.g. Asset Recon -> Soft-404 Exposure -> API Schema -> Auth Correlation -> Concurrency Race) into explainable, multi-step attack paths.
-* **Problems Solved**: Fragmented vulnerability reports; lack of context regarding how low-severity information disclosures enable high-severity access-control breaches.
-* **Functionality Reused**: `framework/findings/lifecycle.py`, `AssetGraph`, `WebappGraph`, `ApiGraph`, `Finding` schema.
-* **Architectural Additions**: Directed Acyclic Graph (DAG) for attack path modeling (`AttackPathGraph`), finding prerequisite matching, attack-step confidence propagation.
-* **Dependencies**: Requires structured findings and standardized evidence from Phases 1–21.
-* **Strict Guardrail**: Attack path correlation must **NEVER** inflate the CVSS score or severity of an individual finding simply because it participates in a path; composite paths are scored as chained scenarios.
-
-### Phase 23 — Autonomous Research Planning & Coverage Intelligence
-* **Strategic Objective**: Transform the orchestrator from a reactive tool dispatcher into an intelligent research planner that evaluates attack surface coverage, budget depletion, untested hypotheses, and findings to prioritize the next safe, high-value assessment step.
-* **Problems Solved**: Redundant testing; operator cognitive fatigue; unmethodical attack surface coverage.
-* **Functionality Reused**: `SecurityStateManager`, `FindingLifecycle`, `SecurityTestPolicy`, `tests.json` deduplication cache.
-* **Architectural Additions**: `ResearchPlannerEngine`, coverage completeness scoring (Surface Coverage Index), capability recommendation heuristics.
-* **Dependencies**: Requires unified attack surface graph from Phase 22.
-* **Strict Guardrail**: Autonomous planning must **NEVER** bypass human approval gates (`permissions: ask`), execute unvetted exploits, or exceed configured byte/request budgets.
-
-### Phase 24 — Final Integration & Production Readiness
-* **Strategic Objective**: End-to-end hardening, performance optimization, release packaging, operator documentation, and formal production validation of the unified BugBounty-Agent system.
-* **Problems Solved**: Cross-platform configuration drift; edge-case stability; packaging friction.
-* **Functionality Reused**: All framework subsystems, CLI scripts, doctor diagnostics, tool installer.
-* **Architectural Additions**: Comprehensive end-to-end integration test harnesses; release packaging automation; installation doctor verification.
-* **Dependencies**: Requires all Phases 1–23 complete and verified.
-
-### Strategic Dependency Matrix
-
-| Phase | Primary Upstream Dependencies | Key Deliverables Exported Downstream | Shared Infrastructure Reused | Premature Implementation Guardrail |
-| :---: | :--- | :--- | :--- | :--- |
-| **Phase 21** | Phase 8 (Authz), Phase 14 (Auth), Phase 5/17 (API) | `CorrelatedPrincipal`, `PrincipalSessionMatrix`, `state/auth_correlation.json` | `framework/common/transport.py`, `EvidenceStore`, `FindingLifecycle` | Do not implement multi-vulnerability attack chaining (belongs to Phase 22). |
-| **Phase 22** | Phase 21 (Auth Correlation), Phase 19 (Infra), Phase 20 (Race) | `AttackPathGraph`, chained scenario models, composite impact scoring | `AssetGraph`, `WebappGraph`, `FindingLifecycle` | Do not implement autonomous action selection or auto-dispatch (belongs to Phase 23). |
-| **Phase 23** | Phase 22 (Attack Paths), All Phase 1–20 Engines | `ResearchPlannerEngine`, coverage metrics, prioritized hypothesis queue | `SecurityTestPolicy`, `SecurityStateManager` | Do not bypass human approval gates (`ask`) or attempt automated exploitation. |
-| **Phase 24** | Phases 1–23 Complete | Production release distribution, verified packaging, cross-platform sign-off | Complete Framework Subsystem | Do not add new experimental research engines or alter established security boundaries. |
-
----
-
-## 8. Proposed Future Feature Assessment: `/Arise`
-
-> [!NOTE]
-> **CONCEPTUAL PROPOSAL ONLY — NOT IMPLEMENTED**  
-> `/Arise` is evaluated here strictly for architectural feasibility, placement, and security boundaries.
-
-### A. Intended Concept & Operational Value
-When an operator investigates an authorized target, `/Arise` researches publicly disclosed vulnerability reports and technical post-mortems (from HackerOne, Bugcrowd, Google Bug Hunters, Intigriti, MSRC, and CVE/KEV databases) matching the specific technology stack, framework versions, and architectural patterns discovered on the target (e.g. `Next.js Server Actions SSRF`, `Spring Boot Actuator RCE`, `Apollo GraphQL Query Batching`).
-
-Instead of relying on generic scanner rule sets, `/Arise` formulates highly specific, hypothesis-driven test ideas based on real-world bug bounty disclosures, which are then passed to our existing, safe validation engines.
-
-### B. Architectural Feasibility Analysis
-
-1. **Skill Placement (18-Skill Invariant)**:
-   * *Question*: Should `/Arise` be a new skill or an extension of `knowledge-research`?
-   * *Recommendation*: It must be implemented as an extension of the existing **`knowledge-research`** skill (`skills/knowledge-research/SKILL.md`). Creating a 19th skill violates the project's single-agent modular architecture invariant without technical necessity.
-2. **Engine Architecture**:
-   * Implemented as an offline query and hypothesis generation engine: `framework/knowledge/` or `framework/research/`.
-   * Operates completely offline during local analysis using pre-indexed or cached vulnerability patterns.
-3. **Storage & Reference Hygiene (No Bulk Scraping)**:
-   * The framework must **NEVER** bulk-scrape or mirror entire vulnerability reports.
-   * Store strictly lightweight, structured reference metadata:
-     ```json
-     {
-       "pattern_id": "AR-NEXTJS-001",
-       "technology": "Next.js",
-       "version_range": ">=13.4.0,<=14.1.0",
-       "vulnerability_family": "SSRF",
-       "root_cause": "Server Actions Host header reflection in fetch cache",
-       "hypothesis_template": "Verify if Host header overrides internal SSR fetch destination",
-       "source_attribution": "HackerOne #2245212",
-       "source_url": "https://hackerone.com/reports/2245212",
-       "published_date": "2024-03-15"
-     }
-     ```
-4. **Technology Fingerprint Correlation**:
-   * Consumes technology observations from `AssetGraph` and `WebApplicationIntelligenceEngine` (e.g. `technologies: ["Next.js", "Express", "GraphQL"]`).
-   * Queries local reference index for matching patterns and outputs formal `SecurityTestCase` hypotheses.
-5. **Strict Security Guardrails**:
-   * *Zero Automated Exploit Execution*: Historical exploits or raw payloads from disclosures must **NEVER** be executed directly.
-   * *Safe Validation Engine Gating*: All generated hypotheses must execute strictly through `SecurityValidationEngine` using parameterized non-destructive payloads (`{{7*7}}`, safe arithmetic, canary tokens).
-   * *Poisoned Source Defense*: External threat intelligence feeds must be parsed as passive data; never execute scripts, macros, or unvetted regexes from external sources.
-6. **Roadmap Placement**:
-   * `/Arise` capability directly enhances **Phase 23 (Autonomous Research Planning & Coverage Intelligence)** by feeding real-world disclosure patterns into the research planning queue.
-
-* **Formal Classification**: **PROPOSED — DESIGN ONLY — NOT IMPLEMENTED**.
-
----
-
-## 9. Final Planning Recommendation
+## 13. Final Planning Recommendation
 
 ### **PHASE 21 PLANNING GATE: READY FOR AUTHORIZATION**
 
-The technical specification, component architecture, implementation stages, security guardrails, and acceptance criteria for **Phase 21 (Authentication & Authorization Correlation)** are complete, robust, and fully aligned with all architectural invariants.
+The technical specification, component architecture, implementation stages, security guardrails, credential persistence prohibitions, preflight validation protocols, and acceptance criteria for **Phase 21 (Authentication & Authorization Correlation)** are complete, robust, and fully aligned with all architectural invariants.
 
 **Next Immediate Action**: Await explicit human operator authorization before initiating Stage 1 implementation.
