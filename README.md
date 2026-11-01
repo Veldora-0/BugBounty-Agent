@@ -436,8 +436,8 @@ BugBounty-Agent has delivered 20 cohesive security research phases, establishing
   * `LocalConcurrencyLab`: 8 deterministic race condition, TOCTOU, limit overrun, and distributed workflow scenarios.
 
 ### 18. Roadmap Status & Verification Baseline
-* **Accepted Baseline**: Phase 19 (Infrastructure Exposure) and Phase 20 (Race Conditions & Distributed Workflows) complete and verified across Windows 11 and Kali Linux.
-* **Next Planned Phase**: Phase 21 (Authentication & Authorization Correlation).
+* **Accepted Baseline**: Phase 19 (Infrastructure Exposure) and Phase 20 (Race Conditions & Distributed Workflows) complete and verified across Windows 11 and Kali Linux. See [`docs/PHASE-1-20-STABLE-BASELINE.md`](docs/PHASE-1-20-STABLE-BASELINE.md).
+* **Next Planned Phase**: Phase 21 (Authentication & Authorization Correlation). See [`docs/PHASE-21-PLANNING-GATE.md`](docs/PHASE-21-PLANNING-GATE.md).
 * **Full Roadmap**: Refer to [`docs/ROADMAP-24-PHASES-TEMP.md`](docs/ROADMAP-24-PHASES-TEMP.md) for the detailed 24-phase roadmap, architectural specifications, and historical verification records.
 
 ---

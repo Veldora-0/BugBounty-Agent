@@ -171,7 +171,9 @@ Safety boundaries:
 - **Accepted with Documented Limitations**: Concurrency probing is bounded to 2-10 requests; high-volume volumetric floods or DoS attacks are strictly prohibited; out-of-scope targets fail closed offline.
 
 ### Phase 21 — Authentication & Authorization Correlation
+**Status:** Planned / Not Started (Planning Gate Ready).
 **Goal:** Correlate existing authentication/session and authorization engines: principal, role, tenant, session, resource, and workflow context. Reuse established dual-principal baselines and require strong evidence before reporting access-control findings.
+**Planning Reference:** Detailed technical architecture, 5-stage implementation breakdown, security guardrails, and acceptance criteria established in [`docs/PHASE-21-PLANNING-GATE.md`](PHASE-21-PLANNING-GATE.md). Stable repository baseline verified in [`docs/PHASE-1-20-STABLE-BASELINE.md`](PHASE-1-20-STABLE-BASELINE.md).
 
 ### Phase 22 — Cross-Engine Attack-Path Correlation
 **Goal:** Build a shared correlation layer that relates assets, endpoints, identities, vulnerabilities, evidence, and prerequisites into explainable attack paths. Preserve individual finding identity, provenance, confidence, and lifecycle; do not inflate severity solely because findings are connected.
