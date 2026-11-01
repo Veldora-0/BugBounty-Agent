@@ -222,9 +222,13 @@ Retaining masked token slices (such as `tok_...4a9f` or prefix/suffix substrings
 When deterministic cross-run correlation is required (allowing the engine to recognize when the same session is referenced across separate test executions without storing the credential), tokens are referenced strictly via a keyed cryptographic message authentication code:
 $$\text{session\_fingerprint} = \text{HMAC-SHA256}(K_{\text{local}}, \text{raw\_token}).\text{hexdigest}()[:32]$$
 
-* **Key Isolation**: The secret key $K_{\text{local}}$ is stored exclusively in `~/.config/opencode/auth_correlation.key` (or a local `.opencode/auth_correlation.key` strictly excluded by `.gitignore`).
-* **Strict Key Separation**: The key must **NEVER** be committed to Git or stored inside `state/auth_correlation.json`.
+* **Key Location & External Isolation**: Secret key $K_{\text{local}}$ is stored **outside the repository** in protected user profile directories:
+  * POSIX / Linux: `~/.config/opencode/auth_correlation.key` (or `$XDG_CONFIG_HOME/opencode/auth_correlation.key`).
+  * Windows: `%LOCALAPPDATA%\opencode\auth_correlation.key` (or `%USERPROFILE%\.config\opencode\auth_correlation.key`).
+* **Strict Repository Separation**: The key must **NEVER** be stored in the repository, committed to Git, or placed inside `state/auth_correlation.json`.
+* **`.gitignore` is Not a Security Boundary**: The framework explicitly treats `.gitignore` as a version-control filter, not an access control or security boundary. Excluding a file via `.gitignore` provides zero filesystem protection against local processes or unauthorized users; storing keys outside the repository tree in protected user profile directories is strictly required.
 * **Key Generation**: Generated on first initialization using cryptographically secure pseudorandomness: `secrets.token_bytes(32)`.
+* **Key Permissions**: Restrictive native filesystem permissions are applied to the key file immediately upon creation (Linux `0600`, Windows protected DACL).
 * **Key Rotation**:
   * The state file records a public, non-sensitive key identifier (`key_id: sha256(key)[:8]`).
   * If the key is rotated, the state manager detects key ID mismatch, safely invalidates obsolete HMAC fingerprints, and requires fresh session observation.
@@ -239,18 +243,18 @@ $$\text{session\_ref} = \text{"sess\_"} + \text{uuid.uuid4}().\text{hex}$$
 
 ### Cross-Platform File Security (Windows & Linux)
 
-The framework enforces strict least-privilege access across both operating environments. It checks the host OS (`os.name == 'nt'` vs POSIX) and applies the corresponding native security mechanism:
+The framework enforces strict least-privilege access across both operating environments for all sensitive state files and secret keys. It checks the host OS (`os.name == 'nt'` vs POSIX) and applies the corresponding native security mechanism:
 
 * **Kali Linux / POSIX**:
   * **File Mode**: Owner-only read/write (`0600` / `stat.S_IRUSR | stat.S_IWUSR`).
   * **Directory Mode**: Owner-only read/write/execute (`0700` / `stat.S_IRWXU`).
   * **Creation Protocol**: Files are opened via `os.open` with flags `O_CREAT | O_WRONLY | O_TRUNC` and mode `0o600`, with process umask set to `0o077`.
 * **Windows / NTFS**:
-  * **Discretionary Access Control Lists (DACLs)**: Enforced via restrictive NTFS ACLs. POSIX permissions on Windows only toggle the read-only flag and do not provide multi-user security.
+  * **Protected DACL (Inheritance Removed)**: Enforced via a non-inherited, protected Discretionary Access Control List (DACL). POSIX permissions on Windows only toggle the read-only flag and do not provide multi-user security.
   * **Inheritance Removal**: Inheritance from parent directories is stripped (`/inheritance:r`).
-  * **Exclusive Grant**: Access is explicitly granted exclusively to the current executing user (`%USERNAME%:(F)`) and `NT AUTHORITY\SYSTEM:(F)`.
-  * **Explicit Denial**: Access is blocked for `Everyone`, `Users`, and other local accounts.
-  * **Implementation**: Applied via native Windows security APIs or `icacls.exe`.
+  * **Strict Exclusive Grant**: Access is granted exclusively to the current executing user's security identifier (SID / `%USERNAME%:(F)`) and `NT AUTHORITY\SYSTEM:(F)`.
+  * **No Explicit Deny ACEs**: To avoid token evaluation conflicts (where an explicit Deny ACE on `Users` or `Everyone` inadvertently denies the executing user who is a member of those groups), all other accounts are implicitly denied by omission from the protected DACL rather than via conflicting explicit deny entries.
+  * **Implementation**: Applied to both the HMAC key file and state file via native Windows security APIs or `icacls.exe <file> /inheritance:r /grant:r "%USERNAME%:(F)" "SYSTEM:(F)"`.
 
 ### Atomic State Replacement & Schema Versioning
 * **Schema Version**: Mandatory top-level field `schema_version: "1.0.0"`.

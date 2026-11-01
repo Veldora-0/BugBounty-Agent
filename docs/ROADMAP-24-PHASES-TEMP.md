@@ -2,8 +2,8 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Current Repository Baseline:** `e740666759c85637cefe20d171acadaa69b567f3` (Phase 1–20 baseline & Phase 21 planning gate documentation reconciled; pre-Phase 21 implementation baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`; historical Stage C audit baseline: `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae`; historical pre-remediation baseline: `1841280b2f71b103b0e9217b961f1d859bd94272`)
-> **Current phase:** Phase 20 — Race Conditions & Distributed Workflows (Complete; Next Phase: Phase 21)
+> **Current Repository Baseline:** `327332f81aceb99461ea6fa646de4351849cc95d` (Phase 1–20 baseline & Phase 21 planning gate documentation reconciled; pre-Phase 21 implementation baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`; historical Stage C audit baseline: `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae`; historical pre-remediation baseline: `1841280b2f71b103b0e9217b961f1d859bd94272`)
+> **Current phase:** Phase 20 — Race Conditions & Distributed Workflows (Complete; Next Phase: Phase 21 — PLANNED / NOT STARTED; implementation unauthorized)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
 ## 1. Roadmap at a glance
@@ -17,7 +17,7 @@
 | 18 | SSRF, XXE & Server-Side Parser Expansion | High | Complete (accepted at `1fcd552d53f99cf0a06802ddae45197796ec74c5` with documented limitations) |
 | 19 | Infrastructure & Configuration Exposure | Medium–High | Complete (accepted at `78f949a6d3b614ca60a82d7f776641787a6bebaa` with documented limitations) |
 | 20 | Race Conditions & Distributed Workflows | Medium–High | Complete (accepted at `3759f1ecb59168a6d4bb5ddaba7674d98afff24f` with documented limitations) |
-| 21 | Authentication & Authorization Correlation | Medium | Planned (Next Phase) |
+| 21 | Authentication & Authorization Correlation | Medium | Planned / Not Started (Implementation Unauthorized) |
 | 22 | Cross-Engine Attack-Path Correlation | Very High | Planned |
 | 23 | Autonomous Research Planning & Coverage Intelligence | High | Planned |
 | 24 | Final Integration & Production Readiness | Mandatory | Planned |
@@ -171,9 +171,9 @@ Safety boundaries:
 - **Accepted with Documented Limitations**: Concurrency probing is bounded to 2-10 requests; high-volume volumetric floods or DoS attacks are strictly prohibited; out-of-scope targets fail closed offline.
 
 ### Phase 21 — Authentication & Authorization Correlation
-**Status:** Planned / Not Started (Planning Gate Ready).
+**Status:** Planned / Not Started (Implementation strictly requires explicit human operator authorization).
 **Goal:** Correlate existing authentication/session and authorization engines: principal, role, tenant, session, resource, and workflow context. Reuse established dual-principal baselines and require strong evidence before reporting access-control findings.
-**Planning Reference:** Detailed technical architecture, 5-stage implementation breakdown, security guardrails, and acceptance criteria established in [`docs/PHASE-21-PLANNING-GATE.md`](PHASE-21-PLANNING-GATE.md). Stable repository baseline verified in [`docs/PHASE-1-20-STABLE-BASELINE.md`](PHASE-1-20-STABLE-BASELINE.md).
+**Planning Reference:** Detailed technical architecture, 5-stage implementation breakdown, security guardrails, and acceptance criteria established in [`docs/PHASE-21-PLANNING-GATE.md`](PHASE-21-PLANNING-GATE.md). Stable repository baseline verified in [`docs/PHASE-1-20-STABLE-BASELINE.md`](PHASE-1-20-STABLE-BASELINE.md). Implementation is strictly unauthorized until explicit operator approval is granted.
 
 ### Phase 22 — Cross-Engine Attack-Path Correlation
 **Goal:** Build a shared correlation layer that relates assets, endpoints, identities, vulnerabilities, evidence, and prerequisites into explainable attack paths. Preserve individual finding identity, provenance, confidence, and lifecycle; do not inflate severity solely because findings are connected.
