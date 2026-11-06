@@ -304,3 +304,62 @@ def test_hmac_fingerprinting_and_quarantine(tmp_path):
     # Confirms quarantine file was generated
     corrupted_files = list(state_dir.glob("auth_correlation.corrupted.*.json"))
     assert len(corrupted_files) == 1
+
+
+def test_state_directory_security_native_platform_enforcement(tmp_path):
+    """Verifies native platform DACL (Windows) and POSIX permission enforcement for state directories."""
+    workspace = tmp_path / "ws_sec"
+    workspace.mkdir()
+    state_dir = workspace / "sec_state"
+
+    if os.name == "nt":
+        import subprocess
+        from framework.auth_correlation.state import (
+            _enforce_windows_directory_dacl,
+            _verify_windows_directory_security,
+        )
+
+        state_dir.mkdir()
+        # Enforce protected DACL
+        _enforce_windows_directory_dacl(str(state_dir))
+        # Verification passes on protected DACL
+        _verify_windows_directory_security(str(state_dir))
+
+        # Grant unsafe write permission to Everyone
+        subprocess.run(["icacls", str(state_dir), "/grant", "Everyone:(OI)(CI)W"], capture_output=True)
+        with pytest.raises(SerializationSecurityError, match="grants unsafe write access"):
+            _verify_windows_directory_security(str(state_dir))
+    else:
+        # On POSIX: verify group- or world-writable directory rejection
+        state_dir.mkdir(mode=0o777)
+        os.chmod(str(state_dir), 0o777)
+        with pytest.raises(SerializationSecurityError, match="must not be group- or world-writable"):
+            _verify_and_prepare_state_dir(str(state_dir), str(workspace))
+
+
+def test_external_hmac_key_security_enforcement(tmp_path):
+    """Verifies that external HMAC key directory and key file require strict private security."""
+    key_dir = tmp_path / "keys_test"
+    mgr = AuthCorrelationStateManager(
+        program_id="test_key_prog",
+        workspace_root=str(tmp_path),
+        key_dir=str(key_dir),
+    )
+    key, kid = mgr.get_or_create_hmac_key()
+    assert len(key) == 32
+    assert len(kid) == 8
+
+    key_file = key_dir / "auth_correlation.key"
+    assert key_file.exists()
+
+    if os.name != "nt":
+        # Make key file non-private (0o644)
+        os.chmod(str(key_file), 0o644)
+        mgr_fail = AuthCorrelationStateManager(
+            program_id="test_key_prog",
+            workspace_root=str(tmp_path),
+            key_dir=str(key_dir),
+        )
+        with pytest.raises(KeySecurityError, match="Key file permissions are not private"):
+            mgr_fail.get_or_create_hmac_key()
+

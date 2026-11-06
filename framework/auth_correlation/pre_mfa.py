@@ -9,6 +9,7 @@ not satisfied Multi-Factor Authentication (MFA) or step-up requirements.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -29,6 +30,7 @@ from framework.auth_correlation.model import (
 )
 from framework.authentication.validators import AuthenticationFalsePositiveClassifier
 from framework.authz.model import ResourceAccessTarget
+from framework.common.evidence import sanitize_sensitive_data
 from framework.validation.engine import SecurityValidationEngine
 from framework.validation.request import ControlledRequest, ControlledResponse
 
@@ -36,9 +38,15 @@ from framework.validation.request import ControlledRequest, ControlledResponse
 class PreMfaPrivilegeValidator:
     """Evaluates privilege leakage across pre-MFA and step-up authentication boundaries."""
 
-    def __init__(self, validation_engine: Optional[Any] = None, program_dir: Optional[str] = None):
+    def __init__(
+        self,
+        validation_engine: Optional[Any] = None,
+        program_dir: Optional[str] = None,
+        evidence_store: Optional[Any] = None,
+    ):
         self._engine = validation_engine
         self._program_dir = program_dir or "."
+        self._evidence_store = evidence_store
 
     @property
     def engine(self) -> Any:
@@ -71,6 +79,22 @@ class PreMfaPrivilegeValidator:
         Dispatches probe and compares response with fully authenticated baseline.
         Actively eliminates 200 OK login/MFA challenge forms and public landing shells.
         """
+        # 1. Establish that session is in a pre-MFA state
+        if session_ctx.metadata.get("mfa_level") == "FULL_MFA":
+            return None  # Ordinary fully authenticated session; cannot test pre-MFA leak
+
+        # 2. Establish appropriate fully authenticated baseline
+        if fully_authenticated_response is None or fully_authenticated_response.status_code != 200:
+            return None
+        if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(
+            fully_authenticated_response.status_code, fully_authenticated_response.body_text
+        ):
+            return None
+        if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(
+            fully_authenticated_response.status_code, fully_authenticated_response.body_text
+        ):
+            return None
+
         target_endpoint = getattr(resource_target, "endpoint", None) or getattr(resource_target, "url", "")
         method = getattr(resource_target, "method", "GET")
 
@@ -117,6 +141,23 @@ class PreMfaPrivilegeValidator:
                 )
                 score, sev, vector = CVSS31Calculator.calculate_base_score(metrics)
 
+                # Capture sanitized evidence reference
+                clean_req = f"{method} {target_endpoint}\nHeaders: [REDACTED]"
+                clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
+                ev_hash = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()[:12]
+                evidence_ref = f"EVID-{ev_hash}"
+                evidence_chain = [evidence_ref]
+                if self._evidence_store is not None:
+                    try:
+                        self._evidence_store.save_http_capture(
+                            request_text=clean_req,
+                            response_text=clean_res,
+                            metadata={"hypothesis_category": "PRE_MFA_PRIVILEGE"},
+                            prefix="pre_mfa",
+                        )
+                    except Exception:
+                        pass
+
                 finding_id = f"FIND-MFA-{int(time.time())}"[:20]
                 endpoint_path = target_endpoint if target_endpoint.startswith("/") else "/" + target_endpoint.split("/", 3)[-1]
                 return CorrelationFinding(
@@ -129,7 +170,7 @@ class PreMfaPrivilegeValidator:
                     confidence=0.90,
                     endpoint=endpoint_path,
                     description="Intermediate session in pre-MFA state accessed sensitive resource without completing MFA challenge.",
-                    evidence_chain=[],
+                    evidence_chain=evidence_chain,
                 )
 
         return None
@@ -143,6 +184,9 @@ class PreMfaPrivilegeValidator:
         """
         Audits whether high-privilege endpoints enforce step-up authentication.
         """
+        if step_up_response is None or step_up_response.status_code != 200:
+            return None
+
         target_endpoint = getattr(resource_target, "endpoint", None) or getattr(resource_target, "url", "")
         method = getattr(resource_target, "method", "GET")
 
@@ -180,6 +224,22 @@ class PreMfaPrivilegeValidator:
                 )
                 score, sev, vector = CVSS31Calculator.calculate_base_score(metrics)
 
+                clean_req = f"{method} {target_endpoint}\nHeaders: [REDACTED]"
+                clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
+                ev_hash = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()[:12]
+                evidence_ref = f"EVID-{ev_hash}"
+                evidence_chain = [evidence_ref]
+                if self._evidence_store is not None:
+                    try:
+                        self._evidence_store.save_http_capture(
+                            request_text=clean_req,
+                            response_text=clean_res,
+                            metadata={"hypothesis_category": "STEP_UP_AUTH"},
+                            prefix="step_up",
+                        )
+                    except Exception:
+                        pass
+
                 finding_id = f"FIND-STEPUP-{int(time.time())}"[:20]
                 endpoint_path = target_endpoint if target_endpoint.startswith("/") else "/" + target_endpoint.split("/", 3)[-1]
                 return CorrelationFinding(
@@ -192,7 +252,7 @@ class PreMfaPrivilegeValidator:
                     confidence=0.85,
                     endpoint=endpoint_path,
                     description="Session performed step-up action without supplying elevated step-up credential.",
-                    evidence_chain=[],
+                    evidence_chain=evidence_chain,
                 )
 
         return None

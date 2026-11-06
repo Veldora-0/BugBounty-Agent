@@ -2,7 +2,7 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Current Repository Baseline:** `3107fe92757ce9bfd71dd9fcc00cbfccacedfce3` (Phase 21 implemented and verified across Stages 1–5; pre-Phase 21 baseline: `45b4edb1210ac02144b26d1226d104d9f1d15042`; historical Phase 1–20 baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`)
+> **Current Repository Baseline:** `3107fe92757ce9bfd71dd9fcc00cbfccacedfce3` (Phase 21 implemented and verified across Stages 1–5; pre-Phase 21 baseline: `45b4edb1210ac02144b26d1226d104d9f1d15042`; historical Phase 1–20 baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`; Stage C baseline: `1841280b2f71b103b0e9217b961f1d859bd94272`; starting baseline: `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae`)
 > **Current phase:** Phase 21 — Authentication & Authorization Correlation (Complete; Next Phase: Phase 22 — Cross-Engine Attack-Path Correlation — PLANNED)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
@@ -95,9 +95,11 @@ Phase 19 (Infrastructure & Configuration Exposure) was completed and accepted.
   - Automatic disclosure report submission is strictly prohibited.
 
 ### Phase 21 Acceptance & Verification Record
-Phase 21 (Authentication & Authorization Correlation) was completed and accepted across all 5 implementation stages.
+Phase 21 (Authentication & Authorization Correlation) was completed and accepted across all 5 implementation stages with full post-implementation hardening.
 - **Test execution results reported by environments**:
-  - Windows 11 (Python 3.14.7): 42 passed in targeted Phase 21 suite (`tests/test_phase21_*.py`) in 1.45s; 981 passed, 2 skipped (browser tests) in full regression suite (155.89s).
+  - Windows 11 (Python 3.14.7): 56 passed in targeted Phase 21 suite (`tests/test_phase21_*.py`) in 5.93s; 996 passed, 2 skipped (browser tests) in full regression suite.
+  - Kali Linux (Python 3.14.8): 56 passed in targeted Phase 21 suite in 6.05s; 997 passed in full regression suite.
+  - System Diagnostics (`bb-doctor` Category 26): `[HEALTHY]` (status HEALTHY, 6 scenarios verified).
   - Kali Linux (Python 3.14.8): 42 passed in targeted Phase 21 suite in 0.90s; 983 passed, 0 skipped in full regression suite (141.79s).
 - **Review and acceptance status**:
   - Delivered `framework/auth_correlation/` with 5 core modules: `model.py` (strict allowlists, safe string/repr representations masking credentials/secrets), `cvss.py` (FIRST CVSS 3.1 metric equations), `preflight.py` (`DualControlPreflightValidator`), `revocation.py` (`PostRevocationResourceValidator`), `pre_mfa.py` (`PreMfaPrivilegeValidator`), `tenant.py` (`MultiTenantDesyncValidator`), `engine.py` (`AuthCorrelationEngine`), `state.py` (`AuthCorrelationStateManager`), and `lab.py` (`SimulationTransport`, `LocalAuthCorrelationLab`).

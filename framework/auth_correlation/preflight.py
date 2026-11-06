@@ -62,6 +62,63 @@ class DualControlPreflightValidator:
             return "CACHE_CONFIRMED"
         return "CACHE_NOT_INDICATED"
 
+    @classmethod
+    def classify_probe_response(
+        cls,
+        resp: ControlledResponse,
+        anon_resp: Optional[ControlledResponse] = None,
+    ) -> CorrelationLifecycle:
+        """
+        Classifies probe response into explicit lifecycle states:
+        - VERIFIED: legitimate protected resource access distinct from anonymous control.
+        - EXPIRED: response explicitly indicates token/session expiration.
+        - AUTHENTICATION_FAILED: 401 Unauthorized or redirect to login.
+        - AUTHORIZATION_DENIED: 403 Forbidden (session authenticated but lacks access).
+        - UNKNOWN: ambiguous response, public landing page, or SPA shell matching anonymous control.
+        - FAILED: 5xx server error, unexpected transport fault, or unclassifiable failure.
+        """
+        # 1. 401 Unauthorized -> check for explicit expiration cues
+        if resp.status_code == 401:
+            lower_body = (resp.body_text or "").lower()
+            if any(term in lower_body for term in ("expired", "token_expired", "session_expired")):
+                return CorrelationLifecycle.EXPIRED
+            return CorrelationLifecycle.AUTHENTICATION_FAILED
+
+        # 2. 403 Forbidden -> explicitly AUTHORIZATION_DENIED
+        if resp.status_code == 403:
+            return CorrelationLifecycle.AUTHORIZATION_DENIED
+
+        # 3. Redirects -> Check if login redirect vs normal redirect
+        if resp.status_code in (301, 302, 303, 307, 308):
+            loc = (resp.headers.get("location") or "").lower()
+            if any(term in loc for term in ("/login", "/auth", "/signin", "/sso", "login.")):
+                return CorrelationLifecycle.AUTHENTICATION_FAILED
+            return CorrelationLifecycle.UNKNOWN
+
+        # 4. Check for inline login forms or WAF challenges on 200 OK
+        if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resp.status_code, resp.body_text):
+            return CorrelationLifecycle.AUTHENTICATION_FAILED
+
+        if AuthenticationFalsePositiveClassifier.is_waf_or_challenge_page(resp.status_code, resp.body_text):
+            return CorrelationLifecycle.UNKNOWN
+
+        # 5. Anonymous differential comparison / public landing shell verification
+        if anon_resp and anon_resp.status_code == 200:
+            if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(resp.status_code, resp.body_text):
+                return CorrelationLifecycle.UNKNOWN
+            ratio = difflib.SequenceMatcher(None, anon_resp.body_text, resp.body_text).ratio()
+            if ratio > 0.70:
+                return CorrelationLifecycle.UNKNOWN
+
+        # 6. 200 OK with authentic protected data
+        if resp.status_code == 200:
+            return CorrelationLifecycle.VERIFIED
+
+        if resp.status_code >= 500:
+            return CorrelationLifecycle.FAILED
+
+        return CorrelationLifecycle.UNKNOWN
+
     def validate_session_pair(
         self,
         context_a: CorrelatedSessionContext,
@@ -72,7 +129,7 @@ class DualControlPreflightValidator:
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Executes deterministic sequential preflight protocol across session pair.
-        Short-circuits immediately if Probe 1 or Probe 2 fails.
+        Short-circuits immediately if Probe 1 or Probe 2 fails, assigning explicit lifecycle states.
         """
         details: Dict[str, Any] = {}
 
@@ -89,13 +146,14 @@ class DualControlPreflightValidator:
         except Exception as e:
             context_a.lifecycle = CorrelationLifecycle.FAILED
             context_b.lifecycle = CorrelationLifecycle.FAILED
-            return False, "SESSION_HEALTH_FAILED", {"probe": "probe_1", "error": str(e)}
+            return False, "FAILED", {"probe": "probe_1", "error": str(e)}
 
         details["probe_1"] = resp_a
-        if resp_a.status_code != 200 or AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resp_a.status_code, resp_a.body_text):
-            context_a.lifecycle = CorrelationLifecycle.EXPIRED if resp_a.status_code in (401, 403) else CorrelationLifecycle.FAILED
+        lc_a = self.classify_probe_response(resp_a)
+        if lc_a != CorrelationLifecycle.VERIFIED:
+            context_a.lifecycle = lc_a
             context_b.lifecycle = CorrelationLifecycle.FAILED
-            return False, "SESSION_HEALTH_FAILED", {"failed_probe": "probe_1", "status_code": resp_a.status_code}
+            return False, "SESSION_HEALTH_FAILED", {"failed_probe": "probe_1", "status_code": resp_a.status_code, "lifecycle": lc_a.value}
 
         # ----------------------------------------------------------------------
         # Probe 2: Principal B
@@ -112,9 +170,10 @@ class DualControlPreflightValidator:
             return False, "SESSION_HEALTH_FAILED", {"probe": "probe_2", "error": str(e)}
 
         details["probe_2"] = resp_b
-        if resp_b.status_code != 200 or AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resp_b.status_code, resp_b.body_text):
-            context_b.lifecycle = CorrelationLifecycle.EXPIRED if resp_b.status_code in (401, 403) else CorrelationLifecycle.FAILED
-            return False, "SESSION_HEALTH_FAILED", {"failed_probe": "probe_2", "status_code": resp_b.status_code}
+        lc_b = self.classify_probe_response(resp_b)
+        if lc_b != CorrelationLifecycle.VERIFIED:
+            context_b.lifecycle = lc_b
+            return False, "SESSION_HEALTH_FAILED", {"failed_probe": "probe_2", "status_code": resp_b.status_code, "lifecycle": lc_b.value}
 
         # ----------------------------------------------------------------------
         # Probe 3: Anonymous Control
@@ -122,6 +181,8 @@ class DualControlPreflightValidator:
         try:
             resp_anon = self.probe_anonymous_control(preflight_url)
         except Exception as e:
+            context_a.lifecycle = CorrelationLifecycle.FAILED
+            context_b.lifecycle = CorrelationLifecycle.FAILED
             return False, "SESSION_HEALTH_FAILED", {"probe": "probe_3", "error": str(e)}
 
         details["probe_3"] = resp_anon
@@ -129,16 +190,19 @@ class DualControlPreflightValidator:
         # ----------------------------------------------------------------------
         # Differential Validation
         # ----------------------------------------------------------------------
-        # Anonymous response must not yield 200 OK with identical authenticated content
+        # Anonymous response must not yield 200 OK with identical content
         if resp_anon.status_code == 200:
             if not AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resp_anon.status_code, resp_anon.body_text):
                 ratio_a = difflib.SequenceMatcher(None, resp_anon.body_text, resp_a.body_text).ratio()
                 ratio_b = difflib.SequenceMatcher(None, resp_anon.body_text, resp_b.body_text).ratio()
-                if ratio_a > 0.70 or ratio_b > 0.70:
+                is_shell_a = AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(resp_a.status_code, resp_a.body_text)
+                is_shell_b = AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(resp_b.status_code, resp_b.body_text)
+                if ratio_a > 0.70 or ratio_b > 0.70 or is_shell_a or is_shell_b:
                     context_a.lifecycle = CorrelationLifecycle.UNKNOWN
                     context_b.lifecycle = CorrelationLifecycle.UNKNOWN
                     return False, "SESSION_HEALTH_FAILED", {
                         "failed_probe": "probe_3",
+                        "lifecycle": "UNKNOWN",
                         "reason": "Anonymous response matches authenticated profile (public endpoint / SPA shell)",
                     }
 
@@ -172,18 +236,24 @@ class DualControlPreflightValidator:
             resp = self.engine.send_request(req)
         except Exception as e:
             session_ctx.lifecycle = CorrelationLifecycle.FAILED
+            return False, "FAILED", {"error": str(e)}
+
+        lc = self.classify_probe_response(resp)
+        if lc != CorrelationLifecycle.VERIFIED:
+            session_ctx.lifecycle = lc
+            return False, "SESSION_HEALTH_FAILED", {"status_code": resp.status_code, "lifecycle": lc.value}
+
+        try:
+            resp_anon = self.probe_anonymous_control(preflight_url)
+        except Exception as e:
+            session_ctx.lifecycle = CorrelationLifecycle.FAILED
             return False, "SESSION_HEALTH_FAILED", {"error": str(e)}
 
-        if resp.status_code != 200 or AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resp.status_code, resp.body_text):
-            session_ctx.lifecycle = CorrelationLifecycle.EXPIRED if resp.status_code in (401, 403) else CorrelationLifecycle.FAILED
-            return False, "SESSION_HEALTH_FAILED", {"status_code": resp.status_code}
-
-        resp_anon = self.probe_anonymous_control(preflight_url)
         if resp_anon.status_code == 200:
             ratio = difflib.SequenceMatcher(None, resp_anon.body_text, resp.body_text).ratio()
             if ratio > 0.70:
                 session_ctx.lifecycle = CorrelationLifecycle.UNKNOWN
-                return False, "SESSION_HEALTH_FAILED", {"reason": "Public endpoint / SPA shell"}
+                return False, "SESSION_HEALTH_FAILED", {"reason": "Public endpoint / SPA shell", "lifecycle": "UNKNOWN"}
 
         session_ctx.lifecycle = CorrelationLifecycle.VERIFIED
         session_ctx.verified_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

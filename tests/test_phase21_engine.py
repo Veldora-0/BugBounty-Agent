@@ -151,3 +151,97 @@ def test_auth_correlation_engine_orchestration(tmp_path):
     res_dry = engine.run_correlation(dry_run=True)
     assert res_dry["status"] == "DRY_RUN_COMPLETED"
     assert res_dry["hypotheses_planned"] >= 2
+
+
+def test_engine_preflight_only_execution(tmp_path):
+    """Verifies that preflight_only=True evaluates session health and stops before active testing."""
+    workspace = tmp_path / "ws_pre"
+    workspace.mkdir()
+
+    lab = LocalAuthCorrelationLab()
+    port = lab.start()
+    try:
+        transport = lab.get_transport()
+        engine = AuthCorrelationEngine(
+            program_id="preflight_test",
+            workspace_root=str(workspace),
+            validation_engine=transport,
+        )
+
+        p_a = CorrelatedPrincipalContext(principal_id="alice", role="USER")
+        p_b = CorrelatedPrincipalContext(principal_id="bob", role="USER")
+        engine.register_principal(p_a)
+        engine.register_principal(p_b)
+
+        s_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="alice", volatile_headers={"Authorization": "valid_token_a"})
+        s_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="bob", volatile_headers={"Authorization": "valid_token_a"})
+        engine.register_session(s_a)
+        engine.register_session(s_b)
+
+        res = engine.run_correlation(
+            target_asset=f"http://127.0.0.1:{port}",
+            preflight_only=True,
+        )
+        assert res["status"] == "PREFLIGHT_COMPLETED"
+        assert res["total_hypotheses"] >= 2
+        assert res["verified_hypotheses"] >= 2
+        assert res["findings"] == []
+    finally:
+        lab.stop()
+
+
+def test_engine_persistence_failure_fail_closed(tmp_path):
+    """Verifies that persistence failure returns PERSISTENCE_FAILED and does not silently succeed."""
+    workspace = tmp_path / "ws_fail"
+    workspace.mkdir()
+
+    engine = AuthCorrelationEngine(
+        program_id="persistence_fail_prog",
+        workspace_root=str(workspace),
+    )
+
+    p_a = CorrelatedPrincipalContext(principal_id="u1", role="USER")
+    p_b = CorrelatedPrincipalContext(principal_id="u2", role="USER")
+    engine.register_principal(p_a)
+    engine.register_principal(p_b)
+
+    s_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
+    s_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="u2")
+    engine.register_session(s_a)
+    engine.register_session(s_b)
+
+    def mock_save_fail(*args, **kwargs):
+        raise IOError("Simulated disk write failure")
+
+    engine.state_manager.save_state = mock_save_fail
+
+    res = engine.run_correlation(target_asset="http://127.0.0.1:9999")
+    assert res["status"] == "PERSISTENCE_FAILED"
+    assert "Simulated disk write failure" in res["error"]
+
+
+def test_engine_principal_session_resolution(tmp_path):
+    """Verifies that hypotheses map to sessions by explicit principal_id rather than list index."""
+    workspace = tmp_path / "ws_res"
+    workspace.mkdir()
+
+    engine = AuthCorrelationEngine(
+        program_id="resolution_prog",
+        workspace_root=str(workspace),
+    )
+
+    p1 = CorrelatedPrincipalContext(principal_id="p_charlie", role="USER")
+    p2 = CorrelatedPrincipalContext(principal_id="p_diana", role="ADMIN")
+    engine.register_principal(p1)
+    engine.register_principal(p2)
+
+    s_diana = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="p_diana")
+    s_charlie = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="p_charlie")
+    # Registered in reverse order
+    engine.register_session(s_diana)
+    engine.register_session(s_charlie)
+
+    assert engine.find_session_for_principal("p_charlie").session_ref == "sess_00000000000000000000000000000001"
+    assert engine.find_session_for_principal("p_diana").session_ref == "sess_00000000000000000000000000000002"
+    assert engine.find_session_for_principal("nonexistent") is None
+

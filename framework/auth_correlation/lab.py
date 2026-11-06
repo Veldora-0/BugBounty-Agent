@@ -90,6 +90,8 @@ class SimulationTransport:
 
         hops = 0
         while True:
+            if current_url.startswith("/"):
+                current_url = f"http://127.0.0.1:{self.lab_port}{current_url}"
             self.validate_target_url(current_url)
             status, resp_headers, resp_bytes = self._raw_dispatch(current_method, current_url, headers, body)
 
@@ -115,6 +117,8 @@ class SimulationTransport:
 
             return ControlledResponse(status_code=status, headers=resp_headers, body=resp_bytes)
 
+    execute_request = send_request
+
 
 class _LabRequestHandler(BaseHTTPRequestHandler):
     """Deterministic HTTP handler simulating all 6 Phase 21 lab scenarios."""
@@ -134,6 +138,23 @@ class _LabRequestHandler(BaseHTTPRequestHandler):
     def _handle_request(self, method: str) -> None:
         path = self.path
         auth_header = self.headers.get("Authorization", "")
+
+        # ----------------------------------------------------------------------
+        # API v1 routes for preflight health gating and candidate discovery
+        # ----------------------------------------------------------------------
+        if path.startswith("/api/v1/"):
+            if auth_header:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status": "ok", "user": "authorized", "tenant_id": "tenant_a"}')
+                return
+            else:
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error": "Unauthorized"}')
+                return
 
         # ----------------------------------------------------------------------
         # SCEN-01: Expired session false-negative prevention

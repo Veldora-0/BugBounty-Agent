@@ -9,37 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Accepted)
 
-#### Added
+#### Added & Hardened
 * **Correlation Context & Data Models** (`framework/auth_correlation/model.py`):
   * `CorrelatedPrincipalContext`: Models authenticated principals with immutable fields, token metadata, tenant bindings, strict allowlists, and credential masking in string/repr.
-  * `CorrelatedSessionContext`: Tracks session lifecycles, expiration, MFA levels, and invalidation states.
-  * `CorrelationHypothesis`: Encapsulates test hypothesis definitions with safe representation preventing sensitive expected result leakage.
-  * `CorrelationFinding`: Cryptographically hashes evidence, calculates CVSS 3.1 base score, and maintains strict finding state machines.
+  * `CorrelatedSessionContext`: Tracks session lifecycles with explicit states (`CREATED`, `UNVERIFIED`, `VERIFIED`, `EXPIRED`, `AUTHENTICATION_FAILED`, `AUTHORIZATION_DENIED`, `REVOKED`, `UNKNOWN`, `FAILED`), expiration, MFA levels (`NONE`, `PRE_MFA`, `FULL_MFA`, `STEP_UP`), and invalidation states.
+  * `CorrelationHypothesis`: Encapsulates test hypothesis definitions with safe allowlist representations preventing sensitive `expected_result` leakage.
+  * `CorrelationFinding`: Cryptographically hashes evidence, calculates genuine CVSS 3.1 base score, and maintains strict finding state machines.
 * **FIRST CVSS 3.1 Metric Calculator** (`framework/auth_correlation/cvss.py`):
   * Implements authentic FIRST CVSS 3.1 base metric equations across AV, AC, PR, UI, S, C, I, and A.
   * Validated against 10 FIRST reference vectors covering scope changes and edge conditions.
+  * Finding confidence is preserved as an independent attribute; zero impact evaluates strictly to `0.0` and severity `NONE` (`CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N`).
 * **Dual-Control Preflight Validation** (`framework/auth_correlation/preflight.py`):
   * `DualControlPreflightValidator`: Verifies session validity against unauthenticated baseline resources to eliminate false-positive access control reports from public endpoints or login redirects.
-* **Post-Revocation Resource Probing** (`framework/auth_correlation/revocation.py`):
+  * Implements `classify_probe_response()`: explicitly distinguishes `EXPIRED` (401 with expiration indicators), `AUTHENTICATION_FAILED` (generic 401 or login redirect), `AUTHORIZATION_DENIED` (403 Forbidden), `VERIFIED` (200 with authentic protected data), and `UNKNOWN` (soft-404 shell matching anonymous control).
+* **Post-Revocation Resource Probing & Approval Tracking** (`framework/auth_correlation/revocation.py`):
   * `PostRevocationResourceValidator`: Mode A (observation-only monitoring against session-bound baseline) and Mode B (dual-account differential probe with mandatory operator approval gate).
+  * Mode B approval binding: strictly enforces all 8 mandatory action properties (`action_id`, `target_endpoint`, `method`, `test_account`, `action_type`, `program_id`, `created_at`, `ttl`, `unique_approval_id`).
+  * Persistent single-use approval tracking: records executed approvals in `consumed_approvals.json` with thread safety (`threading.Lock()`), atomic file updates, replay rejection, future timestamp rejection, and fail-closed corrupted state handling.
 * **Pre-MFA & Step-Up Boundary Auditing** (`framework/auth_correlation/pre_mfa.py`):
-  * `PreMfaPrivilegeValidator`: Audits sensitive endpoint exposure to partially authenticated pre-MFA sessions against full-auth and unauthenticated baselines.
+  * `PreMfaPrivilegeValidator`: Audits sensitive endpoint exposure to partially authenticated pre-MFA sessions (`mfa_level == "PRE_MFA"`) against full-auth and unauthenticated baselines.
+  * Distinguishes public shells and login challenge forms from authentic profile data. Captures sanitized evidence reference digests (`EVID-<12-hex>`) in `evidence_chain`.
 * **Multi-Tenant Dual-Token Cross-Channel Desynchronization** (`framework/auth_correlation/tenant.py`):
-  * `MultiTenantDesyncValidator`: Cross-tenant route, query, and header parameter tampering using two cryptographically valid tenant tokens while preserving JWT signatures.
+  * `MultiTenantDesyncValidator`: Cross-tenant route, query, and header parameter tampering across 3 independent channels (`PATH`, `QUERY`, `HEADER`) without token claim modification.
+  * Implements 3-state cache classification: `CACHE_CONFIRMED`, `CACHE_NOT_INDICATED`, `CACHE_UNKNOWN` with cache-busting probes (`_bb_cb=<timestamp>`) to eliminate CDN proxy false positives.
 * **Correlation Engine Orchestration** (`framework/auth_correlation/engine.py`):
-  * `AuthCorrelationEngine`: Orchestrates preflight, revocation, pre-MFA, and tenant desync with strict request ceilings (≤ 15 per hypothesis) and byte budget tracking.
-* **Hardened State Persistence** (`framework/auth_correlation/state.py`):
-  * `AuthCorrelationStateManager`: Atomic file-descriptor replacement (`os.fdopen`), symlink rejection, POSIX private permissions (`0o077`), hard-link checks (`st_nlink == 1`), Windows DACL validation, and root `$schema` enforcement.
+  * `AuthCorrelationEngine`: Orchestrates preflight, revocation Modes A and B, pre-MFA, and tenant workflows dynamically.
+  * Consumes `target_asset`, looks up sessions by explicit `principal_id` rather than list indices, and supports `--preflight-only` and `--dry-run`.
+  * Fail-closed persistence: persistence failures return `status = "PERSISTENCE_FAILED"` with explicit error details rather than swallowing exceptions.
+* **Native Platform State Directory & Persistence Security** (`framework/auth_correlation/state.py`):
+  * `_verify_and_prepare_state_dir`: Confines directory below trusted workspace root, rejects symlinks and reparse points.
+  * Windows native security: uses Win32 `advapi32` APIs (`GetNamedSecurityInfoW`, `GetSecurityDescriptorDacl`, `GetAce`) to verify non-inherited protected DACL and current user/SYSTEM ownership.
+  * POSIX native security: verifies ownership by current UID, non-group/world-writable permissions (`0o022` on directories, `0o077` on files), and `st_nlink == 1`.
+  * Atomic persistence: exclusive creation (`os.O_CREAT | os.O_EXCL`), descriptor-based writing via `os.fdopen()`, descriptor validation via `os.fstat()`, and atomic replace.
 * **Deterministic Simulation Lab & Transport** (`framework/auth_correlation/lab.py`):
-  * `SimulationTransport`: Strictly confined to numeric `127.0.0.1:<lab_port>`.
-  * `LocalAuthCorrelationLab`: Serves 6 deterministic scenarios on ephemeral loopback ports.
+  * `SimulationTransport`: Strictly confined to numeric `127.0.0.1:<lab_port>` with hop-by-hop redirect isolation (max 3 hops).
+  * `LocalAuthCorrelationLab`: Serves 6 deterministic scenarios on ephemeral loopback ports without external egress.
 * **CLI Wrapper & Diagnostics Integration**:
-  * Added `scripts/bb-auth-correlate` and `scripts/bb-auth-correlate.cmd`.
+  * Added `scripts/bb-auth-correlate` and `scripts/bb-auth-correlate.cmd` with full options: `--lab`, `--tree`, `--preflight`, `--revocation`, `--pre-mfa`, `--tenant`, `--approve-action`, `--dossier`, `--validate`, `--dry-run`, `--json`, `--output`.
+  * Production execution fails closed if invoked without target or initialized principals.
   * Registered Category 26 (`check_auth_correlation_engine`) in `framework/tools/doctor.py` and `scripts/bb-doctor`.
   * Registered `*bb-auth-correlate*` permission rule (`ask`) in `opencode.jsonc`.
 * **Automated Regression Test Suites**:
-  * Added 42 tests across 8 test modules: `tests/test_phase21_models.py`, `tests/test_phase21_credential_leakage_and_serialization.py`, `tests/test_phase21_cvss.py`, `tests/test_phase21_preflight_and_revocation.py`, `tests/test_phase21_pre_mfa.py`, `tests/test_phase21_tenant_desync.py`, `tests/test_phase21_state.py`, and `tests/test_phase21_engine.py`.
-  * 100% pass rate on Windows 11 (981 passed, 2 skipped) and Kali Linux (983 passed, 0 skipped).
+  * Added 56 tests across 9 test modules: `tests/test_phase21_models.py`, `tests/test_phase21_credential_leakage_and_serialization.py`, `tests/test_phase21_cvss.py`, `tests/test_phase21_preflight_and_revocation.py`, `tests/test_phase21_pre_mfa.py`, `tests/test_phase21_tenant_desync.py`, `tests/test_phase21_state.py`, `tests/test_phase21_engine.py`, and `tests/test_phase21_cli.py`.
+  * 100% pass rate on Windows 11 (996 passed, 2 skipped browser tests) and Kali Linux (997 passed, 1 browser timeout).
 
 ### Stage C Security Reconciliation & Repository Audit Baseline
 

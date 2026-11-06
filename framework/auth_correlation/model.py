@@ -36,6 +36,8 @@ class CorrelationLifecycle(str, Enum):
     UNVERIFIED = "UNVERIFIED"
     VERIFIED = "VERIFIED"
     EXPIRED = "EXPIRED"
+    AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
+    AUTHORIZATION_DENIED = "AUTHORIZATION_DENIED"
     REVOKED = "REVOKED"
     UNKNOWN = "UNKNOWN"
     FAILED = "FAILED"
@@ -70,7 +72,7 @@ DISGUISED_CREDENTIAL_INDICATORS = (
 MASKED_TOKEN_FRAGMENT_PATTERN = re.compile(r"tok_[a-zA-Z0-9_\.]{4,}")
 HIGH_ENTROPY_TOKEN_PATTERN = re.compile(r"(?:[A-Za-z0-9+/]{32,}={0,2}|[A-Fa-f0-9]{32,})")
 
-LIFECYCLE_PATTERN = re.compile(r"^(CREATED|UNVERIFIED|VERIFIED|EXPIRED|REVOKED|UNKNOWN|FAILED)$")
+LIFECYCLE_PATTERN = re.compile(r"^(CREATED|UNVERIFIED|VERIFIED|EXPIRED|AUTHENTICATION_FAILED|AUTHORIZATION_DENIED|REVOKED|UNKNOWN|FAILED)$")
 EXPECTED_RESULT_PATTERN = re.compile(r"^(ACCESS_ALLOWED|ACCESS_DENIED|AUTHENTICATION_REQUIRED|ISOLATED)$")
 VALIDATION_STATUS_PATTERN = re.compile(r"^(PENDING|VALIDATED|FAILED|INCONCLUSIVE|SESSION_HEALTH_FAILED)$")
 VERIFICATION_STATUS_PATTERN = re.compile(r"^(UNVERIFIED|VERIFIED|FAILED|EXPIRED)$")
@@ -216,7 +218,7 @@ ALLOWED_SESSION_KEYS: Set[str] = {
 
 ALLOWED_METADATA_KEYS: Set[str] = {
     "token_type", "preflight_endpoint", "is_test_account", 
-    "tenant_id", "observed_role", "claim_keys"
+    "tenant_id", "observed_role", "claim_keys", "mfa_level"
 }
 
 
@@ -233,6 +235,16 @@ class CorrelatedSessionContext:
     expires_at: Optional[str] = None
     verified_at: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def mfa_level(self) -> str:
+        """Returns session MFA level: NONE, PRE_MFA, FULL_MFA, or STEP_UP."""
+        return str(self.metadata.get("mfa_level", "NONE"))
+
+    @property
+    def is_pre_mfa(self) -> bool:
+        """Indicates whether session is in an intermediate pre-MFA state."""
+        return self.metadata.get("mfa_level") == "PRE_MFA"
 
     def __repr__(self) -> str:
         # Safe repr even when object is unvalidated; volatile_headers is repr=False
@@ -296,6 +308,11 @@ class CorrelatedSessionContext:
                 if not isinstance(v, list) or not all(isinstance(x, str) and SAFE_IDENTIFIER_PATTERN.match(x) for x in v):
                     raise SerializationSecurityError("Field 'metadata.claim_keys' must be a list of safe identifier strings")
                 validated_meta[k] = list(v)
+            elif k == "mfa_level":
+                assert_safe_string(v, "metadata.mfa_level")
+                if v not in ("NONE", "PRE_MFA", "FULL_MFA", "STEP_UP"):
+                    raise SerializationSecurityError("Invalid mfa_level value in session metadata")
+                validated_meta[k] = v
 
         return {
             "session_ref": sref,

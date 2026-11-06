@@ -170,21 +170,23 @@ def test_revocation_mode_a_vulnerability_emission():
     assert "EVID-0123456789ab" in finding.evidence_chain
 
 
-def test_revocation_mode_b_controlled_invalidation_approval():
+def test_revocation_mode_b_controlled_invalidation_approval(tmp_path):
     """Verifies Mode B single-use action-specific approval verification and execution."""
     target_url = "https://target.local/auth/logout"
     engine = MockValidationEngine({
         target_url: ControlledResponse(200, {}, b'{"status": "logged_out"}'),
     })
-    validator = PostRevocationResourceValidator(validation_engine=engine)
+    validator = PostRevocationResourceValidator(validation_engine=engine, state_dir=str(tmp_path))
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", volatile_headers={"Authorization": "Bearer active_token"})
 
-    # Build valid dossier
+    # Build valid dossier matching mandatory bound action properties
     dossier_data = {
         "target_endpoint": target_url,
         "method": "POST",
         "test_account": "user_test_b",
         "action_type": "ACTION-LOGOUT",
+        "program_id": "test_prog",
+        "unique_approval_id": "appr_001",
         "created_at": time.time(),
         "ttl": 300,
     }
@@ -204,8 +206,89 @@ def test_revocation_mode_b_controlled_invalidation_approval():
         validator.execute_controlled_invalidation(sess, action_id, tampered_dossier)
 
     # Case 3: Expired approval
-    expired_dossier = {**dossier_data, "created_at": time.time() - 400}
+    expired_dossier = {**dossier_data, "created_at": time.time() - 400, "unique_approval_id": "appr_002"}
     exp_digest = hashlib.sha256(json.dumps(dict(sorted(expired_dossier.items())), sort_keys=True).encode("utf-8")).hexdigest()
     exp_action_id = f"ACT-{exp_digest}"
     with pytest.raises(ApprovalSecurityError, match="expired"):
         validator.execute_controlled_invalidation(sess, exp_action_id, {**expired_dossier, "action_id": exp_action_id})
+
+
+def test_revocation_mode_b_replay_and_security_edge_cases(tmp_path):
+    """Verifies replay rejection, future timestamps, and corrupted approval tracking in Mode B."""
+    target_url = "https://target.local/auth/logout"
+    engine = MockValidationEngine({
+        target_url: ControlledResponse(200, {}, b'{"status": "logged_out"}'),
+    })
+    validator = PostRevocationResourceValidator(validation_engine=engine, state_dir=str(tmp_path))
+    sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
+
+    def make_dossier(appr_id: str, created_at: float = None):
+        data = {
+            "target_endpoint": target_url,
+            "method": "POST",
+            "test_account": "user_test_b",
+            "action_type": "LOGOUT",
+            "program_id": "prog1",
+            "unique_approval_id": appr_id,
+            "created_at": created_at if created_at is not None else time.time(),
+            "ttl": 300,
+        }
+        can_str = json.dumps(dict(sorted(data.items())), sort_keys=True)
+        digest = hashlib.sha256(can_str.encode("utf-8")).hexdigest()
+        act_id = f"ACT-{digest}"
+        return act_id, {**data, "action_id": act_id}
+
+    # 1. Single-use execution succeeds first time
+    act_id1, dossier1 = make_dossier("appr_single_use_01")
+    assert validator.execute_controlled_invalidation(sess, act_id1, dossier1) is True
+
+    # 2. Replay attempt with same unique_approval_id must fail closed
+    with pytest.raises(ApprovalSecurityError, match="has already been consumed"):
+        validator.execute_controlled_invalidation(sess, act_id1, dossier1)
+
+    # 3. Future-dated approval (timestamp skew attack) must fail closed
+    future_time = time.time() + 3600
+    act_id_fut, dossier_fut = make_dossier("appr_future_01", created_at=future_time)
+    with pytest.raises(ApprovalSecurityError, match="future"):
+        validator.execute_controlled_invalidation(sess, act_id_fut, dossier_fut)
+
+    # 4. Corrupted consumed_approvals.json fails closed
+    consumed_file = tmp_path / "consumed_approvals.json"
+    consumed_file.write_text("{malformed json...", encoding="utf-8")
+    act_id3, dossier3 = make_dossier("appr_03")
+    with pytest.raises(ApprovalSecurityError, match="is corrupted"):
+        validator.execute_controlled_invalidation(sess, act_id3, dossier3)
+
+
+def test_preflight_response_classification_distinctions():
+    """Verifies granular classification: 401 vs 403 vs login redirect vs public shell vs verified."""
+    validator = DualControlPreflightValidator()
+
+    # 1. 401 Unauthorized with expiration cues -> EXPIRED
+    resp_expired = ControlledResponse(401, {}, b'{"error": "Session token expired"}')
+    assert validator.classify_probe_response(resp_expired) == CorrelationLifecycle.EXPIRED
+
+    # 2. Generic 401 Unauthorized -> AUTHENTICATION_FAILED
+    resp_401 = ControlledResponse(401, {}, b'{"error": "Invalid authentication credentials"}')
+    assert validator.classify_probe_response(resp_401) == CorrelationLifecycle.AUTHENTICATION_FAILED
+
+    # 3. 403 Forbidden -> AUTHORIZATION_DENIED
+    resp_403 = ControlledResponse(403, {}, b'{"error": "Forbidden: insufficient permissions"}')
+    assert validator.classify_probe_response(resp_403) == CorrelationLifecycle.AUTHORIZATION_DENIED
+
+    # 4. 302 Redirect to /login -> AUTHENTICATION_FAILED
+    resp_302 = ControlledResponse(302, {"Location": "/auth/login"}, b'')
+    assert validator.classify_probe_response(resp_302) == CorrelationLifecycle.AUTHENTICATION_FAILED
+
+    # 5. 200 OK containing login challenge form -> AUTHENTICATION_FAILED
+    resp_login_form = ControlledResponse(200, {"content-type": "text/html"}, b'<html><form action="/login"><input type="password"/></form></html>')
+    assert validator.classify_probe_response(resp_login_form) == CorrelationLifecycle.AUTHENTICATION_FAILED
+
+    # 6. 200 OK containing authorized profile JSON -> VERIFIED
+    resp_profile = ControlledResponse(200, {"content-type": "application/json"}, b'{"user_id": "u1", "email": "u1@corp.local"}')
+    assert validator.classify_probe_response(resp_profile) == CorrelationLifecycle.VERIFIED
+
+    # 7. Differential comparison: 200 OK identical to anonymous control -> UNKNOWN
+    resp_shell = ControlledResponse(200, {"content-type": "text/html"}, b'<html><body>Loading App Shell...</body></html>')
+    assert validator.classify_probe_response(resp_shell, anon_resp=resp_shell) == CorrelationLifecycle.UNKNOWN
+

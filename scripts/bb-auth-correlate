@@ -20,6 +20,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from framework.auth_correlation.engine import AuthCorrelationEngine
+from framework.auth_correlation.state import AuthCorrelationStateManager
 from framework.auth_correlation.lab import LocalAuthCorrelationLab, SecurityBoundaryViolationError
 from framework.auth_correlation.model import CorrelatedPrincipalContext, CorrelatedSessionContext, CorrelationLifecycle
 from framework.auth_correlation.revocation import ApprovalSecurityError
@@ -40,6 +41,7 @@ def main() -> int:
     parser.add_argument("--approve-action", dest="approve_action", help="Grant single-use approval for controlled mutation in Mode B (ACT-<SHA256>)")
     parser.add_argument("--pre-mfa", dest="pre_mfa", action="store_true", help="Execute pre-MFA privilege boundary analysis")
     parser.add_argument("--tenant", action="store_true", help="Execute multi-tenant dual-token desynchronization")
+    parser.add_argument("--dossier", help="Path to action dossier JSON file for Mode B approved mutation")
     parser.add_argument("--lab", action="store_true", help="Execute against the local deterministic simulation lab")
     parser.add_argument("--validate", action="store_true", help="Execute full active correlation validation")
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
@@ -47,16 +49,49 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    # Determine workflow selection filter
+    workflow_filter = None
+    if args.revocation or args.pre_mfa or args.tenant:
+        workflow_filter = set()
+        if args.revocation:
+            workflow_filter.add("revocation")
+        if args.pre_mfa:
+            workflow_filter.add("pre_mfa")
+        if args.tenant:
+            workflow_filter.add("tenant")
+    elif args.validate:
+        workflow_filter = {"revocation", "pre_mfa", "tenant"}
+
+    # Resolve action dossier if Mode B approval passed
+    action_dossier = None
+    if args.approve_action:
+        if args.dossier and os.path.exists(args.dossier):
+            with open(args.dossier, "r", encoding="utf-8") as f:
+                action_dossier = json.load(f)
+        else:
+            cand_path = os.path.join(REPO_ROOT, "state", "pending_actions", f"{args.approve_action}.json")
+            if os.path.exists(cand_path):
+                with open(cand_path, "r", encoding="utf-8") as f:
+                    action_dossier = json.load(f)
+
     # Simulation lab execution
     if args.lab:
+        import shutil
+        import tempfile
         lab = LocalAuthCorrelationLab()
         port = lab.start()
+        lab_state_dir = tempfile.mkdtemp(prefix="bb_lab_state_")
         try:
             transport = lab.get_transport()
             engine = AuthCorrelationEngine(
                 program_id=args.program,
-                workspace_root=REPO_ROOT,
+                workspace_root=tempfile.gettempdir(),
                 validation_engine=transport,
+                state_manager=AuthCorrelationStateManager(
+                    program_id=args.program,
+                    workspace_root=tempfile.gettempdir(),
+                    state_dir=lab_state_dir,
+                ),
             )
             # Register lab scenario principals
             p_a = CorrelatedPrincipalContext(principal_id="lab_usr_a", tenant_id="tenant_a", role="USER")
@@ -64,19 +99,36 @@ def main() -> int:
             engine.register_principal(p_a)
             engine.register_principal(p_b)
 
-            s_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="lab_usr_a", volatile_headers={"Authorization": "valid_token_a"})
-            s_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="lab_usr_b", volatile_headers={"Authorization": "valid_token_b"})
+            s_a_meta = {"mfa_level": "PRE_MFA"} if args.pre_mfa else {}
+            s_a = CorrelatedSessionContext(
+                session_ref="sess_00000000000000000000000000000001",
+                principal_id="lab_usr_a",
+                volatile_headers={"Authorization": "Bearer valid_token_a"},
+                metadata=s_a_meta,
+            )
+            s_b = CorrelatedSessionContext(
+                session_ref="sess_00000000000000000000000000000002",
+                principal_id="lab_usr_b",
+                volatile_headers={"Authorization": "Bearer valid_token_b"},
+            )
             engine.register_session(s_a)
             engine.register_session(s_b)
+
+            if args.tree:
+                print(engine.render_tree())
+                return 0
 
             results = engine.run_correlation(
                 target_asset=f"http://127.0.0.1:{port}",
                 preflight_only=args.preflight,
-                dry_run=args.dry_run,
+                dry_run=args.dry_run or args.passive_only,
+                workflow_filter=workflow_filter,
                 approved_action_id=args.approve_action,
+                action_dossier=action_dossier,
             )
         finally:
             lab.stop()
+            shutil.rmtree(lab_state_dir, ignore_errors=True)
 
         if args.json:
             print(json.dumps(results, indent=2))
@@ -92,15 +144,44 @@ def main() -> int:
         workspace_root=REPO_ROOT,
     )
 
+    # Attempt to load persistent state if available
+    state_file = os.path.join(REPO_ROOT, "state", "auth_correlation.json")
+    if os.path.exists(state_file):
+        try:
+            loaded_state = engine.state_manager.load_state()
+            for p_id, p_dict in loaded_state.get("principals", {}).items():
+                engine.register_principal(CorrelatedPrincipalContext(**p_dict))
+            for s_ref, s_dict in loaded_state.get("sessions", {}).items():
+                engine.register_session(CorrelatedSessionContext(
+                    session_ref=s_dict["session_ref"],
+                    principal_id=s_dict["principal_id"],
+                    lifecycle=CorrelationLifecycle(s_dict["lifecycle"]),
+                    expires_at=s_dict.get("expires_at"),
+                    verified_at=s_dict.get("verified_at"),
+                    metadata=s_dict.get("metadata", {}),
+                ))
+        except Exception as e:
+            print(f"[-] Warning: Could not load existing correlation state: {e}", file=sys.stderr)
+
     if args.tree:
         print(engine.render_tree())
         return 0
 
+    is_passive = args.dry_run or args.passive_only
+    if not is_passive and not args.target and len(engine.principals) < 2:
+        print("[!] Production correlation requires an active target (--target) or initialized principals.", file=sys.stderr)
+        return 1
+
+    if args.approve_action and not action_dossier and not is_passive:
+        raise ApprovalSecurityError(f"Action dossier for approved action '{args.approve_action}' was not found.")
+
     results = engine.run_correlation(
         target_asset=args.target,
         preflight_only=args.preflight,
-        dry_run=args.dry_run or args.passive_only,
+        dry_run=is_passive,
+        workflow_filter=workflow_filter,
         approved_action_id=args.approve_action,
+        action_dossier=action_dossier,
     )
 
     if args.json:

@@ -14,8 +14,10 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
+import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from framework.auth_correlation.cvss import (
     AttackVector,
@@ -40,22 +42,96 @@ from framework.validation.request import ControlledRequest, ControlledResponse
 
 
 class ApprovalSecurityError(Exception):
-    """Raised when controlled invalidation action approval is missing, expired, or tampered."""
+    """Raised when controlled invalidation action approval is missing, expired, replayed, or tampered."""
     pass
+
+
+ALLOWED_DOSSIER_KEYS: Set[str] = {
+    "action_id", "target_endpoint", "method", "test_account", 
+    "action_type", "program_id", "created_at", "ttl", "unique_approval_id"
+}
+
+ALLOWED_MUTATION_METHODS: Set[str] = {"POST", "PUT", "DELETE"}
+ALLOWED_ACTION_TYPES: Set[str] = {"LOGOUT", "ACTION-LOGOUT", "TOKEN_REVOCATION", "PASSWORD_CHANGE"}
 
 
 class PostRevocationResourceValidator:
     """Evaluates resource accessibility post-revocation across Mode A and Mode B."""
 
-    def __init__(self, validation_engine: Optional[Any] = None, program_dir: Optional[str] = None):
+    _consumed_lock = threading.Lock()
+
+    def __init__(
+        self,
+        validation_engine: Optional[Any] = None,
+        program_dir: Optional[str] = None,
+        state_dir: Optional[str] = None,
+        scope_engine: Optional[Any] = None,
+    ):
         self._engine = validation_engine
         self._program_dir = program_dir or "."
+        self._state_dir = state_dir or os.path.join(self._program_dir, "state")
+        self._scope_engine = scope_engine
 
     @property
     def engine(self) -> Any:
         if self._engine is None:
             self._engine = SecurityValidationEngine(program_dir=self._program_dir)
         return self._engine
+
+    def _get_consumed_approvals_path(self) -> str:
+        return os.path.join(self._state_dir, "consumed_approvals.json")
+
+    def _is_approval_consumed(self, action_id: str) -> bool:
+        """Reads consumed approvals state; fails closed on any corruption."""
+        path = self._get_consumed_approvals_path()
+        if not os.path.exists(path):
+            return False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict) or "consumed" not in data or not isinstance(data["consumed"], dict):
+                raise ApprovalSecurityError("Consumed approvals state storage is corrupted")
+            return action_id in data["consumed"]
+        except ApprovalSecurityError:
+            raise
+        except Exception as e:
+            raise ApprovalSecurityError(f"Consumed approvals state storage is corrupted: {e}")
+
+    def _mark_approval_consumed(self, action_id: str, dossier: Dict[str, Any]) -> None:
+        """Atomically marks action approval as consumed; fails closed on corruption."""
+        os.makedirs(self._state_dir, exist_ok=True)
+        path = self._get_consumed_approvals_path()
+        data: Dict[str, Any] = {"consumed": {}}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict) or "consumed" not in data or not isinstance(data["consumed"], dict):
+                    raise ApprovalSecurityError("Consumed approvals state storage is corrupted")
+            except ApprovalSecurityError:
+                raise
+            except Exception as e:
+                raise ApprovalSecurityError(f"Consumed approvals state storage is corrupted: {e}")
+
+        data["consumed"][action_id] = {
+            "consumed_at": time.time(),
+            "target_endpoint": dossier.get("target_endpoint"),
+            "action_type": dossier.get("action_type"),
+            "test_account": dossier.get("test_account"),
+        }
+
+        tmp_path = f"{path}.tmp.{os.getpid()}"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_path, path)
+        except Exception as e:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise ApprovalSecurityError(f"Failed to record consumed approval state: {e}")
 
     def evaluate_revoked_session(
         self,
@@ -92,16 +168,27 @@ class PostRevocationResourceValidator:
             return "INCONCLUSIVE", None
 
         # Secure invalidation: 401, 403, or login redirect
-        if resp.status_code in (401, 403) or resp.status_code in (301, 302, 303, 307, 308):
+        if resp.status_code in (401, 403):
             return "SECURE_INVALIDATION", None
+
+        if resp.status_code in (301, 302, 303, 307, 308):
+            loc = (resp.headers.get("location") or "").lower()
+            if any(term in loc for term in ("/login", "/auth", "/signin", "/sso", "login.")):
+                return "SECURE_INVALIDATION", None
+            return "INCONCLUSIVE", None
 
         if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resp.status_code, resp.body_text):
             return "SECURE_INVALIDATION", None
+
+        if AuthenticationFalsePositiveClassifier.is_waf_or_challenge_page(resp.status_code, resp.body_text):
+            return "INCONCLUSIVE", None
 
         # If HTTP 200 OK: verify body data against pre-revocation baseline
         if resp.status_code == 200:
             # Must not be a generic shell or empty response
             if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(resp.status_code, resp.body_text):
+                return "INCONCLUSIVE", None
+            if AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(resp.status_code, resp.body_text):
                 return "INCONCLUSIVE", None
 
             ratio = difflib.SequenceMatcher(None, resp.body_text, pre_revocation_baseline.body_text).ratio()
@@ -146,17 +233,69 @@ class PostRevocationResourceValidator:
         """
         Mode B: Executes active mutation (logout / password change) on verified test accounts.
         Enforces strict action-specific single-use approval bound to ACT-<SHA256>.
+        Guarantees single-use execution through persistent consumed approval tracking.
         """
-        if not action_id.startswith("ACT-") or len(action_id) != 68:  # "ACT-" + 64 hex chars
-            raise ApprovalSecurityError("Invalid action approval identifier format")
+        if not isinstance(action_id, str) or not action_id.startswith("ACT-") or len(action_id) != 68:
+            raise ApprovalSecurityError("Invalid action approval identifier format: expected ACT-<64-hex>")
 
+        if not isinstance(action_dossier, dict):
+            raise ApprovalSecurityError("Action dossier must be a dictionary")
+
+        # 1. Exact allowed keys enforcement (reject missing and unexpected keys)
+        if set(action_dossier.keys()) != ALLOWED_DOSSIER_KEYS:
+            raise ApprovalSecurityError("Action dossier keys do not match approved schema")
+
+        # 2. Strict field type and value validations
+        if action_dossier.get("action_id") != action_id:
+            raise ApprovalSecurityError("Action dossier action_id does not match parameter action_id")
+
+        method = action_dossier.get("method")
+        if not isinstance(method, str) or method not in ALLOWED_MUTATION_METHODS:
+            raise ApprovalSecurityError("Action approval specifies invalid or unsupported HTTP method")
+
+        action_type = action_dossier.get("action_type")
+        if not isinstance(action_type, str) or action_type not in ALLOWED_ACTION_TYPES:
+            raise ApprovalSecurityError("Action approval specifies unsupported action type")
+
+        target_endpoint = action_dossier.get("target_endpoint")
+        if not isinstance(target_endpoint, str) or not target_endpoint:
+            raise ApprovalSecurityError("Action approval target_endpoint must be a non-empty string")
+
+        test_account = action_dossier.get("test_account")
+        if not isinstance(test_account, str) or not test_account:
+            raise ApprovalSecurityError("Action approval test_account must be a non-empty string")
+
+        program_id = action_dossier.get("program_id")
+        if not isinstance(program_id, str) or not program_id:
+            raise ApprovalSecurityError("Action approval program_id must be a non-empty string")
+
+        unique_approval_id = action_dossier.get("unique_approval_id")
+        if not isinstance(unique_approval_id, str) or not unique_approval_id:
+            raise ApprovalSecurityError("Action approval unique_approval_id must be a non-empty string")
+
+        created_at_raw = action_dossier.get("created_at")
+        if isinstance(created_at_raw, bool) or not isinstance(created_at_raw, (int, float)):
+            raise ApprovalSecurityError("Action approval created_at must be numeric timestamp")
+        created_at = float(created_at_raw)
+
+        ttl_raw = action_dossier.get("ttl")
+        if isinstance(ttl_raw, bool) or not isinstance(ttl_raw, (int, float)) or ttl_raw <= 0:
+            raise ApprovalSecurityError("Action approval ttl must be positive number")
+        ttl = min(float(ttl_raw), 300.0)
+
+        # 3. Scope validation if ScopeEngine is bound
+        if self._scope_engine is not None:
+            try:
+                is_in_scope = self._scope_engine.is_in_scope(target_endpoint)
+                if not is_in_scope:
+                    raise ApprovalSecurityError("Target endpoint for controlled mutation is out of scope")
+            except ApprovalSecurityError:
+                raise
+            except Exception as e:
+                raise ApprovalSecurityError(f"Scope verification failed for controlled mutation: {e}")
+
+        # 4. Canonical digest verification
         expected_hash = action_id[4:]
-
-        required_keys = {"action_id", "target_endpoint", "method", "test_account", "action_type", "created_at", "ttl"}
-        if not required_keys.issubset(action_dossier.keys()):
-            raise ApprovalSecurityError("Action dossier missing mandatory security fields")
-
-        # Canonical digest verification
         dossier_copy = {k: action_dossier[k] for k in sorted(action_dossier.keys()) if k != "action_id"}
         canonical_str = json.dumps(dossier_copy, sort_keys=True)
         computed_hash = hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
@@ -164,16 +303,24 @@ class PostRevocationResourceValidator:
         if computed_hash != expected_hash:
             raise ApprovalSecurityError("Action approval digest mismatch; action dossier has been tampered")
 
-        # TTL check (max 300 seconds)
-        ttl = min(int(action_dossier.get("ttl", 300)), 300)
-        created_at = float(action_dossier.get("created_at", 0))
-        if time.time() - created_at > ttl:
+        # 5. Timestamp and clock tolerance checks
+        now = time.time()
+        if created_at > now + 30.0:
+            raise ApprovalSecurityError("Action approval created_at is future-dated beyond clock tolerance")
+        if now - created_at > ttl:
             raise ApprovalSecurityError("Action approval has expired")
 
-        # Execute the controlled invalidation mutation
+        # 6. Single-use execution enforcement (persistent and thread-safe)
+        with self._consumed_lock:
+            if self._is_approval_consumed(action_id):
+                raise ApprovalSecurityError(f"Action approval '{action_id}' has already been consumed (replay rejected)")
+            # Mark consumed immediately before network mutation to prevent concurrent/interrupted replays
+            self._mark_approval_consumed(action_id, action_dossier)
+
+        # 7. Execute the controlled invalidation mutation
         req = ControlledRequest(
-            url=action_dossier["target_endpoint"],
-            method=action_dossier.get("method", "POST"),
+            url=target_endpoint,
+            method=method,
             headers=dict(session_ctx.volatile_headers),
         )
         try:
