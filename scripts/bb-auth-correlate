@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""
+bb-auth-correlate — BugBounty-Agent Authentication & Authorization Correlation Engine.
+
+Correlates authentication state transitions, session lifecycles, and authorization
+boundaries across multi-session and multi-tenant targets without modifying existing engines.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+# Ensure repository root is on sys.path
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.auth_correlation.engine import AuthCorrelationEngine
+from framework.auth_correlation.lab import LocalAuthCorrelationLab, SecurityBoundaryViolationError
+from framework.auth_correlation.model import CorrelatedPrincipalContext, CorrelatedSessionContext, CorrelationLifecycle
+from framework.auth_correlation.revocation import ApprovalSecurityError
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="bb-auth-correlate",
+        description="Phase 21: Authentication & Authorization Correlation Engine.",
+    )
+    parser.add_argument("--program", default="default-program", help="Target bug bounty program identifier")
+    parser.add_argument("--target", help="Target endpoint or asset URL")
+    parser.add_argument("--tree", action="store_true", help="Render visual ASCII correlation tree")
+    parser.add_argument("--passive-only", action="store_true", help="Model correlation contexts without sending network traffic")
+    parser.add_argument("--dry-run", action="store_true", help="Plan correlation tests without sending network probes")
+    parser.add_argument("--preflight", "--preflight-only", dest="preflight", action="store_true", help="Execute dual-control preflight session health verification only")
+    parser.add_argument("--revocation", action="store_true", help="Execute post-revocation resource verification (Mode A)")
+    parser.add_argument("--approve-action", dest="approve_action", help="Grant single-use approval for controlled mutation in Mode B (ACT-<SHA256>)")
+    parser.add_argument("--pre-mfa", dest="pre_mfa", action="store_true", help="Execute pre-MFA privilege boundary analysis")
+    parser.add_argument("--tenant", action="store_true", help="Execute multi-tenant dual-token desynchronization")
+    parser.add_argument("--lab", action="store_true", help="Execute against the local deterministic simulation lab")
+    parser.add_argument("--validate", action="store_true", help="Execute full active correlation validation")
+    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    parser.add_argument("--output", help="Write summary results to file path")
+
+    args = parser.parse_args()
+
+    # Simulation lab execution
+    if args.lab:
+        lab = LocalAuthCorrelationLab()
+        port = lab.start()
+        try:
+            transport = lab.get_transport()
+            engine = AuthCorrelationEngine(
+                program_id=args.program,
+                workspace_root=REPO_ROOT,
+                validation_engine=transport,
+            )
+            # Register lab scenario principals
+            p_a = CorrelatedPrincipalContext(principal_id="lab_usr_a", tenant_id="tenant_a", role="USER")
+            p_b = CorrelatedPrincipalContext(principal_id="lab_usr_b", tenant_id="tenant_b", role="USER")
+            engine.register_principal(p_a)
+            engine.register_principal(p_b)
+
+            s_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="lab_usr_a", volatile_headers={"Authorization": "valid_token_a"})
+            s_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="lab_usr_b", volatile_headers={"Authorization": "valid_token_b"})
+            engine.register_session(s_a)
+            engine.register_session(s_b)
+
+            results = engine.run_correlation(
+                target_asset=f"http://127.0.0.1:{port}",
+                preflight_only=args.preflight,
+                dry_run=args.dry_run,
+                approved_action_id=args.approve_action,
+            )
+        finally:
+            lab.stop()
+
+        if args.json:
+            print(json.dumps(results, indent=2))
+        else:
+            print(f"[+] Simulation Lab Executed on 127.0.0.1:{port}")
+            print(f"    Findings Discovered: {results.get('findings_count', 0)}")
+            print(f"    Status: {results.get('status')}")
+        return 0
+
+    # Production/Standard Engine Execution
+    engine = AuthCorrelationEngine(
+        program_id=args.program,
+        workspace_root=REPO_ROOT,
+    )
+
+    if args.tree:
+        print(engine.render_tree())
+        return 0
+
+    results = engine.run_correlation(
+        target_asset=args.target,
+        preflight_only=args.preflight,
+        dry_run=args.dry_run or args.passive_only,
+        approved_action_id=args.approve_action,
+    )
+
+    if args.json:
+        out_str = json.dumps(results, indent=2)
+        print(out_str)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(out_str)
+    else:
+        print(f"[*] Correlation run completed for program '{args.program}'")
+        print(f"    Status: {results.get('status')}")
+        print(f"    Findings: {results.get('findings_count', 0)}")
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2)
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except ApprovalSecurityError as e:
+        print(f"[!] Action Approval Security Error: {e}", file=sys.stderr)
+        sys.exit(2)
+    except SecurityBoundaryViolationError as e:
+        print(f"[!] Security Boundary Violation: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"[!] Correlation Engine Error: {e}", file=sys.stderr)
+        sys.exit(1)

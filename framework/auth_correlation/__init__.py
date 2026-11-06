@@ -40,6 +40,20 @@ from framework.auth_correlation.pre_mfa import (
 from framework.auth_correlation.tenant import (
     MultiTenantDesyncValidator,
 )
+from framework.auth_correlation.state import (
+    AuthCorrelationStateManager,
+    KeySecurityError,
+    validate_state_schema,
+    SUPPORTED_SCHEMA_ID,
+)
+from framework.auth_correlation.lab import (
+    LocalAuthCorrelationLab,
+    SimulationTransport,
+    SecurityBoundaryViolationError,
+)
+from framework.auth_correlation.engine import (
+    AuthCorrelationEngine,
+)
 
 __all__ = [
     "CorrelationLifecycle",
@@ -64,4 +78,12 @@ __all__ = [
     "ApprovalSecurityError",
     "PreMfaPrivilegeValidator",
     "MultiTenantDesyncValidator",
+    "AuthCorrelationStateManager",
+    "KeySecurityError",
+    "validate_state_schema",
+    "SUPPORTED_SCHEMA_ID",
+    "LocalAuthCorrelationLab",
+    "SimulationTransport",
+    "SecurityBoundaryViolationError",
+    "AuthCorrelationEngine",
 ]

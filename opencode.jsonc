@@ -137,6 +137,12 @@
     },
     {
       "action": "shell",
+      "resource": "*bb-auth-correlate*",
+      "effect": "ask",
+      "description": "Require human confirmation before launching active authentication and authorization correlation testing"
+    },
+    {
+      "action": "shell",
       "resource": "*bb-infra*",
       "effect": "ask",
       "description": "Require human confirmation before launching active infrastructure and configuration exposure validation"
