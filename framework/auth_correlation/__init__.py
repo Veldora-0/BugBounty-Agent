@@ -34,6 +34,9 @@ from framework.auth_correlation.revocation import (
     PostRevocationResourceValidator,
     ApprovalSecurityError,
 )
+from framework.auth_correlation.pre_mfa import (
+    PreMfaPrivilegeValidator,
+)
 
 __all__ = [
     "CorrelationLifecycle",
@@ -56,4 +59,5 @@ __all__ = [
     "DualControlPreflightValidator",
     "PostRevocationResourceValidator",
     "ApprovalSecurityError",
+    "PreMfaPrivilegeValidator",
 ]
