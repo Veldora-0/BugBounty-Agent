@@ -37,6 +37,9 @@ from framework.auth_correlation.revocation import (
 from framework.auth_correlation.pre_mfa import (
     PreMfaPrivilegeValidator,
 )
+from framework.auth_correlation.tenant import (
+    MultiTenantDesyncValidator,
+)
 
 __all__ = [
     "CorrelationLifecycle",
@@ -60,4 +63,5 @@ __all__ = [
     "PostRevocationResourceValidator",
     "ApprovalSecurityError",
     "PreMfaPrivilegeValidator",
+    "MultiTenantDesyncValidator",
 ]
