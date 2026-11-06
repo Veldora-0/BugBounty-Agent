@@ -257,6 +257,20 @@ class _LabRequestHandler(BaseHTTPRequestHandler):
 class LocalAuthCorrelationLab:
     """In-process simulation lab hosting deterministic test scenarios on 127.0.0.1."""
 
+    SCENARIOS: List[str] = [
+        "SCEN-01: Valid Resource vs Public Landing Soft-404 Differential",
+        "SCEN-02: Mode A Observation Post-Revocation Valid Baseline Persistence",
+        "SCEN-03: Mode B Differential Session Revocation Resource Probe",
+        "SCEN-04: Pre-MFA Partially Authenticated Privilege Escalation",
+        "SCEN-05: Multi-Tenant Route Path Cross-Channel Desynchronization",
+        "SCEN-06: Multi-Tenant Header Desync with Cache-Busting Validation",
+    ]
+
+    @classmethod
+    def list_scenarios(cls) -> List[str]:
+        """Returns the list of deterministic scenarios supported by the lab."""
+        return list(cls.SCENARIOS)
+
     def __init__(self):
         self.server: Optional[HTTPServer] = None
         self.port: int = 0

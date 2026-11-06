@@ -671,6 +671,56 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_auth_correlation_engine(self) -> Dict[str, Any]:
+        """Category 26: Authentication & Authorization Correlation Engine Subsystem."""
+        try:
+            from framework.auth_correlation.model import (
+                CorrelatedPrincipalContext,
+                CorrelatedSessionContext,
+                CorrelationFinding,
+            )
+            from framework.auth_correlation.cvss import (
+                CVSS31Calculator,
+                CVSS31Metrics,
+                AttackVector,
+                AttackComplexity,
+                PrivilegesRequired,
+                UserInteraction,
+                Scope,
+                CIAImpact,
+            )
+            from framework.auth_correlation.lab import LocalAuthCorrelationLab
+            from framework.auth_correlation.engine import AuthCorrelationEngine
+
+            score, sev, vector = CVSS31Calculator.calculate_base_score(
+                CVSS31Metrics(
+                    av=AttackVector.NETWORK,
+                    ac=AttackComplexity.LOW,
+                    pr=PrivilegesRequired.NONE,
+                    ui=UserInteraction.NONE,
+                    scope=Scope.UNCHANGED,
+                    c=CIAImpact.HIGH,
+                    i=CIAImpact.HIGH,
+                    a=CIAImpact.HIGH,
+                )
+            )
+            scenarios = LocalAuthCorrelationLab.list_scenarios()
+
+            healthy = (
+                score == 9.8
+                and sev == "CRITICAL"
+                and len(scenarios) == 6
+            )
+            return {
+                "status": "HEALTHY" if healthy else "ERROR",
+                "healthy": healthy,
+                "scenarios_count": len(scenarios),
+                "cvss_score": score,
+                "cvss_vector": vector,
+            }
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -698,6 +748,7 @@ class SystemDoctor:
             "auth_engine": self.check_authentication_engine(),
             "infrastructure_engine": self.check_infrastructure_engine(),
             "concurrency_engine": self.check_concurrency_engine(),
+            "auth_correlation_engine": self.check_auth_correlation_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }
 

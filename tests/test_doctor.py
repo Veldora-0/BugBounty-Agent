@@ -22,6 +22,7 @@ def test_doctor_full_diagnosis():
         "opencode_integration",
         "infrastructure_engine",
         "concurrency_engine",
+        "auth_correlation_engine",
     ]
 
     for cat in required_categories:
@@ -57,4 +58,12 @@ def test_doctor_concurrency_engine_check():
     assert race_diag["healthy"] is True
     assert race_diag["status"] == "HEALTHY"
     assert race_diag["categories_count"] == 6
+
+def test_doctor_auth_correlation_engine_check():
+    doctor = SystemDoctor()
+    corr_diag = doctor.check_auth_correlation_engine()
+    assert corr_diag["healthy"] is True
+    assert corr_diag["status"] == "HEALTHY"
+    assert corr_diag["scenarios_count"] == 6
+    assert corr_diag["cvss_score"] == 9.8
 
