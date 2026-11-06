@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Accepted)
+
+#### Added
+* **Correlation Context & Data Models** (`framework/auth_correlation/model.py`):
+  * `CorrelatedPrincipalContext`: Models authenticated principals with immutable fields, token metadata, tenant bindings, strict allowlists, and credential masking in string/repr.
+  * `CorrelatedSessionContext`: Tracks session lifecycles, expiration, MFA levels, and invalidation states.
+  * `CorrelationHypothesis`: Encapsulates test hypothesis definitions with safe representation preventing sensitive expected result leakage.
+  * `CorrelationFinding`: Cryptographically hashes evidence, calculates CVSS 3.1 base score, and maintains strict finding state machines.
+* **FIRST CVSS 3.1 Metric Calculator** (`framework/auth_correlation/cvss.py`):
+  * Implements authentic FIRST CVSS 3.1 base metric equations across AV, AC, PR, UI, S, C, I, and A.
+  * Validated against 10 FIRST reference vectors covering scope changes and edge conditions.
+* **Dual-Control Preflight Validation** (`framework/auth_correlation/preflight.py`):
+  * `DualControlPreflightValidator`: Verifies session validity against unauthenticated baseline resources to eliminate false-positive access control reports from public endpoints or login redirects.
+* **Post-Revocation Resource Probing** (`framework/auth_correlation/revocation.py`):
+  * `PostRevocationResourceValidator`: Mode A (observation-only monitoring against session-bound baseline) and Mode B (dual-account differential probe with mandatory operator approval gate).
+* **Pre-MFA & Step-Up Boundary Auditing** (`framework/auth_correlation/pre_mfa.py`):
+  * `PreMfaPrivilegeValidator`: Audits sensitive endpoint exposure to partially authenticated pre-MFA sessions against full-auth and unauthenticated baselines.
+* **Multi-Tenant Dual-Token Cross-Channel Desynchronization** (`framework/auth_correlation/tenant.py`):
+  * `MultiTenantDesyncValidator`: Cross-tenant route, query, and header parameter tampering using two cryptographically valid tenant tokens while preserving JWT signatures.
+* **Correlation Engine Orchestration** (`framework/auth_correlation/engine.py`):
+  * `AuthCorrelationEngine`: Orchestrates preflight, revocation, pre-MFA, and tenant desync with strict request ceilings (≤ 15 per hypothesis) and byte budget tracking.
+* **Hardened State Persistence** (`framework/auth_correlation/state.py`):
+  * `AuthCorrelationStateManager`: Atomic file-descriptor replacement (`os.fdopen`), symlink rejection, POSIX private permissions (`0o077`), hard-link checks (`st_nlink == 1`), Windows DACL validation, and root `$schema` enforcement.
+* **Deterministic Simulation Lab & Transport** (`framework/auth_correlation/lab.py`):
+  * `SimulationTransport`: Strictly confined to numeric `127.0.0.1:<lab_port>`.
+  * `LocalAuthCorrelationLab`: Serves 6 deterministic scenarios on ephemeral loopback ports.
+* **CLI Wrapper & Diagnostics Integration**:
+  * Added `scripts/bb-auth-correlate` and `scripts/bb-auth-correlate.cmd`.
+  * Registered Category 26 (`check_auth_correlation_engine`) in `framework/tools/doctor.py` and `scripts/bb-doctor`.
+  * Registered `*bb-auth-correlate*` permission rule (`ask`) in `opencode.jsonc`.
+* **Automated Regression Test Suites**:
+  * Added 42 tests across 8 test modules: `tests/test_phase21_models.py`, `tests/test_phase21_credential_leakage_and_serialization.py`, `tests/test_phase21_cvss.py`, `tests/test_phase21_preflight_and_revocation.py`, `tests/test_phase21_pre_mfa.py`, `tests/test_phase21_tenant_desync.py`, `tests/test_phase21_state.py`, and `tests/test_phase21_engine.py`.
+  * 100% pass rate on Windows 11 (981 passed, 2 skipped) and Kali Linux (983 passed, 0 skipped).
+
 ### Stage C Security Reconciliation & Repository Audit Baseline
 
 #### Original Security Findings Remediation (SEC-01 to SEC-08)

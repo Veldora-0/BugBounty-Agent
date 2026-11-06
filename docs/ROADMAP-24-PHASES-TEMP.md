@@ -2,8 +2,8 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Current Repository Baseline:** `327332f81aceb99461ea6fa646de4351849cc95d` (Phase 1–20 baseline & Phase 21 planning gate documentation reconciled; pre-Phase 21 implementation baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`; historical Stage C audit baseline: `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae`; historical pre-remediation baseline: `1841280b2f71b103b0e9217b961f1d859bd94272`)
-> **Current phase:** Phase 20 — Race Conditions & Distributed Workflows (Complete; Next Phase: Phase 21 — PLANNED / NOT STARTED; implementation unauthorized)
+> **Current Repository Baseline:** `3107fe92757ce9bfd71dd9fcc00cbfccacedfce3` (Phase 21 implemented and verified across Stages 1–5; pre-Phase 21 baseline: `45b4edb1210ac02144b26d1226d104d9f1d15042`; historical Phase 1–20 baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`)
+> **Current phase:** Phase 21 — Authentication & Authorization Correlation (Complete; Next Phase: Phase 22 — Cross-Engine Attack-Path Correlation — PLANNED)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
 ## 1. Roadmap at a glance
@@ -17,7 +17,7 @@
 | 18 | SSRF, XXE & Server-Side Parser Expansion | High | Complete (accepted at `1fcd552d53f99cf0a06802ddae45197796ec74c5` with documented limitations) |
 | 19 | Infrastructure & Configuration Exposure | Medium–High | Complete (accepted at `78f949a6d3b614ca60a82d7f776641787a6bebaa` with documented limitations) |
 | 20 | Race Conditions & Distributed Workflows | Medium–High | Complete (accepted at `3759f1ecb59168a6d4bb5ddaba7674d98afff24f` with documented limitations) |
-| 21 | Authentication & Authorization Correlation | Medium | Planned / Not Started (Implementation Unauthorized) |
+| 21 | Authentication & Authorization Correlation | Medium | Complete (Accepted; Stages 1–5 verified) |
 | 22 | Cross-Engine Attack-Path Correlation | Very High | Planned |
 | 23 | Autonomous Research Planning & Coverage Intelligence | High | Planned |
 | 24 | Final Integration & Production Readiness | Mandatory | Planned |
@@ -92,6 +92,23 @@ Phase 19 (Infrastructure & Configuration Exposure) was completed and accepted.
   - Read-only safe probing only; zero automated exploitation, credential brute-forcing, archive downloads, or secret replay.
   - Administrative login interfaces are classified strictly as `OBSERVATION` (`INFORMATIONAL`, `HIGH` confidence), never as high-severity vulnerabilities.
   - Local simulation lab (`LocalInfrastructureLab`) findings are marked `SIMULATED` (`INFORMATIONAL`, `CONFIRMED` confidence) and cannot produce live validated findings.
+  - Automatic disclosure report submission is strictly prohibited.
+
+### Phase 21 Acceptance & Verification Record
+Phase 21 (Authentication & Authorization Correlation) was completed and accepted across all 5 implementation stages.
+- **Test execution results reported by environments**:
+  - Windows 11 (Python 3.14.7): 42 passed in targeted Phase 21 suite (`tests/test_phase21_*.py`) in 1.45s; 981 passed, 2 skipped (browser tests) in full regression suite (155.89s).
+  - Kali Linux (Python 3.14.8): 42 passed in targeted Phase 21 suite in 0.90s; 983 passed, 0 skipped in full regression suite (141.79s).
+- **Review and acceptance status**:
+  - Delivered `framework/auth_correlation/` with 5 core modules: `model.py` (strict allowlists, safe string/repr representations masking credentials/secrets), `cvss.py` (FIRST CVSS 3.1 metric equations), `preflight.py` (`DualControlPreflightValidator`), `revocation.py` (`PostRevocationResourceValidator`), `pre_mfa.py` (`PreMfaPrivilegeValidator`), `tenant.py` (`MultiTenantDesyncValidator`), `engine.py` (`AuthCorrelationEngine`), `state.py` (`AuthCorrelationStateManager`), and `lab.py` (`SimulationTransport`, `LocalAuthCorrelationLab`).
+  - Added CLI tool `scripts/bb-auth-correlate` (`scripts/bb-auth-correlate.cmd`), Category 26 in `framework/tools/doctor.py`, and OpenCode V2 permissions in `opencode.jsonc`.
+  - Enforced atomic descriptor-based state writes (`os.fdopen`), symlink/reparse point rejection, POSIX private permission enforcement (`0o077`), hard-link checks (`st_nlink == 1`), Windows DACL validation, and strict JSON schema checking.
+  - Enforced loopback transport confinement: `SimulationTransport` communicates strictly with numeric `127.0.0.1:<active_lab_port>`.
+- **Documented Phase 21 limitations**:
+  - Testing is bounded to operator-provided test identities and credentials; automated password spraying, dictionary attacks, or brute-forcing are strictly prohibited.
+  - Active probes require explicit human approval (`--approve`) and enforce strict request ceilings ($\le 15$ per hypothesis) and response-byte budgets.
+  - High-entropy secrets and credentials are never persisted in state files or logged.
+  - Local simulation lab findings are classified as `SIMULATED` (`INFORMATIONAL`, `CONFIRMED`) and cannot produce live external findings.
   - Automatic disclosure report submission is strictly prohibited.
 
 These notes are a preliminary inspection, not a complete coverage audit. Before implementing each phase, inspect the relevant current code and tests at the then-current HEAD.
@@ -171,9 +188,15 @@ Safety boundaries:
 - **Accepted with Documented Limitations**: Concurrency probing is bounded to 2-10 requests; high-volume volumetric floods or DoS attacks are strictly prohibited; out-of-scope targets fail closed offline.
 
 ### Phase 21 — Authentication & Authorization Correlation
-**Status:** Planned / Not Started (Implementation strictly requires explicit human operator authorization).
-**Goal:** Correlate existing authentication/session and authorization engines: principal, role, tenant, session, resource, and workflow context. Reuse established dual-principal baselines and require strong evidence before reporting access-control findings.
-**Planning Reference:** Detailed technical architecture, 5-stage implementation breakdown, security guardrails, and acceptance criteria established in [`docs/PHASE-21-PLANNING-GATE.md`](PHASE-21-PLANNING-GATE.md). Stable repository baseline verified in [`docs/PHASE-1-20-STABLE-BASELINE.md`](PHASE-1-20-STABLE-BASELINE.md). Implementation is strictly unauthorized until explicit operator approval is granted.
+**Status:** Complete (Accepted; Stages 1–5 verified).
+**Delivered:**
+- **Core Models & Safe Representations**: Implemented `framework/auth_correlation/model.py` with `CorrelatedPrincipalContext`, `CorrelatedSessionContext`, `CorrelationHypothesis`, `CorrelationFinding`, and `CorrelationLifecycle`. Masked credentials in `__repr__` and `__str__`.
+- **CVSS 3.1 Base Metric Calculator**: Implemented `framework/auth_correlation/cvss.py` strictly evaluating FIRST CVSS 3.1 equations across all 8 base metrics with 10 reference vector regression verifications.
+- **Dual-Control Preflight Validation**: Implemented `framework/auth_correlation/preflight.py` (`DualControlPreflightValidator`) verifying session validity differentials against baseline targets to prevent false-positive access control reports.
+- **Post-Revocation Resource Probing**: Implemented `framework/auth_correlation/revocation.py` (`PostRevocationResourceValidator`) supporting Mode A (observation-only) and Mode B (dual-account differential probe with human approval gate).
+- **Pre-MFA & Step-Up Boundary Auditing**: Implemented `framework/auth_correlation/pre_mfa.py` (`PreMfaPrivilegeValidator`) auditing sensitive resource access prior to MFA completion.
+- **Multi-Tenant Cross-Channel Desynchronization**: Implemented `framework/auth_correlation/tenant.py` (`MultiTenantDesyncValidator`) testing route path, query parameter, and custom header tenant substitution using two valid, cryptographically signed tenant identities while preserving JWT signatures.
+- **Orchestration, State, Lab & CLI**: Implemented `AuthCorrelationEngine`, hardened `AuthCorrelationStateManager` with atomic file-descriptor replacement and strict POSIX/Windows DACL permissions, `SimulationTransport` (confined to numeric `127.0.0.1:<lab_port>`), `LocalAuthCorrelationLab` (6 deterministic scenarios), CLI script `scripts/bb-auth-correlate` (`bb-auth-correlate.cmd`), and Category 26 in `framework/tools/doctor.py`.
 
 ### Phase 22 — Cross-Engine Attack-Path Correlation
 **Goal:** Build a shared correlation layer that relates assets, endpoints, identities, vulnerabilities, evidence, and prerequisites into explainable attack paths. Preserve individual finding identity, provenance, confidence, and lifecycle; do not inflate severity solely because findings are connected.
@@ -188,7 +211,7 @@ Safety boundaries:
 
 ## 4. Recommended execution strategy
 
-1. **Execution Order**: Phases 1–20 are complete and verified. The current active roadmap execution point is Phase 21 (Authentication & Authorization Correlation). Do not replace individual security phases with premature general orchestration.
+1. **Execution Order**: Phases 1–21 are complete and verified. The current active roadmap execution point is Phase 22 (Cross-Engine Attack-Path Correlation). Do not replace individual security phases with premature general orchestration.
 2. For each phase, do a focused gap review of relevant code/tests before implementation. Avoid a repeated repository-wide audit unless new evidence warrants it.
 3. Write acceptance criteria and negative/security tests before coding.
 4. Reuse shared scope, transport, policy, state, evidence, finding lifecycle, deduplication, and reporting components.
@@ -201,11 +224,10 @@ Safety boundaries:
 
 ## 5. Priority interpretation
 
-With Phases 1–20 verified and complete, the sequential roadmap priority is:
-1. Phase 21 — Authentication & Authorization Correlation (Active Planning Gate).
-2. Phase 22 — Cross-Engine Attack-Path Correlation.
-3. Phase 23 — Autonomous Research Planning & Coverage Intelligence.
-4. Phase 24 — Final Integration & Production Readiness.
+With Phases 1–21 verified and complete, the sequential roadmap priority is:
+1. Phase 22 — Cross-Engine Attack-Path Correlation (Active Planning Gate).
+2. Phase 23 — Autonomous Research Planning & Coverage Intelligence.
+3. Phase 24 — Final Integration & Production Readiness.
 
 The numeric sequence remains the authoritative execution order. Each phase must be completed and accepted before the subsequent phase begins.
 

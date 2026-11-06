@@ -79,6 +79,7 @@ BugBounty-Agent/
 │   ├── business_logic/        # Business logic state machines, invariant engine, replay, approval gate
 │   ├── cloud_security/        # Cloud security & misconfiguration intelligence, S3/Blob/GCS, takeover
 │   ├── authentication/        # Authentication, session & identity security intelligence, MFA, reset
+│   ├── auth_correlation/     # Authentication & Authorization correlation engine, preflight, revocation, tenant
 │   ├── infrastructure/        # Infrastructure & configuration exposure intelligence, differential soft-404
 │   ├── concurrency/           # Concurrency & race conditions intelligence, barrier synchronization, invariants
 │   ├── findings/              # Finding schema, lifecycle state machine, markdown report generator
@@ -89,7 +90,7 @@ BugBounty-Agent/
 │   ├── bb-deploy              # Deploy and sync agent and skills to global OpenCode
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
-│   ├── bb-doctor              # Diagnostics utility across 25 system categories
+│   ├── bb-doctor              # Diagnostics utility across 26 system categories
 │   ├── bb-install             # Automated tool installer using declared registry tiers
 │   ├── bb-update              # Repository and global skill synchronization updater
 │   ├── bb-report              # Standalone disclosure report compiler
@@ -101,6 +102,7 @@ BugBounty-Agent/
 │   ├── bb-workflow            # Business logic and multi-step workflow intelligence engine
 │   ├── bb-cloud               # Cloud security & misconfiguration intelligence engine
 │   ├── bb-auth                # Authentication, session & identity security intelligence engine
+│   ├── bb-auth-correlate      # Authentication & Authorization correlation engine CLI
 │   ├── bb-infra               # Infrastructure & configuration exposure intelligence engine
 │   ├── bb-race                # Concurrency & distributed workflows intelligence engine
 │   ├── bb-webapp              # Web application intelligence & surface mapping engine
@@ -126,7 +128,7 @@ BugBounty-Agent/
 │   ├── report.md              # 17-section markdown report template
 │   └── config.example.yaml    # Global framework configuration template
 │
-├── tests/                     # Automated regression test suite (46 test modules; 941 tests under pytest)
+├── tests/                     # Automated regression test suite (48 test modules; 983 tests under pytest)
 │   ├── test_scope.py          # Scope boundaries and DNS resolution tests
 │   ├── test_asset_engine.py   # Asset graph and subdomain intelligence tests
 │   ├── test_api_engine.py     # OpenAPI, GraphQL, and streaming byte budget tests
@@ -261,7 +263,7 @@ BugBounty-Agent maintains an authoritative, machine-readable tool registry in [`
 ## Tool Intelligence & Management
 
 ### 1. Automatic Diagnostics (`bb-doctor`)
-Run deep diagnostics across 25 system categories:
+Run deep diagnostics across 26 system categories:
 ```bash
 ./scripts/bb-doctor
 ```
@@ -290,6 +292,7 @@ Checks:
 * **Authentication Engine**: Session analyzers, JWT token inspection, and authentication laboratory
 * **Infrastructure Engine**: Differential soft-404 detection, structural file signatures, and safe exposure intelligence
 * **Concurrency Engine**: Precision barrier synchronization, TOCTOU race testing, invariant discrimination, and safe state management
+* **Auth Correlation Engine**: Preflight validation, revocation intelligence, tenant desync, and simulation transport
 * **OpenCode Integration**: Canonical agent definition, modular skills, V2 permissions, and deployment
 
 ### 2. Safe On-Demand Installation (`bb-install`)
@@ -349,9 +352,9 @@ If a preferred tool is unavailable:
 
 ---
 
-## Implemented Research Capabilities & Security Subsystems (Phases 1–20)
+## Implemented Research Capabilities & Security Subsystems (Phases 1–21)
 
-BugBounty-Agent has delivered 20 cohesive security research phases, establishing a comprehensive, non-destructive intelligence and validation pipeline:
+BugBounty-Agent has delivered 21 cohesive security research phases, establishing a comprehensive, non-destructive intelligence and validation pipeline:
 
 ### 1. Asset Intelligence, Graph & Reconnaissance (Phases 1–3)
 * **Arbitrary-Depth Asset Graph (`bb-assets`)**: Traverses subdomains recursively without artificial depth caps (`example.com` $\to$ `sub` $\to$ `dev` $\to$ `api` $\to$ `internal`). Maps directional infrastructure relationships (`HAS_SUBDOMAIN`, `RESOLVES_TO`, `CNAME_TO`, `PRESENT_IN_CERT`, `HOSTED_BY`, `BELONGS_TO_ASN`), detects wildcard DNS, extracts X.509 TLS certificate SANs, identifies CDN/cloud reverse proxies, and calibrates multi-source provenance confidence (`LOW`, `MEDIUM`, `HIGH`, `CONFIRMED`).
@@ -425,7 +428,16 @@ BugBounty-Agent has delivered 20 cohesive security research phases, establishing
 * **Invariant & TOCTOU State Modeling**: Tests concurrency hypotheses (e.g., balance overdrafts, coupon multi-use, rate limit exhaustion, resource double-allocation) through strictly bounded replay cycles with atomic measurement locks and deterministic state rollback in `LocalConcurrencyLab`.
 * **Safe Diagnostic Isolation**: Preserves primary execution exceptions while safely sanitizing and isolating secondary cleanup failures.
 
-### 17. Deterministic Local Security Labs
+### 17. Authentication & Authorization Correlation Engine (Phase 21)
+* **Dual-Control Preflight Validation (`bb-auth-correlate`)**: Compares session responses against unauthenticated baseline resources to eliminate false positives from public landing pages, login redirects, or SPA shells returning HTTP 200 OK.
+* **FIRST CVSS 3.1 Base Metric Scorer**: Implements exact FIRST specification equations across all 8 base metrics (AV, AC, PR, UI, S, C, I, A), producing verified vector strings and base scores.
+* **Post-Revocation Resource Probing**: Audits resource access persistence across two distinct modes: Mode A (observation-only monitoring against session-bound baselines) and Mode B (dual-account differential probe with explicit operator approval).
+* **Pre-MFA & Step-Up Boundary Auditing**: Detects premature access to sensitive administrative or user endpoints prior to multi-factor authentication completion.
+* **Multi-Tenant Cross-Channel Desynchronization**: Tests route path (`/tenants/{id}/`), query parameter (`?tenant_id=`), and header (`X-Tenant-ID`) substitution using two valid, cryptographically signed tenant identities while strictly preserving JWT signatures.
+* **Hardened State Persistence & Confinement**: Manages `state/auth_correlation.json` with atomic descriptor-based writes (`os.fdopen`), symlink rejection, POSIX private permissions (`0o077`), hard-link checks (`st_nlink == 1`), Windows DACL validation, and schema enforcement.
+* **Deterministic Simulation Transport**: Communicates strictly with numeric `127.0.0.1:<lab_port>` in `LocalAuthCorrelationLab` (6 deterministic scenarios).
+
+### 18. Deterministic Local Security Labs
 * In-memory offline simulation environments for deterministic verification with zero external network traffic:
   * `LocalXxeLab`: Reflection, secure DTD reject, parser error, and mock OOB modes.
   * `LocalSsrfLab`: Direct, blind, redirect, and header SSRF scenarios.
@@ -434,10 +446,11 @@ BugBounty-Agent has delivered 20 cohesive security research phases, establishing
   * `LocalCloudSecurityLab`: 15 cloud storage and takeover scenarios.
   * `LocalInfrastructureLab`: 16 infrastructure, version control, and backup exposure scenarios.
   * `LocalConcurrencyLab`: 8 deterministic race condition, TOCTOU, limit overrun, and distributed workflow scenarios.
+  * `LocalAuthCorrelationLab`: 6 deterministic authentication & authorization correlation scenarios.
 
-### 18. Roadmap Status & Verification Baseline
-* **Accepted Baseline**: Phase 19 (Infrastructure Exposure) and Phase 20 (Race Conditions & Distributed Workflows) complete and verified across Windows 11 and Kali Linux. See [`docs/PHASE-1-20-STABLE-BASELINE.md`](docs/PHASE-1-20-STABLE-BASELINE.md).
-* **Next Planned Phase**: Phase 21 (Authentication & Authorization Correlation). See [`docs/PHASE-21-PLANNING-GATE.md`](docs/PHASE-21-PLANNING-GATE.md).
+### 19. Roadmap Status & Verification Baseline
+* **Accepted Baseline**: Phase 21 (Authentication & Authorization Correlation) complete and verified across Windows 11 and Kali Linux. See [`docs/PHASE-21-PLANNING-GATE.md`](docs/PHASE-21-PLANNING-GATE.md) and [`docs/PHASE-1-20-STABLE-BASELINE.md`](docs/PHASE-1-20-STABLE-BASELINE.md).
+* **Next Planned Phase**: Phase 22 (Cross-Engine Attack-Path Correlation).
 * **Full Roadmap**: Refer to [`docs/ROADMAP-24-PHASES-TEMP.md`](docs/ROADMAP-24-PHASES-TEMP.md) for the detailed 24-phase roadmap, architectural specifications, and historical verification records.
 
 ---
@@ -471,6 +484,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 | **Workflow Intelligence** | `shell` | `*bb-workflow*` | `ask` | Human confirmation required before executing multi-step business logic tests |
 | **Cloud Intelligence** | `shell` | `*bb-cloud*` | `ask` | Human confirmation required before executing active cloud security tests |
 | **Authentication Intelligence** | `shell` | `*bb-auth*` | `ask` | Human confirmation required before executing active authentication/session tests |
+| **Auth Correlation** | `shell` | `*bb-auth-correlate*` | `ask` | Human confirmation required before launching active authentication correlation tests |
 | **Infrastructure Intelligence** | `shell` | `*bb-infra*` | `ask` | Human confirmation required before launching active infrastructure exposure tests |
 | **Concurrency Intelligence** | `shell` | `*bb-race*` | `ask` | Human confirmation required before launching active concurrency or race condition testing |
 | **Tool Installation** | `shell` | `*bb-install*` | `ask` | Human confirmation required before modifying system tools |
@@ -488,7 +502,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 
 ### 3. Environment & Runtime Status
 * **Development & Evaluation Environments**: Validated and synchronized across Windows 11 x86_64 and Kali/Debian Linux workstations with Python 3.10+.
-* **Cross-Platform Test Coverage**: 46 test modules with 941 tests collected under pytest (939 passed, 2 skipped on Windows 11 due to headless browser environment requirements; 941 passed on Kali Linux).
+* **Cross-Platform Test Coverage**: 48 test modules with 983 tests collected under pytest (981 passed, 2 skipped on Windows 11 due to headless browser environment requirements; 983 passed on Kali Linux).
 * **Target Runtime**: Kali/Debian Linux with OpenCode installed, deploying `Bug-Bounty` globally via `bb-deploy`.
 
 ---
