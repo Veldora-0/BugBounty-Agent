@@ -352,6 +352,7 @@ def test_engine_mode_a_revocation_orchestration(tmp_path):
         assert res_no_ref["findings"] == []
 
         # 2. Set invalidation_evidence_ref on s_a: Mode A detects retained access on /scen02/invoices/101!
+        from framework.auth_correlation.revocation import create_controlled_invalidation_attestation
         inv_meta = engine.evidence_store.save_http_capture(
             request_text="POST /auth/logout\nAuthorization: Bearer valid_token_a",
             response_text='HTTP 200 OK\n{"status": "logged_out"}',
@@ -363,7 +364,15 @@ def test_engine_mode_a_revocation_orchestration(tmp_path):
             },
             prefix="inv_proof",
         )
-        s_a.invalidation_evidence_ref = inv_meta["evidence_id"]
+        att_rec = create_controlled_invalidation_attestation(
+            evidence_store=engine.evidence_store,
+            original_evidence_ref=inv_meta["evidence_id"],
+            session_ctx=s_a,
+            program_id="mode_a_test",
+            event_type="SESSION_REVOCATION",
+            action_id="ACT-0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        s_a.invalidation_evidence_ref = att_rec["attestation_id"]
         s_a.pre_revocation_baseline = ControlledResponse(200, {"content-type": "application/json"}, b'{"invoice_id": "101", "amount": 450.00, "customer": "Alice Corp"}')
         res_with_ref = engine.run_correlation(
             target_asset=f"http://127.0.0.1:{port}/scen00/profile",

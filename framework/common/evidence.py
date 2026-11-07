@@ -130,3 +130,71 @@ class EvidenceStore:
         except Exception:
             return None
         return None
+
+    def save_invalidation_attestation(self, attestation_record: Dict[str, Any]) -> str:
+        """
+        Persists an authenticated invalidation event attestation record.
+        Saves as attestation_<original_evidence_ref>.att.json in evidence_dir.
+        Returns attestation_id.
+        """
+        if not isinstance(attestation_record, dict):
+            raise ValueError("Attestation record must be a dictionary")
+        att_id = attestation_record.get("attestation_id")
+        orig_ref = attestation_record.get("original_evidence_ref")
+        if not att_id or not orig_ref:
+            raise ValueError("Attestation record missing required attestation_id or original_evidence_ref")
+
+        orig_clean = str(orig_ref).strip().upper()
+        filename = f"attestation_{orig_clean}.att.json"
+        att_path = os.path.join(self.evidence_dir, filename)
+
+        with open(att_path, "w", encoding="utf-8") as f:
+            json.dump(attestation_record, f, indent=2)
+
+        return str(att_id)
+
+    def get_invalidation_attestation(self, reference: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves an invalidation event attestation record by attestation ID (ATT-...)
+        or by associated original evidence reference (EVID-...).
+        Returns dict copy with att_path, or None if not found or malformed.
+        """
+        if not reference or not isinstance(reference, str):
+            return None
+        target_ref = reference.strip().upper()
+        if not os.path.isdir(self.evidence_dir):
+            return None
+
+        # 1. Direct lookup by original_evidence_ref
+        direct_path = os.path.join(self.evidence_dir, f"attestation_{target_ref}.att.json")
+        if os.path.isfile(direct_path):
+            try:
+                with open(direct_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    data_copy = dict(data)
+                    data_copy["att_path"] = direct_path
+                    return data_copy
+            except Exception:
+                pass
+
+        # 2. Iterate all .att.json files for matching attestation_id or original_evidence_ref
+        try:
+            for fname in sorted(os.listdir(self.evidence_dir)):
+                if fname.endswith(".att.json"):
+                    att_path = os.path.join(self.evidence_dir, fname)
+                    try:
+                        with open(att_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        if isinstance(data, dict):
+                            stored_att_id = str(data.get("attestation_id", "")).strip().upper()
+                            stored_orig_ref = str(data.get("original_evidence_ref", "")).strip().upper()
+                            if stored_att_id == target_ref or stored_orig_ref == target_ref:
+                                data_copy = dict(data)
+                                data_copy["att_path"] = att_path
+                                return data_copy
+                    except Exception:
+                        continue
+        except Exception:
+            return None
+        return None

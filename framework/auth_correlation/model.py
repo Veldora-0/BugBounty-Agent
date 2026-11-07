@@ -35,6 +35,11 @@ class EvidencePersistenceError(Exception):
     pass
 
 
+class AttestationSecurityError(Exception):
+    """Raised when invalidation event attestation fails verification, signature validation, or trust boundaries."""
+    pass
+
+
 class CorrelationLifecycle(str, Enum):
     """Lifecycle stages for sessions and correlation hypotheses."""
     CREATED = "CREATED"
@@ -63,6 +68,8 @@ SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.]{1,64}$")
 SESSION_REF_PATTERN = re.compile(r"^sess_[a-f0-9]{32}$")
 HMAC_FINGERPRINT_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 EVIDENCE_REF_PATTERN = re.compile(r"^EVID-[a-fA-F0-9]{12}$")
+ATTESTATION_REF_PATTERN = re.compile(r"^ATT-[a-fA-F0-9]{64}$")
+ATTESTATION_SIG_PATTERN = re.compile(r"^ATT-SIG-[a-fA-F0-9]{64}$")
 ISO_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 URL_PATH_PATTERN = re.compile(r"^/[a-zA-Z0-9_\-\./?=&%]*$")
 HYPOTHESIS_ID_PATTERN = re.compile(r"^HYP-[a-zA-Z0-9_\-\.]{1,32}$")

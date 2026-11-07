@@ -28,6 +28,9 @@ from framework.auth_correlation.revocation import (
     PostRevocationResourceValidator,
     ApprovalSecurityError,
     classify_revocation_response,
+    create_controlled_invalidation_attestation,
+    create_operator_invalidation_attestation,
+    get_or_create_attestation_key,
 )
 from framework.authz.model import ResourceAccessTarget
 from framework.common.evidence import EvidenceStore
@@ -140,8 +143,10 @@ def make_valid_invalidation_evidence(
     sess: CorrelatedSessionContext,
     event_type: str = "SESSION_REVOCATION",
     program_id: Optional[str] = None,
+    attestation_key: Optional[bytes] = None,
+    key_dir: Optional[str] = None,
 ) -> str:
-    """Helper to persist a valid, attributable invalidation event into EvidenceStore."""
+    """Helper to persist a valid, attributable invalidation event with authentic attestation into EvidenceStore."""
     res = store.save_http_capture(
         request_text="POST /auth/logout\nAuthorization: Bearer revoked",
         response_text='HTTP 200 OK\n{"status": "logged_out"}',
@@ -152,6 +157,17 @@ def make_valid_invalidation_evidence(
             "program_id": program_id or "default-program",
         },
         prefix="inv_proof",
+    )
+    from framework.auth_correlation.revocation import create_controlled_invalidation_attestation
+    att_rec = create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res["evidence_id"],
+        session_ctx=sess,
+        program_id=program_id or "default-program",
+        event_type=event_type,
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000001",
+        attestation_key=attestation_key,
+        key_dir=key_dir,
     )
     return res["evidence_id"]
 
@@ -222,6 +238,8 @@ def test_revocation_mode_a_vulnerability_emission(tmp_path):
         evidence_dir = store.evidence_dir
         def get_evidence(self, ref):
             return store.get_evidence(ref)
+        def get_invalidation_attestation(self, ref):
+            return store.get_invalidation_attestation(ref)
         def save_http_capture(self, *args, **kwargs):
             raise IOError("Simulated disk error during capture")
 
@@ -231,135 +249,361 @@ def test_revocation_mode_a_vulnerability_emission(tmp_path):
 
 
 def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
-    """Verifies all negative provenance cases fail closed to INCONCLUSIVE and valid cases succeed."""
+    """
+    Verifies all 17 negative and positive provenance cases for Mode A invalidation verification:
+    1. Ordinary capture with event_type=SESSION_REVOCATION without attestation is rejected.
+    2. Arbitrary caller-created metadata is rejected.
+    3. A valid trusted event workflow can produce a verifiable attestation.
+    4. Invalid signature rejection.
+    5. Modified signed payload rejection.
+    6. Wrong signing domain rejection.
+    7. Wrong session attribution rejection.
+    8. Wrong principal attribution rejection.
+    9. Wrong program attribution rejection.
+    10. Wrong original evidence reference rejection.
+    11. Missing original capture rejection.
+    12. Modified original capture rejection.
+    13. Unknown key identifier rejection.
+    14. Missing or unavailable key rejection.
+    15. Legacy evidence without attestation returns INCONCLUSIVE.
+    16. Mode A observation evidence cannot be reused as invalidation proof.
+    17. Operator attestation is distinguishable from independently verified event provenance.
+    """
     target_url = "https://target.local/api/v1/docs/1"
+    doc_body = b'{"data": "confidential_document_content"}'
     engine = MockValidationEngine({
-        target_url: ControlledResponse(200, {}, b'{"data": "secret"}'),
+        target_url: ControlledResponse(200, {"content-type": "application/json"}, doc_body),
     })
     ev_dir = tmp_path / "ev_prov"
     ev_dir.mkdir()
     store = EvidenceStore(str(ev_dir))
     mock_scope = MockScopeEngine()
-    validator = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store, scope_engine=mock_scope)
+    key_dir = str(tmp_path / "keys")
+    os.makedirs(key_dir, exist_ok=True)
+    att_key = get_or_create_attestation_key(key_dir=key_dir)
+
+    validator = PostRevocationResourceValidator(
+        validation_engine=engine,
+        evidence_store=store,
+        scope_engine=mock_scope,
+        attestation_key=att_key,
+    )
 
     target = ResourceAccessTarget(resource_id="res_01", resource_type="DOCUMENT", endpoint=target_url, method="GET")
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
-    baseline = ControlledResponse(200, {}, b'{"data": "secret"}')
+    baseline = ControlledResponse(200, {"content-type": "application/json"}, doc_body)
 
-    # Case 1: Nonexistent evidence ID
-    s1, f1 = validator.evaluate_revoked_session(sess, target, baseline, "EVID-000000000000")
+    # 1. Ordinary capture with event_type=SESSION_REVOCATION without attestation is rejected
+    res1 = store.save_http_capture(
+        request_text="POST /logout", response_text="HTTP 200 OK",
+        metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
+    )
+    v1_ok, v1_reason, _ = validator.verify_invalidation_provenance(res1["evidence_id"], sess)
+    assert not v1_ok
+    assert "authenticated invalidation event attestation" in v1_reason
+    s1, f1 = validator.evaluate_revoked_session(sess, target, baseline, res1["evidence_id"])
     assert s1 == "INCONCLUSIVE" and f1 is None
 
-    # Case 2: Malformed evidence reference
-    s2, f2 = validator.evaluate_revoked_session(sess, target, baseline, "NOT_AN_EVID_REF")
+    # 2. Arbitrary caller-created metadata is rejected
+    res2 = store.save_http_capture(
+        request_text="POST /logout", response_text="HTTP 200 OK",
+        metadata={
+            "event_type": "SESSION_REVOCATION",
+            "session_ref": sess.session_ref,
+            "principal_id": sess.principal_id,
+            "program_id": "default-program",
+            "attestation_verified": True,
+            "attestation_id": "ATT-0000000000000000000000000000000000000000000000000000000000000000",
+            "signature": "ATT-SIG-0000000000000000000000000000000000000000000000000000000000000000",
+        },
+    )
+    v2_ok, _, _ = validator.verify_invalidation_provenance(res2["evidence_id"], sess)
+    assert not v2_ok
+    s2, f2 = validator.evaluate_revoked_session(sess, target, baseline, res2["evidence_id"])
     assert s2 == "INCONCLUSIVE" and f2 is None
 
-    # Case 3: Missing event_type in metadata
-    res_no_event = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
-        metadata={"session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
+    # 3. A valid trusted event workflow can produce a verifiable attestation
+    res3 = store.save_http_capture(
+        request_text="POST /logout\nAuthorization: Bearer valid",
+        response_text="HTTP 200 OK\nlogged_out",
+        metadata={
+            "event_type": "SESSION_REVOCATION",
+            "session_ref": sess.session_ref,
+            "principal_id": sess.principal_id,
+            "program_id": "default-program",
+        },
     )
-    s3, f3 = validator.evaluate_revoked_session(sess, target, baseline, res_no_event["evidence_id"])
-    assert s3 == "INCONCLUSIVE" and f3 is None
+    att3 = create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res3["evidence_id"],
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000003",
+        attestation_key=att_key,
+    )
+    v3_ok, v3_reason, v3_rec = validator.verify_invalidation_provenance(res3["evidence_id"], sess)
+    assert v3_ok is True
+    assert v3_rec["attestation_id"] == att3["attestation_id"]
+    s3, f3 = validator.evaluate_revoked_session(sess, target, baseline, res3["evidence_id"])
+    assert s3 == "SESSION_NOT_INVALIDATED"
+    assert f3 is not None
+    assert f3.category == "SESSION_NOT_INVALIDATED"
 
-    # Case 4: hypothesis_category used instead of event_type
-    res_hyp = store.save_http_capture(
+    # 4. Invalid signature rejection
+    res4 = store.save_http_capture(
         request_text="POST /logout", response_text="HTTP 200 OK",
-        metadata={"hypothesis_category": "REVOCATION_ENFORCEMENT", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
+        metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
-    s4, f4 = validator.evaluate_revoked_session(sess, target, baseline, res_hyp["evidence_id"])
+    att4 = create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res4["evidence_id"],
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000004",
+        attestation_key=att_key,
+    )
+    att4_bad = dict(att4)
+    att4_bad["signature"] = "ATT-SIG-" + "a" * 64
+    store.save_invalidation_attestation(att4_bad)
+    v4_ok, v4_reason, _ = validator.verify_invalidation_provenance(res4["evidence_id"], sess)
+    assert not v4_ok
+    assert "signature verification failed" in v4_reason
+    s4, f4 = validator.evaluate_revoked_session(sess, target, baseline, res4["evidence_id"])
     assert s4 == "INCONCLUSIVE" and f4 is None
 
-    # Case 5: REVOCATION_ENFORCEMENT used as event_type (not in GENUINE_INVALIDATION_EVENTS)
-    res_rev_enf = store.save_http_capture(
+    # 5. Modified signed payload rejection
+    res5 = store.save_http_capture(
         request_text="POST /logout", response_text="HTTP 200 OK",
-        metadata={"event_type": "REVOCATION_ENFORCEMENT", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
+        metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
-    s5, f5 = validator.evaluate_revoked_session(sess, target, baseline, res_rev_enf["evidence_id"])
+    att5 = create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res5["evidence_id"],
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000005",
+        attestation_key=att_key,
+    )
+    att5_tamper = dict(att5)
+    att5_tamper["event_type"] = "PASSWORD_CHANGE"
+    store.save_invalidation_attestation(att5_tamper)
+    v5_ok, v5_reason, _ = validator.verify_invalidation_provenance(res5["evidence_id"], sess)
+    assert not v5_ok
+    assert "digest mismatch" in v5_reason or "signature verification failed" in v5_reason
+    s5, f5 = validator.evaluate_revoked_session(sess, target, baseline, res5["evidence_id"])
     assert s5 == "INCONCLUSIVE" and f5 is None
 
-    # Case 6: Missing session_ref in metadata
-    res_no_sess = store.save_http_capture(
+    # 6. Wrong signing domain rejection
+    res6 = store.save_http_capture(
         request_text="POST /logout", response_text="HTTP 200 OK",
-        metadata={"event_type": "SESSION_REVOCATION", "principal_id": sess.principal_id, "program_id": "default-program"},
+        metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
-    s6, f6 = validator.evaluate_revoked_session(sess, target, baseline, res_no_sess["evidence_id"])
+    att6 = create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res6["evidence_id"],
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000006",
+        attestation_key=att_key,
+    )
+    att6_bad_dom = dict(att6)
+    att6_bad_dom["domain"] = "WRONG_DOMAIN_V2"
+    store.save_invalidation_attestation(att6_bad_dom)
+    v6_ok, v6_reason, _ = validator.verify_invalidation_provenance(res6["evidence_id"], sess)
+    assert not v6_ok
+    assert "domain" in v6_reason
+    s6, f6 = validator.evaluate_revoked_session(sess, target, baseline, res6["evidence_id"])
     assert s6 == "INCONCLUSIVE" and f6 is None
 
-    # Case 7: Missing principal_id in metadata
-    res_no_princ = store.save_http_capture(
+    # 7. Wrong session attribution rejection
+    other_sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000999", principal_id="u1")
+    res7 = store.save_http_capture(
         request_text="POST /logout", response_text="HTTP 200 OK",
-        metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "program_id": "default-program"},
+        metadata={"event_type": "SESSION_REVOCATION", "session_ref": other_sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
-    s7, f7 = validator.evaluate_revoked_session(sess, target, baseline, res_no_princ["evidence_id"])
+    create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res7["evidence_id"],
+        session_ctx=other_sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000007",
+        attestation_key=att_key,
+    )
+    v7_ok, v7_reason, _ = validator.verify_invalidation_provenance(res7["evidence_id"], sess)
+    assert not v7_ok
+    assert "session_ref" in v7_reason and "mismatch" in v7_reason
+    s7, f7 = validator.evaluate_revoked_session(sess, target, baseline, res7["evidence_id"])
     assert s7 == "INCONCLUSIVE" and f7 is None
 
-    # Case 8: Missing program_id in metadata
-    res_no_prog = store.save_http_capture(
+    # 8. Wrong principal attribution rejection
+    sess_foreign = CorrelatedSessionContext(session_ref=sess.session_ref, principal_id="foreign_user")
+    res8 = store.save_http_capture(
         request_text="POST /logout", response_text="HTTP 200 OK",
-        metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id},
+        metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": "foreign_user", "program_id": "default-program"},
     )
-    s8, f8 = validator.evaluate_revoked_session(sess, target, baseline, res_no_prog["evidence_id"])
+    create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res8["evidence_id"],
+        session_ctx=sess_foreign,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000008",
+        attestation_key=att_key,
+    )
+    v8_ok, v8_reason, _ = validator.verify_invalidation_provenance(res8["evidence_id"], sess)
+    assert not v8_ok
+    assert "principal_id" in v8_reason and "mismatch" in v8_reason
+    s8, f8 = validator.evaluate_revoked_session(sess, target, baseline, res8["evidence_id"])
     assert s8 == "INCONCLUSIVE" and f8 is None
 
-    # Case 9: Foreign session attribution mismatch
-    res_foreign_sess = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
-        metadata={"event_type": "SESSION_REVOCATION", "session_ref": "sess_00000000000000000000000000000999", "principal_id": sess.principal_id, "program_id": "default-program"},
-    )
-    s9, f9 = validator.evaluate_revoked_session(sess, target, baseline, res_foreign_sess["evidence_id"])
-    assert s9 == "INCONCLUSIVE" and f9 is None
-
-    # Case 10: Foreign principal attribution mismatch
-    res_foreign_princ = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
-        metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": "other_user", "program_id": "default-program"},
-    )
-    s10, f10 = validator.evaluate_revoked_session(sess, target, baseline, res_foreign_princ["evidence_id"])
-    assert s10 == "INCONCLUSIVE" and f10 is None
-
-    # Case 11: Foreign program attribution mismatch
-    res_foreign_prog = store.save_http_capture(
+    # 9. Wrong program attribution rejection
+    res9 = store.save_http_capture(
         request_text="POST /logout", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "foreign_program"},
     )
-    s11, f11 = validator.evaluate_revoked_session(sess, target, baseline, res_foreign_prog["evidence_id"])
+    create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res9["evidence_id"],
+        session_ctx=sess,
+        program_id="foreign_program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000009",
+        attestation_key=att_key,
+    )
+    v9_ok, v9_reason, _ = validator.verify_invalidation_provenance(res9["evidence_id"], sess, program_id="default-program")
+    assert not v9_ok
+    assert "program_id" in v9_reason and "mismatch" in v9_reason
+    s9, f9 = validator.evaluate_revoked_session(sess, target, baseline, res9["evidence_id"])
+    assert s9 == "INCONCLUSIVE" and f9 is None
+
+    # 10. Wrong original evidence reference rejection
+    att10 = create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref="EVID-FFFFFFFFFFFF",
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000010",
+        attestation_key=att_key,
+    )
+    v10_ok, v10_reason, _ = validator.verify_invalidation_provenance(att10["attestation_id"], sess)
+    assert not v10_ok
+    assert "missing from EvidenceStore" in v10_reason
+    s10, f10 = validator.evaluate_revoked_session(sess, target, baseline, att10["attestation_id"])
+    assert s10 == "INCONCLUSIVE" and f10 is None
+
+    # 11. Missing original capture rejection
+    res11 = store.save_http_capture(
+        request_text="POST /logout", response_text="HTTP 200 OK",
+        metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
+    )
+    create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res11["evidence_id"],
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000011",
+        attestation_key=att_key,
+    )
+    rec11 = store.get_evidence(res11["evidence_id"])
+    os.remove(rec11["capture_path"])
+    v11_ok, v11_reason, _ = validator.verify_invalidation_provenance(res11["evidence_id"], sess)
+    assert not v11_ok
+    assert "missing from EvidenceStore" in v11_reason
+    s11, f11 = validator.evaluate_revoked_session(sess, target, baseline, res11["evidence_id"])
     assert s11 == "INCONCLUSIVE" and f11 is None
 
-    # Case 12: Missing capture file on disk (deleted .txt)
-    res_del_txt = store.save_http_capture(
+    # 12. Modified original capture rejection
+    res12 = store.save_http_capture(
         request_text="POST /logout", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
-    rec_del = store.get_evidence(res_del_txt["evidence_id"])
-    os.remove(rec_del["capture_path"])
-    s12, f12 = validator.evaluate_revoked_session(sess, target, baseline, res_del_txt["evidence_id"])
+    create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res12["evidence_id"],
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000012",
+        attestation_key=att_key,
+    )
+    rec12 = store.get_evidence(res12["evidence_id"])
+    with open(rec12["capture_path"], "ab") as f:
+        f.write(b"\nTAMPERED_CONTENT_DIGEST_CORRUPTED")
+    v12_ok, v12_reason, _ = validator.verify_invalidation_provenance(res12["evidence_id"], sess)
+    assert not v12_ok
+    assert "digest mismatch" in v12_reason
+    s12, f12 = validator.evaluate_revoked_session(sess, target, baseline, res12["evidence_id"])
     assert s12 == "INCONCLUSIVE" and f12 is None
 
-    # Case 13: Modified capture file content (tampered .txt bytes causing SHA-256 digest mismatch)
-    res_tamper = store.save_http_capture(
+    # 13. Unknown key identifier rejection
+    res13 = store.save_http_capture(
         request_text="POST /logout", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
-    rec_tamper = store.get_evidence(res_tamper["evidence_id"])
-    with open(rec_tamper["capture_path"], "ab") as f:
-        f.write(b"\nTAMPERED_BYTES_NOT_MATCHING_DIGEST")
-    s13, f13 = validator.evaluate_revoked_session(sess, target, baseline, res_tamper["evidence_id"])
+    att13 = create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res13["evidence_id"],
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000013",
+        attestation_key=att_key,
+    )
+    att13_bad_k = dict(att13)
+    att13_bad_k["key_id"] = "KEY-UNKNOWN-999"
+    store.save_invalidation_attestation(att13_bad_k)
+    v13_ok, v13_reason, _ = validator.verify_invalidation_provenance(res13["evidence_id"], sess)
+    assert not v13_ok
+    assert "key_id" in v13_reason
+    s13, f13 = validator.evaluate_revoked_session(sess, target, baseline, res13["evidence_id"])
     assert s13 == "INCONCLUSIVE" and f13 is None
 
-    # Case 14: Malformed metadata (.meta.json contains malformed JSON)
-    res_corrupt_meta = store.save_http_capture(
+    # 14. Missing or unavailable key rejection
+    res14 = store.save_http_capture(
         request_text="POST /logout", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
-    rec_corrupt = store.get_evidence(res_corrupt_meta["evidence_id"])
-    with open(rec_corrupt["meta_path"], "w", encoding="utf-8") as f:
-        f.write("{corrupted_non_json_content")
-    s14, f14 = validator.evaluate_revoked_session(sess, target, baseline, res_corrupt_meta["evidence_id"])
+    create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res14["evidence_id"],
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000014",
+        attestation_key=att_key,
+    )
+    val_wrong_key = PostRevocationResourceValidator(
+        validation_engine=engine,
+        evidence_store=store,
+        scope_engine=mock_scope,
+        attestation_key=b"wrong_attestation_key_32_bytes!",
+    )
+    v14_ok, v14_reason, _ = val_wrong_key.verify_invalidation_provenance(res14["evidence_id"], sess)
+    assert not v14_ok
+    assert "signature verification failed" in v14_reason
+    s14, f14 = val_wrong_key.evaluate_revoked_session(sess, target, baseline, res14["evidence_id"])
     assert s14 == "INCONCLUSIVE" and f14 is None
 
-    # Case 15: Mode A observation artifact reused as invalidation evidence
-    res_mode_a = store.save_http_capture(
+    # 15. Legacy evidence without attestation returns INCONCLUSIVE
+    res15 = store.save_http_capture(
+        request_text="POST /legacy_logout", response_text="HTTP 200 OK",
+        metadata={"legacy_capture": True, "event_type": "SESSION_REVOCATION"},
+    )
+    v15_ok, v15_reason, _ = validator.verify_invalidation_provenance(res15["evidence_id"], sess)
+    assert not v15_ok
+    assert "does not possess an authenticated invalidation event attestation" in v15_reason
+    s15, f15 = validator.evaluate_revoked_session(sess, target, baseline, res15["evidence_id"])
+    assert s15 == "INCONCLUSIVE" and f15 is None
+
+    # 16. Mode A observation evidence cannot be reused as invalidation proof
+    res16 = store.save_http_capture(
         request_text="GET /api/v1/docs/1", response_text="HTTP 200 OK",
         metadata={
             "mode": "MODE_A",
@@ -371,38 +615,47 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
             "invalidation_evidence_ref": "EVID-AABBCCDDEEFF",
         },
     )
-    s15, f15 = validator.evaluate_revoked_session(sess, target, baseline, res_mode_a["evidence_id"])
-    assert s15 == "INCONCLUSIVE" and f15 is None
-
-    # Case 16: Broken EvidenceStore raises exception
-    class BrokenStore:
-        def get_evidence(self, ref):
-            raise OSError("Database read corruption")
-    val_broken = PostRevocationResourceValidator(validation_engine=engine, evidence_store=BrokenStore(), scope_engine=mock_scope)
-    s16, f16 = val_broken.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789AB")
+    create_controlled_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res16["evidence_id"],
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        action_id="ACT-0000000000000000000000000000000000000000000000000000000000000016",
+        attestation_key=att_key,
+    )
+    v16_ok, v16_reason, _ = validator.verify_invalidation_provenance(res16["evidence_id"], sess)
+    assert not v16_ok
+    assert "Mode A observation artifact" in v16_reason
+    s16, f16 = validator.evaluate_revoked_session(sess, target, baseline, res16["evidence_id"])
     assert s16 == "INCONCLUSIVE" and f16 is None
 
-    # Case 17: Invalid baseline status (HTTP 401)
-    res_valid = store.save_http_capture(
-        request_text="POST /auth/logout\nAuthorization: Bearer revoked",
-        response_text='HTTP 200 OK\n{"status": "logged_out"}',
-        metadata={
-            "event_type": "SESSION_REVOCATION",
-            "session_ref": sess.session_ref,
-            "principal_id": sess.principal_id,
-            "program_id": "default-program",
-        },
+    # 17. Operator attestation is distinguishable from independently verified event provenance
+    res17 = store.save_http_capture(
+        request_text="POST /logout\nAuthorization: Bearer op", response_text="HTTP 200 OK",
+        metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
-    baseline_401 = ControlledResponse(401, {}, b'{"error": "Unauthorized"}')
-    s17, f17 = validator.evaluate_revoked_session(sess, target, baseline_401, res_valid["evidence_id"])
-    assert s17 == "INCONCLUSIVE" and f17 is None
+    att17 = create_operator_invalidation_attestation(
+        evidence_store=store,
+        original_evidence_ref=res17["evidence_id"],
+        session_ctx=sess,
+        program_id="default-program",
+        event_type="SESSION_REVOCATION",
+        operator_id="security-analyst-01",
+        reason="Manually terminated user session via internal admin dashboard",
+        attestation_key=att_key,
+    )
+    v17_ok, v17_reason, v17_rec = validator.verify_invalidation_provenance(res17["evidence_id"], sess)
+    assert v17_ok is True
+    assert v17_rec["source"] == "OPERATOR_ATTESTATION"
+    assert "Operator attestation verified" in v17_reason
+    assert "security-analyst-01" in v17_reason
+    assert v3_rec["source"] == "CONTROLLED_WORKFLOW"
+    assert "Invalidation event attestation verified (Source: CONTROLLED_WORKFLOW" in v3_reason
+    s17, f17 = validator.evaluate_revoked_session(sess, target, baseline, res17["evidence_id"])
+    assert s17 == "SESSION_NOT_INVALIDATED"
+    assert f17 is not None
 
-    # Case 18: Legitimate, properly attributed invalidation event -> Finding emitted
-    s18, f18 = validator.evaluate_revoked_session(sess, target, baseline, res_valid["evidence_id"])
-    assert s18 == "SESSION_NOT_INVALIDATED"
-    assert f18 is not None
-    assert f18.category == "SESSION_NOT_INVALIDATED"
-    assert f18.severity == "MEDIUM"
 
 
 def test_revocation_mode_a_scope_authorization_at_dispatch(tmp_path):

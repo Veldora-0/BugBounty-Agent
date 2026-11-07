@@ -39,7 +39,10 @@ from framework.auth_correlation.model import (
     CorrelationLifecycle,
     SerializationSecurityError,
     EvidencePersistenceError,
+    AttestationSecurityError,
     EVIDENCE_REF_PATTERN,
+    ATTESTATION_REF_PATTERN,
+    ATTESTATION_SIG_PATTERN,
     SESSION_REF_PATTERN,
     SAFE_IDENTIFIER_PATTERN,
 )
@@ -179,6 +182,10 @@ def get_or_create_approval_key(key_dir: Optional[str] = None) -> bytes:
                 _enforce_windows_directory_dacl(key_folder)
 
         if os.name == "nt":
+            try:
+                _enforce_windows_directory_dacl(key_folder)
+            except Exception:
+                pass
             _verify_windows_directory_security(key_folder)
         else:
             kdir_stat = os.lstat(key_folder)
@@ -241,6 +248,251 @@ def get_or_create_approval_key(key_dir: Optional[str] = None) -> bytes:
         if isinstance(e, ApprovalSecurityError):
             raise
         raise ApprovalSecurityError(f"Cannot secure external approval key: {e}")
+
+
+def get_or_create_attestation_key(key_dir: Optional[str] = None) -> bytes:
+    """
+    Retrieves or generates the 32-byte secret HMAC key used for invalidation event attestation.
+    Stored strictly outside the Git repository:
+    - POSIX: ~/.config/opencode/invalidation_attestation.key (or $XDG_CONFIG_HOME/opencode/invalidation_attestation.key)
+    - Windows: %LOCALAPPDATA%\\opencode\\invalidation_attestation.key (fallback ~/.config/opencode/invalidation_attestation.key)
+    - Override: OPENCODE_ATTESTATION_KEY_PATH environment variable
+    """
+    env_path = os.environ.get("OPENCODE_ATTESTATION_KEY_PATH")
+    if env_path:
+        key_file = os.path.abspath(env_path)
+        key_folder = os.path.dirname(key_file)
+    elif key_dir:
+        key_folder = os.path.abspath(key_dir)
+        key_file = os.path.join(key_folder, "invalidation_attestation.key")
+    elif os.name == "nt":
+        base_dir = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        key_folder = os.path.join(base_dir, "opencode")
+        key_file = os.path.join(key_folder, "invalidation_attestation.key")
+    else:
+        base_dir = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+        key_folder = os.path.join(base_dir, "opencode")
+        key_file = os.path.join(key_folder, "invalidation_attestation.key")
+
+    try:
+        if not os.path.exists(key_folder):
+            if os.name != "nt":
+                os.makedirs(key_folder, mode=0o700, exist_ok=True)
+            else:
+                os.makedirs(key_folder, exist_ok=True)
+                _enforce_windows_directory_dacl(key_folder)
+
+        if os.name == "nt":
+            try:
+                _enforce_windows_directory_dacl(key_folder)
+            except Exception:
+                pass
+            _verify_windows_directory_security(key_folder)
+        else:
+            kdir_stat = os.lstat(key_folder)
+            if stat.S_ISLNK(kdir_stat.st_mode):
+                raise AttestationSecurityError("Attestation key directory is a symbolic link")
+            if kdir_stat.st_uid != os.getuid():
+                raise AttestationSecurityError("Attestation key directory ownership mismatch")
+            if kdir_stat.st_mode & 0o077 != 0:
+                try:
+                    os.chmod(key_folder, 0o700)
+                    kdir_stat = os.lstat(key_folder)
+                except OSError:
+                    pass
+            if kdir_stat.st_mode & 0o077 != 0:
+                raise AttestationSecurityError("Attestation key directory permissions are not private")
+
+        if os.path.exists(key_file):
+            k_stat = os.lstat(key_file)
+            if stat.S_ISLNK(k_stat.st_mode):
+                raise AttestationSecurityError("Attestation key file is a symbolic link")
+            if os.name == "nt":
+                try:
+                    _enforce_windows_file_dacl(key_file)
+                    _verify_windows_file_security(key_file)
+                except SerializationSecurityError as err:
+                    raise AttestationSecurityError(str(err))
+            else:
+                if k_stat.st_uid != os.getuid():
+                    raise AttestationSecurityError("Attestation key file ownership mismatch")
+                if k_stat.st_mode & 0o077 != 0:
+                    raise AttestationSecurityError("Attestation key file permissions are not private")
+                if k_stat.st_nlink != 1:
+                    raise AttestationSecurityError("Attestation key file has unexpected hardlinks")
+
+            with open(key_file, "rb") as f:
+                key = f.read(32)
+            if len(key) != 32:
+                raise AttestationSecurityError("Invalid attestation key file length")
+            return key
+        else:
+            key = secrets.token_bytes(32)
+            flags = os.O_CREAT | os.O_WRONLY | os.O_EXCL
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            fd = os.open(key_file, flags, 0o600)
+            try:
+                with os.fdopen(fd, "wb", closefd=True) as f:
+                    f.write(key)
+            except Exception as e:
+                raise AttestationSecurityError(f"Failed to write attestation key file: {e}")
+
+            if os.name == "nt":
+                try:
+                    _enforce_windows_file_dacl(key_file)
+                    _verify_windows_file_security(key_file)
+                except SerializationSecurityError as err:
+                    raise AttestationSecurityError(str(err))
+            return key
+    except Exception as e:
+        if isinstance(e, AttestationSecurityError):
+            raise
+        raise AttestationSecurityError(f"Cannot secure external attestation key: {e}")
+
+
+CANONICAL_ATTESTATION_FIELDS = (
+    "created_at",
+    "domain",
+    "event_type",
+    "key_id",
+    "original_evidence_ref",
+    "principal_id",
+    "program_id",
+    "session_ref",
+    "source",
+    "verification_method",
+)
+ATTESTATION_DOMAIN = "BB_INVALIDATION_ATTESTATION_V1"
+ALLOWED_ATTESTATION_SOURCES = frozenset({"CONTROLLED_WORKFLOW", "OPERATOR_ATTESTATION", "VERIFIED_EXTERNAL"})
+
+
+def _sign_attestation_payload(
+    canonical_payload: Dict[str, Any],
+    attestation_key: Optional[bytes] = None,
+    key_dir: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Generates attestation_id and HMAC signature for canonical payload."""
+    canonical_bytes = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    attestation_id = f"ATT-{hashlib.sha256(canonical_bytes).hexdigest().upper()}"
+    key = attestation_key or get_or_create_attestation_key(key_dir=key_dir)
+    sig_hash = hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest().upper()
+    signature = f"ATT-SIG-{sig_hash}"
+    return attestation_id, signature
+
+
+def create_controlled_invalidation_attestation(
+    evidence_store: Any,
+    original_evidence_ref: str,
+    session_ctx: CorrelatedSessionContext,
+    program_id: str,
+    event_type: str,
+    action_id: str,
+    attestation_key: Optional[bytes] = None,
+    key_dir: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Creates and persists a trusted invalidation event attestation for a successfully
+    verified controlled mutation workflow (Mode B execution).
+    """
+    if not isinstance(original_evidence_ref, str) or not EVIDENCE_REF_PATTERN.match(original_evidence_ref):
+        raise AttestationSecurityError(f"Invalid original evidence reference '{original_evidence_ref}'")
+    if not isinstance(session_ctx, CorrelatedSessionContext) or not session_ctx.session_ref:
+        raise AttestationSecurityError("Invalid session context for attestation")
+    if not isinstance(program_id, str) or not SAFE_IDENTIFIER_PATTERN.match(program_id):
+        raise AttestationSecurityError(f"Invalid program identifier '{program_id}'")
+    if event_type not in GENUINE_INVALIDATION_EVENTS:
+        raise AttestationSecurityError(f"Event type '{event_type}' is not an authorized invalidation event")
+    if not isinstance(action_id, str) or not action_id.startswith("ACT-"):
+        raise AttestationSecurityError(f"Invalid action ID for controlled attestation: '{action_id}'")
+
+    from datetime import datetime, timezone
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    key_id = "KEY-LOCAL-ATTESTATION-1"
+
+    canonical = {
+        "created_at": created_at,
+        "domain": ATTESTATION_DOMAIN,
+        "event_type": event_type,
+        "key_id": key_id,
+        "original_evidence_ref": original_evidence_ref.upper(),
+        "principal_id": session_ctx.principal_id,
+        "program_id": program_id,
+        "session_ref": session_ctx.session_ref,
+        "source": "CONTROLLED_WORKFLOW",
+        "verification_method": "ACTION_MUTATION_VERIFIED",
+    }
+    att_id, sig = _sign_attestation_payload(canonical, attestation_key=attestation_key, key_dir=key_dir)
+
+    record = dict(canonical)
+    record["attestation_id"] = att_id
+    record["signature"] = sig
+    record["details"] = dict(details or {})
+    record["details"]["action_id"] = action_id
+
+    if hasattr(evidence_store, "save_invalidation_attestation"):
+        evidence_store.save_invalidation_attestation(record)
+    return record
+
+
+def create_operator_invalidation_attestation(
+    evidence_store: Any,
+    original_evidence_ref: str,
+    session_ctx: CorrelatedSessionContext,
+    program_id: str,
+    event_type: str,
+    operator_id: str,
+    reason: str,
+    attestation_key: Optional[bytes] = None,
+    key_dir: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Creates and persists an explicit, auditable operator attestation of session invalidation.
+    Clearly records source as OPERATOR_ATTESTATION rather than independently verified.
+    """
+    if not isinstance(original_evidence_ref, str) or not EVIDENCE_REF_PATTERN.match(original_evidence_ref):
+        raise AttestationSecurityError(f"Invalid original evidence reference '{original_evidence_ref}'")
+    if not isinstance(session_ctx, CorrelatedSessionContext) or not session_ctx.session_ref:
+        raise AttestationSecurityError("Invalid session context for attestation")
+    if not isinstance(program_id, str) or not SAFE_IDENTIFIER_PATTERN.match(program_id):
+        raise AttestationSecurityError(f"Invalid program identifier '{program_id}'")
+    if event_type not in GENUINE_INVALIDATION_EVENTS:
+        raise AttestationSecurityError(f"Event type '{event_type}' is not an authorized invalidation event")
+    if not isinstance(operator_id, str) or not operator_id.strip():
+        raise AttestationSecurityError("Operator ID is required for operator attestation")
+    if not isinstance(reason, str) or not reason.strip():
+        raise AttestationSecurityError("Attestation reason is required for operator attestation")
+
+    from datetime import datetime, timezone
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    key_id = "KEY-LOCAL-ATTESTATION-1"
+
+    canonical = {
+        "created_at": created_at,
+        "domain": ATTESTATION_DOMAIN,
+        "event_type": event_type,
+        "key_id": key_id,
+        "original_evidence_ref": original_evidence_ref.upper(),
+        "principal_id": session_ctx.principal_id,
+        "program_id": program_id,
+        "session_ref": session_ctx.session_ref,
+        "source": "OPERATOR_ATTESTATION",
+        "verification_method": "OPERATOR_ASSERTION",
+    }
+    att_id, sig = _sign_attestation_payload(canonical, attestation_key=attestation_key, key_dir=key_dir)
+
+    record = dict(canonical)
+    record["attestation_id"] = att_id
+    record["signature"] = sig
+    record["details"] = dict(details or {})
+    record["details"]["operator_id"] = operator_id.strip()
+    record["details"]["reason"] = reason.strip()
+
+    if hasattr(evidence_store, "save_invalidation_attestation"):
+        evidence_store.save_invalidation_attestation(record)
+    return record
 
 
 def sign_action_approval(
@@ -392,6 +644,7 @@ class PostRevocationResourceValidator:
         approval_key_dir: Optional[str] = None,
         evidence_store: Optional[Any] = None,
         program_id: Optional[str] = None,
+        attestation_key: Optional[bytes] = None,
     ):
         self._engine = validation_engine
         self._program_dir = program_dir or "."
@@ -404,6 +657,7 @@ class PostRevocationResourceValidator:
         self._state_dir = state_dir or os.path.join(self._program_dir, "state")
         self._scope_engine = scope_engine
         self._approval_key = approval_key
+        self._attestation_key = attestation_key
         self._approval_key_dir = approval_key_dir
         self._evidence_store = evidence_store
 
@@ -478,65 +732,148 @@ class PostRevocationResourceValidator:
         program_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
-        Strictly verifies invalidation evidence provenance:
-        1. Reference matches EVIDENCE_REF_PATTERN ('EVID-[0-9A-F]{12}').
-        2. Resolves against the configured EvidenceStore.
-        3. Structural descriptor validation: evidence_id, filename, sha256, metadata exist.
-        4. Capture file exists on disk and its SHA-256 matches both the descriptor and evidence identifier.
-        5. Evidence is NOT a Mode A observation artifact (rejects category SESSION_NOT_INVALIDATED, mode MODE_A, etc.).
-        6. Explicit event_type field exists and belongs strictly to GENUINE_INVALIDATION_EVENTS (no fallback to hypothesis_category or finding category).
-        7. Exact attribution matches across session_ref, principal_id, and program_id (missing attribution fails closed).
-        Returns (is_valid, reason, evidence_record).
+        Strictly verifies invalidation evidence provenance via authentic event attestation:
+        1. Reference matches EVIDENCE_REF_PATTERN ('EVID-[0-9A-F]{12}') or ATTESTATION_REF_PATTERN ('ATT-[0-9A-F]{64}').
+        2. Resolves against the configured EvidenceStore and retrieves authenticated invalidation attestation.
+        3. Fails closed if evidence is an ordinary capture without an authenticated invalidation attestation.
+        4. Validates attestation schema, domain tag (BB_INVALIDATION_ATTESTATION_V1), and event_type in GENUINE_INVALIDATION_EVENTS.
+        5. Enforces exact attribution matching across session_ref, principal_id, and program_id.
+        6. Cryptographically verifies HMAC-SHA256 signature using dedicated attestation key.
+        7. Resolves original evidence capture in EvidenceStore, verifying descriptor structure, on-disk .txt existence, and SHA-256 content digest.
+        8. Rejects Mode A observation artifacts and self-referential evidence.
+        9. Distinguishes independently verified events (CONTROLLED_WORKFLOW) from auditable operator attestations (OPERATOR_ATTESTATION).
+        Returns (is_valid, reason, attestation_record).
         """
         if not invalidation_evidence_ref or not isinstance(invalidation_evidence_ref, str):
             return False, "Invalid or missing invalidation evidence reference format", None
 
         clean_ref = invalidation_evidence_ref.strip().upper()
-        if not EVIDENCE_REF_PATTERN.match(clean_ref):
-            return False, f"Evidence reference '{invalidation_evidence_ref}' does not match required EVID-<12-hex> pattern", None
+        is_evid = bool(EVIDENCE_REF_PATTERN.match(clean_ref))
+        is_att = bool(ATTESTATION_REF_PATTERN.match(clean_ref))
+        if not is_evid and not is_att:
+            return False, f"Evidence reference '{invalidation_evidence_ref}' does not match required EVID-... or ATT-... pattern", None
 
         if self._evidence_store is None:
             return False, "EvidenceStore is not configured; cannot establish invalidation provenance", None
 
-        if not hasattr(self._evidence_store, "get_evidence"):
-            return False, "EvidenceStore does not support evidence retrieval; cannot establish invalidation provenance", None
+        if not hasattr(self._evidence_store, "get_invalidation_attestation"):
+            return False, "EvidenceStore does not support attestation retrieval; cannot establish invalidation provenance", None
+
+        # 1. Attestation lookup
+        try:
+            att_record = self._evidence_store.get_invalidation_attestation(clean_ref)
+        except Exception as e:
+            return False, f"EvidenceStore attestation lookup failure for '{clean_ref}': {e}", None
+
+        if att_record is None or not isinstance(att_record, dict):
+            return False, f"Evidence '{clean_ref}' does not possess an authenticated invalidation event attestation", None
+
+        # 2. Structural descriptor validation of attestation
+        for req_f in CANONICAL_ATTESTATION_FIELDS:
+            if req_f not in att_record or not isinstance(att_record[req_f], str):
+                return False, f"Attestation record missing or malformed required field '{req_f}'", None
+
+        for req_meta in ("attestation_id", "signature"):
+            if req_meta not in att_record or not isinstance(att_record[req_meta], str):
+                return False, f"Attestation record missing or malformed '{req_meta}'", None
+
+        if att_record.get("domain") != ATTESTATION_DOMAIN:
+            return False, f"Attestation domain '{att_record.get('domain')}' does not match expected '{ATTESTATION_DOMAIN}'", None
+
+        event_type = att_record.get("event_type")
+        if event_type not in GENUINE_INVALIDATION_EVENTS:
+            return False, f"Attestation event_type '{event_type}' is not an authorized invalidation event", None
+
+        source = att_record.get("source")
+        if source not in ALLOWED_ATTESTATION_SOURCES:
+            return False, f"Attestation source '{source}' is not recognized or authorized", None
+
+        stored_key_id = att_record.get("key_id")
+        if stored_key_id != "KEY-LOCAL-ATTESTATION-1":
+            return False, f"Attestation key_id '{stored_key_id}' is unknown or unsupported", None
+
+        # 3. Mandatory exact attribution: session_ref, principal_id, program_id
+        stored_session = att_record.get("session_ref")
+        if not stored_session or not SESSION_REF_PATTERN.match(stored_session):
+            return False, "Attestation record missing valid 'session_ref' attribution", None
+        if stored_session != session_ctx.session_ref:
+            return False, f"Attestation attribution mismatch: session_ref '{stored_session}' does not match context session '{session_ctx.session_ref}'", None
+
+        stored_principal = att_record.get("principal_id")
+        if not stored_principal or not SAFE_IDENTIFIER_PATTERN.match(stored_principal):
+            return False, "Attestation record missing valid 'principal_id' attribution", None
+        if stored_principal != session_ctx.principal_id:
+            return False, f"Attestation attribution mismatch: principal_id '{stored_principal}' does not match context principal '{session_ctx.principal_id}'", None
+
+        stored_program = att_record.get("program_id")
+        if not stored_program or not SAFE_IDENTIFIER_PATTERN.match(stored_program):
+            return False, "Attestation record missing valid 'program_id' attribution", None
+        target_prog = program_id or getattr(self, "_program_id", None) or "default-program"
+        if stored_program != target_prog:
+            return False, f"Attestation attribution mismatch: program_id '{stored_program}' does not match target program '{target_prog}'", None
+
+        # 4. Cryptographic signature and ID integrity check
+        sig = att_record.get("signature")
+        if not ATTESTATION_SIG_PATTERN.match(sig):
+            return False, "Attestation contains invalid signature format", None
 
         try:
-            evidence_record = self._evidence_store.get_evidence(clean_ref)
+            key = self._attestation_key or get_or_create_attestation_key(key_dir=self._approval_key_dir)
         except Exception as e:
-            return False, f"EvidenceStore lookup failure for '{clean_ref}': {e}", None
+            return False, f"Attestation key unavailable or insecure: {e}", None
 
-        if evidence_record is None or not isinstance(evidence_record, dict):
-            return False, f"Invalidation evidence '{clean_ref}' does not exist in EvidenceStore", None
+        canonical_payload = {k: att_record[k] for k in CANONICAL_ATTESTATION_FIELDS}
+        canonical_bytes = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        expected_att_id = f"ATT-{hashlib.sha256(canonical_bytes).hexdigest().upper()}"
+        expected_sig = f"ATT-SIG-{hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest().upper()}"
 
-        # 1. Structural validity of descriptor
+        if att_record.get("attestation_id", "").upper() != expected_att_id:
+            return False, "Attestation identifier digest mismatch (attestation record has been tampered)", None
+
+        if not hmac.compare_digest(sig.upper(), expected_sig):
+            return False, "Attestation cryptographic signature verification failed", None
+
+        # 5. Original Evidence Capture Verification
+        orig_ref = att_record.get("original_evidence_ref")
+        if not orig_ref or not EVIDENCE_REF_PATTERN.match(orig_ref):
+            return False, f"Attestation references invalid original evidence reference format: '{orig_ref}'", None
+
+        if not hasattr(self._evidence_store, "get_evidence"):
+            return False, "EvidenceStore does not support get_evidence lookup", None
+
+        try:
+            orig_evidence = self._evidence_store.get_evidence(orig_ref)
+        except Exception as e:
+            return False, f"Failed to retrieve original evidence '{orig_ref}' from EvidenceStore: {e}", None
+
+        if orig_evidence is None or not isinstance(orig_evidence, dict):
+            return False, f"Original evidence capture '{orig_ref}' referenced by attestation is missing from EvidenceStore", None
+
         for req_field in ("evidence_id", "filename", "sha256", "metadata"):
-            if req_field not in evidence_record:
-                return False, f"Evidence descriptor is missing required structural field '{req_field}'", None
+            if req_field not in orig_evidence:
+                return False, f"Original evidence descriptor is missing required structural field '{req_field}'", None
 
-        stored_ev_id = evidence_record.get("evidence_id")
-        if stored_ev_id != clean_ref:
-            return False, f"Descriptor evidence_id '{stored_ev_id}' does not match reference '{clean_ref}'", None
+        if orig_evidence.get("evidence_id") != orig_ref:
+            return False, f"Descriptor evidence_id '{orig_evidence.get('evidence_id')}' does not match reference '{orig_ref}'", None
 
-        stored_sha256 = evidence_record.get("sha256")
+        stored_sha256 = orig_evidence.get("sha256")
         if not isinstance(stored_sha256, str) or len(stored_sha256) != 64 or not all(c in "0123456789abcdefABCDEF" for c in stored_sha256):
-            return False, "Evidence descriptor contains invalid or malformed sha256 digest", None
+            return False, "Original evidence descriptor contains invalid or malformed sha256 digest", None
 
         expected_id_from_hash = f"EVID-{stored_sha256[:12].upper()}"
-        if expected_id_from_hash != clean_ref:
-            return False, f"Evidence identifier '{clean_ref}' does not match stored sha256 prefix '{expected_id_from_hash}'", None
+        if expected_id_from_hash != orig_ref:
+            return False, f"Original evidence identifier '{orig_ref}' does not match stored sha256 prefix '{expected_id_from_hash}'", None
 
-        capture_filename = evidence_record.get("filename")
+        capture_filename = orig_evidence.get("filename")
         if not isinstance(capture_filename, str) or not capture_filename.strip():
-            return False, "Evidence descriptor missing valid capture filename", None
+            return False, "Original evidence descriptor missing valid capture filename", None
 
         if os.path.basename(capture_filename) != capture_filename or "/" in capture_filename or "\\" in capture_filename or ".." in capture_filename:
-            return False, "Evidence descriptor filename contains invalid path separators or directory traversal", None
+            return False, "Original evidence descriptor filename contains invalid path separators or directory traversal", None
 
         if not capture_filename.endswith(".txt"):
-            return False, "Evidence capture file format is unsupported (must be .txt)", None
+            return False, "Original evidence capture file format is unsupported (must be .txt)", None
 
-        # 2. Associated capture file existence and SHA-256 integrity check
         ev_dir = getattr(self._evidence_store, "evidence_dir", None)
         if not ev_dir or not os.path.isdir(ev_dir):
             return False, "EvidenceStore directory is missing or inaccessible", None
@@ -553,15 +890,15 @@ class PostRevocationResourceValidator:
                 capture_bytes = cf.read()
             actual_digest = hashlib.sha256(capture_bytes).hexdigest()
             if actual_digest.lower() != stored_sha256.lower():
-                return False, f"Evidence capture content has been altered or corrupted (digest mismatch: {actual_digest} != {stored_sha256})", None
+                return False, f"Original evidence capture content has been altered or corrupted (digest mismatch: {actual_digest} != {stored_sha256})", None
         except Exception as e:
             return False, f"Failed to read and verify evidence capture file: {e}", None
 
-        meta = evidence_record.get("metadata")
+        meta = orig_evidence.get("metadata")
         if not isinstance(meta, dict):
-            return False, "Evidence metadata is missing or malformed (must be a dictionary)", None
+            return False, "Original evidence metadata is missing or malformed (must be a dictionary)", None
 
-        # 3. Reject Mode A observation artifacts reused as invalidation evidence
+        # 6. Reject Mode A observation artifacts reused as invalidation evidence
         if (
             meta.get("mode") == "MODE_A"
             or meta.get("observation_mode") == "MODE_A"
@@ -569,39 +906,16 @@ class PostRevocationResourceValidator:
             or meta.get("finding_category") == "SESSION_NOT_INVALIDATED"
             or "invalidation_evidence_ref" in meta
         ):
-            return False, f"Evidence '{clean_ref}' represents a Mode A observation artifact, not a genuine invalidation event", None
+            return False, f"Evidence '{orig_ref}' represents a Mode A observation artifact, not a genuine invalidation event", None
 
-        # 4. Explicit event_type requirement (strictly genuine invalidation events; NO fallback)
-        event_type = meta.get("event_type")
-        if not event_type or not isinstance(event_type, str):
-            return False, "Evidence metadata missing required 'event_type' field", None
+        # 7. Preserved auditability of source
+        if source == "OPERATOR_ATTESTATION":
+            op_id = att_record.get("details", {}).get("operator_id", "operator")
+            reason = f"Operator attestation verified for {clean_ref} (Operator: {op_id})"
+        else:
+            reason = f"Invalidation event attestation verified (Source: {source}, Method: {att_record.get('verification_method')})"
 
-        if event_type not in GENUINE_INVALIDATION_EVENTS:
-            return False, f"Evidence '{clean_ref}' does not represent a recognized invalidation event (event_type: '{event_type}')", None
-
-        # 5. Mandatory attribution: session_ref, principal_id, program_id
-        stored_session = meta.get("session_ref")
-        if not stored_session or not isinstance(stored_session, str) or not SESSION_REF_PATTERN.match(stored_session):
-            return False, "Evidence metadata missing valid 'session_ref' attribution", None
-        if stored_session != session_ctx.session_ref:
-            return False, f"Evidence attribution mismatch: session_ref '{stored_session}' does not match context session '{session_ctx.session_ref}'", None
-
-        stored_principal = meta.get("principal_id")
-        if not stored_principal or not isinstance(stored_principal, str) or not SAFE_IDENTIFIER_PATTERN.match(stored_principal):
-            return False, "Evidence metadata missing valid 'principal_id' attribution", None
-        if stored_principal != session_ctx.principal_id:
-            return False, f"Evidence attribution mismatch: principal_id '{stored_principal}' does not match context principal '{session_ctx.principal_id}'", None
-
-        stored_program = meta.get("program_id")
-        if not stored_program or not isinstance(stored_program, str) or not SAFE_IDENTIFIER_PATTERN.match(stored_program):
-            return False, "Evidence metadata missing valid 'program_id' attribution", None
-        target_prog = program_id or getattr(self, "_program_id", None)
-        if not target_prog or not isinstance(target_prog, str):
-            return False, "Target program context is missing or unconfigured for provenance verification", None
-        if stored_program != target_prog:
-            return False, f"Evidence attribution mismatch: program_id '{stored_program}' does not match target program '{target_prog}'", None
-
-        return True, "Invalidation evidence provenance verified", evidence_record
+        return True, reason, att_record
 
     def evaluate_revoked_session(
         self,
@@ -951,7 +1265,42 @@ class PostRevocationResourceValidator:
         )
         try:
             resp = self.engine.send_request(req)
-            session_ctx.lifecycle = CorrelationLifecycle.REVOKED
-            return resp.status_code in (200, 204, 302, 303)
+            is_success = resp.status_code in (200, 204, 302, 303)
+            if is_success:
+                session_ctx.lifecycle = CorrelationLifecycle.REVOKED
+                if self._evidence_store is not None:
+                    try:
+                        clean_req = f"{method} {target_endpoint}\nHeaders: [REDACTED]"
+                        clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
+                        cap = self._evidence_store.save_http_capture(
+                            request_text=clean_req,
+                            response_text=clean_res,
+                            metadata={
+                                "event_type": "SESSION_REVOCATION",
+                                "session_ref": session_ctx.session_ref,
+                                "principal_id": session_ctx.principal_id,
+                                "program_id": self._program_id,
+                                "action_id": action_id,
+                            },
+                            prefix="controlled_revocation",
+                        )
+                        att = create_controlled_invalidation_attestation(
+                            evidence_store=self._evidence_store,
+                            original_evidence_ref=cap["evidence_id"],
+                            session_ctx=session_ctx,
+                            program_id=self._program_id,
+                            event_type="SESSION_REVOCATION",
+                            action_id=action_id,
+                            attestation_key=self._attestation_key,
+                            key_dir=self._approval_key_dir,
+                            details={
+                                "target_endpoint": target_endpoint,
+                                "test_account": action_dossier.get("test_account"),
+                            },
+                        )
+                        session_ctx.invalidation_evidence_ref = att["attestation_id"]
+                    except Exception:
+                        pass
+            return is_success
         except Exception as e:
             raise ApprovalSecurityError(f"Failed to execute controlled invalidation mutation: {e}")

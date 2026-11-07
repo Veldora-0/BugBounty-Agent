@@ -161,7 +161,16 @@ def main() -> int:
                     },
                     prefix="lab_invalidation",
                 )
-                s_a.invalidation_evidence_ref = inv_meta["evidence_id"]
+                from framework.auth_correlation.revocation import create_controlled_invalidation_attestation
+                att_rec = create_controlled_invalidation_attestation(
+                    evidence_store=lab_ev_store,
+                    original_evidence_ref=inv_meta["evidence_id"],
+                    session_ctx=s_a,
+                    program_id=args.program,
+                    event_type="SESSION_REVOCATION",
+                    action_id="ACT-0000000000000000000000000000000000000000000000000000000000000001",
+                )
+                s_a.invalidation_evidence_ref = att_rec["attestation_id"]
                 s_a.pre_revocation_baseline = transport.send_request(ControlledRequest(
                     url=f"http://127.0.0.1:{port}/api/v1/profile",
                     method="GET",

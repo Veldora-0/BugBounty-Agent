@@ -73,15 +73,16 @@ class PreMfaPrivilegeValidator:
         self,
         session_ctx: CorrelatedSessionContext,
         resource_target: ResourceAccessTarget,
-        fully_authenticated_response: Optional[ControlledResponse] = None,
-        full_session_ctx: Optional[CorrelatedSessionContext] = None,
+        fully_authenticated_response: Optional[ControlledResponse],
+        full_session_ctx: CorrelatedSessionContext,
     ) -> Optional[CorrelationFinding]:
         """
         Tests whether an intermediate pre-MFA session can access a protected resource.
         Dispatches probe and compares response with fully authenticated baseline.
         Actively eliminates 200 OK login/MFA challenge forms and public landing shells.
+        Strictly requires an explicit, distinct FULL_MFA comparison session.
         """
-        # 1. Require session_ctx to be explicitly in supported PRE_MFA state
+        # 1. Require candidate session_ctx to be explicitly in supported PRE_MFA state
         if not isinstance(session_ctx, CorrelatedSessionContext):
             return None
         if not isinstance(session_ctx.metadata, dict):
@@ -90,15 +91,18 @@ class PreMfaPrivilegeValidator:
         if mfa_level != "PRE_MFA":
             return None
 
-        # 2. Verify fully authenticated comparison session if provided
-        if full_session_ctx is not None:
-            if not isinstance(full_session_ctx, CorrelatedSessionContext):
-                return None
-            if not isinstance(full_session_ctx.metadata, dict):
-                return None
-            full_mfa = full_session_ctx.metadata.get("mfa_level")
-            if full_mfa != "FULL_MFA":
-                return None
+        # 2. Mandatory distinct FULL_MFA comparison session
+        if full_session_ctx is None:
+            return None
+        if not isinstance(full_session_ctx, CorrelatedSessionContext):
+            return None
+        if not isinstance(full_session_ctx.metadata, dict):
+            return None
+        full_mfa = full_session_ctx.metadata.get("mfa_level")
+        if full_mfa != "FULL_MFA":
+            return None
+        if session_ctx.session_ref == full_session_ctx.session_ref:
+            return None
 
         # 3. Establish appropriate fully authenticated baseline
         if fully_authenticated_response is None or not isinstance(fully_authenticated_response, ControlledResponse):
@@ -112,6 +116,12 @@ class PreMfaPrivilegeValidator:
         if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(
             fully_authenticated_response.status_code, fully_authenticated_response.body_text
         ):
+            return None
+        if AuthenticationFalsePositiveClassifier.is_waf_or_challenge_page(
+            fully_authenticated_response.status_code, fully_authenticated_response.body_text
+        ):
+            return None
+        if self.is_mfa_challenge_form(fully_authenticated_response):
             return None
 
         target_endpoint = getattr(resource_target, "endpoint", None) or getattr(resource_target, "url", "")

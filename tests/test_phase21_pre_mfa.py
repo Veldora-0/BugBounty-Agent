@@ -56,10 +56,16 @@ def test_pre_mfa_safe_denial_401_403():
         volatile_headers={"Authorization": "Bearer pre_mfa_tok"},
         metadata={"mfa_level": "PRE_MFA"},
     )
+    full_sess = CorrelatedSessionContext(
+        session_ref="sess_00000000000000000000000000000002",
+        principal_id="u2",
+        volatile_headers={"Authorization": "Bearer full_mfa_tok"},
+        metadata={"mfa_level": "FULL_MFA"},
+    )
     target = ResourceAccessTarget(resource_id="res_01", resource_type="PROFILE", endpoint="https://target.local/api/v1/profile")
     baseline = ControlledResponse(200, {}, b'{"user_id": "u1", "email": "alice@corp.local"}')
 
-    finding = validator.evaluate_pre_mfa_boundary(sess, target, baseline)
+    finding = validator.evaluate_pre_mfa_boundary(sess, target, baseline, full_session_ctx=full_sess)
     assert finding is None
 
 
@@ -73,10 +79,16 @@ def test_pre_mfa_challenge_form_filtered():
         volatile_headers={"Authorization": "Bearer pre_mfa_tok"},
         metadata={"mfa_level": "PRE_MFA"},
     )
+    full_sess = CorrelatedSessionContext(
+        session_ref="sess_00000000000000000000000000000002",
+        principal_id="u2",
+        volatile_headers={"Authorization": "Bearer full_mfa_tok"},
+        metadata={"mfa_level": "FULL_MFA"},
+    )
     target = ResourceAccessTarget(resource_id="res_01", resource_type="PROFILE", endpoint="https://target.local/api/v1/profile")
     baseline = ControlledResponse(200, {}, b'{"user_id": "u1", "email": "alice@corp.local"}')
 
-    finding = validator.evaluate_pre_mfa_boundary(sess, target, baseline)
+    finding = validator.evaluate_pre_mfa_boundary(sess, target, baseline, full_session_ctx=full_sess)
     assert finding is None
 
 
@@ -91,10 +103,16 @@ def test_pre_mfa_privilege_leak_detected():
         volatile_headers={"Authorization": "Bearer pre_mfa_tok"},
         metadata={"mfa_level": "PRE_MFA"},
     )
+    full_sess = CorrelatedSessionContext(
+        session_ref="sess_00000000000000000000000000000002",
+        principal_id="u2",
+        volatile_headers={"Authorization": "Bearer full_mfa_tok"},
+        metadata={"mfa_level": "FULL_MFA"},
+    )
     target = ResourceAccessTarget(resource_id="res_01", resource_type="PROFILE", endpoint="https://target.local/api/v1/profile")
     baseline = ControlledResponse(200, {"content-type": "application/json"}, protected_payload)
 
-    finding = validator.evaluate_pre_mfa_boundary(sess, target, baseline)
+    finding = validator.evaluate_pre_mfa_boundary(sess, target, baseline, full_session_ctx=full_sess)
     assert finding is not None
     assert finding.category == "PRE_MFA_PRIVILEGE_LEAK"
     assert finding.severity == "HIGH"
@@ -125,7 +143,7 @@ def test_pre_mfa_state_enforcement_matrix():
     valid_baseline = ControlledResponse(200, {"content-type": "application/json"}, protected_payload)
     target = ResourceAccessTarget(resource_id="res_01", resource_type="PROFILE", endpoint="https://target.local/api/v1/profile")
 
-    # 1. Explicit PRE_MFA: eligible and evaluated
+    # 1. Explicit PRE_MFA + distinct FULL_MFA: eligible and evaluated
     engine_ok = MockValidationEngine(ControlledResponse(200, {"content-type": "application/json"}, protected_payload))
     validator_ok = PreMfaPrivilegeValidator(validation_engine=engine_ok)
     sess_valid = CorrelatedSessionContext(
@@ -136,7 +154,7 @@ def test_pre_mfa_state_enforcement_matrix():
     )
     full_valid = CorrelatedSessionContext(
         session_ref="sess_00000000000000000000000000000002",
-        principal_id="u1",
+        principal_id="u2",
         volatile_headers={"Authorization": "Bearer full_mfa_token"},
         metadata={"mfa_level": "FULL_MFA"},
     )
@@ -144,37 +162,101 @@ def test_pre_mfa_state_enforcement_matrix():
     assert finding_ok is not None
     assert engine_ok.last_request is not None
 
-    # Negative Matrix: zero network dispatch for rejected states
+    # Negative Matrix: zero network dispatch for rejected states (all 15 specified cases)
+    login_shell = ControlledResponse(200, {"content-type": "text/html"}, b'<html><form action="/login"><input type="password" name="pwd"/></form></html>')
+    spa_shell = ControlledResponse(200, {"content-type": "text/html"}, b'<html><body>Loading App Shell...</body></html>')
+
     rejected_cases = [
-        # (session_meta, full_session_meta, baseline, description)
-        ({"mfa_level": "FULL_MFA"}, {"mfa_level": "FULL_MFA"}, valid_baseline, "Explicit FULL_MFA candidate session"),
-        ({}, {"mfa_level": "FULL_MFA"}, valid_baseline, "Missing MFA metadata on candidate"),
-        ({"mfa_level": "NONE"}, {"mfa_level": "FULL_MFA"}, valid_baseline, "mfa_level NONE on candidate"),
-        ({"mfa_level": "UNKNOWN"}, {"mfa_level": "FULL_MFA"}, valid_baseline, "mfa_level UNKNOWN on candidate"),
-        ({"mfa_level": 12345}, {"mfa_level": "FULL_MFA"}, valid_baseline, "Malformed integer mfa_level on candidate"),
-        ({"mfa_level": "PRE_MFA"}, {"mfa_level": "FULL_MFA"}, None, "Missing full-authentication baseline"),
-        ({"mfa_level": "PRE_MFA"}, {"mfa_level": "FULL_MFA"}, ControlledResponse(500, {}, b'Internal Server Error'), "500 baseline"),
-        ({"mfa_level": "PRE_MFA"}, {"mfa_level": "NONE"}, valid_baseline, "Comparison session mfa_level NONE"),
-        ({"mfa_level": "PRE_MFA"}, {}, valid_baseline, "Comparison session missing MFA metadata"),
+        # 2. Missing comparison session
+        (sess_valid, None, valid_baseline, "Missing comparison session (None)"),
+        # 3. Invalid comparison-session object
+        (sess_valid, "not_a_session_instance", valid_baseline, "Invalid comparison session type (string)"),
+        # 4. Missing comparison metadata
+        (sess_valid, CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="u2", metadata=None), valid_baseline, "None metadata on comparison session"),
+        # 5. NONE comparison state
+        (sess_valid, CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="u2", metadata={"mfa_level": "NONE"}), valid_baseline, "NONE comparison state"),
+        # 6. UNKNOWN comparison state
+        (sess_valid, CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="u2", metadata={"mfa_level": "UNKNOWN"}), valid_baseline, "UNKNOWN comparison state"),
+        # 7. PRE_MFA comparison state
+        (sess_valid, CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="u2", metadata={"mfa_level": "PRE_MFA"}), valid_baseline, "PRE_MFA comparison state"),
+        # 8. Malformed comparison state
+        (sess_valid, CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="u2", metadata={"mfa_level": 9999}), valid_baseline, "Malformed integer comparison state"),
+        # 9. Candidate FULL_MFA
+        (CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", metadata={"mfa_level": "FULL_MFA"}), full_valid, valid_baseline, "Candidate FULL_MFA state"),
+        # 10. Candidate missing MFA metadata
+        (CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", metadata={}), full_valid, valid_baseline, "Candidate missing MFA metadata"),
+        # 11a. Candidate NONE
+        (CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", metadata={"mfa_level": "NONE"}), full_valid, valid_baseline, "Candidate NONE state"),
+        # 11b. Candidate UNKNOWN
+        (CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", metadata={"mfa_level": "UNKNOWN"}), full_valid, valid_baseline, "Candidate UNKNOWN state"),
+        # 12. Missing baseline
+        (sess_valid, full_valid, None, "Missing baseline (None)"),
+        # 13a. Invalid baseline status 500
+        (sess_valid, full_valid, ControlledResponse(500, {}, b'Internal Server Error'), "HTTP 500 baseline"),
+        # 13b. Invalid baseline status 401
+        (sess_valid, full_valid, ControlledResponse(401, {}, b'Unauthorized'), "HTTP 401 baseline"),
+        # 14a. Login form baseline
+        (sess_valid, full_valid, login_shell, "Login form baseline shell"),
+        # 14b. SPA shell baseline
+        (sess_valid, full_valid, spa_shell, "Generic SPA landing shell baseline"),
+        # 15. Identical candidate and comparison sessions
+        (sess_valid, sess_valid, valid_baseline, "Identical candidate and comparison session references"),
     ]
 
-    for sess_meta, full_meta, baseline_resp, desc in rejected_cases:
+    for cand_s, comp_s, base_resp, desc in rejected_cases:
         mock_engine = MockValidationEngine(ControlledResponse(200, {"content-type": "application/json"}, protected_payload))
         val = PreMfaPrivilegeValidator(validation_engine=mock_engine)
-        c_sess = CorrelatedSessionContext(
-            session_ref="sess_00000000000000000000000000000001",
-            principal_id="u1",
-            volatile_headers={"Authorization": "Bearer cand_tok"},
-            metadata=sess_meta,
-        )
-        c_full = CorrelatedSessionContext(
-            session_ref="sess_00000000000000000000000000000002",
-            principal_id="u1",
-            volatile_headers={"Authorization": "Bearer full_tok"},
-            metadata=full_meta,
-        ) if full_meta is not None else None
 
-        finding = val.evaluate_pre_mfa_boundary(c_sess, target, baseline_resp, full_session_ctx=c_full)
-        assert finding is None, f"Expected None for {desc}, got finding"
-        assert mock_engine.last_request is None, f"Expected ZERO network dispatch for {desc}, but request was sent"
+        finding = val.evaluate_pre_mfa_boundary(cand_s, target, base_resp, full_session_ctx=comp_s)
+        assert finding is None, f"Expected None for '{desc}', got finding"
+        assert mock_engine.last_request is None, f"Expected ZERO network dispatch for '{desc}', but request was sent"
+
+
+def test_pre_mfa_orchestrator_zero_dispatch_when_session_missing(tmp_path):
+    """Verifies that AuthCorrelationEngine does not dispatch any pre-MFA probe when either session is missing."""
+    from framework.auth_correlation.engine import AuthCorrelationEngine
+    from framework.auth_correlation.model import CorrelatedPrincipalContext, CorrelationHypothesis
+
+    class CountingEngine:
+        def __init__(self):
+            self.dispatched_requests = []
+        def send_request(self, req):
+            self.dispatched_requests.append(req)
+            return ControlledResponse(200, {"content-type": "application/json"}, b'{"ok": true}')
+
+    transport = CountingEngine()
+    engine = AuthCorrelationEngine(
+        program_id="test_mfa_orch",
+        workspace_root=str(tmp_path),
+        validation_engine=transport,
+    )
+
+    # Register only ONE principal and session
+    p1 = CorrelatedPrincipalContext(principal_id="u1", role="USER")
+    s1 = CorrelatedSessionContext(
+        session_ref="sess_00000000000000000000000000000001",
+        principal_id="u1",
+        metadata={"mfa_level": "PRE_MFA"},
+    )
+    engine.register_principal(p1)
+    engine.register_session(s1)
+
+    hyp = CorrelationHypothesis(
+        hypothesis_id="HYP-MFA-01",
+        category="PRE_MFA_PRIVILEGE",
+        target_endpoint="/api/v1/profile",
+        principal_a_id="u1",
+        principal_b_id="u2",  # Missing principal/session!
+        expected_result="ACCESS_ALLOWED",
+    )
+    engine.hypotheses = [hyp]
+
+    res = engine.run_correlation(
+        target_asset="https://target.local",
+        workflow_filter=["pre_mfa"],
+    )
+
+    assert hyp.validation_status in ("INCONCLUSIVE", "SESSION_HEALTH_FAILED")
+    # Zero network probes dispatched!
+    assert len(transport.dispatched_requests) == 0
 

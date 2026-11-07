@@ -16,6 +16,7 @@ from framework.auth_correlation.model import (
     SerializationSecurityError,
     StateSecurityValidationError,
     EvidencePersistenceError,
+    AttestationSecurityError,
 )
 from framework.auth_correlation.cvss import (
     AttackVector,
@@ -34,6 +35,9 @@ from framework.auth_correlation.preflight import (
 from framework.auth_correlation.revocation import (
     PostRevocationResourceValidator,
     ApprovalSecurityError,
+    get_or_create_attestation_key,
+    create_controlled_invalidation_attestation,
+    create_operator_invalidation_attestation,
 )
 from framework.auth_correlation.pre_mfa import (
     PreMfaPrivilegeValidator,
@@ -66,6 +70,7 @@ __all__ = [
     "SerializationSecurityError",
     "StateSecurityValidationError",
     "EvidencePersistenceError",
+    "AttestationSecurityError",
     "AttackVector",
     "AttackComplexity",
     "PrivilegesRequired",
@@ -78,6 +83,9 @@ __all__ = [
     "DualControlPreflightValidator",
     "PostRevocationResourceValidator",
     "ApprovalSecurityError",
+    "get_or_create_attestation_key",
+    "create_controlled_invalidation_attestation",
+    "create_operator_invalidation_attestation",
     "PreMfaPrivilegeValidator",
     "MultiTenantDesyncValidator",
     "AuthCorrelationStateManager",

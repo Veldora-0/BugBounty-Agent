@@ -494,7 +494,15 @@ class AuthCorrelationEngine:
                 if hyp.category == "PRE_MFA_PRIVILEGE":
                     sess_pre = self.find_session_for_principal(hyp.principal_a_id)
                     sess_full = self.find_session_for_principal(hyp.principal_b_id)
-                    if sess_pre and getattr(sess_pre, "is_pre_mfa", False):
+                    if (
+                        sess_pre is not None
+                        and sess_full is not None
+                        and isinstance(getattr(sess_pre, "metadata", None), dict)
+                        and isinstance(getattr(sess_full, "metadata", None), dict)
+                        and sess_pre.metadata.get("mfa_level") == "PRE_MFA"
+                        and sess_full.metadata.get("mfa_level") == "FULL_MFA"
+                        and sess_pre.session_ref != sess_full.session_ref
+                    ):
                         full_url, err = self._build_and_validate_target_url(hyp.target_endpoint, eff_target)
                         if err or not full_url:
                             hyp.validation_status = "FAILED"
@@ -505,22 +513,26 @@ class AuthCorrelationEngine:
                             endpoint=full_url,
                         )
                         baseline = None
-                        if sess_full and getattr(sess_full, "metadata", {}).get("mfa_level") == "FULL_MFA":
-                            try:
-                                base_req = ControlledRequest(
-                                    url=full_url,
-                                    method="GET",
-                                    headers=dict(sess_full.volatile_headers),
-                                )
-                                baseline = self.validation_engine.send_request(base_req)
-                            except Exception:
-                                baseline = None
+                        try:
+                            base_req = ControlledRequest(
+                                url=full_url,
+                                method="GET",
+                                headers=dict(sess_full.volatile_headers),
+                            )
+                            baseline = self.validation_engine.send_request(base_req)
+                        except Exception:
+                            baseline = None
+
                         finding = self.pre_mfa_validator.evaluate_pre_mfa_boundary(
                             sess_pre, target, baseline, full_session_ctx=sess_full
                         )
                         if finding:
                             self.findings.append(finding)
                             hyp.validation_status = "VALIDATED"
+                        else:
+                            hyp.validation_status = "INCONCLUSIVE"
+                    else:
+                        hyp.validation_status = "INCONCLUSIVE"
 
         # Step 8: Multi-tenant testing
         if "tenant" in allowed_workflows:
