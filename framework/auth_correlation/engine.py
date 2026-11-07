@@ -505,7 +505,7 @@ class AuthCorrelationEngine:
                             endpoint=full_url,
                         )
                         baseline = None
-                        if sess_full and not getattr(sess_full, "is_pre_mfa", False):
+                        if sess_full and getattr(sess_full, "metadata", {}).get("mfa_level") == "FULL_MFA":
                             try:
                                 base_req = ControlledRequest(
                                     url=full_url,
@@ -515,7 +515,9 @@ class AuthCorrelationEngine:
                                 baseline = self.validation_engine.send_request(base_req)
                             except Exception:
                                 baseline = None
-                        finding = self.pre_mfa_validator.evaluate_pre_mfa_boundary(sess_pre, target, baseline)
+                        finding = self.pre_mfa_validator.evaluate_pre_mfa_boundary(
+                            sess_pre, target, baseline, full_session_ctx=sess_full
+                        )
                         if finding:
                             self.findings.append(finding)
                             hyp.validation_status = "VALIDATED"

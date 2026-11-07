@@ -40,6 +40,8 @@ from framework.auth_correlation.model import (
     SerializationSecurityError,
     EvidencePersistenceError,
     EVIDENCE_REF_PATTERN,
+    SESSION_REF_PATTERN,
+    SAFE_IDENTIFIER_PATTERN,
 )
 from framework.auth_correlation.state import (
     _enforce_windows_directory_dacl,
@@ -72,6 +74,15 @@ CANONICAL_ACTION_FIELDS: List[str] = [
 
 ALLOWED_MUTATION_METHODS: Set[str] = {"POST", "PUT", "DELETE"}
 ALLOWED_ACTION_TYPES: Set[str] = {"LOGOUT", "ACTION-LOGOUT", "TOKEN_REVOCATION", "PASSWORD_CHANGE"}
+
+GENUINE_INVALIDATION_EVENTS: Set[str] = {
+    "SESSION_REVOCATION",
+    "LOGOUT",
+    "SESSION_INVALIDATION",
+    "PASSWORD_CHANGE",
+    "TOKEN_REVOCATION",
+    "ADMIN_SESSION_TERMINATION",
+}
 
 
 class CrossProcessFileLock:
@@ -384,7 +395,12 @@ class PostRevocationResourceValidator:
     ):
         self._engine = validation_engine
         self._program_dir = program_dir or "."
-        self._program_id = program_id or (os.path.basename(self._program_dir.rstrip("/\\")) if self._program_dir != "." else None)
+        if program_id:
+            self._program_id = program_id
+        elif program_dir and program_dir != ".":
+            self._program_id = os.path.basename(program_dir.rstrip("/\\")) or "default-program"
+        else:
+            self._program_id = "default-program"
         self._state_dir = state_dir or os.path.join(self._program_dir, "state")
         self._scope_engine = scope_engine
         self._approval_key = approval_key
@@ -462,12 +478,14 @@ class PostRevocationResourceValidator:
         program_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
-        Strictly verifies that an invalidation evidence reference:
-        1. Is a non-empty string adhering to EVIDENCE_REF_PATTERN ('EVID-[0-9a-fA-F]{12}').
+        Strictly verifies invalidation evidence provenance:
+        1. Reference matches EVIDENCE_REF_PATTERN ('EVID-[0-9A-F]{12}').
         2. Resolves against the configured EvidenceStore.
-        3. Represents a verified invalidation event (SESSION_REVOCATION, LOGOUT, PASSWORD_CHANGE, etc.).
-        4. Matches the session_ref and principal_id if present in metadata.
-        5. Matches the program context if present in metadata.
+        3. Structural descriptor validation: evidence_id, filename, sha256, metadata exist.
+        4. Capture file exists on disk and its SHA-256 matches both the descriptor and evidence identifier.
+        5. Evidence is NOT a Mode A observation artifact (rejects category SESSION_NOT_INVALIDATED, mode MODE_A, etc.).
+        6. Explicit event_type field exists and belongs strictly to GENUINE_INVALIDATION_EVENTS (no fallback to hypothesis_category or finding category).
+        7. Exact attribution matches across session_ref, principal_id, and program_id (missing attribution fails closed).
         Returns (is_valid, reason, evidence_record).
         """
         if not invalidation_evidence_ref or not isinstance(invalidation_evidence_ref, str):
@@ -491,35 +509,97 @@ class PostRevocationResourceValidator:
         if evidence_record is None or not isinstance(evidence_record, dict):
             return False, f"Invalidation evidence '{clean_ref}' does not exist in EvidenceStore", None
 
-        meta = evidence_record.get("metadata", {})
-        if not isinstance(meta, dict):
-            meta = {}
+        # 1. Structural validity of descriptor
+        for req_field in ("evidence_id", "filename", "sha256", "metadata"):
+            if req_field not in evidence_record:
+                return False, f"Evidence descriptor is missing required structural field '{req_field}'", None
 
-        # Event type check: Must represent an invalidation event
-        event_type = meta.get("event_type") or meta.get("action_type") or meta.get("hypothesis_category")
-        allowed_invalidation_events = {
-            "SESSION_REVOCATION", "LOGOUT", "REVOCATION", "SESSION_INVALIDATION",
-            "ACTION-LOGOUT", "ACTION-PASSWORD-CHANGE", "PASSWORD_CHANGE",
-            "REVOCATION_ENFORCEMENT", "controlled_invalidation",
-        }
-        if not event_type or str(event_type) not in allowed_invalidation_events:
+        stored_ev_id = evidence_record.get("evidence_id")
+        if stored_ev_id != clean_ref:
+            return False, f"Descriptor evidence_id '{stored_ev_id}' does not match reference '{clean_ref}'", None
+
+        stored_sha256 = evidence_record.get("sha256")
+        if not isinstance(stored_sha256, str) or len(stored_sha256) != 64 or not all(c in "0123456789abcdefABCDEF" for c in stored_sha256):
+            return False, "Evidence descriptor contains invalid or malformed sha256 digest", None
+
+        expected_id_from_hash = f"EVID-{stored_sha256[:12].upper()}"
+        if expected_id_from_hash != clean_ref:
+            return False, f"Evidence identifier '{clean_ref}' does not match stored sha256 prefix '{expected_id_from_hash}'", None
+
+        capture_filename = evidence_record.get("filename")
+        if not isinstance(capture_filename, str) or not capture_filename.strip():
+            return False, "Evidence descriptor missing valid capture filename", None
+
+        if os.path.basename(capture_filename) != capture_filename or "/" in capture_filename or "\\" in capture_filename or ".." in capture_filename:
+            return False, "Evidence descriptor filename contains invalid path separators or directory traversal", None
+
+        if not capture_filename.endswith(".txt"):
+            return False, "Evidence capture file format is unsupported (must be .txt)", None
+
+        # 2. Associated capture file existence and SHA-256 integrity check
+        ev_dir = getattr(self._evidence_store, "evidence_dir", None)
+        if not ev_dir or not os.path.isdir(ev_dir):
+            return False, "EvidenceStore directory is missing or inaccessible", None
+
+        capture_path = os.path.join(ev_dir, capture_filename)
+        if not os.path.exists(capture_path):
+            return False, f"Associated capture file '{capture_filename}' is missing from EvidenceStore", None
+
+        if not os.path.isfile(capture_path) or os.path.islink(capture_path):
+            return False, f"Associated capture path '{capture_filename}' is not a regular file", None
+
+        try:
+            with open(capture_path, "rb") as cf:
+                capture_bytes = cf.read()
+            actual_digest = hashlib.sha256(capture_bytes).hexdigest()
+            if actual_digest.lower() != stored_sha256.lower():
+                return False, f"Evidence capture content has been altered or corrupted (digest mismatch: {actual_digest} != {stored_sha256})", None
+        except Exception as e:
+            return False, f"Failed to read and verify evidence capture file: {e}", None
+
+        meta = evidence_record.get("metadata")
+        if not isinstance(meta, dict):
+            return False, "Evidence metadata is missing or malformed (must be a dictionary)", None
+
+        # 3. Reject Mode A observation artifacts reused as invalidation evidence
+        if (
+            meta.get("mode") == "MODE_A"
+            or meta.get("observation_mode") == "MODE_A"
+            or meta.get("category") == "SESSION_NOT_INVALIDATED"
+            or meta.get("finding_category") == "SESSION_NOT_INVALIDATED"
+            or "invalidation_evidence_ref" in meta
+        ):
+            return False, f"Evidence '{clean_ref}' represents a Mode A observation artifact, not a genuine invalidation event", None
+
+        # 4. Explicit event_type requirement (strictly genuine invalidation events; NO fallback)
+        event_type = meta.get("event_type")
+        if not event_type or not isinstance(event_type, str):
+            return False, "Evidence metadata missing required 'event_type' field", None
+
+        if event_type not in GENUINE_INVALIDATION_EVENTS:
             return False, f"Evidence '{clean_ref}' does not represent a recognized invalidation event (event_type: '{event_type}')", None
 
-        # Attribution check: session_ref (if present in metadata)
+        # 5. Mandatory attribution: session_ref, principal_id, program_id
         stored_session = meta.get("session_ref")
-        if stored_session and str(stored_session) != session_ctx.session_ref:
-            return False, f"Evidence '{clean_ref}' belongs to session '{stored_session}', not '{session_ctx.session_ref}'", None
+        if not stored_session or not isinstance(stored_session, str) or not SESSION_REF_PATTERN.match(stored_session):
+            return False, "Evidence metadata missing valid 'session_ref' attribution", None
+        if stored_session != session_ctx.session_ref:
+            return False, f"Evidence attribution mismatch: session_ref '{stored_session}' does not match context session '{session_ctx.session_ref}'", None
 
-        # Attribution check: principal_id (if present in metadata)
         stored_principal = meta.get("principal_id")
-        if stored_principal and str(stored_principal) != session_ctx.principal_id:
-            return False, f"Evidence '{clean_ref}' belongs to principal '{stored_principal}', not '{session_ctx.principal_id}'", None
+        if not stored_principal or not isinstance(stored_principal, str) or not SAFE_IDENTIFIER_PATTERN.match(stored_principal):
+            return False, "Evidence metadata missing valid 'principal_id' attribution", None
+        if stored_principal != session_ctx.principal_id:
+            return False, f"Evidence attribution mismatch: principal_id '{stored_principal}' does not match context principal '{session_ctx.principal_id}'", None
 
-        # Context check: program_id (if present in metadata)
-        target_prog = program_id or getattr(self, "_program_id", None)
         stored_program = meta.get("program_id")
-        if stored_program and target_prog and stored_program != target_prog and stored_program != "." and target_prog != ".":
-            return False, f"Evidence '{clean_ref}' belongs to program '{stored_program}', not '{target_prog}'", None
+        if not stored_program or not isinstance(stored_program, str) or not SAFE_IDENTIFIER_PATTERN.match(stored_program):
+            return False, "Evidence metadata missing valid 'program_id' attribution", None
+        target_prog = program_id or getattr(self, "_program_id", None)
+        if not target_prog or not isinstance(target_prog, str):
+            return False, "Target program context is missing or unconfigured for provenance verification", None
+        if stored_program != target_prog:
+            return False, f"Evidence attribution mismatch: program_id '{stored_program}' does not match target program '{target_prog}'", None
 
         return True, "Invalidation evidence provenance verified", evidence_record
 

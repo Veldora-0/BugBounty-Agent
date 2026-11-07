@@ -73,19 +73,37 @@ class PreMfaPrivilegeValidator:
         self,
         session_ctx: CorrelatedSessionContext,
         resource_target: ResourceAccessTarget,
-        fully_authenticated_response: ControlledResponse,
+        fully_authenticated_response: Optional[ControlledResponse] = None,
+        full_session_ctx: Optional[CorrelatedSessionContext] = None,
     ) -> Optional[CorrelationFinding]:
         """
         Tests whether an intermediate pre-MFA session can access a protected resource.
         Dispatches probe and compares response with fully authenticated baseline.
         Actively eliminates 200 OK login/MFA challenge forms and public landing shells.
         """
-        # 1. Establish that session is in a pre-MFA state
-        if session_ctx.metadata.get("mfa_level") == "FULL_MFA":
-            return None  # Ordinary fully authenticated session; cannot test pre-MFA leak
+        # 1. Require session_ctx to be explicitly in supported PRE_MFA state
+        if not isinstance(session_ctx, CorrelatedSessionContext):
+            return None
+        if not isinstance(session_ctx.metadata, dict):
+            return None
+        mfa_level = session_ctx.metadata.get("mfa_level")
+        if mfa_level != "PRE_MFA":
+            return None
 
-        # 2. Establish appropriate fully authenticated baseline
-        if fully_authenticated_response is None or fully_authenticated_response.status_code != 200:
+        # 2. Verify fully authenticated comparison session if provided
+        if full_session_ctx is not None:
+            if not isinstance(full_session_ctx, CorrelatedSessionContext):
+                return None
+            if not isinstance(full_session_ctx.metadata, dict):
+                return None
+            full_mfa = full_session_ctx.metadata.get("mfa_level")
+            if full_mfa != "FULL_MFA":
+                return None
+
+        # 3. Establish appropriate fully authenticated baseline
+        if fully_authenticated_response is None or not isinstance(fully_authenticated_response, ControlledResponse):
+            return None
+        if fully_authenticated_response.status_code != 200:
             return None
         if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(
             fully_authenticated_response.status_code, fully_authenticated_response.body_text
@@ -97,7 +115,10 @@ class PreMfaPrivilegeValidator:
             return None
 
         target_endpoint = getattr(resource_target, "endpoint", None) or getattr(resource_target, "url", "")
-        method = getattr(resource_target, "method", "GET")
+        if not target_endpoint or not isinstance(target_endpoint, str):
+            return None
+
+        method = (getattr(resource_target, "method", "GET") or "GET").upper()
 
         req = ControlledRequest(
             url=target_endpoint,

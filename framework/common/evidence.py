@@ -119,7 +119,12 @@ class EvidenceStore:
                         with open(meta_path, "r", encoding="utf-8") as f:
                             meta = json.load(f)
                         if isinstance(meta, dict) and meta.get("evidence_id") == target_id:
-                            return meta
+                            meta_copy = dict(meta)
+                            meta_copy["meta_path"] = meta_path
+                            filename = meta_copy.get("filename")
+                            if filename and isinstance(filename, str):
+                                meta_copy["capture_path"] = os.path.join(self.evidence_dir, os.path.basename(filename))
+                            return meta_copy
                     except Exception:
                         continue
         except Exception:

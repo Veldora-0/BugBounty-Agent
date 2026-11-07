@@ -167,10 +167,12 @@ def main() -> int:
                     method="GET",
                     headers={"Authorization": "Bearer valid_token_a"},
                 ))
+            s_b_meta = {"mfa_level": "FULL_MFA"} if args.pre_mfa else {}
             s_b = CorrelatedSessionContext(
                 session_ref="sess_00000000000000000000000000000002",
                 principal_id="lab_usr_b",
                 volatile_headers={"Authorization": "Bearer valid_token_b"},
+                metadata=s_b_meta,
             )
             engine.register_session(s_a)
             engine.register_session(s_b)
