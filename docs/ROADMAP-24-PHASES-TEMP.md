@@ -2,7 +2,7 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Current Repository Baseline:** `3107fe92757ce9bfd71dd9fcc00cbfccacedfce3` (Phase 21 implemented and verified across Stages 1–5; pre-Phase 21 baseline: `45b4edb1210ac02144b26d1226d104d9f1d15042`; historical Phase 1–20 baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`; Stage C baseline: `1841280b2f71b103b0e9217b961f1d859bd94272`; starting baseline: `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae`)
+> **Current Repository Baseline:** `46610a3` (Phase 21 final security closure and regression verification completed; baseline starting HEAD: `f4f5954d6b81d0e2c01bb59dd6077b25720ae7b8`; pre-Phase 21 baseline: `45b4edb1210ac02144b26d1226d104d9f1d15042`)
 > **Current phase:** Phase 21 — Authentication & Authorization Correlation (Complete; Next Phase: Phase 22 — Cross-Engine Attack-Path Correlation — PLANNED)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
@@ -97,13 +97,17 @@ Phase 19 (Infrastructure & Configuration Exposure) was completed and accepted.
 ### Phase 21 Acceptance & Verification Record
 Phase 21 (Authentication & Authorization Correlation) was completed and accepted across all 5 implementation stages with comprehensive post-implementation security corrections and cross-platform verification.
 - **Test execution results reported by environments**:
-  - Windows 11 (Python 3.14.7): 61 passed, 1 skipped in targeted Phase 21 suite (`tests/test_phase21_*.py`) in 6.75s; 1001 passed, 3 skipped in full regression suite (154.04s).
-  - Kali Linux (Python 3.14.8): 61 passed, 1 skipped in targeted Phase 21 suite in 4.83s; 1003 passed, 1 skipped in full regression suite (123.73s).
-  - Firefox SPA Integration on Kali: 1 passed in 9.62s (`test_real_browser_firefox_local_spa_integration`).
-  - System Diagnostics (`bb-doctor` Category 26): `[HEALTHY]` (status HEALTHY, 6 scenarios verified across all 26 diagnostic categories).
+  - Windows 11 (Python 3.14.7): 65 passed, 1 skipped in targeted Phase 21 suite (`tests/test_phase21_*.py`) in 7.38s; 1005 passed, 3 skipped in full regression suite (153.18s).
+  - Kali Linux (Python 3.14.8): 65 passed, 1 skipped in targeted Phase 21 suite in 6.67s; 1007 passed, 1 skipped in full regression suite (135.30s).
+  - Firefox SPA Integration on Kali: 1 passed in 79.27s (`test_real_browser_firefox_local_spa_integration`).
+  - System Diagnostics (`bb-doctor` Category 26): `[HEALTHY]` (status HEALTHY, 6 scenarios verified across all 26 diagnostic categories; 44 security tools registered).
 - **Review and acceptance status**:
   - Delivered `framework/auth_correlation/` with 9 core modules: `model.py` (strict allowlists, safe string/repr representations masking credentials/secrets), `cvss.py` (FIRST CVSS 3.1 metric equations), `preflight.py` (`DualControlPreflightValidator`), `revocation.py` (`PostRevocationResourceValidator`), `pre_mfa.py` (`PreMfaPrivilegeValidator`), `tenant.py` (`MultiTenantDesyncValidator`), `engine.py` (`AuthCorrelationEngine`), `state.py` (`AuthCorrelationStateManager`), and `lab.py` (`SimulationTransport`, `LocalAuthCorrelationLab`).
   - Added CLI tool `scripts/bb-auth-correlate` (`scripts/bb-auth-correlate.cmd`), Category 26 in `framework/tools/doctor.py`, and OpenCode V2 permissions in `opencode.jsonc`.
+  - Mode A revocation orchestration directly wired into `engine.py` execution; strictly observation-only (read-only GET/HEAD) with mandatory baseline and attributable invalidation evidence checks.
+  - Conservative revocation response classification (`classify_revocation_response`): explicit 401 $\to$ `REVOKED`/`EXPIRED`, generic 401 $\to$ `AUTHENTICATION_FAILED`, 403 $\to$ `AUTHORIZATION_DENIED` (no finding emitted), login redirect $\to$ `REDIRECT_LOGIN`, WAF/shells $\to$ `INCONCLUSIVE`, baseline match $\ge 0.50 \to$ `SESSION_NOT_INVALIDATED`.
+  - Candidate discovery contract: candidates derived strictly from registered `resource_targets`, `resource_endpoints`, or explicit `target_asset` path; empty discovery returns `[]` without inventing fabricated application routes; candidate URLs validated against origin substitution and `ScopeEngine`.
+  - Truthful evidence persistence: strictly saves captures via `EvidenceStore.save_http_capture()`; if `evidence_store is None`, `evidence_chain = []` and notes `[EVIDENCE_NOT_PERSISTED]` in finding descriptions; never swallows persistence exceptions (raises `EvidencePersistenceError`).
   - Enforced atomic descriptor-based state writes (`os.fdopen`), symlink/reparse point rejection, POSIX private permission enforcement (`0o700` dirs / `0o600` files), hard-link checks (`st_nlink == 1`), Windows Win32 `advapi32` DACL validation (`SE_DACL_PROTECTED` 0x1000), and strict JSON schema checking.
   - Enforced loopback transport confinement: `SimulationTransport` communicates strictly with numeric `127.0.0.1:<active_lab_port>`.
   - Mode B approval with HMAC-SHA256 operator authorization signature (`SIG-<64-hex>`) separated from action integrity (`ACT-<64-hex>`); durable cross-process single-use enforcement (`CrossProcessFileLock`).
