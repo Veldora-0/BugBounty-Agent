@@ -502,7 +502,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 
 ### 3. Environment & Runtime Status
 * **Development & Evaluation Environments**: Validated and synchronized across Windows 11 x86_64 and Kali/Debian Linux workstations with Python 3.10+.
-* **Cross-Platform Test Coverage**: 55 test modules with 1004 tests collected under pytest (1001 passed, 3 skipped on Windows 11; 1003 passed, 1 skipped on Kali Linux; 0 failures).
+* **Cross-Platform Test Coverage**: 56 test modules with 1015 tests collected under pytest (1012 passed, 3 skipped on Windows 11; 1014 passed, 1 skipped on Kali Linux; 0 failures).
 * **Target Runtime**: Kali/Debian Linux with OpenCode installed, deploying `Bug-Bounty` globally via `bb-deploy`.
 
 ---

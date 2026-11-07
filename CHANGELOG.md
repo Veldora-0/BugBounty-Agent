@@ -17,10 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Equivalent response elimination: authenticated responses equivalent to anonymous control (SequenceMatcher similarity ratio $> 0.70$ or identical body text) fail closed to `UNKNOWN`.
   * Strict false-positive elimination: generic SPA shells, WAF challenges, login challenge forms, and empty bodies are classified as `UNKNOWN` or `AUTHENTICATION_FAILED`.
   * Synchronized `validate_single_session()` with identical differential comparison rules.
-* **Evidence Provenance Verification** (`framework/auth_correlation/revocation.py`, `framework/common/evidence.py`):
-  * Implemented `verify_invalidation_provenance()`: resolves caller-supplied evidence references (`EVID-...`) against `EvidenceStore.get_evidence()`, verifying recognized invalidation event types (`SESSION_REVOCATION`, `LOGOUT`, `PASSWORD_CHANGE`, `controlled_invalidation`), session attribution (`session_ref`), principal attribution (`principal_id`), and program attribution (`program_id`).
-  * Missing, malformed, foreign, or unverifiable references fail closed returning `(False, reason, None)`.
-  * Added `EvidenceStore.get_evidence()` to retrieve and parse stored evidence records (`*.meta.json`) by evidence ID.
+* **Evidence Provenance Verification & Capture Integrity** (`framework/auth_correlation/revocation.py`, `framework/common/evidence.py`):
+  * Hardened `verify_invalidation_provenance()`: resolves caller-supplied evidence references (`EVID-...`) against `EvidenceStore.get_evidence()`, verifying descriptor structural schema (`evidence_id`, `filename`, `sha256`, `metadata`), 64-hex SHA-256 format, and `EVID-<12-hex>` prefix match.
+  * Verifies presence and regular file status of capture files (`*.txt`), enforcing basename validation and preventing directory traversal.
+  * Recomputes SHA-256 digest of on-disk capture bytes, ensuring capture content has not been tampered with or corrupted.
+  * Rejects Mode A observation artifacts (`mode: "MODE_A"`, `category: "SESSION_NOT_INVALIDATED"`) reused as invalidation evidence.
+  * Strictly requires explicit `event_type` from `GENUINE_INVALIDATION_EVENTS` (`SESSION_REVOCATION`, `LOGOUT`, `SESSION_INVALIDATION`, `PASSWORD_CHANGE`, `TOKEN_REVOCATION`, `ADMIN_SESSION_TERMINATION`) without fallback to `hypothesis_category` or `REVOCATION_ENFORCEMENT`.
+  * Enforces mandatory, exact attribution matching across `session_ref`, `principal_id`, and `program_id`. Missing or foreign attribution fails closed.
+  * Added `EvidenceStore.get_evidence()` returning `meta_copy` with resolved `meta_path` and `capture_path`.
+* **Pre-MFA State Enforcement & Zero-Dispatch Boundary** (`framework/auth_correlation/pre_mfa.py`):
+  * PreMfaPrivilegeValidator independently requires `session_ctx.metadata["mfa_level"] == "PRE_MFA"`.
+  * Validates comparison session `full_session_ctx.metadata["mfa_level"] == "FULL_MFA"`.
+  * Preflight verification strictly validates fully authenticated baseline is 200 OK and not a login/landing shell.
+  * Rejects candidate sessions with missing, ambiguous, `NONE`, `UNKNOWN`, or malformed MFA metadata prior to probe dispatch, guaranteeing zero network traffic.
+  * Exhaustive state enforcement matrix test verifies `engine.last_request is None` across all rejected states.
 * **Mode A Scope Authorization at Dispatch** (`framework/auth_correlation/revocation.py`):
   * Enforced read-only `GET`/`HEAD` methods strictly.
   * Immediate `ScopeEngine.is_in_scope()` evaluation at dispatch boundary; live requests fail closed returning `("INCONCLUSIVE", None)` if `scope_engine` is absent or throws during evaluation.
