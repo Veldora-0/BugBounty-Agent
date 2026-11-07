@@ -24,6 +24,7 @@ from framework.auth_correlation.state import AuthCorrelationStateManager
 from framework.auth_correlation.lab import LocalAuthCorrelationLab, SecurityBoundaryViolationError
 from framework.auth_correlation.model import CorrelatedPrincipalContext, CorrelatedSessionContext, CorrelationLifecycle
 from framework.auth_correlation.revocation import ApprovalSecurityError, sign_action_approval
+from framework.validation.request import ControlledRequest, ControlledResponse
 
 
 def main() -> int:
@@ -112,11 +113,23 @@ def main() -> int:
                 ),
                 target_asset=f"http://127.0.0.1:{port}",
             )
-            # Register lab scenario principals
+            # Register lab scenario principals and explicit lab resource targets
             p_a = CorrelatedPrincipalContext(principal_id="lab_usr_a", tenant_id="tenant_a", role="USER")
             p_b = CorrelatedPrincipalContext(principal_id="lab_usr_b", tenant_id="tenant_b", role="USER")
             engine.register_principal(p_a)
             engine.register_principal(p_b)
+
+            from framework.authz.model import ResourceAccessTarget
+            engine.register_resource_target(ResourceAccessTarget(
+                resource_id="lab_invoices",
+                resource_type="INVOICE",
+                endpoint=f"http://127.0.0.1:{port}/api/v1/tenant/invoices",
+            ))
+            engine.register_resource_target(ResourceAccessTarget(
+                resource_id="lab_profile",
+                resource_type="PROFILE",
+                endpoint=f"http://127.0.0.1:{port}/api/v1/profile",
+            ))
 
             s_a_meta = {"mfa_level": "PRE_MFA"} if args.pre_mfa else {}
             s_a = CorrelatedSessionContext(
@@ -125,6 +138,18 @@ def main() -> int:
                 volatile_headers={"Authorization": "Bearer valid_token_a"},
                 metadata=s_a_meta,
             )
+            if args.revocation:
+                engine.register_resource_target(ResourceAccessTarget(
+                    resource_id="lab_revoked_inv",
+                    resource_type="INVOICE",
+                    endpoint=f"http://127.0.0.1:{port}/scen02/invoices/101",
+                ))
+                s_a.invalidation_evidence_ref = "EVID-0123456789ab"
+                s_a.pre_revocation_baseline = transport.send_request(ControlledRequest(
+                    url=f"http://127.0.0.1:{port}/api/v1/profile",
+                    method="GET",
+                    headers={"Authorization": "Bearer valid_token_a"},
+                ))
             s_b = CorrelatedSessionContext(
                 session_ref="sess_00000000000000000000000000000002",
                 principal_id="lab_usr_b",

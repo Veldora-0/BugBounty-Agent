@@ -26,6 +26,7 @@ from framework.auth_correlation.cvss import (
 from framework.auth_correlation.model import (
     CorrelatedSessionContext,
     CorrelationFinding,
+    EvidencePersistenceError,
 )
 from framework.authentication.validators import AuthenticationFalsePositiveClassifier
 from framework.authz.model import ResourceAccessTarget
@@ -184,13 +185,12 @@ class MultiTenantDesyncValidator:
 
             clean_req = f"{method} {request_url}\nChannel: {channel_name}\nDirection: {tenant_label}\nHeaders: [REDACTED]"
             clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
-            ev_hash = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()[:12]
-            evidence_ref = f"EVID-{ev_hash}"
-            evidence_chain = [evidence_ref]
+            content_digest = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()
 
+            evidence_chain: List[str] = []
             if self._evidence_store is not None:
                 try:
-                    self._evidence_store.save_http_capture(
+                    evid_meta = self._evidence_store.save_http_capture(
                         request_text=clean_req,
                         response_text=clean_res,
                         metadata={
@@ -201,12 +201,17 @@ class MultiTenantDesyncValidator:
                         },
                         prefix=f"tenant_{channel_name.lower()}",
                     )
-                except Exception:
-                    pass
+                    persisted_id = evid_meta.get("evidence_id")
+                    if not persisted_id:
+                        persisted_id = f"EVID-{evid_meta.get('sha256', content_digest)[:12]}"
+                    evidence_chain = [persisted_id]
+                except Exception as e:
+                    raise EvidencePersistenceError(f"Failed to persist cross-tenant evidence: {e}")
 
             ep_hash = hashlib.sha256(f"{tenant_label}_{channel_name}_{request_url}".encode("utf-8")).hexdigest()[:10].upper()
             finding_id = f"FIND-TENANT-{ep_hash}"
             endpoint_path = request_url if request_url.startswith("/") else "/" + request_url.split("/", 3)[-1]
+            desc_prefix = "" if self._evidence_store is not None else "[EVIDENCE_NOT_PERSISTED] "
             return CorrelationFinding(
                 finding_id=finding_id,
                 title=f"Cross-Tenant Boundary Bypass ({channel_name} Channel: {tenant_label})",
@@ -216,7 +221,7 @@ class MultiTenantDesyncValidator:
                 cvss_vector=vector,
                 confidence=0.95,
                 endpoint=endpoint_path,
-                description=f"Cross-tenant access achieved via {channel_name} substitution ({tenant_label}) without valid tenant authorization. Cache state: {cache_state}. {cache_busted_evidence}. Content match ratio: {ratio:.2f}.",
+                description=f"{desc_prefix}Cross-tenant access achieved via {channel_name} substitution ({tenant_label}) without valid tenant authorization. Cache state: {cache_state}. {cache_busted_evidence}. Content match ratio: {ratio:.2f}.",
                 evidence_chain=evidence_chain,
             )
 

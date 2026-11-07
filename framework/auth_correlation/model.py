@@ -30,6 +30,11 @@ class StateSecurityValidationError(Exception):
     pass
 
 
+class EvidencePersistenceError(Exception):
+    """Raised when saving an evidence artifact to the EvidenceStore fails."""
+    pass
+
+
 class CorrelationLifecycle(str, Enum):
     """Lifecycle stages for sessions and correlation hypotheses."""
     CREATED = "CREATED"
@@ -57,7 +62,7 @@ class ProbeStatus(str, Enum):
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.]{1,64}$")
 SESSION_REF_PATTERN = re.compile(r"^sess_[a-f0-9]{32}$")
 HMAC_FINGERPRINT_PATTERN = re.compile(r"^[a-f0-9]{32}$")
-EVIDENCE_REF_PATTERN = re.compile(r"^EVID-[a-f0-9]{12}$")
+EVIDENCE_REF_PATTERN = re.compile(r"^EVID-[a-fA-F0-9]{12}$")
 ISO_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 URL_PATH_PATTERN = re.compile(r"^/[a-zA-Z0-9_\-\./?=&%]*$")
 HYPOTHESIS_ID_PATTERN = re.compile(r"^HYP-[a-zA-Z0-9_\-\.]{1,32}$")
@@ -230,6 +235,8 @@ class CorrelatedSessionContext:
     authz_session: Optional[AuthzSessionProfile] = None
     auth_session: Optional[AuthSessionProfile] = None
     volatile_headers: Dict[str, str] = field(default_factory=dict, repr=False)  # In-memory only!
+    pre_revocation_baseline: Optional[Any] = field(default=None, repr=False)  # In-memory only!
+    invalidation_evidence_ref: Optional[str] = field(default=None, repr=False)  # In-memory only!
     hmac_fingerprint: Optional[str] = None  # Domain-separated HMAC-SHA256[:32]
     lifecycle: CorrelationLifecycle = CorrelationLifecycle.CREATED
     expires_at: Optional[str] = None

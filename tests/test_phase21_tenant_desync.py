@@ -251,7 +251,7 @@ def test_header_channel_bidirectional_substitution():
     assert len(header_findings) == 2
 
 
-def test_cache_unknown_and_cache_busting_corroboration():
+def test_cache_unknown_and_cache_busting_corroboration(tmp_path):
     """Verifies that CACHE_UNKNOWN produces findings ONLY when corroborated by cache-busting."""
     url_a = "https://target.local/api/v1/orders"
     url_b = "https://target.local/api/v1/tenants/b/orders"
@@ -273,7 +273,9 @@ def test_cache_unknown_and_cache_busting_corroboration():
                 return ControlledResponse(200, {}, data_b)
             return ControlledResponse(404, {}, b"Not Found")
 
-    validator = MultiTenantDesyncValidator(validation_engine=CorroboratedEngine())
+    from framework.common.evidence import EvidenceStore
+    ev_store = EvidenceStore(str(tmp_path / "evidence"))
+    validator = MultiTenantDesyncValidator(validation_engine=CorroboratedEngine(), evidence_store=ev_store)
     sess_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u_a", volatile_headers={"Authorization": "Bearer tok_a"})
     sess_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="u_b", volatile_headers={"Authorization": "Bearer tok_b"})
     res_a = ResourceAccessTarget(resource_id="res_a", resource_type="ORDERS", endpoint=url_a)
@@ -286,4 +288,22 @@ def test_cache_unknown_and_cache_busting_corroboration():
     assert "Cache state: CACHE_UNKNOWN" in f.description
     assert len(f.evidence_chain) >= 1
     assert all(ev.startswith("EVID-") for ev in f.evidence_chain)
+
+    # Case 2: Without EvidenceStore configured, evidence_chain is empty and description notes non-persisted
+    validator_no_store = MultiTenantDesyncValidator(validation_engine=CorroboratedEngine(), evidence_store=None)
+    findings_no_store = validator_no_store.evaluate_tenant_isolation(sess_a, sess_b, res_a, res_b)
+    assert len(findings_no_store) >= 1
+    f_no_store = findings_no_store[0]
+    assert f_no_store.evidence_chain == []
+    assert "[EVIDENCE_NOT_PERSISTED]" in f_no_store.description
+
+    # Case 3: Failing EvidenceStore raises EvidencePersistenceError
+    from framework.auth_correlation.model import EvidencePersistenceError
+    class FailingStore:
+        def save_http_capture(self, *args, **kwargs):
+            raise IOError("Simulated disk error during tenant evidence capture")
+
+    validator_failing_store = MultiTenantDesyncValidator(validation_engine=CorroboratedEngine(), evidence_store=FailingStore())
+    with pytest.raises(EvidencePersistenceError, match="Failed to persist cross-tenant evidence"):
+        validator_failing_store.evaluate_tenant_isolation(sess_a, sess_b, res_a, res_b)
 

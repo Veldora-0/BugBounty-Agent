@@ -38,6 +38,8 @@ from framework.auth_correlation.model import (
     CorrelationFinding,
     CorrelationLifecycle,
     SerializationSecurityError,
+    EvidencePersistenceError,
+    EVIDENCE_REF_PATTERN,
 )
 from framework.auth_correlation.state import (
     _enforce_windows_directory_dacl,
@@ -47,6 +49,7 @@ from framework.auth_correlation.state import (
 )
 from framework.authentication.validators import AuthenticationFalsePositiveClassifier
 from framework.authz.model import ResourceAccessTarget
+from framework.common.evidence import sanitize_sensitive_data
 from framework.validation.engine import SecurityValidationEngine
 from framework.validation.request import ControlledRequest, ControlledResponse
 
@@ -291,6 +294,78 @@ def sign_action_approval(
     return result
 
 
+def classify_revocation_response(
+    resp: Optional[ControlledResponse],
+    baseline: Optional[ControlledResponse] = None,
+) -> Tuple[str, Optional[str]]:
+    """
+    Conservatively classifies post-revocation probe responses according to security policy:
+    - 401 with explicit expiration/revocation evidence: 'REVOKED' or 'EXPIRED'
+    - Generic 401: 'AUTHENTICATION_FAILED' (does not prove revocation)
+    - 403: 'AUTHORIZATION_DENIED' (does not prove revocation)
+    - Recognized login redirect: 'REDIRECT_LOGIN'
+    - WAF/challenge response: 'INCONCLUSIVE'
+    - Generic 200 response (shell, landing, empty): 'INCONCLUSIVE'
+    - 200 with matching protected baseline content: 'SESSION_NOT_INVALIDATED' (retained access finding)
+    - Ambiguous / unhandled: 'INCONCLUSIVE'
+    """
+    if resp is None:
+        return "INCONCLUSIVE", "No response received"
+
+    # 1. 401 Unauthorized -> check for explicit expiration or revocation evidence
+    if resp.status_code == 401:
+        lower_body = (resp.body_text or "").lower()
+        www_auth = (resp.headers.get("www-authenticate") or "").lower()
+        full_text = f"{lower_body} {www_auth}"
+        revocation_indicators = (
+            "revoked", "token_revoked", "session_revoked", "session_invalidated",
+            "logged_out", "logged out", "token has been revoked", "session has been revoked",
+        )
+        if any(ind in full_text for ind in revocation_indicators):
+            return "REVOKED", "Response explicitly reports token or session as revoked"
+        expiration_indicators = (
+            "expired", "token_expired", "session_expired", "token has expired", "session has expired",
+        )
+        if any(ind in full_text for ind in expiration_indicators):
+            return "EXPIRED", "Response explicitly reports token or session as expired"
+        return "AUTHENTICATION_FAILED", "Generic 401 unauthorized without explicit revocation evidence"
+
+    # 2. 403 Forbidden -> AUTHORIZATION_DENIED (does not prove session invalidation)
+    if resp.status_code == 403:
+        return "AUTHORIZATION_DENIED", "HTTP 403 indicates authorization denial, not session invalidation"
+
+    # 3. Recognized login redirect
+    if resp.status_code in (301, 302, 303, 307, 308):
+        loc = (resp.headers.get("location") or "").lower()
+        if any(term in loc for term in ("/login", "/auth", "/signin", "/sso", "login.")):
+            return "REDIRECT_LOGIN", f"Redirect to authentication interface ({loc})"
+        return "INCONCLUSIVE", f"Redirect to non-login interface ({loc})"
+
+    # 4. Check for WAF or bot security challenge page
+    if AuthenticationFalsePositiveClassifier.is_waf_or_challenge_page(resp.status_code, resp.body_text):
+        return "INCONCLUSIVE", "WAF or bot security challenge page"
+
+    # 5. Check for inline login forms
+    if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resp.status_code, resp.body_text):
+        return "REDIRECT_LOGIN", "Inline login challenge form returned"
+
+    # 6. Generic 200 response (public landing page, generic shell, empty status)
+    if resp.status_code == 200:
+        if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(resp.status_code, resp.body_text):
+            return "INCONCLUSIVE", "Public landing page or generic SPA application shell"
+        if AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(resp.status_code, resp.body_text):
+            return "INCONCLUSIVE", "Generic status or empty response without protected data"
+
+        # 7. Verify matching protected baseline content
+        if baseline is not None and baseline.status_code == 200:
+            ratio = difflib.SequenceMatcher(None, resp.body_text, baseline.body_text).ratio()
+            if ratio >= 0.50:
+                return "SESSION_NOT_INVALIDATED", f"Response matches protected baseline content (similarity: {ratio:.2f})"
+            return "INCONCLUSIVE", f"Response similarity ({ratio:.2f}) below threshold for baseline match"
+
+    return "INCONCLUSIVE", f"Ambiguous response (HTTP {resp.status_code})"
+
+
 class PostRevocationResourceValidator:
     """Evaluates resource accessibility post-revocation across Mode A and Mode B."""
 
@@ -304,6 +379,7 @@ class PostRevocationResourceValidator:
         scope_engine: Optional[Any] = None,
         approval_key: Optional[bytes] = None,
         approval_key_dir: Optional[str] = None,
+        evidence_store: Optional[Any] = None,
     ):
         self._engine = validation_engine
         self._program_dir = program_dir or "."
@@ -311,6 +387,7 @@ class PostRevocationResourceValidator:
         self._scope_engine = scope_engine
         self._approval_key = approval_key
         self._approval_key_dir = approval_key_dir
+        self._evidence_store = evidence_store
 
     @property
     def engine(self) -> Any:
@@ -410,63 +487,66 @@ class PostRevocationResourceValidator:
         except Exception:
             return "INCONCLUSIVE", None
 
-        # Secure invalidation: 401, 403, or login redirect
-        if resp.status_code in (401, 403):
-            return "SECURE_INVALIDATION", None
+        classification, reason = classify_revocation_response(resp, pre_revocation_baseline)
 
-        if resp.status_code in (301, 302, 303, 307, 308):
-            loc = (resp.headers.get("location") or "").lower()
-            if any(term in loc for term in ("/login", "/auth", "/signin", "/sso", "login.")):
-                return "SECURE_INVALIDATION", None
-            return "INCONCLUSIVE", None
+        if classification == "SESSION_NOT_INVALIDATED":
+            metrics = CVSS31Metrics(
+                av=AttackVector.NETWORK,
+                ac=AttackComplexity.LOW,
+                pr=PrivilegesRequired.LOW,
+                ui=UserInteraction.NONE,
+                scope=Scope.UNCHANGED,
+                c=CIAImpact.LOW,
+                i=CIAImpact.LOW,
+                a=CIAImpact.NONE,
+            )
+            score, sev, vector = CVSS31Calculator.calculate_base_score(metrics)
 
-        if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resp.status_code, resp.body_text):
-            return "SECURE_INVALIDATION", None
+            clean_req = f"{method} {target_endpoint}\nHeaders: [REDACTED]"
+            clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
+            content_digest = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()
 
-        if AuthenticationFalsePositiveClassifier.is_waf_or_challenge_page(resp.status_code, resp.body_text):
-            return "INCONCLUSIVE", None
+            evidence_chain: List[str] = []
+            if self._evidence_store is not None:
+                try:
+                    evid_meta = self._evidence_store.save_http_capture(
+                        request_text=clean_req,
+                        response_text=clean_res,
+                        metadata={
+                            "hypothesis_category": "REVOCATION_ENFORCEMENT",
+                            "mode": "MODE_A",
+                            "invalidation_evidence_ref": invalidation_evidence_ref,
+                        },
+                        prefix="revocation_mode_a",
+                    )
+                    persisted_id = evid_meta.get("evidence_id")
+                    if not persisted_id:
+                        persisted_id = f"EVID-{evid_meta.get('sha256', content_digest)[:12]}"
+                    evidence_chain = [persisted_id]
+                except Exception as e:
+                    raise EvidencePersistenceError(f"Failed to persist Mode A revocation evidence: {e}")
+            else:
+                evidence_chain = []
 
-        # If HTTP 200 OK: verify body data against pre-revocation baseline
-        if resp.status_code == 200:
-            # Must not be a generic shell or empty response
-            if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(resp.status_code, resp.body_text):
-                return "INCONCLUSIVE", None
-            if AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(resp.status_code, resp.body_text):
-                return "INCONCLUSIVE", None
+            rev_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()
+            finding_id = f"FIND-REVOKE-{rev_hash}"
+            endpoint_path = target_endpoint if target_endpoint.startswith("/") else "/" + target_endpoint.split("/", 3)[-1]
+            desc_prefix = "" if self._evidence_store is not None else "[EVIDENCE_NOT_PERSISTED] "
+            finding = CorrelationFinding(
+                finding_id=finding_id,
+                title="Session Retains Protected Resource Access After Invalidation",
+                category="SESSION_NOT_INVALIDATED",
+                severity=sev,
+                cvss_score=score,
+                cvss_vector=vector,
+                confidence=0.90,
+                endpoint=endpoint_path,
+                description=f"{desc_prefix}Session token continues to access protected resource despite verified invalidation event. {reason}",
+                evidence_chain=evidence_chain,
+            )
+            return "SESSION_NOT_INVALIDATED", finding
 
-            ratio = difflib.SequenceMatcher(None, resp.body_text, pre_revocation_baseline.body_text).ratio()
-            if ratio >= 0.50:
-                # Authentic CVSS 3.1 calculation for SESSION_NOT_INVALIDATED
-                metrics = CVSS31Metrics(
-                    av=AttackVector.NETWORK,
-                    ac=AttackComplexity.LOW,
-                    pr=PrivilegesRequired.LOW,
-                    ui=UserInteraction.NONE,
-                    scope=Scope.UNCHANGED,
-                    c=CIAImpact.LOW,
-                    i=CIAImpact.LOW,
-                    a=CIAImpact.NONE,
-                )
-                score, sev, vector = CVSS31Calculator.calculate_base_score(metrics)
-
-                rev_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()
-                finding_id = f"FIND-REVOKE-{rev_hash}"
-                endpoint_path = target_endpoint if target_endpoint.startswith("/") else "/" + target_endpoint.split("/", 3)[-1]
-                finding = CorrelationFinding(
-                    finding_id=finding_id,
-                    title="Session Retains Protected Resource Access After Invalidation",
-                    category="SESSION_NOT_INVALIDATED",
-                    severity=sev,
-                    cvss_score=score,
-                    cvss_vector=vector,
-                    confidence=0.90,
-                    endpoint=endpoint_path,
-                    description="Session token continues to access protected resource despite verified invalidation event.",
-                    evidence_chain=[invalidation_evidence_ref],
-                )
-                return "SESSION_NOT_INVALIDATED", finding
-
-        return "INCONCLUSIVE", None
+        return classification, None
 
     def verify_post_revocation_access(
         self,
@@ -482,76 +562,72 @@ class PostRevocationResourceValidator:
         if probe_response is None:
             return None
 
-        # Secure invalidation responses
-        if probe_response.status_code in (401, 403):
+        classification, reason = classify_revocation_response(probe_response, baseline_target)
+
+        if classification == "SESSION_NOT_INVALIDATED":
+            metrics = CVSS31Metrics(
+                av=AttackVector.NETWORK,
+                ac=AttackComplexity.LOW,
+                pr=PrivilegesRequired.LOW,
+                ui=UserInteraction.NONE,
+                scope=Scope.UNCHANGED,
+                c=CIAImpact.LOW,
+                i=CIAImpact.LOW,
+                a=CIAImpact.NONE,
+            )
+            score, sev, vector = CVSS31Calculator.calculate_base_score(metrics)
+            clean_req = f"GET {target_endpoint}\nHeaders: [REDACTED]"
+            clean_res = f"HTTP {probe_response.status_code}\n{sanitize_sensitive_data(probe_response.body_text[:500])}"
+            content_digest = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()
+
+            evidence_chain: List[str] = []
+            if self._evidence_store is not None:
+                try:
+                    evid_meta = self._evidence_store.save_http_capture(
+                        request_text=clean_req,
+                        response_text=clean_res,
+                        metadata={
+                            "hypothesis_category": "REVOCATION_ENFORCEMENT",
+                            "mode": "MODE_B",
+                            "session_ref": session_ctx.session_ref,
+                        },
+                        prefix="revocation_mode_b",
+                    )
+                    persisted_id = evid_meta.get("evidence_id")
+                    if not persisted_id:
+                        persisted_id = f"EVID-{evid_meta.get('sha256', content_digest)[:12]}"
+                    evidence_chain = [persisted_id]
+                except Exception as e:
+                    raise EvidencePersistenceError(f"Failed to persist Mode B revocation evidence: {e}")
+
+            rev_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()
+            finding_id = f"FIND-REVOKE-{rev_hash}"
+            endpoint_path = target_endpoint if target_endpoint.startswith("/") else "/" + target_endpoint.split("/", 3)[-1]
+            desc_prefix = "" if self._evidence_store is not None else "[EVIDENCE_NOT_PERSISTED] "
+            return CorrelationFinding(
+                finding_id=finding_id,
+                title="Session Retains Protected Resource Access After Invalidation",
+                category="SESSION_NOT_INVALIDATED",
+                severity=sev,
+                cvss_score=score,
+                cvss_vector=vector,
+                confidence=0.90,
+                endpoint=endpoint_path,
+                description=f"{desc_prefix}Session token continues to access protected resource despite verified invalidation event. {reason}",
+                evidence_chain=evidence_chain,
+            )
+
+        if classification in ("REVOKED", "EXPIRED", "REDIRECT_LOGIN"):
             session_ctx.lifecycle = CorrelationLifecycle.REVOKED
             return None
 
-        if probe_response.status_code in (301, 302, 303, 307, 308):
-            loc = (probe_response.headers.get("location") or "").lower()
-            if any(term in loc for term in ("/login", "/auth", "/signin", "/sso", "login.")):
-                session_ctx.lifecycle = CorrelationLifecycle.REVOKED
-                return None
+        if classification == "AUTHORIZATION_DENIED":
+            session_ctx.lifecycle = CorrelationLifecycle.AUTHORIZATION_DENIED
             return None
 
-        if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(
-            probe_response.status_code, probe_response.body_text
-        ):
-            session_ctx.lifecycle = CorrelationLifecycle.REVOKED
+        if classification == "AUTHENTICATION_FAILED":
+            session_ctx.lifecycle = CorrelationLifecycle.AUTHENTICATION_FAILED
             return None
-
-        if AuthenticationFalsePositiveClassifier.is_waf_or_challenge_page(
-            probe_response.status_code, probe_response.body_text
-        ):
-            return None
-
-        if probe_response.status_code == 200:
-            if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(
-                probe_response.status_code, probe_response.body_text
-            ):
-                return None
-            if AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(
-                probe_response.status_code, probe_response.body_text
-            ):
-                return None
-
-            is_valid_leak = True
-            if baseline_target is not None and baseline_target.status_code == 200:
-                ratio = difflib.SequenceMatcher(None, probe_response.body_text, baseline_target.body_text).ratio()
-                if ratio < 0.50:
-                    is_valid_leak = False
-
-            if is_valid_leak:
-                metrics = CVSS31Metrics(
-                    av=AttackVector.NETWORK,
-                    ac=AttackComplexity.LOW,
-                    pr=PrivilegesRequired.LOW,
-                    ui=UserInteraction.NONE,
-                    scope=Scope.UNCHANGED,
-                    c=CIAImpact.LOW,
-                    i=CIAImpact.LOW,
-                    a=CIAImpact.NONE,
-                )
-                score, sev, vector = CVSS31Calculator.calculate_base_score(metrics)
-                clean_req = f"GET {target_endpoint}\nHeaders: [REDACTED]"
-                clean_res = f"HTTP {probe_response.status_code}\n{sanitize_sensitive_data(probe_response.body_text[:500])}"
-                ev_hash = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()[:12]
-                evidence_ref = f"EVID-{ev_hash}"
-                rev_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()
-                finding_id = f"FIND-REVOKE-{rev_hash}"
-                endpoint_path = target_endpoint if target_endpoint.startswith("/") else "/" + target_endpoint.split("/", 3)[-1]
-                return CorrelationFinding(
-                    finding_id=finding_id,
-                    title="Session Retains Protected Resource Access After Invalidation",
-                    category="SESSION_NOT_INVALIDATED",
-                    severity=sev,
-                    cvss_score=score,
-                    cvss_vector=vector,
-                    confidence=0.90,
-                    endpoint=endpoint_path,
-                    description="Session token continues to access protected resource despite verified invalidation event.",
-                    evidence_chain=[evidence_ref],
-                )
 
         return None
 

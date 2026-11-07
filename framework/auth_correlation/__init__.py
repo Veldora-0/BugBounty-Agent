@@ -15,6 +15,7 @@ from framework.auth_correlation.model import (
     CorrelationFinding,
     SerializationSecurityError,
     StateSecurityValidationError,
+    EvidencePersistenceError,
 )
 from framework.auth_correlation.cvss import (
     AttackVector,
@@ -64,6 +65,7 @@ __all__ = [
     "CorrelationFinding",
     "SerializationSecurityError",
     "StateSecurityValidationError",
+    "EvidencePersistenceError",
     "AttackVector",
     "AttackComplexity",
     "PrivilegesRequired",

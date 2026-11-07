@@ -27,6 +27,7 @@ from framework.auth_correlation.model import (
     CorrelatedSessionContext,
     CorrelationFinding,
     CorrelationLifecycle,
+    EvidencePersistenceError,
 )
 from framework.authentication.validators import AuthenticationFalsePositiveClassifier
 from framework.authz.model import ResourceAccessTarget
@@ -144,23 +145,28 @@ class PreMfaPrivilegeValidator:
                 # Capture sanitized evidence reference
                 clean_req = f"{method} {target_endpoint}\nHeaders: [REDACTED]"
                 clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
-                ev_hash = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()[:12]
-                evidence_ref = f"EVID-{ev_hash}"
-                evidence_chain = [evidence_ref]
+                content_digest = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()
+
+                evidence_chain: List[str] = []
                 if self._evidence_store is not None:
                     try:
-                        self._evidence_store.save_http_capture(
+                        evid_meta = self._evidence_store.save_http_capture(
                             request_text=clean_req,
                             response_text=clean_res,
                             metadata={"hypothesis_category": "PRE_MFA_PRIVILEGE"},
                             prefix="pre_mfa",
                         )
-                    except Exception:
-                        pass
+                        persisted_id = evid_meta.get("evidence_id")
+                        if not persisted_id:
+                            persisted_id = f"EVID-{evid_meta.get('sha256', content_digest)[:12]}"
+                        evidence_chain = [persisted_id]
+                    except Exception as e:
+                        raise EvidencePersistenceError(f"Failed to persist Pre-MFA evidence: {e}")
 
                 ep_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()
                 finding_id = f"FIND-MFA-{ep_hash}"
                 endpoint_path = target_endpoint if target_endpoint.startswith("/") else "/" + target_endpoint.split("/", 3)[-1]
+                desc_prefix = "" if self._evidence_store is not None else "[EVIDENCE_NOT_PERSISTED] "
                 return CorrelationFinding(
                     finding_id=finding_id,
                     title="Pre-MFA Session Exposes Protected Authorization Endpoint Data",
@@ -170,7 +176,7 @@ class PreMfaPrivilegeValidator:
                     cvss_vector=vector,
                     confidence=0.90,
                     endpoint=endpoint_path,
-                    description="Intermediate session in pre-MFA state accessed sensitive resource without completing MFA challenge.",
+                    description=f"{desc_prefix}Intermediate session in pre-MFA state accessed sensitive resource without completing MFA challenge.",
                     evidence_chain=evidence_chain,
                 )
 
@@ -227,23 +233,28 @@ class PreMfaPrivilegeValidator:
 
                 clean_req = f"{method} {target_endpoint}\nHeaders: [REDACTED]"
                 clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
-                ev_hash = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()[:12]
-                evidence_ref = f"EVID-{ev_hash}"
-                evidence_chain = [evidence_ref]
+                content_digest = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()
+
+                evidence_chain: List[str] = []
                 if self._evidence_store is not None:
                     try:
-                        self._evidence_store.save_http_capture(
+                        evid_meta = self._evidence_store.save_http_capture(
                             request_text=clean_req,
                             response_text=clean_res,
                             metadata={"hypothesis_category": "STEP_UP_AUTH"},
                             prefix="step_up",
                         )
-                    except Exception:
-                        pass
+                        persisted_id = evid_meta.get("evidence_id")
+                        if not persisted_id:
+                            persisted_id = f"EVID-{evid_meta.get('sha256', content_digest)[:12]}"
+                        evidence_chain = [persisted_id]
+                    except Exception as e:
+                        raise EvidencePersistenceError(f"Failed to persist Step-Up evidence: {e}")
 
                 step_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()
                 finding_id = f"FIND-STEPUP-{step_hash}"
                 endpoint_path = target_endpoint if target_endpoint.startswith("/") else "/" + target_endpoint.split("/", 3)[-1]
+                desc_prefix = "" if self._evidence_store is not None else "[EVIDENCE_NOT_PERSISTED] "
                 return CorrelationFinding(
                     finding_id=finding_id,
                     title="Sensitive Action Endpoint Lacks Required Step-Up Authentication",
@@ -253,7 +264,7 @@ class PreMfaPrivilegeValidator:
                     cvss_vector=vector,
                     confidence=0.85,
                     endpoint=endpoint_path,
-                    description="Session performed step-up action without supplying elevated step-up credential.",
+                    description=f"{desc_prefix}Session performed step-up action without supplying elevated step-up credential.",
                     evidence_chain=evidence_chain,
                 )
 

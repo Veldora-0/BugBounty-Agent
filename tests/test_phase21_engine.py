@@ -21,6 +21,7 @@ from framework.auth_correlation.model import (
     CorrelatedSessionContext,
     CorrelationLifecycle,
 )
+from framework.authz.model import ResourceAccessTarget
 
 
 def test_simulation_transport_boundary_enforcement():
@@ -136,6 +137,10 @@ def test_auth_correlation_engine_orchestration(tmp_path):
     engine.register_session(s_a)
     engine.register_session(s_b)
 
+    # Register resource targets for candidate discovery
+    engine.register_resource_target(ResourceAccessTarget(resource_id="res_01", resource_type="INVOICE", endpoint="/api/v1/tenant/invoices", method="GET"))
+    engine.register_resource_target(ResourceAccessTarget(resource_id="res_02", resource_type="PROFILE", endpoint="/api/v1/profile", method="GET"))
+
     # 1. Candidate discovery
     candidates = engine.discover_candidates()
     assert len(candidates) >= 2
@@ -179,12 +184,12 @@ def test_engine_preflight_only_execution(tmp_path):
         engine.register_session(s_b)
 
         res = engine.run_correlation(
-            target_asset=f"http://127.0.0.1:{port}",
+            target_asset=f"http://127.0.0.1:{port}/scen01/profile",
             preflight_only=True,
         )
         assert res["status"] == "PREFLIGHT_COMPLETED"
-        assert res["total_hypotheses"] >= 2
-        assert res["verified_hypotheses"] >= 2
+        assert res["total_hypotheses"] >= 1
+        assert res["verified_hypotheses"] >= 1
         assert res["findings"] == []
     finally:
         lab.stop()
@@ -210,12 +215,14 @@ def test_engine_persistence_failure_fail_closed(tmp_path):
     engine.register_session(s_a)
     engine.register_session(s_b)
 
+    engine.register_resource_target(ResourceAccessTarget(resource_id="res_01", resource_type="ITEM", endpoint="/api/v1/resource", method="GET"))
+
     def mock_save_fail(*args, **kwargs):
         raise IOError("Simulated disk write failure")
 
     engine.state_manager.save_state = mock_save_fail
 
-    res = engine.run_correlation(target_asset="http://127.0.0.1:9999")
+    res = engine.run_correlation(target_asset="http://127.0.0.1:9999/api/v1/resource")
     assert res["status"] == "PERSISTENCE_FAILED"
     assert "Simulated disk write failure" in res["error"]
 
@@ -244,4 +251,118 @@ def test_engine_principal_session_resolution(tmp_path):
     assert engine.find_session_for_principal("p_charlie").session_ref == "sess_00000000000000000000000000000001"
     assert engine.find_session_for_principal("p_diana").session_ref == "sess_00000000000000000000000000000002"
     assert engine.find_session_for_principal("nonexistent") is None
+
+
+def test_candidate_discovery_contracts(tmp_path):
+    """Verifies candidate discovery strict contracts: no fabricated routes, origin preservation, and scope filtering."""
+    workspace = tmp_path / "ws_disc"
+    workspace.mkdir()
+
+    class MockScope:
+        def is_in_scope(self, url: str) -> bool:
+            return "in-scope.local" in url
+
+    scope = MockScope()
+    engine = AuthCorrelationEngine(
+        program_id="discovery_test",
+        workspace_root=str(workspace),
+        scope_engine=scope,
+    )
+    p_a = CorrelatedPrincipalContext(principal_id="alice", tenant_id="t1", role="USER")
+    p_b = CorrelatedPrincipalContext(principal_id="bob", tenant_id="t2", role="USER")
+    engine.register_principal(p_a)
+    engine.register_principal(p_b)
+
+    # 1. Without endpoints or targets, discovery strictly returns []
+    assert engine.discover_candidates() == []
+
+    # 2. Origin mismatch rejection
+    url, err = engine._build_and_validate_target_url(
+        endpoint="https://attacker.com/api/steal",
+        target_asset="https://in-scope.local/app",
+    )
+    assert url is None
+    assert "Origin mismatch" in err
+
+    # 3. ScopeEngine rejection of out-of-scope candidate
+    url_out, err_out = engine._build_and_validate_target_url(
+        endpoint="https://out-of-scope.local/api/test",
+        target_asset="https://out-of-scope.local/app",
+    )
+    assert url_out is None
+    assert "out of scope" in err_out
+
+    # 4. Valid in-scope candidate derivation
+    url_in, err_in = engine._build_and_validate_target_url(
+        endpoint="/api/v1/valid",
+        target_asset="https://in-scope.local/app",
+    )
+    assert err_in is None
+    assert url_in == "https://in-scope.local/api/v1/valid"
+
+
+def test_engine_mode_a_revocation_orchestration(tmp_path):
+    """Verifies Mode A orchestration in AuthCorrelationEngine: preflight baseline, evidentiary prereqs, and finding emission."""
+    from framework.validation.request import ControlledResponse
+    workspace = tmp_path / "ws_rev_orch"
+    workspace.mkdir()
+
+    lab = LocalAuthCorrelationLab()
+    port = lab.start()
+    try:
+        transport = lab.get_transport()
+        engine = AuthCorrelationEngine(
+            program_id="mode_a_test",
+            workspace_root=str(workspace),
+            validation_engine=transport,
+        )
+
+        p_a = CorrelatedPrincipalContext(principal_id="alice", role="USER")
+        p_b = CorrelatedPrincipalContext(principal_id="bob", role="USER")
+        engine.register_principal(p_a)
+        engine.register_principal(p_b)
+
+        s_a = CorrelatedSessionContext(
+            session_ref="sess_00000000000000000000000000000001",
+            principal_id="alice",
+            volatile_headers={"Authorization": "Bearer valid_token_a"},
+        )
+        s_b = CorrelatedSessionContext(
+            session_ref="sess_00000000000000000000000000000002",
+            principal_id="bob",
+            volatile_headers={"Authorization": "Bearer valid_token_a"},
+        )
+        engine.register_session(s_a)
+        engine.register_session(s_b)
+
+        # Register target that will be probed post-revocation
+        engine.register_resource_target(ResourceAccessTarget(
+            resource_id="scen02_inv",
+            resource_type="INVOICE",
+            endpoint=f"http://127.0.0.1:{port}/scen02/invoices/101",
+            method="GET",
+        ))
+
+        # 1. Mode A run WITHOUT invalidation_evidence_ref: fails closed to inconclusive, no finding
+        res_no_ref = engine.run_correlation(
+            target_asset=f"http://127.0.0.1:{port}/scen00/profile",
+            revocation=True,
+        )
+        assert res_no_ref["status"] == "COMPLETED"
+        assert res_no_ref["findings"] == []
+
+        # 2. Set invalidation_evidence_ref on s_a: Mode A detects retained access on /scen02/invoices/101!
+        s_a.invalidation_evidence_ref = "EVID-0123456789ab"
+        s_a.pre_revocation_baseline = ControlledResponse(200, {"content-type": "application/json"}, b'{"invoice_id": "101", "amount": 450.00, "customer": "Alice Corp"}')
+        res_with_ref = engine.run_correlation(
+            target_asset=f"http://127.0.0.1:{port}/scen00/profile",
+            revocation=True,
+        )
+        assert res_with_ref["status"] == "COMPLETED"
+        assert len(res_with_ref["findings"]) >= 1
+        revoke_finding = [f for f in res_with_ref["findings"] if f.get("category") == "SESSION_NOT_INVALIDATED"][0]
+        assert revoke_finding["severity"] == "MEDIUM"
+        assert revoke_finding["cvss_score"] == 5.4
+    finally:
+        lab.stop()
 

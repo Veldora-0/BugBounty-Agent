@@ -51,6 +51,8 @@ class AuthCorrelationEngine:
         validation_engine: Optional[Any] = None,
         state_manager: Optional[AuthCorrelationStateManager] = None,
         target_asset: Optional[str] = None,
+        scope_engine: Optional[Any] = None,
+        evidence_store: Optional[Any] = None,
     ):
         self.program_id = program_id
         self.workspace_root = workspace_root or os.getcwd()
@@ -61,7 +63,8 @@ class AuthCorrelationEngine:
         )
         self.validation_engine = validation_engine or SecurityValidationEngine(program_dir=self.workspace_root)
         
-        scope_eng = getattr(self.validation_engine, "scope_engine", None)
+        self.scope_engine = scope_engine or getattr(self.validation_engine, "scope_engine", None)
+        self.evidence_store = evidence_store or getattr(self.validation_engine, "evidence_store", None)
         self.preflight_validator = DualControlPreflightValidator(
             validation_engine=self.validation_engine,
             program_dir=self.workspace_root,
@@ -70,15 +73,18 @@ class AuthCorrelationEngine:
             validation_engine=self.validation_engine,
             program_dir=self.workspace_root,
             state_dir=os.path.join(self.workspace_root, "state"),
-            scope_engine=scope_eng,
+            scope_engine=self.scope_engine,
+            evidence_store=self.evidence_store,
         )
         self.pre_mfa_validator = PreMfaPrivilegeValidator(
             validation_engine=self.validation_engine,
             program_dir=self.workspace_root,
+            evidence_store=self.evidence_store,
         )
         self.tenant_validator = MultiTenantDesyncValidator(
             validation_engine=self.validation_engine,
             program_dir=self.workspace_root,
+            evidence_store=self.evidence_store,
         )
 
         self.principals: Dict[str, CorrelatedPrincipalContext] = {}
@@ -109,6 +115,49 @@ class AuthCorrelationEngine:
                 return s
         return None
 
+    def _build_and_validate_target_url(
+        self,
+        endpoint: str,
+        target_asset: Optional[str] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Derives valid target URL, preserving scheme, hostname, and authorized port.
+        Rejects origin substitution and validates against ScopeEngine policy.
+        Returns (full_url, error_message).
+        """
+        eff_target = target_asset or self.target_asset
+        target_base = ""
+        base_parsed = None
+        if eff_target:
+            base_parsed = urlparse(eff_target)
+            if base_parsed.scheme in ("http", "https") and base_parsed.netloc:
+                target_base = f"{base_parsed.scheme}://{base_parsed.netloc}"
+
+        ep_parsed = urlparse(endpoint)
+        if ep_parsed.scheme in ("http", "https"):
+            # Absolute candidate URL: verify origin matches target_base if target_base is set
+            if target_base and base_parsed and ep_parsed.netloc.lower() != base_parsed.netloc.lower():
+                return None, f"Origin mismatch: candidate '{endpoint}' changes target origin from '{target_base}'"
+            full_url = endpoint
+        elif endpoint.startswith("/"):
+            if not target_base:
+                return None, f"Cannot resolve relative endpoint '{endpoint}' without target base URL"
+            full_url = f"{target_base}{endpoint}"
+        else:
+            if not target_base:
+                return None, f"Cannot resolve candidate endpoint '{endpoint}' without target base URL"
+            full_url = f"{target_base}/{endpoint}"
+
+        # ScopeEngine validation
+        if self.scope_engine is not None:
+            try:
+                if not self.scope_engine.is_in_scope(full_url):
+                    return None, f"Candidate URL '{full_url}' is out of scope"
+            except Exception as e:
+                return None, f"Scope verification failed for '{full_url}': {e}"
+
+        return full_url, None
+
     def discover_candidates(
         self,
         target_asset: Optional[str] = None,
@@ -116,38 +165,58 @@ class AuthCorrelationEngine:
     ) -> List[CorrelationHypothesis]:
         """
         Formulates correlation hypotheses across registered principals and verified target endpoints.
-        Consumes target_asset or registered resource endpoints; falls back to relative candidate
-        modeling when target_asset is not yet bound.
+        Consumes target_asset or registered resource endpoints. Does not invent fabricated routes.
         """
         eff_target = target_asset or self.target_asset
-        endpoints = list(resource_endpoints or [])
+        endpoints: List[str] = []
+        if resource_endpoints:
+            for ep in resource_endpoints:
+                if ep and ep not in endpoints:
+                    endpoints.append(ep)
+
         if self.resource_targets:
             for r in self.resource_targets:
                 ep = getattr(r, "endpoint", None) or getattr(r, "url", None)
-                if ep and ep not in endpoints:
-                    endpoints.append(ep)
+                if ep:
+                    parsed_ep = urlparse(ep)
+                    if parsed_ep.scheme in ("http", "https") and parsed_ep.path:
+                        path_ep = parsed_ep.path + (f"?{parsed_ep.query}" if parsed_ep.query else "")
+                        if path_ep not in endpoints:
+                            endpoints.append(path_ep)
+                    elif ep not in endpoints:
+                        endpoints.append(ep)
 
         if eff_target:
             parsed = urlparse(eff_target)
             if parsed.scheme in ("http", "https"):
                 if parsed.path and parsed.path not in ("/", ""):
-                    if parsed.path not in endpoints:
-                        endpoints.append(parsed.path)
-                else:
-                    endpoints.extend(["/api/v1/tenant/invoices", "/api/v1/profile"])
+                    path_ep = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+                    if path_ep not in endpoints:
+                        endpoints.append(path_ep)
             elif eff_target.startswith("/"):
                 if eff_target not in endpoints:
                     endpoints.append(eff_target)
-        elif not endpoints:
-            endpoints = ["/api/v1/tenant/invoices", "/api/v1/profile"]
 
+        # STRICTLY NO FABRICATED APPLICATION ROUTES!
         if not endpoints:
+            return []
+
+        # Validate candidates against scope policy if scope_engine is available
+        valid_endpoints: List[str] = []
+        for ep in endpoints:
+            full_url, err = self._build_and_validate_target_url(ep, eff_target)
+            if err is None:
+                valid_endpoints.append(ep)
+            elif "without target base URL" in err:
+                valid_endpoints.append(ep)
+
+        if not valid_endpoints:
             return []
 
         discovered: List[CorrelationHypothesis] = []
         p_ids = list(self.principals.keys())
 
-        for ep in endpoints:
+        for ep in valid_endpoints:
             if len(p_ids) >= 2:
                 p_a = p_ids[0]
                 p_b = p_ids[1]
@@ -171,11 +240,31 @@ class AuthCorrelationEngine:
                     expected_result="ACCESS_DENIED",
                     validation_status="PENDING",
                 ))
+                discovered.append(CorrelationHypothesis(
+                    hypothesis_id=f"HYP-REVOKE-{len(self.hypotheses) + len(discovered) + 1:03d}",
+                    category="REVOCATION_ENFORCEMENT",
+                    target_endpoint=ep,
+                    principal_a_id=p_a,
+                    principal_b_id=p_b,
+                    preflight_status=CorrelationLifecycle.CREATED,
+                    expected_result="ACCESS_DENIED",
+                    validation_status="PENDING",
+                ))
             elif len(p_ids) == 1:
                 p_a = p_ids[0]
                 discovered.append(CorrelationHypothesis(
                     hypothesis_id=f"HYP-MFA-{len(self.hypotheses) + len(discovered) + 1:03d}",
                     category="PRE_MFA_PRIVILEGE",
+                    target_endpoint=ep,
+                    principal_a_id=p_a,
+                    principal_b_id=p_a,
+                    preflight_status=CorrelationLifecycle.CREATED,
+                    expected_result="ACCESS_DENIED",
+                    validation_status="PENDING",
+                ))
+                discovered.append(CorrelationHypothesis(
+                    hypothesis_id=f"HYP-REVOKE-{len(self.hypotheses) + len(discovered) + 1:03d}",
+                    category="REVOCATION_ENFORCEMENT",
                     target_endpoint=ep,
                     principal_a_id=p_a,
                     principal_b_id=p_a,
@@ -195,27 +284,37 @@ class AuthCorrelationEngine:
         """Executes preflight health checks for each registered hypothesis."""
         verified_hypotheses: List[CorrelationHypothesis] = []
         eff_target = target_asset or self.target_asset
-        target_base = ""
-        if eff_target:
-            parsed = urlparse(eff_target)
-            if parsed.scheme in ("http", "https"):
-                target_base = f"{parsed.scheme}://{parsed.netloc}"
 
         for hyp in hypotheses:
             sess_a = self.find_session_for_principal(hyp.principal_a_id)
-            sess_b = self.find_session_for_principal(hyp.principal_b_id)
+            sess_b = self.find_session_for_principal(hyp.principal_b_id) if hyp.principal_b_id != hyp.principal_a_id else sess_a
             if not sess_a or not sess_b:
                 hyp.preflight_status = CorrelationLifecycle.FAILED
                 hyp.validation_status = "SESSION_HEALTH_FAILED"
                 continue
 
-            full_url = f"{target_base}{hyp.target_endpoint}" if target_base and hyp.target_endpoint.startswith("/") else hyp.target_endpoint
+            full_url, err = self._build_and_validate_target_url(hyp.target_endpoint, eff_target)
+            if err is not None or not full_url:
+                hyp.preflight_status = CorrelationLifecycle.FAILED
+                hyp.validation_status = err or "INVALID_TARGET_URL"
+                continue
+
+            # Invalidation observation: if session already carries invalidation evidence, it passes preflight check
+            if hyp.category == "REVOCATION_ENFORCEMENT":
+                if getattr(sess_a, "invalidation_evidence_ref", None):
+                    hyp.preflight_status = CorrelationLifecycle.VERIFIED
+                    verified_hypotheses.append(hyp)
+                    continue
+
             success, status, details = self.preflight_validator.validate_session_pair(
                 sess_a, sess_b, full_url
             )
             if success:
                 hyp.preflight_status = CorrelationLifecycle.VERIFIED
                 verified_hypotheses.append(hyp)
+                if "probe_1" in details and hasattr(details["probe_1"], "status_code") and details["probe_1"].status_code == 200:
+                    if getattr(sess_a, "pre_revocation_baseline", None) is None:
+                        sess_a.pre_revocation_baseline = details["probe_1"]
             else:
                 hyp.preflight_status = CorrelationLifecycle.FAILED
                 hyp.validation_status = "SESSION_HEALTH_FAILED"
@@ -230,6 +329,9 @@ class AuthCorrelationEngine:
         workflow_filter: Optional[Set[str]] = None,
         approved_action_id: Optional[str] = None,
         action_dossier: Optional[Dict[str, Any]] = None,
+        revocation: bool = False,
+        pre_mfa: bool = False,
+        tenant: bool = False,
     ) -> Dict[str, Any]:
         """
         Executes the 12-step correlation orchestration sequence.
@@ -237,6 +339,16 @@ class AuthCorrelationEngine:
         """
         start_time = time.time()
         eff_target = target_asset or self.target_asset
+        
+        # Merge individual workflow toggles into workflow_filter if provided
+        if revocation or pre_mfa or tenant:
+            workflow_filter = set(workflow_filter) if workflow_filter else set()
+            if revocation:
+                workflow_filter.add("revocation")
+            if pre_mfa:
+                workflow_filter.add("pre_mfa")
+            if tenant:
+                workflow_filter.add("tenant")
         
         # Step 2: Discover Candidates if none present
         if not self.hypotheses:
@@ -279,34 +391,71 @@ class AuthCorrelationEngine:
 
         allowed_workflows = workflow_filter if workflow_filter is not None else {"tenant", "pre_mfa", "revocation"}
 
-        # Step 6: Mode B Controlled Invalidation (if approved action provided)
-        if "revocation" in allowed_workflows and approved_action_id and action_dossier:
-            target_account = action_dossier.get("test_account", "")
-            target_sess = self.find_session_for_principal(target_account)
-            if target_sess:
-                try:
-                    rev_ok = self.revocation_validator.execute_controlled_invalidation(
-                        target_sess, approved_action_id, action_dossier
-                    )
-                    if rev_ok:
-                        target_ep = action_dossier.get("target_endpoint", "")
-                        probe_req = ControlledRequest(
-                            url=target_ep,
+        # Step 6: Revocation Testing (Mode A vs Mode B)
+        if "revocation" in allowed_workflows:
+            is_mode_b = bool(approved_action_id and action_dossier)
+            if is_mode_b:
+                # Mode B: Controlled Invalidation (strictly requires operator-approved action)
+                target_account = action_dossier.get("test_account", "")
+                target_sess = self.find_session_for_principal(target_account)
+                if target_sess:
+                    try:
+                        rev_ok = self.revocation_validator.execute_controlled_invalidation(
+                            target_sess, approved_action_id, action_dossier
+                        )
+                        if rev_ok:
+                            target_ep = action_dossier.get("target_endpoint", "")
+                            full_url, err = self._build_and_validate_target_url(target_ep, eff_target)
+                            if not err and full_url:
+                                probe_req = ControlledRequest(
+                                    url=full_url,
+                                    method="GET",
+                                    headers=dict(target_sess.volatile_headers),
+                                )
+                                probe_resp = self.validation_engine.send_request(probe_req)
+                                baseline = target_sess.metadata.get("pre_revocation_baseline")
+                                finding = self.revocation_validator.verify_post_revocation_access(
+                                    target_sess, full_url, probe_resp, baseline_target=baseline
+                                )
+                                if finding:
+                                    self.findings.append(finding)
+                    except Exception as e:
+                        return {
+                            "status": "REVOCATION_MUTATION_FAILED",
+                            "error": str(e),
+                            "findings": [f.to_dict() for f in self.findings],
+                        }
+            else:
+                # Mode A: Observation-Only Workflow (strictly read-only)
+                for hyp in verified:
+                    if hyp.category == "REVOCATION_ENFORCEMENT":
+                        sess = self.find_session_for_principal(hyp.principal_a_id)
+                        if not sess:
+                            hyp.validation_status = "INCONCLUSIVE"
+                            continue
+
+                        full_url, err = self._build_and_validate_target_url(hyp.target_endpoint, eff_target)
+                        if err or not full_url:
+                            hyp.validation_status = err or "INVALID_TARGET_URL"
+                            continue
+
+                        resource = ResourceAccessTarget(
+                            resource_id=f"res_rev_{hyp.hypothesis_id}",
+                            resource_type="PROTECTED_RESOURCE",
+                            endpoint=full_url,
                             method="GET",
-                            headers=dict(target_sess.volatile_headers),
                         )
-                        probe_resp = self.validation_engine.send_request(probe_req)
-                        finding = self.revocation_validator.verify_post_revocation_access(
-                            target_sess, target_ep, probe_resp
+                        baseline = getattr(sess, "pre_revocation_baseline", None) or sess.metadata.get("pre_revocation_baseline")
+                        invalidation_ref = getattr(sess, "invalidation_evidence_ref", None) or sess.metadata.get("invalidation_evidence_ref")
+
+                        status, finding = self.revocation_validator.evaluate_revoked_session(
+                            sess, resource, baseline, invalidation_ref
                         )
-                        if finding:
+                        if status == "SESSION_NOT_INVALIDATED" and finding:
                             self.findings.append(finding)
-                except Exception as e:
-                    return {
-                        "status": "REVOCATION_MUTATION_FAILED",
-                        "error": str(e),
-                        "findings": [f.to_dict() for f in self.findings],
-                    }
+                            hyp.validation_status = "VALIDATED"
+                        else:
+                            hyp.validation_status = status
 
         # Step 7: Pre-MFA privilege testing
         if "pre_mfa" in allowed_workflows:
@@ -315,7 +464,10 @@ class AuthCorrelationEngine:
                     sess_pre = self.find_session_for_principal(hyp.principal_a_id)
                     sess_full = self.find_session_for_principal(hyp.principal_b_id)
                     if sess_pre and getattr(sess_pre, "is_pre_mfa", False):
-                        full_url = f"{target_base}{hyp.target_endpoint}" if target_base and hyp.target_endpoint.startswith("/") else hyp.target_endpoint
+                        full_url, err = self._build_and_validate_target_url(hyp.target_endpoint, eff_target)
+                        if err or not full_url:
+                            hyp.validation_status = err or "INVALID_TARGET_URL"
+                            continue
                         target = ResourceAccessTarget(
                             resource_id=f"res_mfa_{hyp.hypothesis_id}",
                             resource_type="PROFILE",
@@ -344,7 +496,10 @@ class AuthCorrelationEngine:
                     sess_a = self.find_session_for_principal(hyp.principal_a_id)
                     sess_b = self.find_session_for_principal(hyp.principal_b_id)
                     if sess_a and sess_b:
-                        full_url = f"{target_base}{hyp.target_endpoint}" if target_base and hyp.target_endpoint.startswith("/") else hyp.target_endpoint
+                        full_url, err = self._build_and_validate_target_url(hyp.target_endpoint, eff_target)
+                        if err or not full_url:
+                            hyp.validation_status = err or "INVALID_TARGET_URL"
+                            continue
                         res_a = ResourceAccessTarget(
                             resource_id=f"res_a_{hyp.hypothesis_id}",
                             resource_type="INVOICE",

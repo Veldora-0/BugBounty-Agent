@@ -20,13 +20,16 @@ from framework.auth_correlation.model import (
     CorrelatedSessionContext,
     CorrelationLifecycle,
     CorrelationFinding,
+    EvidencePersistenceError,
 )
 from framework.auth_correlation.preflight import DualControlPreflightValidator
 from framework.auth_correlation.revocation import (
     PostRevocationResourceValidator,
     ApprovalSecurityError,
+    classify_revocation_response,
 )
 from framework.authz.model import ResourceAccessTarget
+from framework.common.evidence import EvidenceStore
 from framework.validation.request import ControlledRequest, ControlledResponse
 
 
@@ -132,7 +135,7 @@ def test_revocation_mode_a_missing_prerequisites_fails_inconclusive():
 
 
 def test_revocation_mode_a_secure_invalidation():
-    """Verifies that 401/403 post-revocation response confirms SECURE_INVALIDATION."""
+    """Verifies that 401 with explicit revocation keywords confirms REVOKED."""
     target_url = "https://target.local/api/v1/docs/1"
     engine = MockValidationEngine({
         target_url: ControlledResponse(401, {}, b'{"error": "Token has been revoked"}'),
@@ -143,18 +146,23 @@ def test_revocation_mode_a_secure_invalidation():
     baseline = ControlledResponse(200, {}, b'{"doc": "confidential"}')
 
     status, finding = validator.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789ab")
-    assert status == "SECURE_INVALIDATION"
+    assert status == "REVOKED"
     assert finding is None
 
 
-def test_revocation_mode_a_vulnerability_emission():
+def test_revocation_mode_a_vulnerability_emission(tmp_path):
     """Verifies that 200 OK post-revocation with matching baseline emits SESSION_NOT_INVALIDATED."""
     target_url = "https://target.local/api/v1/docs/1"
     doc_body = b'{"document_id": "1", "sensitive_data": "secret_content_xyz"}'
     engine = MockValidationEngine({
         target_url: ControlledResponse(200, {"content-type": "application/json"}, doc_body),
     })
-    validator = PostRevocationResourceValidator(validation_engine=engine)
+    ev_dir = tmp_path / "evidence_rev"
+    ev_dir.mkdir()
+    store = EvidenceStore(str(ev_dir))
+
+    # 1. With configured EvidenceStore: evidence is saved and chain contains valid ID
+    validator = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store)
     target = ResourceAccessTarget(resource_id="res_01", resource_type="DOCUMENT", endpoint=target_url, method="GET")
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", volatile_headers={"Authorization": "Bearer revoked_token"})
     baseline = ControlledResponse(200, {"content-type": "application/json"}, doc_body)
@@ -167,7 +175,78 @@ def test_revocation_mode_a_vulnerability_emission():
     assert finding.cvss_score == 5.4
     assert finding.cvss_vector == "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N"
     assert finding.confidence == 0.90
-    assert "EVID-0123456789ab" in finding.evidence_chain
+    assert len(finding.evidence_chain) == 1
+    assert finding.evidence_chain[0].startswith("EVID-")
+    assert "[EVIDENCE_NOT_PERSISTED]" not in finding.description
+
+    # 2. Without EvidenceStore: evidence_chain is empty and description notes lack of persistence
+    validator_no_store = PostRevocationResourceValidator(validation_engine=engine, evidence_store=None)
+    status_ns, finding_ns = validator_no_store.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789ab")
+    assert status_ns == "SESSION_NOT_INVALIDATED"
+    assert finding_ns is not None
+    assert finding_ns.evidence_chain == []
+    assert "[EVIDENCE_NOT_PERSISTED]" in finding_ns.description
+
+    # 3. Failing EvidenceStore raises EvidencePersistenceError
+    class FailingStore:
+        def save_http_capture(self, *args, **kwargs):
+            raise IOError("Simulated disk error during capture")
+
+    validator_fail = PostRevocationResourceValidator(validation_engine=engine, evidence_store=FailingStore())
+    with pytest.raises(EvidencePersistenceError, match="Failed to persist Mode A revocation evidence"):
+        validator_fail.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789ab")
+
+
+def test_revocation_conservative_response_classifications():
+    """Verifies that non-matching, 403, generic 401, redirect, and WAF responses do not emit findings."""
+    target_url = "https://target.local/api/v1/docs/1"
+    sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
+    baseline = ControlledResponse(200, {"content-type": "application/json"}, b'{"user": "alice", "doc": "confidential"}')
+    target = ResourceAccessTarget(resource_id="res_01", resource_type="DOCUMENT", endpoint=target_url, method="GET")
+
+    cases = [
+        # (Response, expected_status)
+        (ControlledResponse(403, {}, b'{"error": "Forbidden: access denied"}'), "AUTHORIZATION_DENIED"),
+        (ControlledResponse(401, {}, b'{"error": "Invalid authentication credentials"}'), "AUTHENTICATION_FAILED"),
+        (ControlledResponse(401, {}, b'{"error": "Session token has expired"}'), "EXPIRED"),
+        (ControlledResponse(302, {"Location": "/auth/login"}, b''), "REDIRECT_LOGIN"),
+        (ControlledResponse(200, {"content-type": "text/html"}, b'<html><form action="/login"><input type="password"/></form></html>'), "REDIRECT_LOGIN"),
+        (ControlledResponse(200, {"Server": "cloudflare"}, b'Attention Required! | Cloudflare Ray ID... Cloudflare security challenge'), "INCONCLUSIVE"),
+        (ControlledResponse(200, {"content-type": "text/html"}, b'<html><body>Loading App Shell...</body></html>'), "INCONCLUSIVE"),
+        (ControlledResponse(200, {"content-type": "application/json"}, b'{"status": "ok"}'), "INCONCLUSIVE"),
+        # Low similarity (< 0.50) against baseline
+        (ControlledResponse(200, {"content-type": "application/json"}, b'{"unrelated": "completely different output data"}'), "INCONCLUSIVE"),
+    ]
+
+    for resp, exp_status in cases:
+        engine = MockValidationEngine({target_url: resp})
+        val = PostRevocationResourceValidator(validation_engine=engine)
+        status, finding = val.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789ab")
+        assert status == exp_status, f"Expected status {exp_status} for {resp.status_code}, got {status}"
+        assert finding is None, f"Expected no finding for {exp_status}, but finding was emitted"
+
+
+def test_revocation_mode_a_strictly_read_only():
+    """Verifies that Mode A strictly restricts requests to GET or HEAD, never dispatching unsafe mutations."""
+    target_url = "https://target.local/api/v1/resource"
+    engine = MockValidationEngine({
+        target_url: ControlledResponse(401, {}, b'{"error": "Token revoked"}'),
+    })
+    val = PostRevocationResourceValidator(validation_engine=engine)
+    sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
+    baseline = ControlledResponse(200, {}, b'{"data": "active"}')
+
+    # Even if target defines POST or DELETE, Mode A must downgrade to GET
+    target_post = ResourceAccessTarget(resource_id="res_post", resource_type="ITEM", endpoint=target_url, method="POST")
+    val.evaluate_revoked_session(sess, target_post, baseline, "EVID-0123456789ab")
+    assert len(engine.dispatched_requests) == 1
+    assert engine.dispatched_requests[0].method == "GET"
+
+    # HEAD method is preserved
+    target_head = ResourceAccessTarget(resource_id="res_head", resource_type="ITEM", endpoint=target_url, method="HEAD")
+    val.evaluate_revoked_session(sess, target_head, baseline, "EVID-0123456789ab")
+    assert len(engine.dispatched_requests) == 2
+    assert engine.dispatched_requests[1].method == "HEAD"
 
 
 class MockScopeEngine:
