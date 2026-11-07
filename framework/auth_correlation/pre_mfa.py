@@ -156,11 +156,12 @@ class PreMfaPrivilegeValidator:
                             metadata={"hypothesis_category": "PRE_MFA_PRIVILEGE"},
                             prefix="pre_mfa",
                         )
-                        persisted_id = evid_meta.get("evidence_id")
-                        if not persisted_id:
-                            persisted_id = f"EVID-{evid_meta.get('sha256', content_digest)[:12]}"
-                        evidence_chain = [persisted_id]
+                        if not isinstance(evid_meta, dict) or not evid_meta.get("evidence_id"):
+                            raise EvidencePersistenceError("EvidenceStore failed to return valid persisted evidence ID")
+                        evidence_chain = [evid_meta["evidence_id"]]
                     except Exception as e:
+                        if isinstance(e, EvidencePersistenceError):
+                            raise
                         raise EvidencePersistenceError(f"Failed to persist Pre-MFA evidence: {e}")
 
                 ep_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()
@@ -244,11 +245,12 @@ class PreMfaPrivilegeValidator:
                             metadata={"hypothesis_category": "STEP_UP_AUTH"},
                             prefix="step_up",
                         )
-                        persisted_id = evid_meta.get("evidence_id")
-                        if not persisted_id:
-                            persisted_id = f"EVID-{evid_meta.get('sha256', content_digest)[:12]}"
-                        evidence_chain = [persisted_id]
+                        if not isinstance(evid_meta, dict) or not evid_meta.get("evidence_id"):
+                            raise EvidencePersistenceError("EvidenceStore failed to return valid persisted evidence ID")
+                        evidence_chain = [evid_meta["evidence_id"]]
                     except Exception as e:
+                        if isinstance(e, EvidencePersistenceError):
+                            raise
                         raise EvidencePersistenceError(f"Failed to persist Step-Up evidence: {e}")
 
                 step_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()

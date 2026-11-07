@@ -380,9 +380,11 @@ class PostRevocationResourceValidator:
         approval_key: Optional[bytes] = None,
         approval_key_dir: Optional[str] = None,
         evidence_store: Optional[Any] = None,
+        program_id: Optional[str] = None,
     ):
         self._engine = validation_engine
         self._program_dir = program_dir or "."
+        self._program_id = program_id or (os.path.basename(self._program_dir.rstrip("/\\")) if self._program_dir != "." else None)
         self._state_dir = state_dir or os.path.join(self._program_dir, "state")
         self._scope_engine = scope_engine
         self._approval_key = approval_key
@@ -453,6 +455,74 @@ class PostRevocationResourceValidator:
                     pass
             raise ApprovalSecurityError(f"Failed to record consumed approval state: {e}")
 
+    def verify_invalidation_provenance(
+        self,
+        invalidation_evidence_ref: Any,
+        session_ctx: CorrelatedSessionContext,
+        program_id: Optional[str] = None,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Strictly verifies that an invalidation evidence reference:
+        1. Is a non-empty string adhering to EVIDENCE_REF_PATTERN ('EVID-[0-9a-fA-F]{12}').
+        2. Resolves against the configured EvidenceStore.
+        3. Represents a verified invalidation event (SESSION_REVOCATION, LOGOUT, PASSWORD_CHANGE, etc.).
+        4. Matches the session_ref and principal_id if present in metadata.
+        5. Matches the program context if present in metadata.
+        Returns (is_valid, reason, evidence_record).
+        """
+        if not invalidation_evidence_ref or not isinstance(invalidation_evidence_ref, str):
+            return False, "Invalid or missing invalidation evidence reference format", None
+
+        clean_ref = invalidation_evidence_ref.strip().upper()
+        if not EVIDENCE_REF_PATTERN.match(clean_ref):
+            return False, f"Evidence reference '{invalidation_evidence_ref}' does not match required EVID-<12-hex> pattern", None
+
+        if self._evidence_store is None:
+            return False, "EvidenceStore is not configured; cannot establish invalidation provenance", None
+
+        if not hasattr(self._evidence_store, "get_evidence"):
+            return False, "EvidenceStore does not support evidence retrieval; cannot establish invalidation provenance", None
+
+        try:
+            evidence_record = self._evidence_store.get_evidence(clean_ref)
+        except Exception as e:
+            return False, f"EvidenceStore lookup failure for '{clean_ref}': {e}", None
+
+        if evidence_record is None or not isinstance(evidence_record, dict):
+            return False, f"Invalidation evidence '{clean_ref}' does not exist in EvidenceStore", None
+
+        meta = evidence_record.get("metadata", {})
+        if not isinstance(meta, dict):
+            meta = {}
+
+        # Event type check: Must represent an invalidation event
+        event_type = meta.get("event_type") or meta.get("action_type") or meta.get("hypothesis_category")
+        allowed_invalidation_events = {
+            "SESSION_REVOCATION", "LOGOUT", "REVOCATION", "SESSION_INVALIDATION",
+            "ACTION-LOGOUT", "ACTION-PASSWORD-CHANGE", "PASSWORD_CHANGE",
+            "REVOCATION_ENFORCEMENT", "controlled_invalidation",
+        }
+        if not event_type or str(event_type) not in allowed_invalidation_events:
+            return False, f"Evidence '{clean_ref}' does not represent a recognized invalidation event (event_type: '{event_type}')", None
+
+        # Attribution check: session_ref (if present in metadata)
+        stored_session = meta.get("session_ref")
+        if stored_session and str(stored_session) != session_ctx.session_ref:
+            return False, f"Evidence '{clean_ref}' belongs to session '{stored_session}', not '{session_ctx.session_ref}'", None
+
+        # Attribution check: principal_id (if present in metadata)
+        stored_principal = meta.get("principal_id")
+        if stored_principal and str(stored_principal) != session_ctx.principal_id:
+            return False, f"Evidence '{clean_ref}' belongs to principal '{stored_principal}', not '{session_ctx.principal_id}'", None
+
+        # Context check: program_id (if present in metadata)
+        target_prog = program_id or getattr(self, "_program_id", None)
+        stored_program = meta.get("program_id")
+        if stored_program and target_prog and stored_program != target_prog and stored_program != "." and target_prog != ".":
+            return False, f"Evidence '{clean_ref}' belongs to program '{stored_program}', not '{target_prog}'", None
+
+        return True, "Invalidation evidence provenance verified", evidence_record
+
     def evaluate_revoked_session(
         self,
         session_ctx: CorrelatedSessionContext,
@@ -464,19 +534,56 @@ class PostRevocationResourceValidator:
         Mode A: Observes whether an already-invalidated session can access a protected resource.
         Mandatory Evidentiary Prerequisites:
         1. pre_revocation_baseline proving prior authorized access (HTTP 200).
-        2. invalidation_evidence_ref providing defensible proof of the invalidation event.
-        If either prerequisite is missing, fails closed returning ('INCONCLUSIVE', None).
+        2. invalidation_evidence_ref verified for provenance against configured EvidenceStore.
+        3. Strict read-only GET/HEAD dispatch with immediate ScopeEngine authorization check.
+        If any prerequisite is missing or invalid, fails closed returning ('INCONCLUSIVE', None).
         """
+        # 1. Require legitimate pre-revocation baseline (HTTP 200)
         if pre_revocation_baseline is None or pre_revocation_baseline.status_code != 200:
             return "INCONCLUSIVE", None
 
-        if not invalidation_evidence_ref or not isinstance(invalidation_evidence_ref, str):
+        # 2. Require verified invalidation evidence provenance
+        prov_ok, prov_reason, ev_record = self.verify_invalidation_provenance(
+            invalidation_evidence_ref, session_ctx, program_id=getattr(self, "_program_id", None)
+        )
+        if not prov_ok:
             return "INCONCLUSIVE", None
 
-        # Mode A: strictly read-only request (GET or HEAD)
+        # 3. Mode A: strictly read-only request (GET or HEAD)
         target_endpoint = getattr(resource_target, "endpoint", None) or getattr(resource_target, "url", "")
-        method_raw = getattr(resource_target, "method", "GET")
+        if not target_endpoint:
+            return "INCONCLUSIVE", None
+
+        parsed = urlparse(target_endpoint)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            return "INCONCLUSIVE", None
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+        if port < 1 or port > 65535:
+            return "INCONCLUSIVE", None
+
+        method_raw = (getattr(resource_target, "method", "GET") or "GET").upper()
         method = "HEAD" if method_raw == "HEAD" else "GET"
+
+        # 4. Scope authorization check immediately before dispatch
+        is_simulation = hasattr(self.engine, "lab_port") or type(self.engine).__name__ == "SimulationTransport"
+        if not is_simulation:
+            if self._scope_engine is None:
+                return "INCONCLUSIVE", None
+            try:
+                if not self._scope_engine.is_in_scope(target_endpoint):
+                    return "INCONCLUSIVE", None
+            except Exception:
+                return "INCONCLUSIVE", None
+        else:
+            try:
+                self.engine.validate_target_url(target_endpoint)
+            except Exception:
+                return "INCONCLUSIVE", None
+
+        # Bind scope engine to validation engine so redirect following cannot bypass scope checks
+        if hasattr(self.engine, "scope_engine") and self._scope_engine is not None:
+            self.engine.scope_engine = self._scope_engine
+
         req = ControlledRequest(
             url=target_endpoint,
             method=method,
@@ -504,7 +611,6 @@ class PostRevocationResourceValidator:
 
             clean_req = f"{method} {target_endpoint}\nHeaders: [REDACTED]"
             clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
-            content_digest = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()
 
             evidence_chain: List[str] = []
             if self._evidence_store is not None:
@@ -516,14 +622,17 @@ class PostRevocationResourceValidator:
                             "hypothesis_category": "REVOCATION_ENFORCEMENT",
                             "mode": "MODE_A",
                             "invalidation_evidence_ref": invalidation_evidence_ref,
+                            "session_ref": session_ctx.session_ref,
+                            "principal_id": session_ctx.principal_id,
                         },
                         prefix="revocation_mode_a",
                     )
-                    persisted_id = evid_meta.get("evidence_id")
-                    if not persisted_id:
-                        persisted_id = f"EVID-{evid_meta.get('sha256', content_digest)[:12]}"
-                    evidence_chain = [persisted_id]
+                    if not isinstance(evid_meta, dict) or not evid_meta.get("evidence_id"):
+                        raise EvidencePersistenceError("EvidenceStore failed to return valid persisted evidence ID")
+                    evidence_chain = [evid_meta["evidence_id"]]
                 except Exception as e:
+                    if isinstance(e, EvidencePersistenceError):
+                        raise
                     raise EvidencePersistenceError(f"Failed to persist Mode A revocation evidence: {e}")
             else:
                 evidence_chain = []
@@ -545,6 +654,8 @@ class PostRevocationResourceValidator:
                 evidence_chain=evidence_chain,
             )
             return "SESSION_NOT_INVALIDATED", finding
+
+        return classification, None
 
         return classification, None
 
@@ -593,11 +704,12 @@ class PostRevocationResourceValidator:
                         },
                         prefix="revocation_mode_b",
                     )
-                    persisted_id = evid_meta.get("evidence_id")
-                    if not persisted_id:
-                        persisted_id = f"EVID-{evid_meta.get('sha256', content_digest)[:12]}"
-                    evidence_chain = [persisted_id]
+                    if not isinstance(evid_meta, dict) or not evid_meta.get("evidence_id"):
+                        raise EvidencePersistenceError("EvidenceStore failed to return valid persisted evidence ID")
+                    evidence_chain = [evid_meta["evidence_id"]]
                 except Exception as e:
+                    if isinstance(e, EvidencePersistenceError):
+                        raise
                     raise EvidencePersistenceError(f"Failed to persist Mode B revocation evidence: {e}")
 
             rev_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()

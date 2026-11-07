@@ -33,6 +33,7 @@ def main() -> int:
         description="Phase 21: Authentication & Authorization Correlation Engine.",
     )
     parser.add_argument("--program", default="default-program", help="Target bug bounty program identifier")
+    parser.add_argument("--workspace", help="Target workspace root containing state, scope, and evidence")
     parser.add_argument("--target", help="Target endpoint or asset URL")
     parser.add_argument("--tree", action="store_true", help="Render visual ASCII correlation tree")
     parser.add_argument("--passive-only", action="store_true", help="Model correlation contexts without sending network traffic")
@@ -144,7 +145,23 @@ def main() -> int:
                     resource_type="INVOICE",
                     endpoint=f"http://127.0.0.1:{port}/scen02/invoices/101",
                 ))
-                s_a.invalidation_evidence_ref = "EVID-0123456789ab"
+                # Save authentic invalidation event into lab evidence store to establish verified provenance
+                from framework.common.evidence import EvidenceStore
+                lab_ev_store = EvidenceStore(os.path.join(lab_state_dir, "evidence"))
+                engine.evidence_store = lab_ev_store
+                engine.revocation_validator._evidence_store = lab_ev_store
+                inv_meta = lab_ev_store.save_http_capture(
+                    request_text="POST /auth/logout\nAuthorization: Bearer valid_token_a",
+                    response_text="HTTP 200 OK\n{\"status\": \"logged_out\"}",
+                    metadata={
+                        "event_type": "SESSION_REVOCATION",
+                        "session_ref": "sess_00000000000000000000000000000001",
+                        "principal_id": "lab_usr_a",
+                        "program_id": args.program,
+                    },
+                    prefix="lab_invalidation",
+                )
+                s_a.invalidation_evidence_ref = inv_meta["evidence_id"]
                 s_a.pre_revocation_baseline = transport.send_request(ControlledRequest(
                     url=f"http://127.0.0.1:{port}/api/v1/profile",
                     method="GET",
@@ -182,15 +199,17 @@ def main() -> int:
             print(f"    Status: {results.get('status')}")
         return 0
 
+    workspace_root = os.path.abspath(args.workspace) if args.workspace else REPO_ROOT
+
     # Production/Standard Engine Execution
     engine = AuthCorrelationEngine(
         program_id=args.program,
-        workspace_root=REPO_ROOT,
+        workspace_root=workspace_root,
         target_asset=args.target,
     )
 
     # Attempt to load persistent state if available
-    state_file = os.path.join(REPO_ROOT, "state", "auth_correlation.json")
+    state_file = os.path.join(workspace_root, "state", "auth_correlation.json")
     if os.path.exists(state_file):
         try:
             loaded_state = engine.state_manager.load_state()
@@ -206,19 +225,31 @@ def main() -> int:
                     metadata=s_dict.get("metadata", {}),
                 ))
         except Exception as e:
-            print(f"[-] Warning: Could not load existing correlation state: {e}", file=sys.stderr)
+            print(f"[!] Error: Corrupted or invalid correlation state file '{state_file}': {e}", file=sys.stderr)
+            return 1
 
     if args.tree:
         print(engine.render_tree())
         return 0
 
     is_passive = args.dry_run or args.passive_only
-    if not is_passive and not args.target and len(engine.principals) < 2:
-        print("[!] Production correlation requires an active target (--target) or initialized principals.", file=sys.stderr)
-        return 1
-
     if args.approve_action and not action_dossier and not is_passive:
         raise ApprovalSecurityError(f"Action dossier for approved action '{args.approve_action}' was not found.")
+
+    if not is_passive:
+        if not args.target:
+            print("[!] Production correlation requires an active target (--target).", file=sys.stderr)
+            return 1
+        if len(engine.principals) < 2 or len(engine.sessions) < 2:
+            print("[!] Production correlation requires at least two registered principals and sessions.", file=sys.stderr)
+            return 1
+        if engine.scope_engine:
+            if not engine.scope_engine.is_in_scope(args.target):
+                print(f"[!] Target '{args.target}' is outside configured program scope.", file=sys.stderr)
+                return 1
+        else:
+            print("[!] No scope engine configured. Active production correlation requires authorized scope.", file=sys.stderr)
+            return 1
 
     results = engine.run_correlation(
         target_asset=args.target,

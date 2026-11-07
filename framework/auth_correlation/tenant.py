@@ -201,11 +201,12 @@ class MultiTenantDesyncValidator:
                         },
                         prefix=f"tenant_{channel_name.lower()}",
                     )
-                    persisted_id = evid_meta.get("evidence_id")
-                    if not persisted_id:
-                        persisted_id = f"EVID-{evid_meta.get('sha256', content_digest)[:12]}"
-                    evidence_chain = [persisted_id]
+                    if not isinstance(evid_meta, dict) or not evid_meta.get("evidence_id"):
+                        raise EvidencePersistenceError("EvidenceStore failed to return valid persisted evidence ID")
+                    evidence_chain = [evid_meta["evidence_id"]]
                 except Exception as e:
+                    if isinstance(e, EvidencePersistenceError):
+                        raise
                     raise EvidencePersistenceError(f"Failed to persist cross-tenant evidence: {e}")
 
             ep_hash = hashlib.sha256(f"{tenant_label}_{channel_name}_{request_url}".encode("utf-8")).hexdigest()[:10].upper()

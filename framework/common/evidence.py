@@ -99,3 +99,29 @@ class EvidenceStore:
             "sha256": digest,
             "meta_path": meta_path,
         }
+
+    def get_evidence(self, evidence_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves evidence descriptor by evidence ID from the evidence directory.
+        Returns meta dict if found, or None if not found or malformed.
+        """
+        if not evidence_id or not isinstance(evidence_id, str):
+            return None
+        target_id = evidence_id.upper().strip()
+        if not os.path.isdir(self.evidence_dir):
+            return None
+
+        try:
+            for fname in sorted(os.listdir(self.evidence_dir)):
+                if fname.endswith(".meta.json"):
+                    meta_path = os.path.join(self.evidence_dir, fname)
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                        if isinstance(meta, dict) and meta.get("evidence_id") == target_id:
+                            return meta
+                    except Exception:
+                        continue
+        except Exception:
+            return None
+        return None

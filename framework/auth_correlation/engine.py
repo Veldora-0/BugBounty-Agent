@@ -64,7 +64,21 @@ class AuthCorrelationEngine:
         self.validation_engine = validation_engine or SecurityValidationEngine(program_dir=self.workspace_root)
         
         self.scope_engine = scope_engine or getattr(self.validation_engine, "scope_engine", None)
+        if self.scope_engine is None:
+            scope_file = os.path.join(self.workspace_root, "scope.yaml")
+            if os.path.exists(scope_file):
+                try:
+                    from framework.scope.engine import ScopeEngine
+                    self.scope_engine = ScopeEngine.from_file(scope_file)
+                    if hasattr(self.validation_engine, "scope_engine") and self.validation_engine.scope_engine is None:
+                        self.validation_engine.scope_engine = self.scope_engine
+                except Exception:
+                    pass
+
         self.evidence_store = evidence_store or getattr(self.validation_engine, "evidence_store", None)
+        if self.evidence_store is None:
+            from framework.common.evidence import EvidenceStore
+            self.evidence_store = EvidenceStore(os.path.join(self.workspace_root, "evidence"))
         self.preflight_validator = DualControlPreflightValidator(
             validation_engine=self.validation_engine,
             program_dir=self.workspace_root,
@@ -72,6 +86,7 @@ class AuthCorrelationEngine:
         self.revocation_validator = PostRevocationResourceValidator(
             validation_engine=self.validation_engine,
             program_dir=self.workspace_root,
+            program_id=self.program_id,
             state_dir=os.path.join(self.workspace_root, "state"),
             scope_engine=self.scope_engine,
             evidence_store=self.evidence_store,
@@ -296,14 +311,28 @@ class AuthCorrelationEngine:
             full_url, err = self._build_and_validate_target_url(hyp.target_endpoint, eff_target)
             if err is not None or not full_url:
                 hyp.preflight_status = CorrelationLifecycle.FAILED
-                hyp.validation_status = err or "INVALID_TARGET_URL"
+                hyp.validation_status = "FAILED"
                 continue
 
-            # Invalidation observation: if session already carries invalidation evidence, it passes preflight check
+            # Invalidation observation: if session carries verified invalidation evidence and valid baseline
             if hyp.category == "REVOCATION_ENFORCEMENT":
-                if getattr(sess_a, "invalidation_evidence_ref", None):
-                    hyp.preflight_status = CorrelationLifecycle.VERIFIED
-                    verified_hypotheses.append(hyp)
+                inv_ref = getattr(sess_a, "invalidation_evidence_ref", None)
+                base = getattr(sess_a, "pre_revocation_baseline", None)
+                if inv_ref and base and getattr(base, "status_code", 0) == 200:
+                    prov_ok, prov_reason, _ = self.revocation_validator.verify_invalidation_provenance(
+                        inv_ref, sess_a, program_id=self.program_id
+                    )
+                    if prov_ok:
+                        hyp.preflight_status = CorrelationLifecycle.VERIFIED
+                        verified_hypotheses.append(hyp)
+                        continue
+                    else:
+                        hyp.preflight_status = CorrelationLifecycle.FAILED
+                        hyp.validation_status = "SESSION_HEALTH_FAILED"
+                        continue
+                elif inv_ref:
+                    hyp.preflight_status = CorrelationLifecycle.FAILED
+                    hyp.validation_status = "SESSION_HEALTH_FAILED"
                     continue
 
             success, status, details = self.preflight_validator.validate_session_pair(
@@ -436,7 +465,7 @@ class AuthCorrelationEngine:
 
                         full_url, err = self._build_and_validate_target_url(hyp.target_endpoint, eff_target)
                         if err or not full_url:
-                            hyp.validation_status = err or "INVALID_TARGET_URL"
+                            hyp.validation_status = "FAILED"
                             continue
 
                         resource = ResourceAccessTarget(
@@ -454,8 +483,10 @@ class AuthCorrelationEngine:
                         if status == "SESSION_NOT_INVALIDATED" and finding:
                             self.findings.append(finding)
                             hyp.validation_status = "VALIDATED"
+                        elif status == "INCONCLUSIVE":
+                            hyp.validation_status = "INCONCLUSIVE"
                         else:
-                            hyp.validation_status = status
+                            hyp.validation_status = "FAILED"
 
         # Step 7: Pre-MFA privilege testing
         if "pre_mfa" in allowed_workflows:
@@ -466,7 +497,7 @@ class AuthCorrelationEngine:
                     if sess_pre and getattr(sess_pre, "is_pre_mfa", False):
                         full_url, err = self._build_and_validate_target_url(hyp.target_endpoint, eff_target)
                         if err or not full_url:
-                            hyp.validation_status = err or "INVALID_TARGET_URL"
+                            hyp.validation_status = "FAILED"
                             continue
                         target = ResourceAccessTarget(
                             resource_id=f"res_mfa_{hyp.hypothesis_id}",
@@ -498,7 +529,7 @@ class AuthCorrelationEngine:
                     if sess_a and sess_b:
                         full_url, err = self._build_and_validate_target_url(hyp.target_endpoint, eff_target)
                         if err or not full_url:
-                            hyp.validation_status = err or "INVALID_TARGET_URL"
+                            hyp.validation_status = "FAILED"
                             continue
                         res_a = ResourceAccessTarget(
                             resource_id=f"res_a_{hyp.hypothesis_id}",

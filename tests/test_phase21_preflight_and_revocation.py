@@ -134,18 +134,47 @@ def test_revocation_mode_a_missing_prerequisites_fails_inconclusive():
     assert finding is None
 
 
-def test_revocation_mode_a_secure_invalidation():
-    """Verifies that 401 with explicit revocation keywords confirms REVOKED."""
+def make_valid_invalidation_evidence(
+    store: EvidenceStore,
+    sess: CorrelatedSessionContext,
+    event_type: str = "SESSION_REVOCATION",
+    program_id: Optional[str] = None,
+) -> str:
+    """Helper to persist a valid, attributable invalidation event into EvidenceStore."""
+    res = store.save_http_capture(
+        request_text="POST /auth/logout\nAuthorization: Bearer revoked",
+        response_text='HTTP 200 OK\n{"status": "logged_out"}',
+        metadata={
+            "event_type": event_type,
+            "session_ref": sess.session_ref,
+            "principal_id": sess.principal_id,
+            "program_id": program_id or ".",
+        },
+        prefix="inv_proof",
+    )
+    return res["evidence_id"]
+
+
+def test_revocation_mode_a_secure_invalidation(tmp_path):
+    """Verifies that 401 with explicit revocation keywords confirms REVOKED when provenance is verified."""
     target_url = "https://target.local/api/v1/docs/1"
     engine = MockValidationEngine({
         target_url: ControlledResponse(401, {}, b'{"error": "Token has been revoked"}'),
     })
-    validator = PostRevocationResourceValidator(validation_engine=engine)
+    store = EvidenceStore(str(tmp_path / "ev_sec"))
+    mock_scope = MockScopeEngine()
+    validator = PostRevocationResourceValidator(
+        validation_engine=engine,
+        evidence_store=store,
+        scope_engine=mock_scope,
+    )
     target = ResourceAccessTarget(resource_id="res_01", resource_type="DOCUMENT", endpoint=target_url, method="GET")
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", volatile_headers={"Authorization": "Bearer revoked_token"})
     baseline = ControlledResponse(200, {}, b'{"doc": "confidential"}')
 
-    status, finding = validator.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789ab")
+    inv_ref = make_valid_invalidation_evidence(store, sess)
+
+    status, finding = validator.evaluate_revoked_session(sess, target, baseline, inv_ref)
     assert status == "REVOKED"
     assert finding is None
 
@@ -160,14 +189,16 @@ def test_revocation_mode_a_vulnerability_emission(tmp_path):
     ev_dir = tmp_path / "evidence_rev"
     ev_dir.mkdir()
     store = EvidenceStore(str(ev_dir))
+    mock_scope = MockScopeEngine()
 
-    # 1. With configured EvidenceStore: evidence is saved and chain contains valid ID
-    validator = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store)
     target = ResourceAccessTarget(resource_id="res_01", resource_type="DOCUMENT", endpoint=target_url, method="GET")
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", volatile_headers={"Authorization": "Bearer revoked_token"})
     baseline = ControlledResponse(200, {"content-type": "application/json"}, doc_body)
+    inv_ref = make_valid_invalidation_evidence(store, sess)
 
-    status, finding = validator.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789ab")
+    # 1. With configured EvidenceStore and verified provenance: finding is emitted
+    validator = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store, scope_engine=mock_scope)
+    status, finding = validator.evaluate_revoked_session(sess, target, baseline, inv_ref)
     assert status == "SESSION_NOT_INVALIDATED"
     assert finding is not None
     assert finding.category == "SESSION_NOT_INVALIDATED"
@@ -179,30 +210,136 @@ def test_revocation_mode_a_vulnerability_emission(tmp_path):
     assert finding.evidence_chain[0].startswith("EVID-")
     assert "[EVIDENCE_NOT_PERSISTED]" not in finding.description
 
-    # 2. Without EvidenceStore: evidence_chain is empty and description notes lack of persistence
-    validator_no_store = PostRevocationResourceValidator(validation_engine=engine, evidence_store=None)
-    status_ns, finding_ns = validator_no_store.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789ab")
-    assert status_ns == "SESSION_NOT_INVALIDATED"
-    assert finding_ns is not None
-    assert finding_ns.evidence_chain == []
-    assert "[EVIDENCE_NOT_PERSISTED]" in finding_ns.description
+    # 2. Without EvidenceStore: provenance cannot be verified, fails closed to INCONCLUSIVE without finding
+    validator_no_store = PostRevocationResourceValidator(validation_engine=engine, evidence_store=None, scope_engine=mock_scope)
+    status_ns, finding_ns = validator_no_store.evaluate_revoked_session(sess, target, baseline, inv_ref)
+    assert status_ns == "INCONCLUSIVE"
+    assert finding_ns is None
 
     # 3. Failing EvidenceStore raises EvidencePersistenceError
     class FailingStore:
+        def get_evidence(self, ref):
+            return {"metadata": {"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id}}
         def save_http_capture(self, *args, **kwargs):
             raise IOError("Simulated disk error during capture")
 
-    validator_fail = PostRevocationResourceValidator(validation_engine=engine, evidence_store=FailingStore())
+    validator_fail = PostRevocationResourceValidator(validation_engine=engine, evidence_store=FailingStore(), scope_engine=mock_scope)
     with pytest.raises(EvidencePersistenceError, match="Failed to persist Mode A revocation evidence"):
-        validator_fail.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789ab")
+        validator_fail.evaluate_revoked_session(sess, target, baseline, inv_ref)
 
 
-def test_revocation_conservative_response_classifications():
+def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
+    """Verifies all negative provenance cases fail closed to INCONCLUSIVE."""
+    target_url = "https://target.local/api/v1/docs/1"
+    engine = MockValidationEngine({
+        target_url: ControlledResponse(200, {}, b'{"data": "secret"}'),
+    })
+    ev_dir = tmp_path / "ev_prov"
+    ev_dir.mkdir()
+    store = EvidenceStore(str(ev_dir))
+    mock_scope = MockScopeEngine()
+    validator = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store, scope_engine=mock_scope)
+
+    target = ResourceAccessTarget(resource_id="res_01", resource_type="DOCUMENT", endpoint=target_url, method="GET")
+    sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
+    baseline = ControlledResponse(200, {}, b'{"data": "secret"}')
+
+    # Case 1: Nonexistent evidence ID
+    s1, f1 = validator.evaluate_revoked_session(sess, target, baseline, "EVID-000000000000")
+    assert s1 == "INCONCLUSIVE" and f1 is None
+
+    # Case 2: Malformed evidence reference
+    s2, f2 = validator.evaluate_revoked_session(sess, target, baseline, "NOT_AN_EVID_REF")
+    assert s2 == "INCONCLUSIVE" and f2 is None
+
+    # Case 3: Evidence belonging to another session
+    sess_other = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000999", principal_id="other_user")
+    inv_other = make_valid_invalidation_evidence(store, sess_other)
+    s3, f3 = validator.evaluate_revoked_session(sess, target, baseline, inv_other)
+    assert s3 == "INCONCLUSIVE" and f3 is None
+
+    # Case 4: Evidence with wrong event type (e.g. XSS_TEST instead of SESSION_REVOCATION)
+    inv_wrong_type = make_valid_invalidation_evidence(store, sess, event_type="XSS_TEST")
+    s4, f4 = validator.evaluate_revoked_session(sess, target, baseline, inv_wrong_type)
+    assert s4 == "INCONCLUSIVE" and f4 is None
+
+    # Case 5: Evidence belonging to another program
+    inv_other_prog = make_valid_invalidation_evidence(store, sess, program_id="foreign_program")
+    validator_with_prog = PostRevocationResourceValidator(
+        validation_engine=engine, evidence_store=store, scope_engine=mock_scope, program_dir="my_program"
+    )
+    s5, f5 = validator_with_prog.evaluate_revoked_session(sess, target, baseline, inv_other_prog)
+    assert s5 == "INCONCLUSIVE" and f5 is None
+
+    # Case 6: EvidenceStore lookup failure (exception)
+    class BrokenStore:
+        def get_evidence(self, ref):
+            raise OSError("Database read corruption")
+    val_broken = PostRevocationResourceValidator(validation_engine=engine, evidence_store=BrokenStore(), scope_engine=mock_scope)
+    s6, f6 = val_broken.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789AB")
+    assert s6 == "INCONCLUSIVE" and f6 is None
+
+    # Case 7: Invalid baseline status (e.g. 401 or 500)
+    inv_valid = make_valid_invalidation_evidence(store, sess)
+    baseline_401 = ControlledResponse(401, {}, b'{"error": "Unauthorized"}')
+    s7, f7 = validator.evaluate_revoked_session(sess, target, baseline_401, inv_valid)
+    assert s7 == "INCONCLUSIVE" and f7 is None
+
+
+def test_revocation_mode_a_scope_authorization_at_dispatch(tmp_path):
+    """Verifies that Mode A validates ScopeEngine immediately before request dispatch."""
+    target_url = "https://target.local/api/v1/resource"
+    engine = MockValidationEngine({
+        target_url: ControlledResponse(200, {}, b'{"data": "protected"}'),
+    })
+    store = EvidenceStore(str(tmp_path / "ev_scope"))
+    target = ResourceAccessTarget(resource_id="res_01", resource_type="DOCUMENT", endpoint=target_url, method="GET")
+    sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
+    baseline = ControlledResponse(200, {}, b'{"data": "protected"}')
+    inv_ref = make_valid_invalidation_evidence(store, sess)
+
+    # 1. Missing ScopeEngine fails closed (zero requests dispatched)
+    val_no_scope = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store, scope_engine=None)
+    s1, f1 = val_no_scope.evaluate_revoked_session(sess, target, baseline, inv_ref)
+    assert s1 == "INCONCLUSIVE" and f1 is None
+    assert len(engine.dispatched_requests) == 0
+
+    # 2. ScopeEngine returning False (out-of-scope) fails closed (zero requests dispatched)
+    class ScopeOut:
+        def is_in_scope(self, url):
+            return False
+    val_scope_out = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store, scope_engine=ScopeOut())
+    s2, f2 = val_scope_out.evaluate_revoked_session(sess, target, baseline, inv_ref)
+    assert s2 == "INCONCLUSIVE" and f2 is None
+    assert len(engine.dispatched_requests) == 0
+
+    # 3. ScopeEngine raising exception fails closed (zero requests dispatched)
+    class ScopeErr:
+        def is_in_scope(self, url):
+            raise RuntimeError("DNS policy resolver unreachable")
+    val_scope_err = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store, scope_engine=ScopeErr())
+    s3, f3 = val_scope_err.evaluate_revoked_session(sess, target, baseline, inv_ref)
+    assert s3 == "INCONCLUSIVE" and f3 is None
+    assert len(engine.dispatched_requests) == 0
+
+    # 4. Non-HTTP scheme fails closed
+    target_ftp = ResourceAccessTarget(resource_id="res_ftp", resource_type="FILE", endpoint="ftp://target.local/doc", method="GET")
+    mock_scope = MockScopeEngine()
+    val_valid_scope = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store, scope_engine=mock_scope)
+    s4, f4 = val_valid_scope.evaluate_revoked_session(sess, target_ftp, baseline, inv_ref)
+    assert s4 == "INCONCLUSIVE" and f4 is None
+    assert len(engine.dispatched_requests) == 0
+
+
+def test_revocation_conservative_response_classifications(tmp_path):
     """Verifies that non-matching, 403, generic 401, redirect, and WAF responses do not emit findings."""
     target_url = "https://target.local/api/v1/docs/1"
+    store = EvidenceStore(str(tmp_path / "ev_class"))
+    mock_scope = MockScopeEngine()
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
     baseline = ControlledResponse(200, {"content-type": "application/json"}, b'{"user": "alice", "doc": "confidential"}')
     target = ResourceAccessTarget(resource_id="res_01", resource_type="DOCUMENT", endpoint=target_url, method="GET")
+    inv_ref = make_valid_invalidation_evidence(store, sess)
 
     cases = [
         # (Response, expected_status)
@@ -220,31 +357,34 @@ def test_revocation_conservative_response_classifications():
 
     for resp, exp_status in cases:
         engine = MockValidationEngine({target_url: resp})
-        val = PostRevocationResourceValidator(validation_engine=engine)
-        status, finding = val.evaluate_revoked_session(sess, target, baseline, "EVID-0123456789ab")
+        val = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store, scope_engine=mock_scope)
+        status, finding = val.evaluate_revoked_session(sess, target, baseline, inv_ref)
         assert status == exp_status, f"Expected status {exp_status} for {resp.status_code}, got {status}"
         assert finding is None, f"Expected no finding for {exp_status}, but finding was emitted"
 
 
-def test_revocation_mode_a_strictly_read_only():
+def test_revocation_mode_a_strictly_read_only(tmp_path):
     """Verifies that Mode A strictly restricts requests to GET or HEAD, never dispatching unsafe mutations."""
     target_url = "https://target.local/api/v1/resource"
     engine = MockValidationEngine({
         target_url: ControlledResponse(401, {}, b'{"error": "Token revoked"}'),
     })
-    val = PostRevocationResourceValidator(validation_engine=engine)
+    store = EvidenceStore(str(tmp_path / "ev_ro"))
+    mock_scope = MockScopeEngine()
+    val = PostRevocationResourceValidator(validation_engine=engine, evidence_store=store, scope_engine=mock_scope)
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
     baseline = ControlledResponse(200, {}, b'{"data": "active"}')
+    inv_ref = make_valid_invalidation_evidence(store, sess)
 
     # Even if target defines POST or DELETE, Mode A must downgrade to GET
     target_post = ResourceAccessTarget(resource_id="res_post", resource_type="ITEM", endpoint=target_url, method="POST")
-    val.evaluate_revoked_session(sess, target_post, baseline, "EVID-0123456789ab")
+    val.evaluate_revoked_session(sess, target_post, baseline, inv_ref)
     assert len(engine.dispatched_requests) == 1
     assert engine.dispatched_requests[0].method == "GET"
 
     # HEAD method is preserved
     target_head = ResourceAccessTarget(resource_id="res_head", resource_type="ITEM", endpoint=target_url, method="HEAD")
-    val.evaluate_revoked_session(sess, target_head, baseline, "EVID-0123456789ab")
+    val.evaluate_revoked_session(sess, target_head, baseline, inv_ref)
     assert len(engine.dispatched_requests) == 2
     assert engine.dispatched_requests[1].method == "HEAD"
 
@@ -444,4 +584,121 @@ def test_preflight_response_classification_distinctions():
     # 7. Differential comparison: 200 OK identical to anonymous control -> UNKNOWN
     resp_shell = ControlledResponse(200, {"content-type": "text/html"}, b'<html><body>Loading App Shell...</body></html>')
     assert validator.classify_probe_response(resp_shell, anon_resp=resp_shell) == CorrelationLifecycle.UNKNOWN
+
+
+def test_preflight_anonymous_control_differential_cases():
+    """Verifies all required anonymous control differential cases:
+    1. Authenticated response equivalent to anonymous control -> UNKNOWN
+    2. Authenticated differs meaningfully from anonymous control -> VERIFIED
+    3. Both authenticated sessions independently pass -> VERIFIED
+    4. Anonymous request failure (transport exception or 500) -> FAILED
+    5. Generic SPA shell and WAF challenge do not pass -> UNKNOWN
+    """
+    preflight_url = "https://target.local/api/profile"
+
+    # Case 1: Authenticated response equivalent to anonymous control -> UNKNOWN
+    engine1 = MockValidationEngine({
+        f"{preflight_url}|Bearer tok_a": ControlledResponse(200, {"content-type": "application/json"}, b'{"app": "v1", "public": true, "msg": "welcome"}'),
+        f"{preflight_url}|Bearer tok_b": ControlledResponse(200, {"content-type": "application/json"}, b'{"app": "v1", "public": true, "msg": "welcome"}'),
+        f"{preflight_url}|ANONYMOUS": ControlledResponse(200, {"content-type": "application/json"}, b'{"app": "v1", "public": true, "msg": "welcome"}'),
+    })
+    v1 = DualControlPreflightValidator(validation_engine=engine1)
+    s1_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", volatile_headers={"Authorization": "Bearer tok_a"})
+    s1_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="u2", volatile_headers={"Authorization": "Bearer tok_b"})
+    ok1, status1, details1 = v1.validate_session_pair(s1_a, s1_b, preflight_url)
+    assert ok1 is False
+    assert status1 == "SESSION_HEALTH_FAILED"
+    assert s1_a.lifecycle == CorrelationLifecycle.UNKNOWN
+    assert s1_b.lifecycle == CorrelationLifecycle.UNKNOWN
+
+    # Case 2 & 3: Authenticated differs meaningfully from anonymous control & both sessions independently pass -> VERIFIED
+    engine2 = MockValidationEngine({
+        f"{preflight_url}|Bearer tok_a": ControlledResponse(200, {"content-type": "application/json"}, b'{"user": "alice", "account_id": "ACC-100", "private_records": [1, 2, 3]}'),
+        f"{preflight_url}|Bearer tok_b": ControlledResponse(200, {"content-type": "application/json"}, b'{"user": "bob", "account_id": "ACC-200", "private_records": [4, 5, 6]}'),
+        f"{preflight_url}|ANONYMOUS": ControlledResponse(401, {"content-type": "application/json"}, b'{"error": "Authentication credentials required"}'),
+    })
+    v2 = DualControlPreflightValidator(validation_engine=engine2)
+    s2_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000003", principal_id="u1", volatile_headers={"Authorization": "Bearer tok_a"})
+    s2_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000004", principal_id="u2", volatile_headers={"Authorization": "Bearer tok_b"})
+    ok2, status2, details2 = v2.validate_session_pair(s2_a, s2_b, preflight_url)
+    assert ok2 is True
+    assert status2 == "VERIFIED"
+    assert s2_a.lifecycle == CorrelationLifecycle.VERIFIED
+    assert s2_b.lifecycle == CorrelationLifecycle.VERIFIED
+
+    # Also test validate_single_session for both independently:
+    v2_single = DualControlPreflightValidator(validation_engine=engine2)
+    s2_a_solo = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000003", principal_id="u1", volatile_headers={"Authorization": "Bearer tok_a"})
+    s2_b_solo = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000004", principal_id="u2", volatile_headers={"Authorization": "Bearer tok_b"})
+    s_ok_a, s_status_a, _ = v2_single.validate_single_session(s2_a_solo, preflight_url)
+    assert s_ok_a is True
+    assert s_status_a == "VERIFIED"
+    assert s2_a_solo.lifecycle == CorrelationLifecycle.VERIFIED
+    s_ok_b, s_status_b, _ = v2_single.validate_single_session(s2_b_solo, preflight_url)
+    assert s_ok_b is True
+    assert s_status_b == "VERIFIED"
+    assert s2_b_solo.lifecycle == CorrelationLifecycle.VERIFIED
+
+    # Case 4a: Anonymous request failure (server error 500) -> FAILED
+    engine4a = MockValidationEngine({
+        f"{preflight_url}|Bearer tok_a": ControlledResponse(200, {"content-type": "application/json"}, b'{"user": "alice", "data": "ok"}'),
+        f"{preflight_url}|Bearer tok_b": ControlledResponse(200, {"content-type": "application/json"}, b'{"user": "bob", "data": "ok"}'),
+        f"{preflight_url}|ANONYMOUS": ControlledResponse(500, {"content-type": "application/json"}, b'{"error": "Internal Server Error"}'),
+    })
+    v4a = DualControlPreflightValidator(validation_engine=engine4a)
+    s4a_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000005", principal_id="u1", volatile_headers={"Authorization": "Bearer tok_a"})
+    s4a_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000006", principal_id="u2", volatile_headers={"Authorization": "Bearer tok_b"})
+    ok4a, status4a, details4a = v4a.validate_session_pair(s4a_a, s4a_b, preflight_url)
+    assert ok4a is False
+    assert status4a == "SESSION_HEALTH_FAILED"
+    assert s4a_a.lifecycle == CorrelationLifecycle.FAILED
+    assert s4a_b.lifecycle == CorrelationLifecycle.FAILED
+
+    # Case 4b: Anonymous request failure (transport exception) -> FAILED
+    engine4b = MockValidationEngine({
+        f"{preflight_url}|Bearer tok_a": ControlledResponse(200, {"content-type": "application/json"}, b'{"user": "alice", "data": "ok"}'),
+        f"{preflight_url}|Bearer tok_b": ControlledResponse(200, {"content-type": "application/json"}, b'{"user": "bob", "data": "ok"}'),
+    })
+    def fail_anon(req):
+        if req.headers.get("Authorization") == "Bearer tok_a":
+            return ControlledResponse(200, {"content-type": "application/json"}, b'{"user": "alice", "data": "ok"}')
+        if req.headers.get("Authorization") == "Bearer tok_b":
+            return ControlledResponse(200, {"content-type": "application/json"}, b'{"user": "bob", "data": "ok"}')
+        raise ConnectionResetError("Anonymous connection reset")
+    engine4b.send_request = fail_anon
+    v4b = DualControlPreflightValidator(validation_engine=engine4b)
+    s4b_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000007", principal_id="u1", volatile_headers={"Authorization": "Bearer tok_a"})
+    s4b_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000008", principal_id="u2", volatile_headers={"Authorization": "Bearer tok_b"})
+    ok4b, status4b, details4b = v4b.validate_session_pair(s4b_a, s4b_b, preflight_url)
+    assert ok4b is False
+    assert status4b == "SESSION_HEALTH_FAILED"
+    assert s4b_a.lifecycle == CorrelationLifecycle.FAILED
+    assert s4b_b.lifecycle == CorrelationLifecycle.FAILED
+
+    # Case 5: Generic SPA shell and WAF challenge do not pass -> UNKNOWN
+    # 5a: Generic SPA shell
+    engine5a = MockValidationEngine({
+        f"{preflight_url}|Bearer tok_a": ControlledResponse(200, {"content-type": "text/html"}, b'<!DOCTYPE html><html><body><div id="root">Loading Single Page Application</div><script src="/app.js"></script></body></html>'),
+        f"{preflight_url}|Bearer tok_b": ControlledResponse(200, {"content-type": "text/html"}, b'<!DOCTYPE html><html><body><div id="root">Loading Single Page Application</div><script src="/app.js"></script></body></html>'),
+        f"{preflight_url}|ANONYMOUS": ControlledResponse(404, {}, b'Not Found'),
+    })
+    v5a = DualControlPreflightValidator(validation_engine=engine5a)
+    s5a_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000009", principal_id="u1", volatile_headers={"Authorization": "Bearer tok_a"})
+    s5a_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000010", principal_id="u2", volatile_headers={"Authorization": "Bearer tok_b"})
+    ok5a, status5a, details5a = v5a.validate_session_pair(s5a_a, s5a_b, preflight_url)
+    assert ok5a is False
+    assert s5a_a.lifecycle == CorrelationLifecycle.UNKNOWN
+
+    # 5b: WAF challenge (Cloudflare / captcha / etc)
+    engine5b = MockValidationEngine({
+        f"{preflight_url}|Bearer tok_a": ControlledResponse(200, {"content-type": "text/html"}, b'<html><title>Just a moment...</title><body>Checking your browser before accessing the website. Cloudflare ray id 12345.</body></html>'),
+        f"{preflight_url}|Bearer tok_b": ControlledResponse(200, {"content-type": "text/html"}, b'<html><title>Just a moment...</title><body>Checking your browser before accessing the website. Cloudflare ray id 12345.</body></html>'),
+        f"{preflight_url}|ANONYMOUS": ControlledResponse(403, {}, b'Forbidden'),
+    })
+    v5b = DualControlPreflightValidator(validation_engine=engine5b)
+    s5b_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000011", principal_id="u1", volatile_headers={"Authorization": "Bearer tok_a"})
+    s5b_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000012", principal_id="u2", volatile_headers={"Authorization": "Bearer tok_b"})
+    ok5b, status5b, details5b = v5b.validate_session_pair(s5b_a, s5b_b, preflight_url)
+    assert ok5b is False
+    assert s5b_a.lifecycle == CorrelationLifecycle.UNKNOWN
 

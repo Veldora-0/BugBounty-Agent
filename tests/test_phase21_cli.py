@@ -14,6 +14,9 @@ import subprocess
 import sys
 import pytest
 
+from framework.auth_correlation.model import CorrelatedPrincipalContext, CorrelatedSessionContext
+from framework.auth_correlation.state import AuthCorrelationStateManager
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CLI_PATH = os.path.join(REPO_ROOT, "scripts", "bb-auth-correlate")
 
@@ -76,6 +79,61 @@ def test_cli_uninitialized_production_fails_closed(tmp_path):
     res = subprocess.run([sys.executable, CLI_PATH, "--program", "empty_prog"], capture_output=True, text=True)
     assert res.returncode == 1
     assert "Production correlation requires an active target" in res.stderr
+
+
+def test_cli_corrupted_state_file_fails_closed(tmp_path):
+    """Verifies that corrupted state file fails closed with exit code 1."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    state_file = state_dir / "auth_correlation.json"
+    state_file.write_text("{malformed: corrupted json...", encoding="utf-8")
+    
+    res = subprocess.run(
+        [sys.executable, CLI_PATH, "--workspace", str(tmp_path), "--target", "https://example.com/api"],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 1
+    assert "Corrupted or invalid correlation state file" in res.stderr
+
+
+def test_cli_production_insufficient_principals_fails_closed(tmp_path):
+    """Verifies that active production correlation fails closed when fewer than 2 principals/sessions exist."""
+    res = subprocess.run(
+        [sys.executable, CLI_PATH, "--workspace", str(tmp_path), "--target", "https://example.com/api"],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 1
+    assert "requires at least two registered principals and sessions" in res.stderr
+
+
+def test_cli_production_out_of_scope_target_fails_closed(tmp_path):
+    """Verifies that active production correlation with an out-of-scope target fails closed."""
+    scope_yaml = """
+program:
+  name: "test_prog"
+targets:
+  urls:
+    - "https://authorized.example.com/api/"
+"""
+    (tmp_path / "scope.yaml").write_text(scope_yaml, encoding="utf-8")
+    mgr = AuthCorrelationStateManager(program_id="test_prog", workspace_root=str(tmp_path))
+    p1 = CorrelatedPrincipalContext(principal_id="user_1", role="MEMBER")
+    p2 = CorrelatedPrincipalContext(principal_id="user_2", role="MEMBER")
+    mgr.principals[p1.principal_id] = p1
+    mgr.principals[p2.principal_id] = p2
+    s1 = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="user_1", volatile_headers={"Authorization": "Bearer tok1"})
+    s2 = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="user_2", volatile_headers={"Authorization": "Bearer tok2"})
+    mgr.save_state([s1, s2], [], [])
+
+    res = subprocess.run(
+        [sys.executable, CLI_PATH, "--workspace", str(tmp_path), "--target", "https://unauthorized-evil.com/api/test"],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 1
+    assert "is outside configured program scope" in res.stderr
 
 
 def test_cli_missing_dossier_fails_closed():

@@ -2,7 +2,7 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Current Repository Baseline:** `46610a3` (Phase 21 final security closure and regression verification completed; baseline starting HEAD: `f4f5954d6b81d0e2c01bb59dd6077b25720ae7b8`; pre-Phase 21 baseline: `45b4edb1210ac02144b26d1226d104d9f1d15042`)
+> **Current Repository Baseline:** `6d1e3a5304f6eac08f7d272dd39ce8793379af66` (Phase 21 final security closure and regression verification completed; baseline starting HEAD: `6d1e3a5304f6eac08f7d272dd39ce8793379af66`; pre-Phase 21 baseline: `45b4edb1210ac02144b26d1226d104d9f1d15042`; historical Phase 1–20 baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`; Stage C baseline: `1841280b2f71b103b0e9217b961f1d859bd94272`; starting baseline: `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae`)
 > **Current phase:** Phase 21 — Authentication & Authorization Correlation (Complete; Next Phase: Phase 22 — Cross-Engine Attack-Path Correlation — PLANNED)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
