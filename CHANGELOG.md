@@ -10,6 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Accepted)
 
 #### Added & Hardened
+* **Anonymous Differential Preflight Protocol** (`framework/auth_correlation/preflight.py`):
+  * Completed full 3-probe sequential verification sequence: Probe 1 (Principal A authenticated) $\rightarrow$ Probe 2 (Principal B authenticated) $\rightarrow$ Probe 3 (Anonymous control) $\rightarrow$ differential classification with anonymous control input.
+  * Preserved sequential short-circuiting: authentication/authorization failures on Probe 1 or Probe 2 abort immediately before dispatching subsequent probes.
+  * Fail-closed gating on anonymous control failures: anonymous control transport errors or HTTP 5xx responses fail closed to `FAILED`.
+  * Equivalent response elimination: authenticated responses equivalent to anonymous control (SequenceMatcher similarity ratio $> 0.70$ or identical body text) fail closed to `UNKNOWN`.
+  * Strict false-positive elimination: generic SPA shells, WAF challenges, login challenge forms, and empty bodies are classified as `UNKNOWN` or `AUTHENTICATION_FAILED`.
+  * Synchronized `validate_single_session()` with identical differential comparison rules.
+* **Evidence Provenance Verification** (`framework/auth_correlation/revocation.py`, `framework/common/evidence.py`):
+  * Implemented `verify_invalidation_provenance()`: resolves caller-supplied evidence references (`EVID-...`) against `EvidenceStore.get_evidence()`, verifying recognized invalidation event types (`SESSION_REVOCATION`, `LOGOUT`, `PASSWORD_CHANGE`, `controlled_invalidation`), session attribution (`session_ref`), principal attribution (`principal_id`), and program attribution (`program_id`).
+  * Missing, malformed, foreign, or unverifiable references fail closed returning `(False, reason, None)`.
+  * Added `EvidenceStore.get_evidence()` to retrieve and parse stored evidence records (`*.meta.json`) by evidence ID.
+* **Mode A Scope Authorization at Dispatch** (`framework/auth_correlation/revocation.py`):
+  * Enforced read-only `GET`/`HEAD` methods strictly.
+  * Immediate `ScopeEngine.is_in_scope()` evaluation at dispatch boundary; live requests fail closed returning `("INCONCLUSIVE", None)` if `scope_engine` is absent or throws during evaluation.
+  * Simulation transport validates target URL via `validate_target_url()`.
+  * Bound `scope_engine` to `self.engine.scope_engine` to prevent redirect following from escaping program scope.
+* **CLI & Production Fail-Closed Hardening** (`scripts/bb-auth-correlate`):
+  * Added `--workspace` argument to support targeted workspace roots containing state, scope, and evidence.
+  * Corrupted or invalid state files (`state/auth_correlation.json`) fail closed with exit code 1.
+  * Active production mode without `--target`, with fewer than 2 registered principals or sessions, or with an out-of-scope target fails closed with exit code 1.
+  * Missing or unverified action dossiers for `--approve-action` fail closed with exit code 2 (`ApprovalSecurityError`).
 * **Mode A Revocation Orchestration & Gating** (`framework/auth_correlation/engine.py`, `framework/auth_correlation/revocation.py`):
   * Integrated Mode A `evaluate_revoked_session()` directly into `AuthCorrelationEngine.run_correlation()`.
   * Strictly observation-only using read-only requests (`GET` or `HEAD`); never initiates unsafe mutations without approval.
@@ -75,8 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Registered Category 26 (`check_auth_correlation_engine`) in `framework/tools/doctor.py` and `scripts/bb-doctor`.
   * Registered `*bb-auth-correlate*` permission rule (`ask`) in `opencode.jsonc`.
 * **Automated Regression Test Suites**:
-  * Added 66 tests across 9 test modules: `tests/test_phase21_models.py`, `tests/test_phase21_credential_leakage_and_serialization.py`, `tests/test_phase21_cvss.py`, `tests/test_phase21_preflight_and_revocation.py`, `tests/test_phase21_pre_mfa.py`, `tests/test_phase21_tenant_desync.py`, `tests/test_phase21_state.py`, `tests/test_phase21_engine.py`, and `tests/test_phase21_cli.py`.
-  * 100% pass rate: 65 passed, 1 skipped in targeted Phase 21 suite; 1005 passed, 3 skipped on Windows 11 host (153.18s); 1007 passed, 1 skipped on Kali Linux VM (135.30s); Firefox real browser integration test passed in 79.27s on Kali Linux. Total 1008 items across 55 test modules. Zero regressions.
+  * Added 72 tests across 9 test modules: `tests/test_phase21_models.py`, `tests/test_phase21_credential_leakage_and_serialization.py`, `tests/test_phase21_cvss.py`, `tests/test_phase21_preflight_and_revocation.py`, `tests/test_phase21_pre_mfa.py`, `tests/test_phase21_tenant_desync.py`, `tests/test_phase21_state.py`, `tests/test_phase21_engine.py`, and `tests/test_phase21_cli.py`.
+  * 100% pass rate: 71 passed, 1 skipped in targeted Phase 21 suite; 1011 passed, 3 skipped on Windows 11 host; 1013 passed, 1 skipped on Kali Linux VM; Firefox real browser integration test passed in 18.66s on Kali Linux. Total 1014 items across 55 test modules. Zero regressions.
 
 ### Stage C Security Reconciliation & Repository Audit Baseline
 
