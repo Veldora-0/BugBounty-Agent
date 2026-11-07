@@ -25,33 +25,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **Post-Revocation Resource Probing & Approval Tracking** (`framework/auth_correlation/revocation.py`):
   * `PostRevocationResourceValidator`: Mode A (observation-only monitoring against session-bound baseline) and Mode B (dual-account differential probe with mandatory operator approval gate).
   * Mode B approval binding: strictly enforces all 8 mandatory action properties (`action_id`, `target_endpoint`, `method`, `test_account`, `action_type`, `program_id`, `created_at`, `ttl`, `unique_approval_id`).
-  * Persistent single-use approval tracking: records executed approvals in `consumed_approvals.json` with thread safety (`threading.Lock()`), atomic file updates, replay rejection, future timestamp rejection, and fail-closed corrupted state handling.
+  * Cryptographic authorization separation: operator approval signature (`SIG-<64-hex>` via HMAC-SHA256 from external approval key) strictly separated from action integrity hash (`ACT-<64-hex>` via SHA256 canonical serialization).
+  * Cross-process single-use enforcement: `CrossProcessFileLock` (using Win32 `msvcrt.locking` on Windows and POSIX `fcntl.flock` on Linux) to prevent concurrent replay race conditions.
+  * Mandatory ScopeEngine integration: fail-closed scope check immediately before dispatching any mutation probe.
+  * Mode A strictly observation-only; Mode B requires explicit operator approval dossier signed with external key.
 * **Pre-MFA & Step-Up Boundary Auditing** (`framework/auth_correlation/pre_mfa.py`):
   * `PreMfaPrivilegeValidator`: Audits sensitive endpoint exposure to partially authenticated pre-MFA sessions (`mfa_level == "PRE_MFA"`) against full-auth and unauthenticated baselines.
   * Distinguishes public shells and login challenge forms from authentic profile data. Captures sanitized evidence reference digests (`EVID-<12-hex>`) in `evidence_chain`.
 * **Multi-Tenant Dual-Token Cross-Channel Desynchronization** (`framework/auth_correlation/tenant.py`):
-  * `MultiTenantDesyncValidator`: Cross-tenant route, query, and header parameter tampering across 3 independent channels (`PATH`, `QUERY`, `HEADER`) without token claim modification.
-  * Implements 3-state cache classification: `CACHE_CONFIRMED`, `CACHE_NOT_INDICATED`, `CACHE_UNKNOWN` with cache-busting probes (`_bb_cb=<timestamp>`) to eliminate CDN proxy false positives.
+  * `MultiTenantDesyncValidator`: Cross-tenant route, query, and header parameter tampering across 3 independent channels (`PATH`, `QUERY`, `HEADER`) in both directions (`A_TO_B`, `B_TO_A`) without token claim modification.
+  * Rigorous 3-state cache classification: `CACHE_CONFIRMED`, `CACHE_NOT_INDICATED`, `CACHE_UNKNOWN` with dynamic cache-busting probes (`_bb_cb=<timestamp>`) requiring similarity >= 0.50 to corroborate findings and eliminate reverse-proxy false positives.
 * **Correlation Engine Orchestration** (`framework/auth_correlation/engine.py`):
   * `AuthCorrelationEngine`: Orchestrates preflight, revocation Modes A and B, pre-MFA, and tenant workflows dynamically.
-  * Consumes `target_asset`, looks up sessions by explicit `principal_id` rather than list indices, and supports `--preflight-only` and `--dry-run`.
+  * Target-aware relative endpoint joining against target base URL (`scheme://netloc`), resolving sessions by explicit `principal_id` rather than list indices, and supporting `--preflight-only` and `--dry-run`.
   * Fail-closed persistence: persistence failures return `status = "PERSISTENCE_FAILED"` with explicit error details rather than swallowing exceptions.
 * **Native Platform State Directory & Persistence Security** (`framework/auth_correlation/state.py`):
   * `_verify_and_prepare_state_dir`: Confines directory below trusted workspace root, rejects symlinks and reparse points.
-  * Windows native security: uses Win32 `advapi32` APIs (`GetNamedSecurityInfoW`, `GetSecurityDescriptorDacl`, `GetAce`) to verify non-inherited protected DACL and current user/SYSTEM ownership.
-  * POSIX native security: verifies ownership by current UID, non-group/world-writable permissions (`0o022` on directories, `0o077` on files), and `st_nlink == 1`.
+  * Windows native security: uses Win32 `advapi32` APIs (`GetSecurityDescriptorControl` to verify `SE_DACL_PROTECTED` 0x1000, `GetSecurityDescriptorDacl`, `GetAce`) to verify non-inherited protected DACL and current user/SYSTEM ownership; explicitly verifies `icacls` return codes.
+  * POSIX native security: verifies ownership by current UID, private permissions (`0o700` directories, `0o600` files), and `st_nlink == 1`.
   * Atomic persistence: exclusive creation (`os.O_CREAT | os.O_EXCL`), descriptor-based writing via `os.fdopen()`, descriptor validation via `os.fstat()`, and atomic replace.
 * **Deterministic Simulation Lab & Transport** (`framework/auth_correlation/lab.py`):
   * `SimulationTransport`: Strictly confined to numeric `127.0.0.1:<lab_port>` with hop-by-hop redirect isolation (max 3 hops).
   * `LocalAuthCorrelationLab`: Serves 6 deterministic scenarios on ephemeral loopback ports without external egress.
 * **CLI Wrapper & Diagnostics Integration**:
-  * Added `scripts/bb-auth-correlate` and `scripts/bb-auth-correlate.cmd` with full options: `--lab`, `--tree`, `--preflight`, `--revocation`, `--pre-mfa`, `--tenant`, `--approve-action`, `--dossier`, `--validate`, `--dry-run`, `--json`, `--output`.
+  * Added `scripts/bb-auth-correlate` and `scripts/bb-auth-correlate.cmd` with full options: `--lab`, `--tree`, `--preflight`, `--revocation`, `--pre-mfa`, `--tenant`, `--approve-action`, `--dossier`, `--sign-dossier`, `--validate`, `--dry-run`, `--json`, `--output`.
   * Production execution fails closed if invoked without target or initialized principals.
   * Registered Category 26 (`check_auth_correlation_engine`) in `framework/tools/doctor.py` and `scripts/bb-doctor`.
   * Registered `*bb-auth-correlate*` permission rule (`ask`) in `opencode.jsonc`.
 * **Automated Regression Test Suites**:
-  * Added 56 tests across 9 test modules: `tests/test_phase21_models.py`, `tests/test_phase21_credential_leakage_and_serialization.py`, `tests/test_phase21_cvss.py`, `tests/test_phase21_preflight_and_revocation.py`, `tests/test_phase21_pre_mfa.py`, `tests/test_phase21_tenant_desync.py`, `tests/test_phase21_state.py`, `tests/test_phase21_engine.py`, and `tests/test_phase21_cli.py`.
-  * 100% pass rate on Windows 11 (996 passed, 2 skipped browser tests) and Kali Linux (997 passed, 1 browser timeout).
+  * Added 62 tests across 9 test modules: `tests/test_phase21_models.py`, `tests/test_phase21_credential_leakage_and_serialization.py`, `tests/test_phase21_cvss.py`, `tests/test_phase21_preflight_and_revocation.py`, `tests/test_phase21_pre_mfa.py`, `tests/test_phase21_tenant_desync.py`, `tests/test_phase21_state.py`, `tests/test_phase21_engine.py`, and `tests/test_phase21_cli.py`.
+  * 100% pass rate: 61 passed, 1 skipped in targeted suite; 1001 passed, 3 skipped on Windows 11 host (154.04s); 1003 passed, 1 skipped on Kali Linux VM (123.73s). Total 1004 items across 55 test modules. Zero regressions.
 
 ### Stage C Security Reconciliation & Repository Audit Baseline
 

@@ -128,7 +128,7 @@ BugBounty-Agent/
 │   ├── report.md              # 17-section markdown report template
 │   └── config.example.yaml    # Global framework configuration template
 │
-├── tests/                     # Automated regression test suite (48 test modules; 983 tests under pytest)
+├── tests/                     # Automated regression test suite (55 test modules; 1004 tests under pytest)
 │   ├── test_scope.py          # Scope boundaries and DNS resolution tests
 │   ├── test_asset_engine.py   # Asset graph and subdomain intelligence tests
 │   ├── test_api_engine.py     # OpenAPI, GraphQL, and streaming byte budget tests
@@ -502,7 +502,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 
 ### 3. Environment & Runtime Status
 * **Development & Evaluation Environments**: Validated and synchronized across Windows 11 x86_64 and Kali/Debian Linux workstations with Python 3.10+.
-* **Cross-Platform Test Coverage**: 48 test modules with 983 tests collected under pytest (981 passed, 2 skipped on Windows 11 due to headless browser environment requirements; 983 passed on Kali Linux).
+* **Cross-Platform Test Coverage**: 55 test modules with 1004 tests collected under pytest (1001 passed, 3 skipped on Windows 11; 1003 passed, 1 skipped on Kali Linux; 0 failures).
 * **Target Runtime**: Kali/Debian Linux with OpenCode installed, deploying `Bug-Bounty` globally via `bb-deploy`.
 
 ---

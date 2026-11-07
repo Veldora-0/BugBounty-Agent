@@ -95,17 +95,21 @@ Phase 19 (Infrastructure & Configuration Exposure) was completed and accepted.
   - Automatic disclosure report submission is strictly prohibited.
 
 ### Phase 21 Acceptance & Verification Record
-Phase 21 (Authentication & Authorization Correlation) was completed and accepted across all 5 implementation stages with full post-implementation hardening.
+Phase 21 (Authentication & Authorization Correlation) was completed and accepted across all 5 implementation stages with comprehensive post-implementation security corrections and cross-platform verification.
 - **Test execution results reported by environments**:
-  - Windows 11 (Python 3.14.7): 56 passed in targeted Phase 21 suite (`tests/test_phase21_*.py`) in 5.93s; 996 passed, 2 skipped (browser tests) in full regression suite.
-  - Kali Linux (Python 3.14.8): 56 passed in targeted Phase 21 suite in 6.05s; 997 passed in full regression suite.
-  - System Diagnostics (`bb-doctor` Category 26): `[HEALTHY]` (status HEALTHY, 6 scenarios verified).
-  - Kali Linux (Python 3.14.8): 42 passed in targeted Phase 21 suite in 0.90s; 983 passed, 0 skipped in full regression suite (141.79s).
+  - Windows 11 (Python 3.14.7): 61 passed, 1 skipped in targeted Phase 21 suite (`tests/test_phase21_*.py`) in 6.75s; 1001 passed, 3 skipped in full regression suite (154.04s).
+  - Kali Linux (Python 3.14.8): 61 passed, 1 skipped in targeted Phase 21 suite in 4.83s; 1003 passed, 1 skipped in full regression suite (123.73s).
+  - Firefox SPA Integration on Kali: 1 passed in 9.62s (`test_real_browser_firefox_local_spa_integration`).
+  - System Diagnostics (`bb-doctor` Category 26): `[HEALTHY]` (status HEALTHY, 6 scenarios verified across all 26 diagnostic categories).
 - **Review and acceptance status**:
-  - Delivered `framework/auth_correlation/` with 5 core modules: `model.py` (strict allowlists, safe string/repr representations masking credentials/secrets), `cvss.py` (FIRST CVSS 3.1 metric equations), `preflight.py` (`DualControlPreflightValidator`), `revocation.py` (`PostRevocationResourceValidator`), `pre_mfa.py` (`PreMfaPrivilegeValidator`), `tenant.py` (`MultiTenantDesyncValidator`), `engine.py` (`AuthCorrelationEngine`), `state.py` (`AuthCorrelationStateManager`), and `lab.py` (`SimulationTransport`, `LocalAuthCorrelationLab`).
+  - Delivered `framework/auth_correlation/` with 9 core modules: `model.py` (strict allowlists, safe string/repr representations masking credentials/secrets), `cvss.py` (FIRST CVSS 3.1 metric equations), `preflight.py` (`DualControlPreflightValidator`), `revocation.py` (`PostRevocationResourceValidator`), `pre_mfa.py` (`PreMfaPrivilegeValidator`), `tenant.py` (`MultiTenantDesyncValidator`), `engine.py` (`AuthCorrelationEngine`), `state.py` (`AuthCorrelationStateManager`), and `lab.py` (`SimulationTransport`, `LocalAuthCorrelationLab`).
   - Added CLI tool `scripts/bb-auth-correlate` (`scripts/bb-auth-correlate.cmd`), Category 26 in `framework/tools/doctor.py`, and OpenCode V2 permissions in `opencode.jsonc`.
-  - Enforced atomic descriptor-based state writes (`os.fdopen`), symlink/reparse point rejection, POSIX private permission enforcement (`0o077`), hard-link checks (`st_nlink == 1`), Windows DACL validation, and strict JSON schema checking.
+  - Enforced atomic descriptor-based state writes (`os.fdopen`), symlink/reparse point rejection, POSIX private permission enforcement (`0o700` dirs / `0o600` files), hard-link checks (`st_nlink == 1`), Windows Win32 `advapi32` DACL validation (`SE_DACL_PROTECTED` 0x1000), and strict JSON schema checking.
   - Enforced loopback transport confinement: `SimulationTransport` communicates strictly with numeric `127.0.0.1:<active_lab_port>`.
+  - Mode B approval with HMAC-SHA256 operator authorization signature (`SIG-<64-hex>`) separated from action integrity (`ACT-<64-hex>`); durable cross-process single-use enforcement (`CrossProcessFileLock`).
+  - Mandatory ScopeEngine integration: fail-closed scope check immediately before dispatching any mutation probe.
+  - Multi-tenant cross-channel testing across PATH, QUERY, and HEADER channels in both directions (`A_TO_B`, `B_TO_A`) with 3-state cache classification and cache-busting corroboration.
+  - Final acceptance status: **ACCEPTED AND CLOSED**.
 - **Documented Phase 21 limitations**:
   - Testing is bounded to operator-provided test identities and credentials; automated password spraying, dictionary attacks, or brute-forcing are strictly prohibited.
   - Active probes require explicit human approval (`--approve`) and enforce strict request ceilings ($\le 15$ per hypothesis) and response-byte budgets.
