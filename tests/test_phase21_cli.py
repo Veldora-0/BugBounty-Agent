@@ -94,3 +94,47 @@ def test_cli_missing_dossier_fails_closed():
     )
     assert res.returncode == 2
     assert "Action Approval Security Error" in res.stderr
+
+
+def test_cli_sign_dossier(tmp_path):
+    """Verifies that --sign-dossier produces a cryptographically signed dossier with action_id and approval_signature."""
+    import time
+    dossier = {
+        "action_type": "LOGOUT",
+        "target_endpoint": "https://example.com/api/logout",
+        "test_account": "test_user_1",
+        "method": "POST",
+        "program_id": "test_program",
+        "unique_approval_id": "appr_test_001",
+        "created_at": time.time(),
+        "ttl": 300,
+    }
+    raw_path = tmp_path / "raw_dossier.json"
+    raw_path.write_text(json.dumps(dossier), encoding="utf-8")
+
+    res = subprocess.run(
+        [sys.executable, CLI_PATH, "--sign-dossier", str(raw_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0
+    signed_data = json.loads(res.stdout)
+    assert "action_id" in signed_data
+    assert signed_data["action_id"].startswith("ACT-")
+    assert "approval_signature" in signed_data
+    assert signed_data["approval_signature"].startswith("SIG-")
+    assert signed_data["action_type"] == "LOGOUT"
+    assert signed_data["target_endpoint"] == "https://example.com/api/logout"
+
+    out_path = tmp_path / "signed_dossier.json"
+    res2 = subprocess.run(
+        [sys.executable, CLI_PATH, "--sign-dossier", str(raw_path), "--output", str(out_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert res2.returncode == 0
+    assert os.path.exists(out_path)
+    file_data = json.loads(out_path.read_text(encoding="utf-8"))
+    assert file_data["action_id"] == signed_data["action_id"]
+    assert file_data["approval_signature"] == signed_data["approval_signature"]
+

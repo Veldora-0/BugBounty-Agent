@@ -329,6 +329,11 @@ if os.name == "nt":
     ]
     advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
 
+    advapi32.GetSecurityDescriptorControl.argtypes = [
+        c_void_p, POINTER(wintypes.WORD), POINTER(wintypes.DWORD)
+    ]
+    advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+
     class ACL_SIZE_INFORMATION(Structure):
         _fields_ = [
             ("AceCount", wintypes.DWORD),
@@ -380,7 +385,7 @@ if os.name == "nt":
     def _enforce_windows_directory_dacl(dir_path: str) -> None:
         user_sid = _get_current_user_sid_windows()
         if not user_sid:
-            return
+            raise SerializationSecurityError("Security violation: cannot determine current Windows user SID")
         import subprocess
         cmd = [
             "icacls", dir_path, "/inheritance:r",
@@ -389,12 +394,31 @@ if os.name == "nt":
             "/grant:r", "*S-1-5-32-544:(OI)(CI)F",
             "/c", "/q"
         ]
-        subprocess.run(cmd, capture_output=True)
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise SerializationSecurityError(f"Security violation: failed to enforce Windows DACL on directory '{dir_path}' (exit code {res.returncode})")
 
-    def _verify_windows_directory_security(dir_path: str) -> None:
-        lst = os.lstat(dir_path)
+    def _enforce_windows_file_dacl(file_path: str) -> None:
+        user_sid = _get_current_user_sid_windows()
+        if not user_sid:
+            raise SerializationSecurityError("Security violation: cannot determine current Windows user SID")
+        import subprocess
+        cmd = [
+            "icacls", file_path, "/inheritance:r",
+            f"/grant:r", f"*{user_sid}:F",
+            "/grant:r", "*S-1-5-18:F",
+            "/grant:r", "*S-1-5-32-544:F",
+            "/c", "/q"
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise SerializationSecurityError(f"Security violation: failed to enforce Windows DACL on file '{file_path}' (exit code {res.returncode})")
+
+    def _verify_windows_path_security(target_path: str, is_dir: bool = True) -> None:
+        lst = os.lstat(target_path)
         if hasattr(lst, "st_file_attributes") and (lst.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
-            raise SerializationSecurityError(f"Security violation: directory '{dir_path}' is an NTFS reparse point or junction")
+            path_type = "directory" if is_dir else "file"
+            raise SerializationSecurityError(f"Security violation: {path_type} '{target_path}' is an NTFS reparse point or junction")
 
         SE_FILE_OBJECT = 1
         OWNER_SECURITY_INFORMATION = 0x00000001
@@ -405,14 +429,24 @@ if os.name == "nt":
         p_sd = c_void_p()
 
         res = advapi32.GetNamedSecurityInfoW(
-            dir_path, SE_FILE_OBJECT,
+            target_path, SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             byref(p_owner), None, byref(p_dacl), None, byref(p_sd)
         )
         if res != 0:
-            raise SerializationSecurityError(f"Security violation: failed to inspect Windows security descriptor for '{dir_path}' (code {res})")
+            raise SerializationSecurityError(f"Security violation: failed to inspect Windows security descriptor for '{target_path}' (code {res})")
 
         try:
+            # 1. Protected DACL verification (inheritance disabled)
+            ctrl = wintypes.WORD()
+            rev = wintypes.DWORD()
+            if not advapi32.GetSecurityDescriptorControl(p_sd, byref(ctrl), byref(rev)):
+                raise SerializationSecurityError(f"Security violation: failed to read security descriptor control for '{target_path}'")
+            SE_DACL_PROTECTED = 0x1000
+            if not (ctrl.value & SE_DACL_PROTECTED):
+                raise SerializationSecurityError(f"Security violation: path '{target_path}' DACL is not protected (inheritance enabled)")
+
+            # 2. Owner verification
             current_sid = _get_current_user_sid_windows()
             str_sid = c_void_p()
             owner_str = ""
@@ -422,18 +456,23 @@ if os.name == "nt":
 
             ALLOWED_OWNERS = {current_sid, "S-1-5-18", "S-1-5-32-544"}
             if current_sid and owner_str not in ALLOWED_OWNERS:
-                raise SerializationSecurityError(f"Security violation: directory '{dir_path}' ownership mismatch: not owned by current user or Administrators")
+                raise SerializationSecurityError(f"Security violation: path '{target_path}' ownership mismatch: not owned by current user or Administrators")
 
+            # 3. DACL verification
             if not p_dacl:
-                raise SerializationSecurityError(f"Security violation: directory '{dir_path}' has a NULL DACL")
+                raise SerializationSecurityError(f"Security violation: path '{target_path}' has a NULL DACL")
 
             acl_info = ACL_SIZE_INFORMATION()
             if not advapi32.GetAclInformation(p_dacl, byref(acl_info), ctypes.sizeof(acl_info), 2):
-                raise SerializationSecurityError(f"Security violation: failed to read DACL information for '{dir_path}'")
+                raise SerializationSecurityError(f"Security violation: failed to read DACL information for '{target_path}'")
 
+            # Approved principals: current user, Local SYSTEM (S-1-5-18), Builtin Administrators (S-1-5-32-544),
+            # and NT AUTHORITY\OWNER RIGHTS (S-1-3-4) which represents the object owner.
+            ALLOWED_SIDS = {current_sid, "S-1-5-18", "S-1-5-32-544", "S-1-3-4"}
             UNSAFE_SIDS = {"S-1-1-0", "S-1-5-32-545", "S-1-5-11", "S-1-5-7", "S-1-5-32-546"}
             WRITE_MASK = 0x0002 | 0x0004 | 0x0010 | 0x0100 | 0x40000000 | 0x10000000 | 0x1f01ff
 
+            has_user_access = False
             for i in range(acl_info.AceCount):
                 p_ace = c_void_p()
                 if advapi32.GetAce(p_dacl, i, byref(p_ace)):
@@ -446,15 +485,33 @@ if os.name == "nt":
                         kernel32.LocalFree(str_sid_buf)
 
                     if ace.Header.AceType == 0:  # ACCESS_ALLOWED_ACE_TYPE
-                        if ace_sid in UNSAFE_SIDS and (ace.Mask & WRITE_MASK):
-                            raise SerializationSecurityError(f"Security violation: directory '{dir_path}' DACL grants unsafe write access to unprivileged or public principals ({ace_sid})")
+                        if ace_sid in UNSAFE_SIDS:
+                            raise SerializationSecurityError(f"Security violation: path '{target_path}' DACL grants unsafe write access to unprivileged or public principals ({ace_sid})")
+                        if ace_sid not in ALLOWED_SIDS:
+                            raise SerializationSecurityError(f"Security violation: path '{target_path}' DACL grants unexpected access to unapproved principal ({ace_sid})")
+                        if current_sid and (ace_sid == current_sid or ace_sid == "S-1-3-4"):
+                            has_user_access = True
+            if current_sid and not has_user_access:
+                raise SerializationSecurityError(f"Security violation: path '{target_path}' DACL does not grant required access to current user ({current_sid})")
         finally:
             kernel32.LocalFree(p_sd)
+
+    def _verify_windows_directory_security(dir_path: str) -> None:
+        _verify_windows_path_security(dir_path, is_dir=True)
+
+    def _verify_windows_file_security(file_path: str) -> None:
+        _verify_windows_path_security(file_path, is_dir=False)
 else:
     def _enforce_windows_directory_dacl(dir_path: str) -> None:
         pass
 
+    def _enforce_windows_file_dacl(file_path: str) -> None:
+        pass
+
     def _verify_windows_directory_security(dir_path: str) -> None:
+        pass
+
+    def _verify_windows_file_security(file_path: str) -> None:
         pass
 
 
@@ -537,13 +594,18 @@ class AuthCorrelationStateManager:
                 if stat.S_ISLNK(k_stat.st_mode):
                     raise KeySecurityError("Key file is a symbolic link")
                 if os.name == "nt":
-                    if hasattr(k_stat, "st_file_attributes") and (k_stat.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
-                        raise KeySecurityError("Key file is a reparse point")
+                    try:
+                        _enforce_windows_file_dacl(key_file)
+                        _verify_windows_file_security(key_file)
+                    except SerializationSecurityError as err:
+                        raise KeySecurityError(str(err))
                 else:
                     if k_stat.st_uid != os.getuid():
                         raise KeySecurityError("Key file ownership mismatch")
                     if k_stat.st_mode & 0o077 != 0:
                         raise KeySecurityError("Key file permissions are not private")
+                    if k_stat.st_nlink != 1:
+                        raise KeySecurityError("Key file has unexpected hardlinks")
 
                 with open(key_file, "rb") as f:
                     key = f.read(32)
@@ -562,7 +624,11 @@ class AuthCorrelationStateManager:
                     raise KeySecurityError(f"Failed to write key file: {e}")
 
                 if os.name == "nt":
-                    _enforce_windows_directory_dacl(key_file)
+                    try:
+                        _enforce_windows_file_dacl(key_file)
+                        _verify_windows_file_security(key_file)
+                    except SerializationSecurityError as err:
+                        raise KeySecurityError(str(err))
 
             key_id = hashlib.sha256(key).hexdigest()[:8]
             self._key = key

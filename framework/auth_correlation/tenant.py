@@ -147,36 +147,26 @@ class MultiTenantDesyncValidator:
             return None
 
         cache_state = self.assess_cache_state(resp)
-        is_cache_artifact = False
+        cache_busted_evidence = "N/A"
 
-        if cache_state == "CACHE_CONFIRMED":
+        if cache_state in ("CACHE_CONFIRMED", "CACHE_UNKNOWN"):
             sep = "&" if "?" in request_url else "?"
             busted_url = f"{request_url}{sep}_bb_cb={int(time.time()*1000)}"
             busted_req = ControlledRequest(url=busted_url, method=method, headers=request_headers)
             try:
                 busted_resp = self.engine.send_request(busted_req)
-                if busted_resp.status_code in (401, 403, 404):
-                    is_cache_artifact = True
-                elif busted_resp.status_code != 200:
-                    return None  # Inconclusive cache state
             except Exception:
-                return None  # Failed cache-busting request cannot be interpreted as proof
-        elif cache_state == "CACHE_UNKNOWN":
-            # Ambiguous headers: require cache confirmation probe
-            sep = "&" if "?" in request_url else "?"
-            busted_url = f"{request_url}{sep}_bb_cb={int(time.time()*1000)}"
-            busted_req = ControlledRequest(url=busted_url, method=method, headers=request_headers)
-            try:
-                busted_resp = self.engine.send_request(busted_req)
-                if busted_resp.status_code in (401, 403, 404):
-                    is_cache_artifact = True
-                elif busted_resp.status_code != 200:
-                    return None
-            except Exception:
-                return None
+                return None  # Failed cache-busting request cannot confirm vulnerability
 
-        if is_cache_artifact:
-            return None
+            if busted_resp.status_code in (401, 403, 404):
+                return None  # Cache artifact eliminated
+            elif busted_resp.status_code == 200:
+                b_ratio = difflib.SequenceMatcher(None, busted_resp.body_text, baseline_target.body_text).ratio()
+                if b_ratio < 0.50:
+                    return None  # Cache busted probe did not return cross-tenant data
+                cache_busted_evidence = f"Corroborated via cache-busting probe (status 200, similarity {b_ratio:.2f})"
+            else:
+                return None  # Ambiguous/inconclusive cache response
 
         ratio = difflib.SequenceMatcher(None, resp.body_text, baseline_target.body_text).ratio()
         if ratio >= 0.50:
@@ -192,7 +182,7 @@ class MultiTenantDesyncValidator:
             )
             score, sev, vector = CVSS31Calculator.calculate_base_score(metrics)
 
-            clean_req = f"{method} {request_url}\nChannel: {channel_name}\nHeaders: [REDACTED]"
+            clean_req = f"{method} {request_url}\nChannel: {channel_name}\nDirection: {tenant_label}\nHeaders: [REDACTED]"
             clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
             ev_hash = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()[:12]
             evidence_ref = f"EVID-{ev_hash}"
@@ -203,13 +193,19 @@ class MultiTenantDesyncValidator:
                     self._evidence_store.save_http_capture(
                         request_text=clean_req,
                         response_text=clean_res,
-                        metadata={"hypothesis_category": "TENANT_ISOLATION", "channel": channel_name},
+                        metadata={
+                            "hypothesis_category": "TENANT_ISOLATION",
+                            "channel": channel_name,
+                            "direction": tenant_label,
+                            "cache_state": cache_state,
+                        },
                         prefix=f"tenant_{channel_name.lower()}",
                     )
                 except Exception:
                     pass
 
-            finding_id = f"FIND-TENANT-{tenant_label}-{int(time.time())}"[:20]
+            ep_hash = hashlib.sha256(f"{tenant_label}_{channel_name}_{request_url}".encode("utf-8")).hexdigest()[:10].upper()
+            finding_id = f"FIND-TENANT-{ep_hash}"
             endpoint_path = request_url if request_url.startswith("/") else "/" + request_url.split("/", 3)[-1]
             return CorrelationFinding(
                 finding_id=finding_id,
@@ -220,7 +216,7 @@ class MultiTenantDesyncValidator:
                 cvss_vector=vector,
                 confidence=0.95,
                 endpoint=endpoint_path,
-                description=f"Cross-tenant access achieved via {channel_name} substitution without valid tenant authorization.",
+                description=f"Cross-tenant access achieved via {channel_name} substitution ({tenant_label}) without valid tenant authorization. Cache state: {cache_state}. {cache_busted_evidence}. Content match ratio: {ratio:.2f}.",
                 evidence_chain=evidence_chain,
             )
 
@@ -284,7 +280,7 @@ class MultiTenantDesyncValidator:
             findings.append(f_ba)
 
         # ----------------------------------------------------------------------
-        # Probe 3: Query Parameter Substitution (if tenant IDs are known)
+        # Probe 3: Query Parameter Substitution (A -> B)
         # ----------------------------------------------------------------------
         tid_b = tenant_b_ctx.metadata.get("tenant_id")
         tid_a = tenant_a_ctx.metadata.get("tenant_id")
@@ -303,19 +299,53 @@ class MultiTenantDesyncValidator:
                 pass
 
         # ----------------------------------------------------------------------
-        # Probe 4: Header Substitution (X-Tenant-ID header)
+        # Probe 4: Query Parameter Substitution (B -> A)
+        # ----------------------------------------------------------------------
+        if tid_a:
+            sep = "&" if "?" in target_b else "?"
+            query_url_ba = f"{target_b}{sep}tenant_id={tid_a}"
+            req_q_ba = ControlledRequest(url=query_url_ba, method=method_b, headers=dict(tenant_b_ctx.volatile_headers))
+            try:
+                resp_q_ba = self.engine.send_request(req_q_ba)
+                f_q_ba = self._verify_cache_and_evaluate_probe(
+                    resp_q_ba, baseline_a, query_url_ba, method_b, dict(tenant_b_ctx.volatile_headers), "B_TO_A", "QUERY"
+                )
+                if f_q_ba:
+                    findings.append(f_q_ba)
+            except Exception:
+                pass
+
+        # ----------------------------------------------------------------------
+        # Probe 5: Header Substitution (A -> B)
         # ----------------------------------------------------------------------
         if tid_b:
-            hdr_headers = dict(tenant_a_ctx.volatile_headers)
-            hdr_headers["X-Tenant-ID"] = tid_b
-            req_h_ab = ControlledRequest(url=target_a, method=method_a, headers=hdr_headers)
+            hdr_headers_a = dict(tenant_a_ctx.volatile_headers)
+            hdr_headers_a["X-Tenant-ID"] = tid_b
+            req_h_ab = ControlledRequest(url=target_a, method=method_a, headers=hdr_headers_a)
             try:
                 resp_h_ab = self.engine.send_request(req_h_ab)
                 f_h_ab = self._verify_cache_and_evaluate_probe(
-                    resp_h_ab, baseline_b, target_a, method_a, hdr_headers, "A_TO_B", "HEADER"
+                    resp_h_ab, baseline_b, target_a, method_a, hdr_headers_a, "A_TO_B", "HEADER"
                 )
                 if f_h_ab:
                     findings.append(f_h_ab)
+            except Exception:
+                pass
+
+        # ----------------------------------------------------------------------
+        # Probe 6: Header Substitution (B -> A)
+        # ----------------------------------------------------------------------
+        if tid_a:
+            hdr_headers_b = dict(tenant_b_ctx.volatile_headers)
+            hdr_headers_b["X-Tenant-ID"] = tid_a
+            req_h_ba = ControlledRequest(url=target_b, method=method_b, headers=hdr_headers_b)
+            try:
+                resp_h_ba = self.engine.send_request(req_h_ba)
+                f_h_ba = self._verify_cache_and_evaluate_probe(
+                    resp_h_ba, baseline_a, target_b, method_b, hdr_headers_b, "B_TO_A", "HEADER"
+                )
+                if f_h_ba:
+                    findings.append(f_h_ba)
             except Exception:
                 pass
 

@@ -20,9 +20,15 @@ from framework.tools.doctor import SystemDoctor
 def main():
     parser = argparse.ArgumentParser(description="Comprehensive BugBounty-Agent environment health check.")
     parser.add_argument("--json", action="store_true", help="Output raw diagnostics in JSON")
-    parser.add_argument("--category", choices=[
-        "system", "dependencies", "tools", "providers", "browser", "wordlists", "configuration", "scope_engine", "opencode_integration"
-    ], help="Inspect only a specific diagnostic category")
+    ALL_CATEGORIES = [
+        "system", "dependencies", "tools", "providers", "browser", "wordlists", "configuration",
+        "scope_engine", "asset_engine", "recon_engine", "webapp_engine", "javascript_engine",
+        "api_engine", "validation_engine", "xss_engine", "authz_engine", "ssrf_engine",
+        "injection_engine", "http_trust_engine", "business_logic_engine", "cloud_security_engine",
+        "auth_engine", "infrastructure_engine", "concurrency_engine", "auth_correlation_engine",
+        "opencode_integration",
+    ]
+    parser.add_argument("--category", choices=ALL_CATEGORIES, help="Inspect only a specific diagnostic category")
     args = parser.parse_args()
 
     doctor = SystemDoctor()

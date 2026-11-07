@@ -158,3 +158,132 @@ def test_cache_hit_false_positive_elimination():
     findings = validator.evaluate_tenant_isolation(sess_a, sess_b, res_a, res_b)
     # Zero findings recorded because cache busting confirmed it was a proxy cache artifact!
     assert len(findings) == 0
+
+
+def test_query_channel_bidirectional_substitution():
+    """Verifies that query-parameter channel is tested in both directions (A->B and B->A)."""
+    url_a = "https://target.local/api/v1/orders"
+    url_b = "https://target.local/api/v1/orders"
+    data_b = b'{"tenant": "tenant_b", "invoices": [101]}'
+    data_a = b'{"tenant": "tenant_a", "invoices": [202]}'
+
+    class QueryMockEngine:
+        def __init__(self):
+            self.dispatched = []
+
+        def send_request(self, req: ControlledRequest) -> ControlledResponse:
+            self.dispatched.append(req)
+            auth = req.headers.get("Authorization", "")
+            if auth == "Bearer tok_a" and "tenant_id=tenant_b" in req.url:
+                return ControlledResponse(200, {"cache-control": "no-store"}, data_b)
+            if auth == "Bearer tok_b" and "tenant_id=tenant_a" in req.url:
+                return ControlledResponse(200, {"cache-control": "no-store"}, data_a)
+            if auth == "Bearer tok_a":
+                return ControlledResponse(200, {}, data_a)
+            if auth == "Bearer tok_b":
+                return ControlledResponse(200, {}, data_b)
+            return ControlledResponse(404, {}, b"Not Found")
+
+    validator = MultiTenantDesyncValidator(validation_engine=QueryMockEngine())
+    sess_a = CorrelatedSessionContext(
+        session_ref="sess_00000000000000000000000000000001",
+        principal_id="u_a",
+        volatile_headers={"Authorization": "Bearer tok_a"},
+        metadata={"tenant_id": "tenant_b"},  # Target B id
+    )
+    sess_b = CorrelatedSessionContext(
+        session_ref="sess_00000000000000000000000000000002",
+        principal_id="u_b",
+        volatile_headers={"Authorization": "Bearer tok_b"},
+        metadata={"tenant_id": "tenant_a"},  # Target A id
+    )
+    res_a = ResourceAccessTarget(resource_id="res_a", resource_type="ORDERS", endpoint=url_a)
+    res_b = ResourceAccessTarget(resource_id="res_b", resource_type="ORDERS", endpoint=url_b)
+
+    findings = validator.evaluate_tenant_isolation(sess_a, sess_b, res_a, res_b)
+    query_findings = [f for f in findings if "QUERY" in f.title]
+    assert len(query_findings) == 2
+
+
+def test_header_channel_bidirectional_substitution():
+    """Verifies that header channel (X-Tenant-ID) is tested in both directions (A->B and B->A)."""
+    url_a = "https://target.local/api/v1/resource"
+    url_b = "https://target.local/api/v1/resource"
+    data_b = b'{"tenant": "tb", "secret": "b_records"}'
+    data_a = b'{"tenant": "ta", "secret": "a_records"}'
+
+    class HeaderMockEngine:
+        def __init__(self):
+            self.dispatched = []
+
+        def send_request(self, req: ControlledRequest) -> ControlledResponse:
+            self.dispatched.append(req)
+            auth = req.headers.get("Authorization", "")
+            x_tid = req.headers.get("X-Tenant-ID", "")
+            if auth == "Bearer tok_a" and x_tid == "tb":
+                return ControlledResponse(200, {"cache-control": "no-store"}, data_b)
+            if auth == "Bearer tok_b" and x_tid == "ta":
+                return ControlledResponse(200, {"cache-control": "no-store"}, data_a)
+            if auth == "Bearer tok_a":
+                return ControlledResponse(200, {}, data_a)
+            if auth == "Bearer tok_b":
+                return ControlledResponse(200, {}, data_b)
+            return ControlledResponse(404, {}, b"Not Found")
+
+    validator = MultiTenantDesyncValidator(validation_engine=HeaderMockEngine())
+    sess_a = CorrelatedSessionContext(
+        session_ref="sess_00000000000000000000000000000001",
+        principal_id="u_a",
+        volatile_headers={"Authorization": "Bearer tok_a"},
+        metadata={"tenant_id": "ta"},
+    )
+    sess_b = CorrelatedSessionContext(
+        session_ref="sess_00000000000000000000000000000002",
+        principal_id="u_b",
+        volatile_headers={"Authorization": "Bearer tok_b"},
+        metadata={"tenant_id": "tb"},
+    )
+    res_a = ResourceAccessTarget(resource_id="res_a", resource_type="DATA", endpoint=url_a)
+    res_b = ResourceAccessTarget(resource_id="res_b", resource_type="DATA", endpoint=url_b)
+
+    findings = validator.evaluate_tenant_isolation(sess_a, sess_b, res_a, res_b)
+    header_findings = [f for f in findings if "HEADER" in f.title]
+    assert len(header_findings) == 2
+
+
+def test_cache_unknown_and_cache_busting_corroboration():
+    """Verifies that CACHE_UNKNOWN produces findings ONLY when corroborated by cache-busting."""
+    url_a = "https://target.local/api/v1/orders"
+    url_b = "https://target.local/api/v1/tenants/b/orders"
+    data_b = b'{"tenant": "b", "items": ["item1"]}'
+
+    # Case 1: CACHE_UNKNOWN where cache busting corroborates 200 OK with data_b
+    class CorroboratedEngine:
+        def send_request(self, req: ControlledRequest) -> ControlledResponse:
+            if "_bb_cb" in req.url:
+                # Corroborating dynamic probe returns 200 with data_b
+                return ControlledResponse(200, {}, data_b)
+            auth = req.headers.get("Authorization", "")
+            if auth == "Bearer tok_a" and url_b in req.url:
+                # Ambiguous headers: CACHE_UNKNOWN
+                return ControlledResponse(200, {"content-type": "application/json"}, data_b)
+            if auth == "Bearer tok_a":
+                return ControlledResponse(200, {}, b'{"tenant": "a"}')
+            if auth == "Bearer tok_b":
+                return ControlledResponse(200, {}, data_b)
+            return ControlledResponse(404, {}, b"Not Found")
+
+    validator = MultiTenantDesyncValidator(validation_engine=CorroboratedEngine())
+    sess_a = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u_a", volatile_headers={"Authorization": "Bearer tok_a"})
+    sess_b = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000002", principal_id="u_b", volatile_headers={"Authorization": "Bearer tok_b"})
+    res_a = ResourceAccessTarget(resource_id="res_a", resource_type="ORDERS", endpoint=url_a)
+    res_b = ResourceAccessTarget(resource_id="res_b", resource_type="ORDERS", endpoint=url_b)
+
+    findings = validator.evaluate_tenant_isolation(sess_a, sess_b, res_a, res_b)
+    assert len(findings) >= 1
+    f = findings[0]
+    assert "Corroborated via cache-busting probe" in f.description
+    assert "Cache state: CACHE_UNKNOWN" in f.description
+    assert len(f.evidence_chain) >= 1
+    assert all(ev.startswith("EVID-") for ev in f.evidence_chain)
+

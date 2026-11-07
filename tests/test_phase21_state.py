@@ -363,3 +363,80 @@ def test_external_hmac_key_security_enforcement(tmp_path):
         with pytest.raises(KeySecurityError, match="Key file permissions are not private"):
             mgr_fail.get_or_create_hmac_key()
 
+
+def test_windows_dacl_inheritance_and_unexpected_ace_rejection(tmp_path):
+    """Verifies that Windows DACL fails closed on inheritance or unexpected ACEs."""
+    if os.name != "nt":
+        pytest.skip("Windows-only DACL enforcement test")
+
+    import subprocess
+    from framework.auth_correlation.state import (
+        _enforce_windows_directory_dacl,
+        _verify_windows_directory_security,
+        _enforce_windows_file_dacl,
+        _verify_windows_file_security,
+    )
+
+    test_dir = tmp_path / "dacl_test_dir"
+    test_dir.mkdir()
+    _enforce_windows_directory_dacl(str(test_dir))
+    _verify_windows_directory_security(str(test_dir))
+
+    # Enable inheritance: must fail closed
+    subprocess.run(["icacls", str(test_dir), "/inheritance:e"], capture_output=True)
+    with pytest.raises(SerializationSecurityError, match="inheritance enabled"):
+        _verify_windows_directory_security(str(test_dir))
+
+    # Unprivileged public principal (e.g. Guests SID S-1-5-32-546) on fresh dir
+    unprivileged_dir = tmp_path / "unprivileged_dir"
+    unprivileged_dir.mkdir()
+    _enforce_windows_directory_dacl(str(unprivileged_dir))
+    subprocess.run(["icacls", str(unprivileged_dir), "/grant", "*S-1-5-32-546:(OI)(CI)R"], capture_output=True)
+    with pytest.raises(SerializationSecurityError, match="grants unsafe write access to unprivileged or public principals"):
+        _verify_windows_directory_security(str(unprivileged_dir))
+
+    # Unexpected third-party / service SID on fresh dir (e.g. LOCAL SERVICE S-1-5-19)
+    unexpected_dir = tmp_path / "unexpected_dir"
+    unexpected_dir.mkdir()
+    _enforce_windows_directory_dacl(str(unexpected_dir))
+    subprocess.run(["icacls", str(unexpected_dir), "/grant", "*S-1-5-19:(OI)(CI)R"], capture_output=True)
+    with pytest.raises(SerializationSecurityError, match="unexpected access to unapproved principal"):
+        _verify_windows_directory_security(str(unexpected_dir))
+
+    # Test file DACL enforcement and verification
+    test_file = test_dir / "secure_sample.key"
+    test_file.write_bytes(b"A" * 32)
+    _enforce_windows_file_dacl(str(test_file))
+    _verify_windows_file_security(str(test_file))
+
+
+def test_posix_key_hardlink_and_symlink_rejection(tmp_path):
+    """Verifies that POSIX environments reject symlinks and hardlinks for key files."""
+    if os.name == "nt":
+        pytest.skip("POSIX-only permission and link test")
+
+    key_dir = tmp_path / "posix_keys"
+    mgr = AuthCorrelationStateManager(
+        program_id="test_link_prog",
+        workspace_root=str(tmp_path),
+        key_dir=str(key_dir),
+    )
+    key, kid = mgr.get_or_create_hmac_key()
+    key_file = key_dir / "auth_correlation.key"
+
+    # Create hard link: must fail closed on multiple links
+    hardlink_file = key_dir / "hardlink.key"
+    try:
+        os.link(str(key_file), str(hardlink_file))
+        mgr_hard = AuthCorrelationStateManager(
+            program_id="test_link_prog",
+            workspace_root=str(tmp_path),
+            key_dir=str(key_dir),
+        )
+        with pytest.raises(KeySecurityError, match="unexpected hardlinks"):
+            mgr_hard.get_or_create_hmac_key()
+    finally:
+        if hardlink_file.exists():
+            hardlink_file.unlink()
+
+

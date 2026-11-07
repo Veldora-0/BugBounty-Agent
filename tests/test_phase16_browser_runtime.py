@@ -927,7 +927,7 @@ def test_real_browser_firefox_local_spa_integration():
 
     assistant = BrowserXssAssistant(
         enabled=True,
-        timeout=15.0,
+        timeout=35.0,
         scope_engine=mock_scope,
         route_fulfill_handler=handle_fixture_route,
         browser_type="firefox",

@@ -158,7 +158,8 @@ class PreMfaPrivilegeValidator:
                     except Exception:
                         pass
 
-                finding_id = f"FIND-MFA-{int(time.time())}"[:20]
+                ep_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()
+                finding_id = f"FIND-MFA-{ep_hash}"
                 endpoint_path = target_endpoint if target_endpoint.startswith("/") else "/" + target_endpoint.split("/", 3)[-1]
                 return CorrelationFinding(
                     finding_id=finding_id,
@@ -240,7 +241,8 @@ class PreMfaPrivilegeValidator:
                     except Exception:
                         pass
 
-                finding_id = f"FIND-STEPUP-{int(time.time())}"[:20]
+                step_hash = hashlib.sha256(f"{target_endpoint}_{time.time_ns()}".encode("utf-8")).hexdigest()[:10].upper()
+                finding_id = f"FIND-STEPUP-{step_hash}"
                 endpoint_path = target_endpoint if target_endpoint.startswith("/") else "/" + target_endpoint.split("/", 3)[-1]
                 return CorrelationFinding(
                     finding_id=finding_id,
