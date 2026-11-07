@@ -397,10 +397,14 @@ All 5 stages of **Phase 21 (Authentication & Authorization Correlation)** have b
    * Created CLI tool `scripts/bb-auth-correlate` (`scripts/bb-auth-correlate.cmd`), updated OpenCode V2 permissions in `opencode.jsonc`, and registered Category 26 in `framework/tools/doctor.py`.
    * Commit: `3107fe9` (`feat(phase21): complete authentication authorization correlation engine`).
 
-### Cross-Platform Verification Summary
+6. **Security Corrections & Acceptance Closure** (`6b2fcd9c8afdcd4ac7e8bcb48c0144e6f131d860`):
+   * Delivered cryptographic invalidation-event attestation system (`ATT-<SHA256>`) with dedicated key (`invalidation_attestation.key`), domain-separated HMAC signature (`ATT-SIG-<SHA256>`), Win32 DACL inheritance-disabled protection, POSIX `0o700`/`0o600` permissions, and 17-case provenance verification matrix.
+   * Delivered mandatory fully authenticated comparison session in `PreMfaPrivilegeValidator`, independent session state validation, and zero network dispatch on invalid or ambiguous session states.
 
-* **Windows 11 Host**: 981 passed, 2 skipped (100% pass rate; skipped 2 browser tests) in 155.89s under pytest. Phase 21 test suite: 42 passed in 1.45s.
-* **Kali Linux VM**: 983 passed, 0 skipped (100% pass rate) in 141.79s under pytest. Phase 21 test suite: 42 passed in 0.90s.
-* **Zero Regressions**: All 941 baseline tests continue to pass without error.
+### Cross-Platform Verification Summary (Commit `6b2fcd9c8afdcd4ac7e8bcb48c0144e6f131d860`)
 
-**Next Immediate Action**: Proceed to Phase 22 (Cross-Engine Attack-Path Correlation) planning gate.
+* **Windows 11 Host**: 1013 passed, 3 skipped in 155.11s under pytest. Phase 21 test suite: 73 passed, 1 skipped in 8.72s. bb-doctor: 26/26 categories healthy.
+* **Kali Linux VM**: 1015 passed, 1 skipped in 117.89s under pytest. Phase 21 test suite: 73 passed, 1 skipped in 7.14s. Firefox SPA integration test: 1 passed in 13.98s. Concurrency test: 1 passed in 0.69s. bb-doctor: 26/26 categories healthy.
+* **Zero Regressions**: 100% test pass rate across all 55 test modules.
+
+**Status**: Phase 21 is officially **COMPLETED, VERIFIED, AND ACCEPTED**. Proceed to Phase 22 (Cross-Engine Attack-Path Correlation) planning gate when authorized.

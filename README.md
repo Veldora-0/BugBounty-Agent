@@ -128,7 +128,7 @@ BugBounty-Agent/
 │   ├── report.md              # 17-section markdown report template
 │   └── config.example.yaml    # Global framework configuration template
 │
-├── tests/                     # Automated regression test suite (55 test modules; 1004 tests under pytest)
+├── tests/                     # Automated regression test suite (55 test modules; 1016 tests under pytest)
 │   ├── test_scope.py          # Scope boundaries and DNS resolution tests
 │   ├── test_asset_engine.py   # Asset graph and subdomain intelligence tests
 │   ├── test_api_engine.py     # OpenAPI, GraphQL, and streaming byte budget tests
@@ -431,8 +431,8 @@ BugBounty-Agent has delivered 21 cohesive security research phases, establishing
 ### 17. Authentication & Authorization Correlation Engine (Phase 21)
 * **Dual-Control Preflight Validation (`bb-auth-correlate`)**: Implements sequential 3-probe differential preflight verification (Principal A $\rightarrow$ Principal B $\rightarrow$ Anonymous Control) to eliminate false positives from public landing pages, login redirects, WAF challenges, or SPA shells returning HTTP 200 OK. Fail-closed on anonymous control errors (5xx/transport faults).
 * **FIRST CVSS 3.1 Base Metric Scorer**: Implements exact FIRST specification equations across all 8 base metrics (AV, AC, PR, UI, S, C, I, A), producing verified vector strings and base scores.
-* **Post-Revocation Resource Probing**: Audits resource access persistence across two distinct modes: Mode A (observation-only monitoring with verified invalidation provenance and immediate ScopeEngine authorization at dispatch) and Mode B (dual-account differential probe with cryptographically signed operator approval dossiers and cross-process single-use enforcement).
-* **Pre-MFA & Step-Up Boundary Auditing**: Detects premature access to sensitive administrative or user endpoints prior to multi-factor authentication completion.
+* **Post-Revocation Resource Probing**: Audits resource access persistence across two distinct modes: Mode A (observation-only monitoring requiring verified invalidation-event attestations (`ATT-...`) signed with a dedicated attestation key and immediate ScopeEngine authorization at dispatch) and Mode B (dual-account differential probe with cryptographically signed operator approval dossiers and cross-process single-use enforcement).
+* **Pre-MFA & Step-Up Boundary Auditing**: Detects premature access to sensitive administrative or user endpoints prior to multi-factor authentication completion, requiring mandatory comparison with a verified fully authenticated session and enforcing zero network dispatch on invalid or ambiguous session states.
 * **Multi-Tenant Cross-Channel Desynchronization**: Tests route path (`/tenants/{id}/`), query parameter (`?tenant_id=`), and header (`X-Tenant-ID`) substitution in both directions (`A_TO_B`, `B_TO_A`) with 3-state cache classification (`CACHE_CONFIRMED`, `CACHE_NOT_INDICATED`, `CACHE_UNKNOWN`) and cache-busting corroboration.
 * **Hardened State Persistence & Confinement**: Manages `state/auth_correlation.json` with atomic descriptor-based writes (`os.fdopen`), symlink and reparse point rejection, POSIX private permissions (`0o700` dirs / `0o600` files), hard-link checks (`st_nlink == 1`), Windows Win32 `advapi32` protected DACL validation (`SE_DACL_PROTECTED`), and schema enforcement.
 * **Deterministic Simulation Transport**: Communicates strictly with numeric `127.0.0.1:<lab_port>` in `LocalAuthCorrelationLab` (6 deterministic scenarios).

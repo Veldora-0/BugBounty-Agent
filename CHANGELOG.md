@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Accepted)
 
+#### Security Corrections & Acceptance Closure (Commit `6b2fcd9c8afdcd4ac7e8bcb48c0144e6f131d860`)
+* **Cryptographic Invalidation-Event Attestation System** (`framework/auth_correlation/revocation.py`, `framework/common/evidence.py`, `framework/auth_correlation/model.py`):
+  * Separated ordinary evidence captures from authentic, trusted invalidation events via dedicated HMAC-SHA256 event attestations (`ATT-<SHA256>`).
+  * Enforced dedicated attestation key separation: `invalidation_attestation.key` is stored strictly outside Git (`~/.config/opencode/` on POSIX, `%LOCALAPPDATA%\opencode\` on Windows) and is isolated from the Mode B operator action approval key (`auth_approval.key`).
+  * Enforced canonical domain-separated payload structure (`BB_INVALIDATION_ATTESTATION_V1`), SHA-256 canonical hashing, and HMAC-SHA256 signatures (`ATT-SIG-<SHA256>`).
+  * Enforced inheritance-disabled Windows Win32 protected DACLs (`_enforce_windows_directory_dacl`) and POSIX `0o700`/`0o600` private file permissions.
+  * Implemented restricted attestation creation APIs: `create_controlled_invalidation_attestation` for Mode B verified mutations and `create_operator_invalidation_attestation` for auditable operator attestations.
+  * Extended `EvidenceStore` with `save_invalidation_attestation()` and `get_invalidation_attestation()` supporting dual lookup by `ATT-...` identifier and `EVID-...` reference.
+  * Hardened `verify_invalidation_provenance()` to verify cryptographic signatures, schema, domain, attribution (`session_ref`, `principal_id`, `program_id`), original capture existence, and on-disk SHA-256 byte integrity. Rejects ordinary un-attested captures and caller metadata. Distinguishes operator assertions from controlled workflows.
+  * Added exhaustive 17-case provenance verification matrix test in `tests/test_phase21_preflight_and_revocation.py`.
+* **Mandatory Fully Authenticated Pre-MFA Comparison Session** (`framework/auth_correlation/pre_mfa.py`, `framework/auth_correlation/engine.py`):
+  * Made `full_session_ctx` a mandatory positional parameter in `PreMfaPrivilegeValidator.evaluate_pre_mfa_boundary()` (no default, cannot be None).
+  * Enforced independent validator checks: `session_ctx.metadata["mfa_level"] == "PRE_MFA"`, `full_session_ctx.metadata["mfa_level"] == "FULL_MFA"`, distinct session references (`session_ctx.session_ref != full_session_ctx.session_ref`), and baseline 200 OK without landing/login/SPA shell.
+  * Enforced fail-closed behavior with zero network dispatch on any invalid, missing, ambiguous, or equivalent session state.
+  * Synchronized `AuthCorrelationEngine` to verify both sessions before dispatching preflight or baseline requests.
+  * Expanded pre-MFA state enforcement matrix test to 15 cases verifying `engine.last_request is None`.
+* **Cross-Platform Verification Results (Commit `6b2fcd9c8afdcd4ac7e8bcb48c0144e6f131d860`)**:
+  * Windows 11: 74 Phase 21 tests (73 passed, 1 skipped in 8.72s), 1016 full suite tests (1013 passed, 3 skipped in 155.11s), bb-doctor 26/26 categories healthy.
+  * Kali Linux VM: 74 Phase 21 tests (73 passed, 1 skipped in 7.14s), 1016 full suite tests (1015 passed, 1 skipped in 117.89s), Firefox SPA integration test (1 passed in 13.98s), concurrency test (1 passed in 0.69s), bb-doctor 26/26 categories healthy.
+
 #### Added & Hardened
 * **Anonymous Differential Preflight Protocol** (`framework/auth_correlation/preflight.py`):
   * Completed full 3-probe sequential verification sequence: Probe 1 (Principal A authenticated) $\rightarrow$ Probe 2 (Principal B authenticated) $\rightarrow$ Probe 3 (Anonymous control) $\rightarrow$ differential classification with anonymous control input.

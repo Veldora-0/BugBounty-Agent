@@ -2,7 +2,7 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Current Repository Baseline:** `6d1e3a5304f6eac08f7d272dd39ce8793379af66` (Phase 21 final security closure and regression verification completed; baseline starting HEAD: `6d1e3a5304f6eac08f7d272dd39ce8793379af66`; pre-Phase 21 baseline: `45b4edb1210ac02144b26d1226d104d9f1d15042`; historical Phase 1–20 baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`; Stage C baseline: `1841280b2f71b103b0e9217b961f1d859bd94272`; starting baseline: `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae`)
+> **Current Repository Baseline:** `6b2fcd9c8afdcd4ac7e8bcb48c0144e6f131d860` (Phase 21 final security corrections, cross-platform verification and acceptance closure completed; starting baseline HEAD: `e9a6d03780a50d656c4b84049ff5b58847f6cf97`; pre-Phase 21 baseline: `45b4edb1210ac02144b26d1226d104d9f1d15042`; historical Phase 1–20 baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`; Stage C baseline: `1841280b2f71b103b0e9217b961f1d859bd94272`; starting baseline: `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae`)
 > **Current phase:** Phase 21 — Authentication & Authorization Correlation (Complete; Next Phase: Phase 22 — Cross-Engine Attack-Path Correlation — PLANNED)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
@@ -202,15 +202,18 @@ Safety boundaries:
 - **Accepted with Documented Limitations**: Concurrency probing is bounded to 2-10 requests; high-volume volumetric floods or DoS attacks are strictly prohibited; out-of-scope targets fail closed offline.
 
 ### Phase 21 — Authentication & Authorization Correlation
-**Status:** Complete (Accepted; Stages 1–5 verified).
+**Status:** Complete (Accepted; Stages 1–5 verified at `6b2fcd9c8afdcd4ac7e8bcb48c0144e6f131d860`).
 **Delivered:**
 - **Core Models & Safe Representations**: Implemented `framework/auth_correlation/model.py` with `CorrelatedPrincipalContext`, `CorrelatedSessionContext`, `CorrelationHypothesis`, `CorrelationFinding`, and `CorrelationLifecycle`. Masked credentials in `__repr__` and `__str__`.
 - **CVSS 3.1 Base Metric Calculator**: Implemented `framework/auth_correlation/cvss.py` strictly evaluating FIRST CVSS 3.1 equations across all 8 base metrics with 10 reference vector regression verifications.
 - **Dual-Control Preflight Validation**: Implemented `framework/auth_correlation/preflight.py` (`DualControlPreflightValidator`) verifying session validity differentials against baseline targets to prevent false-positive access control reports.
-- **Post-Revocation Resource Probing**: Implemented `framework/auth_correlation/revocation.py` (`PostRevocationResourceValidator`) supporting Mode A (observation-only) and Mode B (dual-account differential probe with human approval gate).
-- **Pre-MFA & Step-Up Boundary Auditing**: Implemented `framework/auth_correlation/pre_mfa.py` (`PreMfaPrivilegeValidator`) auditing sensitive resource access prior to MFA completion.
+- **Post-Revocation Resource Probing & Invalidation Attestation**: Implemented `framework/auth_correlation/revocation.py` (`PostRevocationResourceValidator`) supporting Mode A (observation-only requiring cryptographically signed invalidation attestations `ATT-...` with dedicated attestation key and 17-case provenance verification) and Mode B (dual-account differential probe with human approval gate).
+- **Pre-MFA & Step-Up Boundary Auditing**: Implemented `framework/auth_correlation/pre_mfa.py` (`PreMfaPrivilegeValidator`) auditing sensitive resource access prior to MFA completion, requiring mandatory comparison with a verified fully authenticated session and enforcing zero network dispatch on invalid or ambiguous session states.
 - **Multi-Tenant Cross-Channel Desynchronization**: Implemented `framework/auth_correlation/tenant.py` (`MultiTenantDesyncValidator`) testing route path, query parameter, and custom header tenant substitution using two valid, cryptographically signed tenant identities while preserving JWT signatures.
 - **Orchestration, State, Lab & CLI**: Implemented `AuthCorrelationEngine`, hardened `AuthCorrelationStateManager` with atomic file-descriptor replacement and strict POSIX/Windows DACL permissions, `SimulationTransport` (confined to numeric `127.0.0.1:<lab_port>`), `LocalAuthCorrelationLab` (6 deterministic scenarios), CLI script `scripts/bb-auth-correlate` (`bb-auth-correlate.cmd`), and Category 26 in `framework/tools/doctor.py`.
+- **Cross-Platform Verification Metrics (74 targeted Phase 21 tests / 1016 full suite tests)**:
+  - Windows 11: 73 passed, 1 skipped in Phase 21 (8.72s); 1013 passed, 3 skipped in full test suite (155.11s); bb-doctor 26/26 categories healthy.
+  - Kali Linux VM: 73 passed, 1 skipped in Phase 21 (7.14s); 1015 passed, 1 skipped in full test suite (117.89s); Firefox SPA test (1 passed in 13.98s); concurrency test (1 passed in 0.69s); bb-doctor 26/26 categories healthy.
 
 ### Phase 22 — Cross-Engine Attack-Path Correlation
 **Goal:** Build a shared correlation layer that relates assets, endpoints, identities, vulnerabilities, evidence, and prerequisites into explainable attack paths. Preserve individual finding identity, provenance, confidence, and lifecycle; do not inflate severity solely because findings are connected.
