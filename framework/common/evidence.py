@@ -145,11 +145,20 @@ class EvidenceStore:
             raise ValueError("Attestation record missing required attestation_id or original_evidence_ref")
 
         orig_clean = str(orig_ref).strip().upper()
-        filename = f"attestation_{orig_clean}.att.json"
+        att_clean = str(att_id).strip().upper()
+        filename = f"attestation_{att_clean}.att.json"
         att_path = os.path.join(self.evidence_dir, filename)
 
         with open(att_path, "w", encoding="utf-8") as f:
             json.dump(attestation_record, f, indent=2)
+
+        # Also persist direct lookup alias by original evidence reference
+        orig_alias_path = os.path.join(self.evidence_dir, f"attestation_{orig_clean}.att.json")
+        try:
+            with open(orig_alias_path, "w", encoding="utf-8") as f:
+                json.dump(attestation_record, f, indent=2)
+        except Exception:
+            pass
 
         return str(att_id)
 

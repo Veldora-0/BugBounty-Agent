@@ -352,27 +352,32 @@ def test_engine_mode_a_revocation_orchestration(tmp_path):
         assert res_no_ref["findings"] == []
 
         # 2. Set invalidation_evidence_ref on s_a: Mode A detects retained access on /scen02/invoices/101!
-        from framework.auth_correlation.revocation import create_controlled_invalidation_attestation
-        inv_meta = engine.evidence_store.save_http_capture(
-            request_text="POST /auth/logout\nAuthorization: Bearer valid_token_a",
-            response_text='HTTP 200 OK\n{"status": "logged_out"}',
-            metadata={
-                "event_type": "SESSION_REVOCATION",
-                "session_ref": s_a.session_ref,
-                "principal_id": s_a.principal_id,
+        import time
+        from framework.auth_correlation.revocation import sign_action_approval
+        appr_key = b"\x01" * 32
+        att_key = b"\x02" * 32
+        engine.revocation_validator._approval_key = appr_key
+        engine.revocation_validator._attestation_key = att_key
+        dossier = sign_action_approval(
+            {
+                "action_type": "LOGOUT",
+                "created_at": time.time(),
+                "method": "POST",
                 "program_id": "mode_a_test",
+                "target_endpoint": f"http://127.0.0.1:{port}/auth/logout",
+                "test_account": "alice",
+                "ttl": 300,
+                "unique_approval_id": "appr_test_mode_a_revocation_001",
             },
-            prefix="inv_proof",
+            approval_key=appr_key,
         )
-        att_rec = create_controlled_invalidation_attestation(
-            evidence_store=engine.evidence_store,
-            original_evidence_ref=inv_meta["evidence_id"],
+        success = engine.revocation_validator.execute_controlled_invalidation(
             session_ctx=s_a,
-            program_id="mode_a_test",
-            event_type="SESSION_REVOCATION",
-            action_id="ACT-0000000000000000000000000000000000000000000000000000000000000001",
+            action_id=dossier["action_id"],
+            action_dossier=dossier,
         )
-        s_a.invalidation_evidence_ref = att_rec["attestation_id"]
+        assert success is True
+        assert s_a.invalidation_evidence_ref is not None
         s_a.pre_revocation_baseline = ControlledResponse(200, {"content-type": "application/json"}, b'{"invoice_id": "101", "amount": 450.00, "customer": "Alice Corp"}')
         res_with_ref = engine.run_correlation(
             target_asset=f"http://127.0.0.1:{port}/scen00/profile",

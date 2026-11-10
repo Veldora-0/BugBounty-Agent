@@ -70,6 +70,8 @@ HMAC_FINGERPRINT_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 EVIDENCE_REF_PATTERN = re.compile(r"^EVID-[a-fA-F0-9]{12}$")
 ATTESTATION_REF_PATTERN = re.compile(r"^ATT-[a-fA-F0-9]{64}$")
 ATTESTATION_SIG_PATTERN = re.compile(r"^ATT-SIG-[a-fA-F0-9]{64}$")
+ACTION_ID_PATTERN = re.compile(r"^ACT-[a-fA-F0-9]{64}$")
+ACTION_DOSSIER_DIGEST_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
 ISO_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 URL_PATH_PATTERN = re.compile(r"^/[a-zA-Z0-9_\-\./?=&%]*$")
 HYPOTHESIS_ID_PATTERN = re.compile(r"^HYP-[a-zA-Z0-9_\-\.]{1,32}$")
@@ -336,6 +338,96 @@ class CorrelatedSessionContext:
             "expires_at": exp,
             "verified_at": ver,
             "metadata": validated_meta,
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        return self.validate()
+
+
+@dataclass
+class ControlledExecutionResult:
+    """
+    Trusted internal execution-result object containing verified Mode B execution information.
+    Must be instantiated only through the verified Mode B execution workflow.
+    """
+    action_id: str
+    action_dossier_digest: str
+    original_evidence_ref: str
+    mutation_evidence_ref: str
+    mutation_request_evidence: str
+    mutation_response_evidence: str
+    session_ref: str
+    principal_id: str
+    program_id: str
+    target_endpoint: str
+    http_method: str
+    action_type: str
+    execution_timestamp: str
+    verification_timestamp: str
+    invalidation_verification_result: str
+    verification_method: str
+    verification_evidence_ref: str
+
+    def __repr__(self) -> str:
+        aid = _safe_repr(self.action_id, ACTION_ID_PATTERN, "UNVALIDATED_ACTION_ID")
+        sref = _safe_repr(self.session_ref, SESSION_REF_PATTERN, "UNVALIDATED_SESSION_REF")
+        res = repr(self.invalidation_verification_result) if isinstance(self.invalidation_verification_result, str) else "[UNVALIDATED_RESULT]"
+        return f"ControlledExecutionResult(action_id={aid}, session_ref={sref}, result={res})"
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
+    def validate(self) -> Dict[str, Any]:
+        """Fail-closed validation covering all fields of the controlled execution result."""
+        aid = assert_safe_string(self.action_id, "action_id", ACTION_ID_PATTERN)
+        add = assert_safe_string(self.action_dossier_digest, "action_dossier_digest", ACTION_DOSSIER_DIGEST_PATTERN)
+        orig_ref = assert_safe_string(self.original_evidence_ref, "original_evidence_ref", EVIDENCE_REF_PATTERN)
+        mut_ref = assert_safe_string(self.mutation_evidence_ref, "mutation_evidence_ref", EVIDENCE_REF_PATTERN)
+        ver_ref = assert_safe_string(self.verification_evidence_ref, "verification_evidence_ref", EVIDENCE_REF_PATTERN)
+        sref = assert_safe_string(self.session_ref, "session_ref", SESSION_REF_PATTERN)
+        pid = assert_safe_string(self.principal_id, "principal_id", SAFE_IDENTIFIER_PATTERN)
+        prog = assert_safe_string(self.program_id, "program_id", SAFE_IDENTIFIER_PATTERN)
+
+        if not isinstance(self.target_endpoint, str) or not (self.target_endpoint.startswith("http://") or self.target_endpoint.startswith("https://")):
+            raise AttestationSecurityError("Target endpoint must be an http or https URL")
+
+        method = assert_safe_string(self.http_method, "http_method")
+        if method not in ("POST", "PUT", "DELETE"):
+            raise AttestationSecurityError(f"HTTP method '{method}' is not an authorized mutation method")
+
+        act_type = assert_safe_string(self.action_type, "action_type")
+        if act_type not in ("LOGOUT", "ACTION-LOGOUT", "TOKEN_REVOCATION", "PASSWORD_CHANGE"):
+            raise AttestationSecurityError(f"Action type '{act_type}' is not an authorized action type")
+
+        exec_ts = assert_safe_string(self.execution_timestamp, "execution_timestamp", ISO_TIMESTAMP_PATTERN)
+        ver_ts = assert_safe_string(self.verification_timestamp, "verification_timestamp", ISO_TIMESTAMP_PATTERN)
+
+        ver_res = assert_safe_string(self.invalidation_verification_result, "invalidation_verification_result")
+        if ver_res not in ("VERIFIED", "REVOKED", "SESSION_REVOKED"):
+            raise AttestationSecurityError(f"Invalidation verification result '{ver_res}' does not satisfy verification criteria")
+
+        ver_meth = assert_safe_string(self.verification_method, "verification_method")
+        if ver_meth not in ("ACTION_MUTATION_AND_PROBE_VERIFIED", "MUTATION_EXPLICIT_REVOCATION_VERIFIED"):
+            raise AttestationSecurityError(f"Verification method '{ver_meth}' is not recognized")
+
+        return {
+            "action_id": aid,
+            "action_dossier_digest": add,
+            "original_evidence_ref": orig_ref,
+            "mutation_evidence_ref": mut_ref,
+            "mutation_request_evidence": self.mutation_request_evidence,
+            "mutation_response_evidence": self.mutation_response_evidence,
+            "session_ref": sref,
+            "principal_id": pid,
+            "program_id": prog,
+            "target_endpoint": self.target_endpoint,
+            "http_method": method,
+            "action_type": act_type,
+            "execution_timestamp": exec_ts,
+            "verification_timestamp": ver_ts,
+            "invalidation_verification_result": ver_res,
+            "verification_method": ver_meth,
+            "verification_evidence_ref": ver_ref,
         }
 
     def to_dict(self) -> Dict[str, Any]:

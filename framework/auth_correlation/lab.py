@@ -142,6 +142,13 @@ class _LabRequestHandler(BaseHTTPRequestHandler):
         # ----------------------------------------------------------------------
         # API v1 routes for preflight health gating and candidate discovery
         # ----------------------------------------------------------------------
+        if path == "/auth/logout" or path.startswith("/auth/logout"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"status": "logged_out", "revoked": true}')
+            return
+
         if path.startswith("/api/v1/"):
             if auth_header:
                 self.send_response(200)

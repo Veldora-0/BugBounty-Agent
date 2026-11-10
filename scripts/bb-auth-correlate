@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 # Ensure repository root is on sys.path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -145,32 +146,35 @@ def main() -> int:
                     resource_type="INVOICE",
                     endpoint=f"http://127.0.0.1:{port}/scen02/invoices/101",
                 ))
-                # Save authentic invalidation event into lab evidence store to establish verified provenance
+                # Execute genuine Mode B invalidation workflow into lab evidence store to establish verified provenance
                 from framework.common.evidence import EvidenceStore
                 lab_ev_store = EvidenceStore(os.path.join(lab_state_dir, "evidence"))
                 engine.evidence_store = lab_ev_store
                 engine.revocation_validator._evidence_store = lab_ev_store
-                inv_meta = lab_ev_store.save_http_capture(
-                    request_text="POST /auth/logout\nAuthorization: Bearer valid_token_a",
-                    response_text="HTTP 200 OK\n{\"status\": \"logged_out\"}",
-                    metadata={
-                        "event_type": "SESSION_REVOCATION",
-                        "session_ref": "sess_00000000000000000000000000000001",
-                        "principal_id": "lab_usr_a",
+                appr_key = b"\x01" * 32
+                att_key = b"\x02" * 32
+                engine.revocation_validator._approval_key = appr_key
+                engine.revocation_validator._attestation_key = att_key
+                dossier = sign_action_approval(
+                    {
+                        "action_type": "LOGOUT",
+                        "created_at": time.time(),
+                        "method": "POST",
                         "program_id": args.program,
+                        "target_endpoint": f"http://127.0.0.1:{port}/auth/logout",
+                        "test_account": "lab_usr_a",
+                        "ttl": 300,
+                        "unique_approval_id": f"appr_lab_{int(time.time() * 1000)}",
                     },
-                    prefix="lab_invalidation",
+                    approval_key=appr_key,
                 )
-                from framework.auth_correlation.revocation import create_controlled_invalidation_attestation
-                att_rec = create_controlled_invalidation_attestation(
-                    evidence_store=lab_ev_store,
-                    original_evidence_ref=inv_meta["evidence_id"],
+                success = engine.revocation_validator.execute_controlled_invalidation(
                     session_ctx=s_a,
-                    program_id=args.program,
-                    event_type="SESSION_REVOCATION",
-                    action_id="ACT-0000000000000000000000000000000000000000000000000000000000000001",
+                    action_id=dossier["action_id"],
+                    action_dossier=dossier,
                 )
-                s_a.invalidation_evidence_ref = att_rec["attestation_id"]
+                if not success or not s_a.invalidation_evidence_ref:
+                    raise RuntimeError("Simulation lab controlled invalidation execution failed")
                 s_a.pre_revocation_baseline = transport.send_request(ControlledRequest(
                     url=f"http://127.0.0.1:{port}/api/v1/profile",
                     method="GET",

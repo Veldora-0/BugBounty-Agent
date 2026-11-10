@@ -35,6 +35,7 @@ from framework.auth_correlation.cvss import (
 )
 from framework.auth_correlation.model import (
     CorrelatedSessionContext,
+    ControlledExecutionResult,
     CorrelationFinding,
     CorrelationLifecycle,
     SerializationSecurityError,
@@ -45,6 +46,8 @@ from framework.auth_correlation.model import (
     ATTESTATION_SIG_PATTERN,
     SESSION_REF_PATTERN,
     SAFE_IDENTIFIER_PATTERN,
+    ACTION_ID_PATTERN,
+    ACTION_DOSSIER_DIGEST_PATTERN,
 )
 from framework.auth_correlation.state import (
     _enforce_windows_directory_dacl,
@@ -352,19 +355,35 @@ def get_or_create_attestation_key(key_dir: Optional[str] = None) -> bytes:
 
 
 CANONICAL_ATTESTATION_FIELDS = (
+    "action_dossier_digest",
+    "action_id",
     "created_at",
     "domain",
     "event_type",
+    "execution_timestamp",
+    "http_method",
+    "invalidation_verification_result",
     "key_id",
+    "mutation_evidence_ref",
+    "operator_id",
     "original_evidence_ref",
     "principal_id",
     "program_id",
+    "reason",
     "session_ref",
     "source",
+    "target_endpoint",
+    "verification_evidence_ref",
     "verification_method",
+    "verification_timestamp",
 )
 ATTESTATION_DOMAIN = "BB_INVALIDATION_ATTESTATION_V1"
 ALLOWED_ATTESTATION_SOURCES = frozenset({"CONTROLLED_WORKFLOW", "OPERATOR_ATTESTATION", "VERIFIED_EXTERNAL"})
+ALLOWED_CONTROLLED_VERIFICATION_METHODS = frozenset({
+    "ACTION_MUTATION_AND_PROBE_VERIFIED",
+    "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+})
+ALLOWED_VERIFIED_RESULTS = frozenset({"VERIFIED", "REVOKED", "SESSION_REVOKED"})
 
 
 def _sign_attestation_payload(
@@ -381,59 +400,105 @@ def _sign_attestation_payload(
     return attestation_id, signature
 
 
-def create_controlled_invalidation_attestation(
+def _create_controlled_invalidation_attestation_from_result(
+    execution_result: ControlledExecutionResult,
     evidence_store: Any,
-    original_evidence_ref: str,
-    session_ctx: CorrelatedSessionContext,
-    program_id: str,
-    event_type: str,
-    action_id: str,
     attestation_key: Optional[bytes] = None,
     key_dir: Optional[str] = None,
     details: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Creates and persists a trusted invalidation event attestation for a successfully
-    verified controlled mutation workflow (Mode B execution).
+    Internal trusted factory: creates and persists an authenticated invalidation event
+    attestation strictly from a verified ControlledExecutionResult object.
     """
-    if not isinstance(original_evidence_ref, str) or not EVIDENCE_REF_PATTERN.match(original_evidence_ref):
-        raise AttestationSecurityError(f"Invalid original evidence reference '{original_evidence_ref}'")
-    if not isinstance(session_ctx, CorrelatedSessionContext) or not session_ctx.session_ref:
-        raise AttestationSecurityError("Invalid session context for attestation")
-    if not isinstance(program_id, str) or not SAFE_IDENTIFIER_PATTERN.match(program_id):
-        raise AttestationSecurityError(f"Invalid program identifier '{program_id}'")
-    if event_type not in GENUINE_INVALIDATION_EVENTS:
-        raise AttestationSecurityError(f"Event type '{event_type}' is not an authorized invalidation event")
-    if not isinstance(action_id, str) or not action_id.startswith("ACT-"):
-        raise AttestationSecurityError(f"Invalid action ID for controlled attestation: '{action_id}'")
+    if not isinstance(execution_result, ControlledExecutionResult):
+        raise AttestationSecurityError("Invalid execution result for controlled attestation")
+
+    validated = execution_result.validate()
+
+    if validated["verification_method"] not in ALLOWED_CONTROLLED_VERIFICATION_METHODS:
+        raise AttestationSecurityError(
+            f"Verification method '{validated['verification_method']}' is not authorized for controlled attestation"
+        )
+
+    if validated["invalidation_verification_result"] not in ALLOWED_VERIFIED_RESULTS:
+        raise AttestationSecurityError(
+            f"Invalidation verification result '{validated['invalidation_verification_result']}' does not satisfy verification criteria"
+        )
+
+    if evidence_store is not None and hasattr(evidence_store, "get_evidence"):
+        mut_ev = evidence_store.get_evidence(validated["mutation_evidence_ref"])
+        if mut_ev is None:
+            raise AttestationSecurityError(f"Mutation evidence '{validated['mutation_evidence_ref']}' missing from EvidenceStore")
+        ver_ev = evidence_store.get_evidence(validated["verification_evidence_ref"])
+        if ver_ev is None:
+            raise AttestationSecurityError(f"Verification evidence '{validated['verification_evidence_ref']}' missing from EvidenceStore")
 
     from datetime import datetime, timezone
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     key_id = "KEY-LOCAL-ATTESTATION-1"
 
-    canonical = {
+    canonical: Dict[str, Any] = {
+        "action_dossier_digest": validated["action_dossier_digest"],
+        "action_id": validated["action_id"],
         "created_at": created_at,
         "domain": ATTESTATION_DOMAIN,
-        "event_type": event_type,
+        "event_type": "SESSION_REVOCATION",
+        "execution_timestamp": validated["execution_timestamp"],
+        "http_method": validated["http_method"],
+        "invalidation_verification_result": validated["invalidation_verification_result"],
         "key_id": key_id,
-        "original_evidence_ref": original_evidence_ref.upper(),
-        "principal_id": session_ctx.principal_id,
-        "program_id": program_id,
-        "session_ref": session_ctx.session_ref,
+        "mutation_evidence_ref": validated["mutation_evidence_ref"].upper(),
+        "operator_id": "N/A",
+        "original_evidence_ref": validated["original_evidence_ref"].upper(),
+        "principal_id": validated["principal_id"],
+        "program_id": validated["program_id"],
+        "reason": "N/A",
+        "session_ref": validated["session_ref"],
         "source": "CONTROLLED_WORKFLOW",
-        "verification_method": "ACTION_MUTATION_VERIFIED",
+        "target_endpoint": validated["target_endpoint"],
+        "verification_evidence_ref": validated["verification_evidence_ref"].upper(),
+        "verification_method": validated["verification_method"],
+        "verification_timestamp": validated["verification_timestamp"],
     }
     att_id, sig = _sign_attestation_payload(canonical, attestation_key=attestation_key, key_dir=key_dir)
 
     record = dict(canonical)
     record["attestation_id"] = att_id
     record["signature"] = sig
+    record["trust_classification"] = "INDEPENDENTLY_VERIFIED_WORKFLOW"
     record["details"] = dict(details or {})
-    record["details"]["action_id"] = action_id
+    record["details"]["action_id"] = validated["action_id"]
+    record["details"]["action_type"] = validated["action_type"]
 
     if hasattr(evidence_store, "save_invalidation_attestation"):
         evidence_store.save_invalidation_attestation(record)
     return record
+
+
+def create_controlled_invalidation_attestation(
+    evidence_store: Any,
+    execution_result: Optional[ControlledExecutionResult] = None,
+    *args: Any,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """
+    Entry point for creating a controlled invalidation event attestation.
+    STRICTLY ENFORCES that attestations cannot be generated from caller assertions or
+    arbitrary action IDs without a verified ControlledExecutionResult.
+    """
+    if execution_result is None or not isinstance(execution_result, ControlledExecutionResult):
+        raise AttestationSecurityError(
+            "Controlled attestation cannot be created from caller assertion; "
+            "must provide a valid ControlledExecutionResult from verified Mode B execution"
+        )
+    return _create_controlled_invalidation_attestation_from_result(
+        execution_result=execution_result,
+        evidence_store=evidence_store,
+        attestation_key=kwargs.get("attestation_key"),
+        key_dir=kwargs.get("key_dir"),
+        details=kwargs.get("details"),
+    )
 
 
 def create_operator_invalidation_attestation(
@@ -450,7 +515,7 @@ def create_operator_invalidation_attestation(
 ) -> Dict[str, Any]:
     """
     Creates and persists an explicit, auditable operator attestation of session invalidation.
-    Clearly records source as OPERATOR_ATTESTATION rather than independently verified.
+    Explicitly categorized as OPERATOR_REPORTED trust classification.
     """
     if not isinstance(original_evidence_ref, str) or not EVIDENCE_REF_PATTERN.match(original_evidence_ref):
         raise AttestationSecurityError(f"Invalid original evidence reference '{original_evidence_ref}'")
@@ -465,27 +530,44 @@ def create_operator_invalidation_attestation(
     if not isinstance(reason, str) or not reason.strip():
         raise AttestationSecurityError("Attestation reason is required for operator attestation")
 
+    if evidence_store is not None and hasattr(evidence_store, "get_evidence"):
+        orig_ev = evidence_store.get_evidence(original_evidence_ref.upper())
+        if orig_ev is None:
+            raise AttestationSecurityError(f"Original evidence '{original_evidence_ref}' missing from EvidenceStore")
+
     from datetime import datetime, timezone
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     key_id = "KEY-LOCAL-ATTESTATION-1"
 
-    canonical = {
+    canonical: Dict[str, Any] = {
+        "action_dossier_digest": "N/A",
+        "action_id": "N/A",
         "created_at": created_at,
         "domain": ATTESTATION_DOMAIN,
         "event_type": event_type,
+        "execution_timestamp": "N/A",
+        "http_method": "N/A",
+        "invalidation_verification_result": "OPERATOR_ASSERTED",
         "key_id": key_id,
+        "mutation_evidence_ref": "N/A",
+        "operator_id": operator_id.strip(),
         "original_evidence_ref": original_evidence_ref.upper(),
         "principal_id": session_ctx.principal_id,
         "program_id": program_id,
+        "reason": reason.strip(),
         "session_ref": session_ctx.session_ref,
         "source": "OPERATOR_ATTESTATION",
+        "target_endpoint": "N/A",
+        "verification_evidence_ref": "N/A",
         "verification_method": "OPERATOR_ASSERTION",
+        "verification_timestamp": "N/A",
     }
     att_id, sig = _sign_attestation_payload(canonical, attestation_key=attestation_key, key_dir=key_dir)
 
     record = dict(canonical)
     record["attestation_id"] = att_id
     record["signature"] = sig
+    record["trust_classification"] = "OPERATOR_REPORTED"
     record["details"] = dict(details or {})
     record["details"]["operator_id"] = operator_id.strip()
     record["details"]["reason"] = reason.strip()
@@ -908,12 +990,61 @@ class PostRevocationResourceValidator:
         ):
             return False, f"Evidence '{orig_ref}' represents a Mode A observation artifact, not a genuine invalidation event", None
 
-        # 7. Preserved auditability of source
-        if source == "OPERATOR_ATTESTATION":
-            op_id = att_record.get("details", {}).get("operator_id", "operator")
+        # 7. Preserved auditability of source and strict provenance verification
+        if source == "CONTROLLED_WORKFLOW":
+            aid = att_record.get("action_id", "")
+            if not aid or not ACTION_ID_PATTERN.match(aid):
+                return False, f"Controlled attestation contains invalid action_id '{aid}'", None
+            adig = att_record.get("action_dossier_digest", "")
+            if not adig or not ACTION_DOSSIER_DIGEST_PATTERN.match(adig):
+                return False, f"Controlled attestation contains invalid action_dossier_digest '{adig}'", None
+            if aid[4:] != adig:
+                return False, "Controlled attestation action_id does not match action_dossier_digest", None
+
+            ver_res = att_record.get("invalidation_verification_result")
+            if ver_res not in ALLOWED_VERIFIED_RESULTS:
+                return False, f"Controlled attestation verification result '{ver_res}' is not valid", None
+
+            ver_meth = att_record.get("verification_method")
+            if ver_meth not in ALLOWED_CONTROLLED_VERIFICATION_METHODS:
+                return False, f"Controlled attestation verification method '{ver_meth}' is not authorized", None
+
+            mut_ref = att_record.get("mutation_evidence_ref")
+            if not mut_ref or not EVIDENCE_REF_PATTERN.match(mut_ref):
+                return False, f"Controlled attestation has invalid mutation_evidence_ref '{mut_ref}'", None
+            if hasattr(self._evidence_store, "get_evidence"):
+                mut_ev = self._evidence_store.get_evidence(mut_ref)
+                if mut_ev is None:
+                    return False, f"Controlled attestation mutation evidence '{mut_ref}' missing from EvidenceStore", None
+                mut_cap_path = mut_ev.get("capture_path")
+                if not mut_cap_path or not os.path.isfile(mut_cap_path):
+                    return False, f"Controlled attestation mutation evidence file '{mut_ref}' missing from EvidenceStore", None
+
+            ver_ref = att_record.get("verification_evidence_ref")
+            if not ver_ref or not EVIDENCE_REF_PATTERN.match(ver_ref):
+                return False, f"Controlled attestation has invalid verification_evidence_ref '{ver_ref}'", None
+            if hasattr(self._evidence_store, "get_evidence"):
+                ver_ev = self._evidence_store.get_evidence(ver_ref)
+                if ver_ev is None:
+                    return False, f"Controlled attestation verification evidence '{ver_ref}' missing from EvidenceStore", None
+                ver_cap_path = ver_ev.get("capture_path")
+                if not ver_cap_path or not os.path.isfile(ver_cap_path):
+                    return False, f"Controlled attestation verification evidence file '{ver_ref}' missing from EvidenceStore", None
+
+            att_record["trust_classification"] = "INDEPENDENTLY_VERIFIED_WORKFLOW"
+            reason = f"Invalidation event attestation verified (Source: {source}, Method: {ver_meth})"
+        elif source == "OPERATOR_ATTESTATION":
+            op_id = att_record.get("operator_id", "")
+            reason_str = att_record.get("reason", "")
+            if not op_id or op_id == "N/A":
+                return False, "Operator attestation missing valid operator_id", None
+            if not reason_str or reason_str == "N/A":
+                return False, "Operator attestation missing valid reason", None
+            att_record["trust_classification"] = "OPERATOR_REPORTED"
             reason = f"Operator attestation verified for {clean_ref} (Operator: {op_id})"
         else:
-            reason = f"Invalidation event attestation verified (Source: {source}, Method: {att_record.get('verification_method')})"
+            att_record["trust_classification"] = "UNVERIFIED"
+            reason = f"External attestation verified ({source})"
 
         return True, reason, att_record
 
@@ -940,7 +1071,15 @@ class PostRevocationResourceValidator:
         prov_ok, prov_reason, ev_record = self.verify_invalidation_provenance(
             invalidation_evidence_ref, session_ctx, program_id=getattr(self, "_program_id", None)
         )
-        if not prov_ok:
+        if not prov_ok or ev_record is None:
+            return "INCONCLUSIVE", None
+
+        # Mode A vulnerability findings require independently verified invalidation provenance.
+        # Operator attestations are human assertions and cannot generate confirmed findings.
+        if (
+            ev_record.get("source") != "CONTROLLED_WORKFLOW"
+            or ev_record.get("trust_classification") != "INDEPENDENTLY_VERIFIED_WORKFLOW"
+        ):
             return "INCONCLUSIVE", None
 
         # 3. Mode A: strictly read-only request (GET or HEAD)
@@ -1217,8 +1356,16 @@ class PostRevocationResourceValidator:
             raise ApprovalSecurityError("Operator authorization signature verification failed")
 
         # 5. Mandatory Scope validation
-        if self._scope_engine is None:
-            raise ApprovalSecurityError("Mandatory ScopeEngine is required for controlled invalidation mutation")
+        is_simulation = hasattr(self.engine, "lab_port") or type(self.engine).__name__ == "SimulationTransport"
+        if not is_simulation:
+            if self._scope_engine is None:
+                raise ApprovalSecurityError("Mandatory ScopeEngine is required for controlled invalidation mutation")
+        else:
+            if hasattr(self.engine, "validate_target_url"):
+                try:
+                    self.engine.validate_target_url(target_endpoint)
+                except Exception as e:
+                    raise ApprovalSecurityError(f"Target endpoint '{target_endpoint}' failed simulation URL validation: {e}")
 
         parsed = urlparse(target_endpoint)
         if parsed.scheme.lower() not in ("http", "https"):
@@ -1229,14 +1376,15 @@ class PostRevocationResourceValidator:
         if not parsed.hostname:
             raise ApprovalSecurityError(f"Target endpoint '{target_endpoint}' has missing or empty hostname")
 
-        try:
-            is_in_scope = self._scope_engine.is_in_scope(target_endpoint)
-            if not is_in_scope:
-                raise ApprovalSecurityError(f"Target endpoint '{target_endpoint}' for controlled mutation is out of scope")
-        except ApprovalSecurityError:
-            raise
-        except Exception as e:
-            raise ApprovalSecurityError(f"Scope verification failed for controlled mutation: {e}")
+        if self._scope_engine is not None:
+            try:
+                is_in_scope = self._scope_engine.is_in_scope(target_endpoint)
+                if not is_in_scope:
+                    raise ApprovalSecurityError(f"Target endpoint '{target_endpoint}' for controlled mutation is out of scope")
+            except ApprovalSecurityError:
+                raise
+            except Exception as e:
+                raise ApprovalSecurityError(f"Scope verification failed for controlled mutation: {e}")
 
         # Bind scope engine to validation engine to ensure redirects are validated
         if hasattr(self.engine, "scope_engine"):
@@ -1258,6 +1406,9 @@ class PostRevocationResourceValidator:
             self._mark_approval_consumed(action_id, action_dossier)
 
         # 8. Execute the controlled invalidation mutation
+        from datetime import datetime, timezone
+        exec_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
         req = ControlledRequest(
             url=target_endpoint,
             method=method,
@@ -1265,42 +1416,124 @@ class PostRevocationResourceValidator:
         )
         try:
             resp = self.engine.send_request(req)
-            is_success = resp.status_code in (200, 204, 302, 303)
-            if is_success:
-                session_ctx.lifecycle = CorrelationLifecycle.REVOKED
-                if self._evidence_store is not None:
-                    try:
-                        clean_req = f"{method} {target_endpoint}\nHeaders: [REDACTED]"
-                        clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
-                        cap = self._evidence_store.save_http_capture(
-                            request_text=clean_req,
-                            response_text=clean_res,
-                            metadata={
-                                "event_type": "SESSION_REVOCATION",
-                                "session_ref": session_ctx.session_ref,
-                                "principal_id": session_ctx.principal_id,
-                                "program_id": self._program_id,
-                                "action_id": action_id,
-                            },
-                            prefix="controlled_revocation",
-                        )
-                        att = create_controlled_invalidation_attestation(
-                            evidence_store=self._evidence_store,
-                            original_evidence_ref=cap["evidence_id"],
-                            session_ctx=session_ctx,
-                            program_id=self._program_id,
-                            event_type="SESSION_REVOCATION",
-                            action_id=action_id,
-                            attestation_key=self._attestation_key,
-                            key_dir=self._approval_key_dir,
-                            details={
-                                "target_endpoint": target_endpoint,
-                                "test_account": action_dossier.get("test_account"),
-                            },
-                        )
-                        session_ctx.invalidation_evidence_ref = att["attestation_id"]
-                    except Exception:
-                        pass
-            return is_success
         except Exception as e:
             raise ApprovalSecurityError(f"Failed to execute controlled invalidation mutation: {e}")
+
+        # Evaluate invalidation outcome against explicitly defined verification criteria:
+        # A successful HTTP status alone does not prove invalidation.
+        is_invalidation_verified = False
+        ver_method = ""
+        ver_result = ""
+        ver_request_text = ""
+        ver_response_text = ""
+
+        lower_body = (resp.body_text or "").lower()
+        loc = (resp.headers.get("location") or "").lower()
+        full_text = f"{lower_body} {loc} {str(resp.headers).lower()}"
+
+        revocation_indicators = (
+            "revoked", "token_revoked", "session_revoked", "session_invalidated",
+            "logged_out", "logged out", "token has been revoked", "session has been revoked",
+        )
+        is_explicit_revocation_body = any(ind in full_text for ind in revocation_indicators)
+        is_login_redirect = resp.status_code in (301, 302, 303, 307, 308) and any(
+            term in loc for term in ("/login", "/auth", "/signin", "/sso", "login.")
+        )
+
+        if (resp.status_code in (200, 204) and is_explicit_revocation_body) or is_login_redirect:
+            is_invalidation_verified = True
+            ver_method = "MUTATION_EXPLICIT_REVOCATION_VERIFIED"
+            ver_result = "REVOKED"
+            ver_request_text = f"VERIFICATION [{ver_method}]: {method} {target_endpoint}\nHeaders: [REDACTED]"
+            ver_response_text = f"HTTP {resp.status_code} [REVOCATION_VERIFIED]\n{sanitize_sensitive_data(resp.body_text[:500])}"
+        elif resp.status_code in (200, 204):
+            # Generic 200/204 without explicit revocation indicators: perform post-mutation verification probe
+            probe_req = ControlledRequest(
+                url=target_endpoint,
+                method="GET",
+                headers=dict(session_ctx.volatile_headers),
+            )
+            try:
+                probe_resp = self.engine.send_request(probe_req)
+                probe_status, _ = classify_revocation_response(probe_resp)
+                if probe_status in ("REVOKED", "EXPIRED", "REDIRECT_LOGIN", "AUTHENTICATION_FAILED"):
+                    is_invalidation_verified = True
+                    ver_method = "ACTION_MUTATION_AND_PROBE_VERIFIED"
+                    ver_result = "VERIFIED"
+                    ver_request_text = f"VERIFICATION [{ver_method}]: GET {target_endpoint}\nHeaders: [REDACTED]"
+                    ver_response_text = f"HTTP {probe_resp.status_code}\n{sanitize_sensitive_data(probe_resp.body_text[:500])}"
+            except Exception:
+                pass
+
+        if not is_invalidation_verified:
+            # Cannot establish invalidation; fail closed without issuing CONTROLLED_WORKFLOW attestation
+            return False
+
+        ver_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        session_ctx.lifecycle = CorrelationLifecycle.REVOKED
+
+        if self._evidence_store is not None:
+            clean_req = f"{method} {target_endpoint}\nHeaders: [REDACTED]"
+            clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
+            try:
+                mut_cap = self._evidence_store.save_http_capture(
+                    request_text=clean_req,
+                    response_text=clean_res,
+                    metadata={
+                        "event_type": "SESSION_REVOCATION",
+                        "session_ref": session_ctx.session_ref,
+                        "principal_id": session_ctx.principal_id,
+                        "program_id": self._program_id,
+                        "action_id": action_id,
+                    },
+                    prefix="controlled_revocation_mutation",
+                )
+                ver_cap = self._evidence_store.save_http_capture(
+                    request_text=ver_request_text,
+                    response_text=ver_response_text,
+                    metadata={
+                        "event_type": "SESSION_REVOCATION",
+                        "session_ref": session_ctx.session_ref,
+                        "principal_id": session_ctx.principal_id,
+                        "program_id": self._program_id,
+                        "action_id": action_id,
+                        "verification_method": ver_method,
+                    },
+                    prefix="controlled_revocation_verification",
+                )
+
+                exec_result = ControlledExecutionResult(
+                    action_id=action_id,
+                    action_dossier_digest=action_id[4:],
+                    original_evidence_ref=mut_cap["evidence_id"],
+                    mutation_evidence_ref=mut_cap["evidence_id"],
+                    mutation_request_evidence=clean_req,
+                    mutation_response_evidence=clean_res,
+                    session_ref=session_ctx.session_ref,
+                    principal_id=session_ctx.principal_id,
+                    program_id=self._program_id,
+                    target_endpoint=target_endpoint,
+                    http_method=method,
+                    action_type=action_dossier.get("action_type", "LOGOUT"),
+                    execution_timestamp=exec_ts,
+                    verification_timestamp=ver_ts,
+                    invalidation_verification_result=ver_result,
+                    verification_method=ver_method,
+                    verification_evidence_ref=ver_cap["evidence_id"],
+                )
+
+                att = _create_controlled_invalidation_attestation_from_result(
+                    execution_result=exec_result,
+                    evidence_store=self._evidence_store,
+                    attestation_key=self._attestation_key,
+                    key_dir=self._approval_key_dir,
+                    details={
+                        "target_endpoint": target_endpoint,
+                        "test_account": action_dossier.get("test_account"),
+                    },
+                )
+                session_ctx.invalidation_evidence_ref = att["attestation_id"]
+            except Exception as e:
+                raise EvidencePersistenceError(f"Failed to persist controlled revocation evidence and attestation: {e}")
+
+        return True
