@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Accepted)
 
+#### Final Security Remediation, Execution Ledger Provenance & Acceptance Closure
+* **Tamper-Evident Execution Ledger & Cryptographic Provenance** (`framework/auth_correlation/ledger.py`, `framework/auth_correlation/revocation.py`, `framework/auth_correlation/model.py`):
+  * Replaced caller-instantiated dataclasses with a sealed internal `ExecutionLedger` (`state/execution_ledger.json`) backed by cross-process locking (`CrossProcessFileLock`) and atomic descriptor-based updates (`.tmp` + `os.replace`).
+  * Bound execution records to an isolated HMAC-SHA256 key (`execution_ledger.key`) stored strictly outside the Git repository (`~/.config/opencode/` on POSIX, `%LOCALAPPDATA%\opencode\` on Windows).
+  * Cryptographically signs 25 canonical execution fields under HMAC-SHA256 (`EXEC-SIG-...`) and generates deterministic execution IDs (`EXEC-...`).
+  * Enforced single-use attestation claims (`claim_for_attestation`): execution records can only be claimed once, rejecting replay attacks and duplicate attestation issuance.
+  * Verified on retrieval: `get_execution()` validates HMAC-SHA256 signature, SHA-256 identifier hash, and schema allowlisting.
+* **EvidenceStore Hardening & Multiple Capture Lookup** (`framework/common/evidence.py`):
+  * Hardened directory security: `_enforce_directory_security()` enforces private POSIX `0o700` and Windows Win32 protected DACLs (`SE_DACL_PROTECTED`) rejecting symlinks and unapproved principals.
+  * Added `is_writable() -> bool` preflight probe.
+  * Enforced `SAFE_PREFIX_PATTERN` preventing directory traversal.
+  * Converted `save_http_capture()`, `save_invalidation_attestation()`, and metadata writes to atomic `.tmp` + `os.replace`.
+  * Enhanced `get_evidence()` with path containment checks and on-disk SHA-256 byte recomputation; fixed multiple-capture scanning to skip missing or corrupted captures and find valid files.
+* **Strict Invalidation Verification & Negative Statement Elimination** (`framework/auth_correlation/revocation.py`):
+  * Eliminated loose substring matching; introduced `NEGATIVE_REVOCATION_PHRASES` explicitly rejecting negative statements (e.g. `"Your session was not revoked"`).
+  * Implemented structured JSON parsing over `status`, `error`, `message`, `detail`, and `error_description` fields for positive revocation/expiration indicators.
+  * Mandatory EvidenceStore verification before Mode B mutation dispatch; fails closed with `ApprovalSecurityError` if missing or unwritable.
+  * Mandatory attribution checks enforcing `action_dossier["test_account"] == session_ctx.principal_id` and `action_dossier["program_id"] == self._program_id`.
+  * Bound `session_ref` and `action_id` into mutation request evidence to prevent cross-session hash collisions.
+* **Self-Contained CLI Simulation Lab** (`scripts/bb-auth-correlate`):
+  * Set `workspace_root=lab_state_dir` ensuring lab execution is completely self-contained in its isolated temporary directory with zero pollution of the system temp directory.
+* **Automated Regression Test Suite** (`tests/test_phase21_execution_ledger.py`, `tests/test_phase21_preflight_and_revocation.py`):
+  * Added 5 new tests in `tests/test_phase21_execution_ledger.py` (total 81 tests in Phase 21 test suite).
+  * Expanded `test_controlled_attestation_security_matrix_d1` to 32 security scenarios.
+  * Full suite: 80 passed, 1 skipped in targeted Phase 21 suite; 1020 passed, 3 skipped on Windows 11 host. Zero regressions.
+
 #### Final Attestation Security Remediation & Acceptance Closure (Commit `ba88a140a905a26de73ea4b50bbbdc9e38185c83`)
 * **Genuine Controlled Invalidation Attestation & Verified Execution Binding** (`framework/auth_correlation/model.py`, `framework/auth_correlation/revocation.py`, `framework/common/evidence.py`):
   * Defined `ControlledExecutionResult` dataclass with fail-closed validation of all 17 execution and verification properties (`action_id`, `action_dossier_digest`, `mutation_evidence_ref`, `mutation_timestamp`, `mutation_status_code`, `mutation_response_digest`, `verification_evidence_ref`, `verification_timestamp`, `verification_status_code`, `verification_response_digest`, `verified_invalidation_state`, `verification_method`, `session_ref`, `principal_id`, `program_id`, `target_endpoint`, `executed_by`).
