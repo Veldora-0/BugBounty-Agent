@@ -12,7 +12,10 @@ Verifies:
 
 import hashlib
 import json
+import hashlib
+import json
 import os
+import secrets
 import time
 import pytest
 
@@ -20,7 +23,9 @@ from framework.auth_correlation.cvss import CVSS31Calculator
 from framework.auth_correlation.ledger import (
     ExecutionLedger,
     ExecutionRecord,
+    ExecutionCapability,
     ExecutionProvenanceError,
+    issue_execution_capability,
 )
 from framework.auth_correlation.model import (
     CorrelatedSessionContext,
@@ -173,9 +178,11 @@ def make_valid_invalidation_evidence(
         },
         prefix="inv_proof",
     )
+    ver_req = f"GET /auth/verify\nAuthorization: Bearer {sess.session_ref[:8]}"
+    ver_res = 'HTTP 401 Unauthorized\n{"error": "Session revoked"}'
     ver_cap = store.save_http_capture(
-        request_text=clean_req,
-        response_text=clean_res,
+        request_text=ver_req,
+        response_text=ver_res,
         metadata={
             "event_type": event_type,
             "session_ref": sess.session_ref,
@@ -187,17 +194,50 @@ def make_valid_invalidation_evidence(
     )
     from datetime import datetime, timezone
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    aid = "ACT-0000000000000000000000000000000000000000000000000000000000000001"
 
     if state_dir is None:
         state_dir = os.path.join(os.path.dirname(os.path.abspath(store.evidence_dir)), "state")
     os.makedirs(state_dir, exist_ok=True)
 
+    aid_hex = hashlib.sha256(f"{res['evidence_id']}_{ver_cap['evidence_id']}_{secrets.token_hex(8)}".encode("utf-8")).hexdigest()
+    aid = f"ACT-{aid_hex}"
+    app_id = f"APPR-{aid_hex[:32]}"
+    c_token = secrets.token_hex(32)
+
+    consumed_path = os.path.join(state_dir, "consumed_approvals.json")
+    consumed_entry = {
+        "approval_id": app_id,
+        "action_id": aid,
+        "consumption_token": c_token,
+        "program_id": prog_id,
+        "session_ref": sess.session_ref,
+        "principal_id": sess.principal_id,
+        "test_account": sess.principal_id,
+        "target_endpoint": "http://127.0.0.1:8080/auth/logout",
+        "method": "POST",
+        "action_type": "LOGOUT",
+        "consumed_at": ts,
+        "execution_id": None,
+    }
+    consumed_data = {"version": "1.0", "consumed": {}}
+    if os.path.exists(consumed_path):
+        try:
+            with open(consumed_path, "r", encoding="utf-8") as f:
+                consumed_data = json.load(f)
+        except Exception:
+            pass
+    if "consumed" not in consumed_data:
+        consumed_data["consumed"] = {}
+    consumed_data["consumed"][aid] = consumed_entry
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(consumed_data, f, indent=2)
+
     ledger = execution_ledger or ExecutionLedger(state_dir=state_dir, key_dir=key_dir)
-    exec_rec = ledger.record_execution(
+    k_dir = key_dir or ledger._key_dir
+    cap = issue_execution_capability(
         action_id=aid,
         action_dossier_digest=aid[4:],
-        approval_id="APPR-00000000000000000000000000000001",
+        approval_id=app_id,
         program_id=prog_id,
         session_ref=sess.session_ref,
         principal_id=sess.principal_id,
@@ -217,6 +257,13 @@ def make_valid_invalidation_evidence(
         invalidation_verification_result="REVOKED",
         execution_timestamp=ts,
         verification_timestamp=ts,
+        consumption_token=c_token,
+        key_dir=k_dir,
+    )
+    exec_rec = ledger.record_execution(
+        capability=cap,
+        evidence_store=store,
+        consumed_approvals_path=consumed_path,
     )
 
     att_rec = _create_controlled_invalidation_attestation_from_record(
@@ -358,10 +405,55 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
         req_dig = ev_item["request_sha256"] if ev_item else "0"*64
         res_dig = ev_item["response_sha256"] if ev_item else "0"*64
         clean_aid = aid if aid.startswith("ACT-") else f"ACT-{aid.ljust(64, '0')[:64]}"
-        exec_rec = ledger.record_execution(
+        app_id = f"APPR-{clean_aid[4:36]}"
+
+        ver_cap = store.save_http_capture(
+            request_text=f"GET /auth/verify?aid={clean_aid}\nAuthorization: Bearer {sess_ctx.session_ref[:8]}",
+            response_text=f'HTTP 401 Unauthorized\n{{"error": "Session revoked", "action": "{clean_aid}"}}',
+            metadata={
+                "event_type": ev_type,
+                "session_ref": sess_ctx.session_ref,
+                "principal_id": sess_ctx.principal_id,
+                "program_id": prog,
+                "verification_method": "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+            },
+            prefix=f"ver_{clean_aid[-6:]}",
+        )
+
+        c_token = secrets.token_hex(32)
+        os.makedirs(ledger.state_dir, exist_ok=True)
+        consumed_path = os.path.join(ledger.state_dir, "consumed_approvals.json")
+        consumed_entry = {
+            "approval_id": app_id,
+            "action_id": clean_aid,
+            "consumption_token": c_token,
+            "program_id": prog,
+            "session_ref": sess_ctx.session_ref,
+            "principal_id": sess_ctx.principal_id,
+            "test_account": sess_ctx.principal_id,
+            "target_endpoint": "https://target.local/auth/logout",
+            "method": "POST",
+            "action_type": "LOGOUT",
+            "consumed_at": ts,
+            "execution_id": None,
+        }
+        consumed_data = {"version": "1.0", "consumed": {}}
+        if os.path.exists(consumed_path):
+            try:
+                with open(consumed_path, "r", encoding="utf-8") as f:
+                    consumed_data = json.load(f)
+            except Exception:
+                pass
+        if "consumed" not in consumed_data:
+            consumed_data["consumed"] = {}
+        consumed_data["consumed"][clean_aid] = consumed_entry
+        with open(consumed_path, "w", encoding="utf-8") as f:
+            json.dump(consumed_data, f, indent=2)
+
+        cap = issue_execution_capability(
             action_id=clean_aid,
             action_dossier_digest=clean_aid[4:],
-            approval_id=f"APPR-{clean_aid[4:36]}",
+            approval_id=app_id,
             program_id=prog,
             session_ref=sess_ctx.session_ref,
             principal_id=sess_ctx.principal_id,
@@ -373,14 +465,21 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
             mutation_request_digest=req_dig,
             mutation_response_digest=res_dig,
             mutation_status_code=200,
-            verification_evidence_ref=orig_ref,
-            verification_request_digest=req_dig,
-            verification_response_digest=res_dig,
+            verification_evidence_ref=ver_cap["evidence_id"],
+            verification_request_digest=ver_cap["request_sha256"],
+            verification_response_digest=ver_cap["response_sha256"],
             verification_status_code=401,
             verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
             invalidation_verification_result="REVOKED",
             execution_timestamp=ts,
             verification_timestamp=ts,
+            consumption_token=c_token,
+            key_dir=ledger.key_dir,
+        )
+        exec_rec = ledger.record_execution(
+            capability=cap,
+            evidence_store=store,
+            consumed_approvals_path=consumed_path,
         )
         return _create_controlled_invalidation_attestation_from_record(
             execution_record=exec_rec,
@@ -445,7 +544,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
 
     # 4. Invalid signature rejection
     res4 = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
+        request_text="POST /logout\nTest: 4", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
     att4 = _make_att(
@@ -465,7 +564,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
 
     # 5. Modified signed payload rejection
     res5 = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
+        request_text="POST /logout\nTest: 5", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
     att5 = _make_att(
@@ -485,7 +584,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
 
     # 6. Wrong signing domain rejection
     res6 = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
+        request_text="POST /logout\nTest: 6", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
     att6 = _make_att(
@@ -506,7 +605,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
     # 7. Wrong session attribution rejection
     other_sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000999", principal_id="u1")
     res7 = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
+        request_text="POST /logout\nTest: 7", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": other_sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
     _make_att(
@@ -524,7 +623,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
     # 8. Wrong principal attribution rejection
     sess_foreign = CorrelatedSessionContext(session_ref=sess.session_ref, principal_id="foreign_user")
     res8 = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
+        request_text="POST /logout\nTest: 8", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": "foreign_user", "program_id": "default-program"},
     )
     _make_att(
@@ -541,7 +640,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
 
     # 9. Wrong program attribution rejection
     res9 = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
+        request_text="POST /logout\nTest: 9", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "foreign_program"},
     )
     _make_att(
@@ -557,7 +656,16 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
     assert s9 == "INCONCLUSIVE" and f9 is None
 
     # 10. Wrong original evidence reference rejection
-    dummy_ev = store.save_http_capture("POST /dummy", "HTTP 200 OK", metadata={"event_type": "SESSION_REVOCATION"})
+    dummy_ev = store.save_http_capture(
+        "POST /dummy",
+        "HTTP 200 OK",
+        metadata={
+            "event_type": "SESSION_REVOCATION",
+            "session_ref": sess.session_ref,
+            "principal_id": sess.principal_id,
+            "program_id": "default-program",
+        },
+    )
     att10 = _make_att(
         aid="ACT-0000000000000000000000000000000000000000000000000000000000000010",
         orig_ref=dummy_ev["evidence_id"],
@@ -637,7 +745,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
 
     # 14. Missing or unavailable key rejection
     res14 = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
+        request_text="POST /logout\nTest: 14", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
     _make_att(

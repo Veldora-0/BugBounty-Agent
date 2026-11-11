@@ -67,10 +67,7 @@ class EvidenceStore:
             raise ValueError(f"Evidence directory '{self.evidence_dir}' is a symbolic link")
         if os.name == "nt":
             from framework.auth_correlation.state import _enforce_windows_directory_dacl, _verify_windows_directory_security
-            try:
-                _enforce_windows_directory_dacl(self.evidence_dir)
-            except Exception:
-                pass
+            _enforce_windows_directory_dacl(self.evidence_dir)
             _verify_windows_directory_security(self.evidence_dir)
         else:
             st = os.lstat(self.evidence_dir)
@@ -131,6 +128,10 @@ class EvidenceStore:
         tmp_capture = f"{file_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
         with open(tmp_capture, "w", encoding="utf-8", newline="\n") as f:
             f.write(combined)
+        if os.name == "nt":
+            from framework.auth_correlation.state import _enforce_windows_file_dacl, _verify_windows_file_security
+            _enforce_windows_file_dacl(tmp_capture)
+            _verify_windows_file_security(tmp_capture)
         os.replace(tmp_capture, file_path)
 
         # Meta descriptor
@@ -148,6 +149,10 @@ class EvidenceStore:
         tmp_meta = f"{meta_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
         with open(tmp_meta, "w", encoding="utf-8") as f:
             json.dump(meta_info, f, indent=2)
+        if os.name == "nt":
+            from framework.auth_correlation.state import _enforce_windows_file_dacl, _verify_windows_file_security
+            _enforce_windows_file_dacl(tmp_meta)
+            _verify_windows_file_security(tmp_meta)
         os.replace(tmp_meta, meta_path)
 
         return {
@@ -164,6 +169,7 @@ class EvidenceStore:
         Retrieves evidence descriptor by evidence ID from the evidence directory.
         Verifies that the capture file exists on disk, is a regular file within evidence_dir,
         and recomputes SHA-256 byte digest to ensure byte integrity.
+        Also recomputes and verifies individual request and response SHA-256 digests.
         Returns meta dict if valid and uncorrupted, or None if not found, malformed, or tampered.
         """
         if not evidence_id or not isinstance(evidence_id, str):
@@ -178,6 +184,10 @@ class EvidenceStore:
                     meta_path = os.path.join(self.evidence_dir, fname)
                     if os.path.islink(meta_path):
                         continue
+                    if os.name == "nt":
+                        m_stat = os.lstat(meta_path)
+                        if hasattr(m_stat, "st_file_attributes") and (m_stat.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                            continue
                     try:
                         with open(meta_path, "r", encoding="utf-8") as f:
                             meta = json.load(f)
@@ -193,6 +203,10 @@ class EvidenceStore:
                             capture_path = os.path.join(self.evidence_dir, base_filename)
                             if not os.path.isfile(capture_path) or os.path.islink(capture_path):
                                 continue
+                            if os.name == "nt":
+                                c_stat = os.lstat(capture_path)
+                                if hasattr(c_stat, "st_file_attributes") and (c_stat.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                                    continue
 
                             # Verify capture file is inside evidence_dir
                             real_dir = os.path.realpath(self.evidence_dir)
@@ -205,6 +219,24 @@ class EvidenceStore:
                             with open(capture_path, "rb") as cf:
                                 actual_digest = hashlib.sha256(cf.read()).hexdigest()
                             if actual_digest.lower() != stored_sha256.lower():
+                                continue
+
+                            # Recompute request and response SHA-256 digests
+                            with open(capture_path, "r", encoding="utf-8", errors="replace") as cf_text:
+                                combined_content = cf_text.read()
+                            parts = combined_content.split("\n\n--- RESPONSE ---\n", 1)
+                            if len(parts) == 2 and parts[0].startswith("--- REQUEST ---\n"):
+                                req_part = parts[0][len("--- REQUEST ---\n"):]
+                                res_part = parts[1]
+                                if res_part.endswith("\n"):
+                                    res_part = res_part[:-1]
+                                act_req_sha = hashlib.sha256(req_part.encode("utf-8")).hexdigest()
+                                act_res_sha = hashlib.sha256(res_part.encode("utf-8")).hexdigest()
+                                stored_req_sha = meta.get("request_sha256", "")
+                                stored_res_sha = meta.get("response_sha256", "")
+                                if act_req_sha.lower() != stored_req_sha.lower() or act_res_sha.lower() != stored_res_sha.lower():
+                                    continue
+                            else:
                                 continue
 
                             meta_copy = dict(meta)
@@ -240,6 +272,10 @@ class EvidenceStore:
         tmp_att = f"{att_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
         with open(tmp_att, "w", encoding="utf-8") as f:
             json.dump(attestation_record, f, indent=2)
+        if os.name == "nt":
+            from framework.auth_correlation.state import _enforce_windows_file_dacl, _verify_windows_file_security
+            _enforce_windows_file_dacl(tmp_att)
+            _verify_windows_file_security(tmp_att)
         os.replace(tmp_att, att_path)
 
         # Also persist direct lookup alias by original evidence reference atomically

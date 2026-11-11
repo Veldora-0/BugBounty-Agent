@@ -39,7 +39,10 @@ from framework.auth_correlation.ledger import (
     ExecutionLedger,
     ExecutionRecord,
     ExecutionProvenanceError,
+    ExecutionCapability,
+    issue_execution_capability,
     get_or_create_execution_key,
+    get_or_create_capability_key,
     EXECUTION_ID_PATTERN,
     EXECUTION_SIG_PATTERN,
     EXECUTION_DOMAIN,
@@ -220,10 +223,7 @@ def get_or_create_approval_key(key_dir: Optional[str] = None) -> bytes:
                 _enforce_windows_directory_dacl(key_folder)
 
         if os.name == "nt":
-            try:
-                _enforce_windows_directory_dacl(key_folder)
-            except Exception:
-                pass
+            _enforce_windows_directory_dacl(key_folder)
             _verify_windows_directory_security(key_folder)
         else:
             kdir_stat = os.lstat(key_folder)
@@ -321,10 +321,7 @@ def get_or_create_attestation_key(key_dir: Optional[str] = None) -> bytes:
                 _enforce_windows_directory_dacl(key_folder)
 
         if os.name == "nt":
-            try:
-                _enforce_windows_directory_dacl(key_folder)
-            except Exception:
-                pass
+            _enforce_windows_directory_dacl(key_folder)
             _verify_windows_directory_security(key_folder)
         else:
             kdir_stat = os.lstat(key_folder)
@@ -472,6 +469,8 @@ def _create_controlled_invalidation_attestation_from_record(
         rec_in_ledger = execution_ledger.get_execution(validated["execution_id"])
         if rec_in_ledger is None:
             raise AttestationSecurityError(f"Execution '{validated['execution_id']}' is not registered in ExecutionLedger")
+        if getattr(rec_in_ledger, "is_testing_primitive", False):
+            raise AttestationSecurityError("Execution record is a test primitive and not genuine execution provenance")
         if rec_in_ledger.attestation_created:
             raise AttestationSecurityError(
                 f"Execution '{validated['execution_id']}' has already been claimed for attestation '{rec_in_ledger.attestation_id}' (replay rejected)"
@@ -1004,17 +1003,28 @@ class PostRevocationResourceValidator:
             except Exception as e:
                 raise ApprovalSecurityError(f"Consumed approvals state storage is corrupted: {e}")
 
+        consumption_token = secrets.token_hex(32)
         data["consumed"][action_id] = {
             "consumed_at": time.time(),
+            "approval_id": dossier.get("unique_approval_id"),
+            "action_dossier_digest": action_id[4:],
+            "program_id": self._program_id,
             "target_endpoint": dossier.get("target_endpoint"),
+            "method": dossier.get("method"),
             "action_type": dossier.get("action_type"),
             "test_account": dossier.get("test_account"),
+            "consumption_token": consumption_token,
+            "capability_issued": False,
+            "execution_id": None,
         }
 
         tmp_path = f"{path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
         try:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            if os.name == "nt":
+                _enforce_windows_file_dacl(tmp_path)
+                _verify_windows_file_security(tmp_path)
             os.replace(tmp_path, path)
         except Exception as e:
             if os.path.exists(tmp_path):
@@ -1023,6 +1033,7 @@ class PostRevocationResourceValidator:
                 except OSError:
                     pass
             raise ApprovalSecurityError(f"Failed to record consumed approval state: {e}")
+        return consumption_token
 
     def verify_invalidation_provenance(
         self,
@@ -1250,7 +1261,7 @@ class PostRevocationResourceValidator:
             except Exception as e:
                 return False, f"Failed to verify evidence capture bytes: {e}", None
 
-            # Verify execution ledger record if ledger is available
+            # Verify execution ledger record (mandatory for CONTROLLED_WORKFLOW)
             ledger = getattr(self, "_execution_ledger", None)
             if ledger is None and os.path.isdir(self._state_dir):
                 try:
@@ -1258,25 +1269,29 @@ class PostRevocationResourceValidator:
                 except Exception:
                     ledger = None
 
-            if ledger is not None and os.path.exists(ledger.ledger_file):
-                try:
-                    exec_rec = ledger.get_execution(eid)
-                    if exec_rec is None:
-                        return False, f"Execution '{eid}' referenced by attestation is missing from ExecutionLedger", None
-                    if exec_rec.attestation_id and exec_rec.attestation_id != att_record.get("attestation_id"):
-                        return False, "Execution record attestation_id mismatch in ledger", None
-                    if exec_rec.session_ref != session_ctx.session_ref:
-                        return False, "Execution record session attribution mismatch in ledger", None
-                    if exec_rec.principal_id != session_ctx.principal_id:
-                        return False, "Execution record principal attribution mismatch in ledger", None
-                    if exec_rec.program_id != target_prog:
-                        return False, "Execution record program attribution mismatch in ledger", None
-                    if exec_rec.mutation_evidence_ref != mut_ref:
-                        return False, "Execution record mutation evidence reference mismatch in ledger", None
-                    if exec_rec.verification_evidence_ref != ver_ref:
-                        return False, "Execution record verification evidence reference mismatch in ledger", None
-                except ExecutionProvenanceError as e:
-                    return False, f"Execution provenance verification failed: {e}", None
+            if ledger is None:
+                return False, "ExecutionLedger is not available; cannot verify controlled execution provenance", None
+
+            try:
+                exec_rec = ledger.get_execution(eid)
+                if exec_rec is None:
+                    return False, f"Execution '{eid}' referenced by attestation is missing from ExecutionLedger", None
+                if getattr(exec_rec, "is_testing_primitive", False):
+                    return False, "Execution record is a test primitive and not genuine execution provenance", None
+                if exec_rec.attestation_id and exec_rec.attestation_id != att_record.get("attestation_id"):
+                    return False, "Execution record attestation_id mismatch in ledger", None
+                if exec_rec.session_ref != session_ctx.session_ref:
+                    return False, "Execution record session attribution mismatch in ledger", None
+                if exec_rec.principal_id != session_ctx.principal_id:
+                    return False, "Execution record principal attribution mismatch in ledger", None
+                if exec_rec.program_id != target_prog:
+                    return False, "Execution record program attribution mismatch in ledger", None
+                if exec_rec.mutation_evidence_ref != mut_ref:
+                    return False, "Execution record mutation evidence reference mismatch in ledger", None
+                if exec_rec.verification_evidence_ref != ver_ref:
+                    return False, "Execution record verification evidence reference mismatch in ledger", None
+            except ExecutionProvenanceError as e:
+                return False, f"Execution provenance verification failed: {e}", None
 
             att_record["trust_classification"] = "INDEPENDENTLY_VERIFIED_WORKFLOW"
             reason = f"Invalidation event attestation verified (Source: {source}, Method: {ver_meth})"
@@ -1663,7 +1678,7 @@ class PostRevocationResourceValidator:
             if self._is_approval_consumed(action_id):
                 raise ApprovalSecurityError(f"Action approval '{action_id}' has already been consumed (replay rejected)")
             # Mark consumed immediately BEFORE network mutation
-            self._mark_approval_consumed(action_id, action_dossier)
+            consumption_token = self._mark_approval_consumed(action_id, action_dossier)
 
         # 8. Execute the controlled invalidation mutation
         from datetime import datetime, timezone
@@ -1802,8 +1817,8 @@ class PostRevocationResourceValidator:
                 prefix="controlled_revocation_verification",
             )
 
-            # Record in ExecutionLedger to establish genuine execution provenance
-            exec_rec = self.ledger.record_execution(
+            # Issue verifiable ExecutionCapability bound to consumed approval receipt and persisted evidence
+            capability = issue_execution_capability(
                 action_id=action_id,
                 action_dossier_digest=action_id[4:],
                 approval_id=unique_approval_id,
@@ -1826,6 +1841,15 @@ class PostRevocationResourceValidator:
                 invalidation_verification_result=ver_result,
                 execution_timestamp=exec_ts,
                 verification_timestamp=ver_ts,
+                consumption_token=consumption_token,
+                key_dir=self._approval_key_dir,
+            )
+
+            # Record in ExecutionLedger with capability and evidence_store
+            exec_rec = self.ledger.record_execution(
+                capability=capability,
+                evidence_store=self._evidence_store,
+                consumed_approvals_path=self._get_consumed_approvals_path(),
             )
 
             att = _create_controlled_invalidation_attestation_from_record(
