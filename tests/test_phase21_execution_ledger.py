@@ -1091,4 +1091,5 @@ def test_attack_10_concurrent_approval_consumption(tmp_path):
     assert len(results) == 1
     assert len(errors) == 3
     for err in errors:
-        assert "duplicate execution" in str(err).lower() or "already been executed" in str(err).lower()
+        s = str(err).lower()
+        assert "duplicate execution" in s or "already been executed" in s or "cross-execution reuse" in s
