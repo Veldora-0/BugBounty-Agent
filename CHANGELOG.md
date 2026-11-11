@@ -9,7 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Accepted)
 
-#### Final Security Remediation, Execution Ledger Provenance & Acceptance Closure
+#### Final Trust-Boundary Remediation & Definitive Acceptance (Commit `f078b093cddc13bb8fc7054d350451a431e4cb16`)
+* **Genuine Execution Provenance & Capability Workflow** (`framework/auth_correlation/ledger.py`, `framework/auth_correlation/revocation.py`, `framework/auth_correlation/model.py`):
+  * Eliminated arbitrary caller creation of execution records via `record_execution()`. Ordinary callers without a verified `ExecutionCapability` fail closed.
+  * Established verifiable `ExecutionCapability` issued strictly upon successful completion of the trusted Mode B execution workflow.
+  * Cryptographically signs 26 canonical capability fields under HMAC-SHA256 (`CAP-SIG-...`) using dedicated key `execution_capability.key` stored outside Git (`~/.config/opencode/` on POSIX, `%LOCALAPPDATA%\opencode\` on Windows).
+  * Bound consumed approval receipt, session reference, principal, test account, target endpoint, method, action type, mutation and verification evidence references, disk-recomputed request/response digests, status codes, verification method, and single-use consumption token.
+  * Added `is_testing_primitive = True` to low-level test helper records (`_record_raw_record_for_testing()`), ensuring Mode A attestation creation and verification strictly rejects test primitives.
+* **Exact Evidence-to-Ledger Binding & Disk Byte Recomputation** (`framework/auth_correlation/ledger.py`, `framework/common/evidence.py`):
+  * Persistence of execution records retrieves exact persisted capture bytes from `EvidenceStore`.
+  * Recomputes SHA-256 byte digests over entire capture files and individual request/response sections from disk.
+  * Verifies exact match with capability digests and `.meta.json`.
+  * Verifies on-disk metadata (`session_ref`, `principal_id`, `program_id`, `event_type`, `verification_method`).
+  * Rejects symbolic links and NTFS reparse points (`FILE_ATTRIBUTE_REPARSE_POINT`).
+  * Strictly rejects cross-execution evidence reuse across both mutation and verification capture references.
+* **Windows Security & DACL Enforcement** (`framework/auth_correlation/ledger.py`, `framework/auth_correlation/state.py`, `framework/auth_correlation/revocation.py`, `framework/common/evidence.py`):
+  * Removed all `except Exception: pass` suppressions around Windows DACL enforcement (`_enforce_windows_directory_dacl`, `_enforce_windows_file_dacl`, `_verify_windows_path_security`).
+  * Enforcement and verification failures fail closed immediately with `ExecutionProvenanceError` or `SerializationSecurityError`.
+* **Adversarial Regression Test Suite** (`tests/test_phase21_execution_ledger.py`, `tests/test_phase21_preflight_and_revocation.py`):
+  * Expanded `tests/test_phase21_execution_ledger.py` from 5 to 15 tests covering all 15 adversarial trust-boundary attack scenarios.
+  * Updated test helpers in `test_phase21_preflight_and_revocation.py` to use capability workflow.
+  * All 91 Phase 21 tests passed (90 passed, 1 skipped). All 1033 framework tests passed with zero regressions.
+
+#### Final Security Remediation, Execution Ledger Provenance & Acceptance Closure (Commit `ee4fa74312116482f5f7df5cfc84a5c1c2a3b43e`)
 * **Tamper-Evident Execution Ledger & Cryptographic Provenance** (`framework/auth_correlation/ledger.py`, `framework/auth_correlation/revocation.py`, `framework/auth_correlation/model.py`):
   * Replaced caller-instantiated dataclasses with a sealed internal `ExecutionLedger` (`state/execution_ledger.json`) backed by cross-process locking (`CrossProcessFileLock`) and atomic descriptor-based updates (`.tmp` + `os.replace`).
   * Bound execution records to an isolated HMAC-SHA256 key (`execution_ledger.key`) stored strictly outside the Git repository (`~/.config/opencode/` on POSIX, `%LOCALAPPDATA%\opencode\` on Windows).
