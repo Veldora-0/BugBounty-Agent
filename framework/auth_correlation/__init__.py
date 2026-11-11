@@ -37,10 +37,7 @@ from framework.auth_correlation.ledger import (
     ExecutionLedger,
     ExecutionRecord,
     ExecutionProvenanceError,
-    ExecutionCapability,
-    issue_execution_capability,
     get_or_create_execution_key,
-    get_or_create_capability_key,
 )
 from framework.auth_correlation.revocation import (
     PostRevocationResourceValidator,
@@ -97,10 +94,7 @@ __all__ = [
     "ExecutionLedger",
     "ExecutionRecord",
     "ExecutionProvenanceError",
-    "ExecutionCapability",
-    "issue_execution_capability",
     "get_or_create_execution_key",
-    "get_or_create_capability_key",
     "get_or_create_attestation_key",
     "create_controlled_invalidation_attestation",
     "create_operator_invalidation_attestation",

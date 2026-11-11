@@ -191,20 +191,27 @@ def get_or_create_capability_key(key_dir: Optional[str] = None) -> bytes:
             flags = os.O_CREAT | os.O_WRONLY | os.O_EXCL
             if hasattr(os, "O_BINARY"):
                 flags |= os.O_BINARY
-            fd = os.open(key_file, flags, 0o600)
             try:
-                with os.fdopen(fd, "wb", closefd=True) as f:
-                    f.write(key)
-            except Exception as e:
-                raise ExecutionProvenanceError(f"Failed to write execution capability key file: {e}")
-
-            if os.name == "nt":
+                fd = os.open(key_file, flags, 0o600)
                 try:
-                    _enforce_windows_file_dacl(key_file)
-                    _verify_windows_file_security(key_file)
-                except SerializationSecurityError as err:
-                    raise ExecutionProvenanceError(str(err))
-            return key
+                    with os.fdopen(fd, "wb", closefd=True) as f:
+                        f.write(key)
+                except Exception as e:
+                    raise ExecutionProvenanceError(f"Failed to write execution capability key file: {e}")
+
+                if os.name == "nt":
+                    try:
+                        _enforce_windows_file_dacl(key_file)
+                        _verify_windows_file_security(key_file)
+                    except SerializationSecurityError as err:
+                        raise ExecutionProvenanceError(str(err))
+                return key
+            except FileExistsError:
+                with open(key_file, "rb") as f:
+                    key = f.read(32)
+                if len(key) != 32:
+                    raise ExecutionProvenanceError("Invalid execution capability key file length")
+                return key
     except Exception as e:
         if isinstance(e, ExecutionProvenanceError):
             raise
@@ -289,20 +296,27 @@ def get_or_create_execution_key(key_dir: Optional[str] = None) -> bytes:
             flags = os.O_CREAT | os.O_WRONLY | os.O_EXCL
             if hasattr(os, "O_BINARY"):
                 flags |= os.O_BINARY
-            fd = os.open(key_file, flags, 0o600)
             try:
-                with os.fdopen(fd, "wb", closefd=True) as f:
-                    f.write(key)
-            except Exception as e:
-                raise ExecutionProvenanceError(f"Failed to write execution key file: {e}")
-
-            if os.name == "nt":
+                fd = os.open(key_file, flags, 0o600)
                 try:
-                    _enforce_windows_file_dacl(key_file)
-                    _verify_windows_file_security(key_file)
-                except SerializationSecurityError as err:
-                    raise ExecutionProvenanceError(str(err))
-            return key
+                    with os.fdopen(fd, "wb", closefd=True) as f:
+                        f.write(key)
+                except Exception as e:
+                    raise ExecutionProvenanceError(f"Failed to write execution key file: {e}")
+
+                if os.name == "nt":
+                    try:
+                        _enforce_windows_file_dacl(key_file)
+                        _verify_windows_file_security(key_file)
+                    except SerializationSecurityError as err:
+                        raise ExecutionProvenanceError(str(err))
+                return key
+            except FileExistsError:
+                with open(key_file, "rb") as f:
+                    key = f.read(32)
+                if len(key) != 32:
+                    raise ExecutionProvenanceError("Invalid execution key file length")
+                return key
     except Exception as e:
         if isinstance(e, ExecutionProvenanceError):
             raise
@@ -864,50 +878,71 @@ class ExecutionLedger:
 
         # 3. Consumed approval verification (single-use approval and attribution binding)
         consumed_path = consumed_approvals_path or os.path.join(self.state_dir, "consumed_approvals.json")
-        if os.path.exists(consumed_path):
-            with self._acquire_lock():
-                try:
-                    with open(consumed_path, "r", encoding="utf-8") as f:
-                        consumed_data = json.load(f)
-                except Exception as e:
-                    raise ExecutionProvenanceError(f"Failed to load consumed approvals registry: {e}")
+        if not consumed_path or not os.path.exists(consumed_path):
+            raise ExecutionProvenanceError(f"Consumed approvals registry '{consumed_path}' does not exist: approval verification failed closed")
+        if not os.path.isfile(consumed_path):
+            raise ExecutionProvenanceError(f"Consumed approvals registry '{consumed_path}' is not a regular file")
+        if os.path.islink(consumed_path):
+            raise ExecutionProvenanceError("Consumed approvals registry cannot be a symbolic link")
+        if os.name == "nt":
+            c_stat = os.lstat(consumed_path)
+            if hasattr(c_stat, "st_file_attributes") and (c_stat.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                raise ExecutionProvenanceError("Consumed approvals registry cannot be an NTFS reparse point")
 
-                if not isinstance(consumed_data, dict):
-                    raise ExecutionProvenanceError("Consumed approvals registry is corrupted")
+        with self._acquire_lock():
+            try:
+                with open(consumed_path, "r", encoding="utf-8") as f:
+                    consumed_data = json.load(f)
+            except json.JSONDecodeError as e:
+                raise ExecutionProvenanceError(f"Consumed approvals registry contains invalid JSON: {e}")
+            except Exception as e:
+                raise ExecutionProvenanceError(f"Failed to read consumed approvals registry: {e}")
 
-                consumed_dict = consumed_data.get("consumed", consumed_data)
-                if not isinstance(consumed_dict, dict):
-                    raise ExecutionProvenanceError("Consumed approvals registry is corrupted")
+            if not isinstance(consumed_data, dict):
+                raise ExecutionProvenanceError("Consumed approvals registry is corrupted: root must be a dict")
 
-                entry = consumed_dict.get(capability.action_id)
-                if not entry or not isinstance(entry, dict):
-                    raise ExecutionProvenanceError(f"Action '{capability.action_id}' has not been consumed in approval registry")
+            if "version" not in consumed_data or not isinstance(consumed_data["version"], (int, str)):
+                raise ExecutionProvenanceError("Consumed approvals registry schema is invalid: missing or invalid version")
 
-                if entry.get("approval_id") != capability.approval_id:
-                    raise ExecutionProvenanceError("Approval ID mismatch with consumed approval record")
+            consumed_dict = consumed_data.get("consumed")
+            if not isinstance(consumed_dict, dict):
+                raise ExecutionProvenanceError("Consumed approvals registry schema is invalid: missing or invalid consumed dictionary")
 
-                if entry.get("consumption_token") != capability.consumption_token:
-                    raise ExecutionProvenanceError("Consumption token mismatch with consumed approval record")
+            entry = consumed_dict.get(capability.action_id)
+            if not entry or not isinstance(entry, dict):
+                raise ExecutionProvenanceError(f"Action '{capability.action_id}' has not been consumed in approval registry")
 
-                if entry.get("program_id") != capability.program_id:
-                    raise ExecutionProvenanceError("Program ID mismatch with consumed approval record")
+            if entry.get("approval_id") != capability.approval_id:
+                raise ExecutionProvenanceError("Approval ID mismatch with consumed approval record")
 
-                if entry.get("test_account") != capability.test_account:
-                    raise ExecutionProvenanceError("Test account mismatch with consumed approval record")
+            if entry.get("consumption_token") != capability.consumption_token:
+                raise ExecutionProvenanceError("Consumption token mismatch with consumed approval record")
 
-                if entry.get("target_endpoint") != capability.target_endpoint:
-                    raise ExecutionProvenanceError("Target endpoint mismatch with consumed approval record")
+            if entry.get("program_id") != capability.program_id:
+                raise ExecutionProvenanceError("Program ID mismatch with consumed approval record")
 
-                if entry.get("method") != capability.http_method:
-                    raise ExecutionProvenanceError("HTTP method mismatch with consumed approval record")
+            if entry.get("test_account") != capability.test_account:
+                raise ExecutionProvenanceError("Test account mismatch with consumed approval record")
 
-                if entry.get("action_type") != capability.action_type:
-                    raise ExecutionProvenanceError("Action type mismatch with consumed approval record")
+            if entry.get("target_endpoint") != capability.target_endpoint:
+                raise ExecutionProvenanceError("Target endpoint mismatch with consumed approval record")
 
-                if entry.get("execution_id") is not None:
-                    raise ExecutionProvenanceError(
-                        f"Action '{capability.action_id}' has already been executed under '{entry['execution_id']}' (duplicate execution rejected)"
-                    )
+            if entry.get("method") != capability.http_method:
+                raise ExecutionProvenanceError("HTTP method mismatch with consumed approval record")
+
+            if entry.get("action_type") != capability.action_type:
+                raise ExecutionProvenanceError("Action type mismatch with consumed approval record")
+
+            if entry.get("session_ref") != capability.session_ref:
+                raise ExecutionProvenanceError("Session reference mismatch with consumed approval record")
+
+            if entry.get("principal_id") != capability.principal_id:
+                raise ExecutionProvenanceError("Principal ID mismatch with consumed approval record")
+
+            if entry.get("execution_id") is not None:
+                raise ExecutionProvenanceError(
+                    f"Action '{capability.action_id}' has already been executed under '{entry['execution_id']}' (duplicate execution rejected)"
+                )
 
         # 4. Exact evidence-to-ledger binding (Correction B)
         mut_ev = evidence_store.get_evidence(capability.mutation_evidence_ref)
@@ -984,9 +1019,14 @@ class ExecutionLedger:
         if hashlib.sha256(v_res.encode("utf-8")).hexdigest().lower() != capability.verification_response_digest.lower():
             raise ExecutionProvenanceError("Verification response digest mismatch with actual capture content")
 
-        # Verify metadata on disk
+        # Verify metadata on disk and transport boundary
         mut_meta = mut_ev.get("metadata", {})
         ver_meta = ver_ev.get("metadata", {})
+        if mut_meta.get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH":
+            raise ExecutionProvenanceError("Mutation evidence was not captured by controlled transport dispatch")
+        if ver_meta.get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH":
+            raise ExecutionProvenanceError("Verification evidence was not captured by controlled transport dispatch")
+
         if mut_meta.get("action_id") and mut_meta.get("action_id") != capability.action_id:
             raise ExecutionProvenanceError("Mutation evidence metadata action_id mismatch")
         if mut_meta.get("session_ref") != capability.session_ref:
@@ -1087,24 +1127,33 @@ class ExecutionLedger:
             ledger_data = self._load_ledger_data()
             if exec_id in ledger_data["records"]:
                 raise ExecutionProvenanceError(f"Duplicate execution entry for '{exec_id}' detected")
+
+            # Update consumed approval record with execution_id atomically under lock
+            entry["execution_id"] = exec_id
+            tmp_c = f"{consumed_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
+            try:
+                flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
+                if hasattr(os, "O_BINARY"):
+                    flags |= os.O_BINARY
+                fd_c = os.open(tmp_c, flags, 0o600)
+                with os.fdopen(fd_c, "w", encoding="utf-8") as cf:
+                    json.dump(consumed_data, cf, indent=2)
+                if os.name == "nt":
+                    _enforce_windows_file_dacl(tmp_c)
+                    _verify_windows_file_security(tmp_c)
+                os.replace(tmp_c, consumed_path)
+            except Exception as e:
+                if os.path.exists(tmp_c):
+                    try:
+                        os.remove(tmp_c)
+                    except OSError:
+                        pass
+                if isinstance(e, ExecutionProvenanceError):
+                    raise
+                raise ExecutionProvenanceError(f"Failed to update consumed approval registry with execution ID: {e}")
+
             ledger_data["records"][exec_id] = record.to_dict()
             self._save_ledger_data(ledger_data)
-
-            # Update consumed approval record with execution_id
-            if os.path.exists(consumed_path):
-                try:
-                    with open(consumed_path, "r", encoding="utf-8") as f:
-                        c_data = json.load(f)
-                    if isinstance(c_data, dict):
-                        c_dict = c_data.get("consumed", c_data)
-                        if isinstance(c_dict, dict) and capability.action_id in c_dict:
-                            c_dict[capability.action_id]["execution_id"] = exec_id
-                            tmp_c = f"{consumed_path}.tmp.{os.getpid()}"
-                            with open(tmp_c, "w", encoding="utf-8") as f:
-                                json.dump(c_data, f, indent=2)
-                            os.replace(tmp_c, consumed_path)
-                except Exception:
-                    pass
 
         return record
 

@@ -175,6 +175,7 @@ def make_valid_invalidation_evidence(
             "session_ref": sess.session_ref,
             "principal_id": sess.principal_id,
             "program_id": prog_id,
+            "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
         },
         prefix="inv_proof",
     )
@@ -189,6 +190,7 @@ def make_valid_invalidation_evidence(
             "principal_id": sess.principal_id,
             "program_id": prog_id,
             "verification_method": "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+            "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
         },
         prefix="inv_ver_proof",
     )
@@ -407,6 +409,18 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
         clean_aid = aid if aid.startswith("ACT-") else f"ACT-{aid.ljust(64, '0')[:64]}"
         app_id = f"APPR-{clean_aid[4:36]}"
 
+        if ev_item and "meta_path" in ev_item and os.path.exists(ev_item["meta_path"]):
+            try:
+                with open(ev_item["meta_path"], "r", encoding="utf-8") as mf:
+                    mdata = json.load(mf)
+                if "metadata" not in mdata:
+                    mdata["metadata"] = {}
+                mdata["metadata"]["capture_source"] = "CONTROLLED_TRANSPORT_DISPATCH"
+                with open(ev_item["meta_path"], "w", encoding="utf-8") as mf:
+                    json.dump(mdata, mf, indent=2)
+            except Exception:
+                pass
+
         ver_cap = store.save_http_capture(
             request_text=f"GET /auth/verify?aid={clean_aid}\nAuthorization: Bearer {sess_ctx.session_ref[:8]}",
             response_text=f'HTTP 401 Unauthorized\n{{"error": "Session revoked", "action": "{clean_aid}"}}',
@@ -416,6 +430,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
                 "principal_id": sess_ctx.principal_id,
                 "program_id": prog,
                 "verification_method": "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+                "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
             },
             prefix=f"ver_{clean_aid[-6:]}",
         )

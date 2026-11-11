@@ -95,8 +95,9 @@ def _create_valid_execution_fixture(
     store = EvidenceStore(ev_dir)
     ledger = ExecutionLedger(state_dir=state_dir, key_dir=key_dir)
 
-    clean_aid = f"ACT-{(action_suffix * 32)[:64]}"
-    app_id = f"APPR-{(action_suffix * 16)[:32]}"
+    aid_hex = hashlib.sha256(f"action_{action_suffix}".encode("utf-8")).hexdigest()
+    clean_aid = f"ACT-{aid_hex}"
+    app_id = f"APPR-{aid_hex[:32]}"
     c_token = secrets.token_hex(32)
     ts = "2026-11-11T12:00:00Z"
 
@@ -112,6 +113,7 @@ def _create_valid_execution_fixture(
             "principal_id": principal_id,
             "program_id": prog_id,
             "action_id": clean_aid,
+            "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
         },
         prefix=f"mut_{action_suffix}",
     )
@@ -129,6 +131,7 @@ def _create_valid_execution_fixture(
             "program_id": prog_id,
             "action_id": clean_aid,
             "verification_method": ver_method,
+            "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
         },
         prefix=f"ver_{action_suffix}",
     )
@@ -590,6 +593,7 @@ def test_adversarial_cross_execution_evidence_reuse(tmp_path):
             "program_id": cap1.program_id,
             "action_id": clean_aid2,
             "verification_method": "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+            "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
         },
         prefix="ver_11b",
     )
@@ -646,3 +650,445 @@ def test_adversarial_windows_dacl_failures_fail_closed(tmp_path):
         with patch("os.name", "nt"):
             with pytest.raises((ExecutionProvenanceError, SerializationSecurityError), match="Insecure permissions"):
                 get_or_create_capability_key(key_dir=key_dir)
+
+
+# ==============================================================================
+# SECTION 2: 16-ROW APPROVAL FAILURE MATRIX REGRESSION TESTS
+# ==============================================================================
+
+def test_approval_failure_row01_registry_missing(tmp_path):
+    """Row 1: Approval registry missing fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row01")
+    missing_path = os.path.join(str(tmp_path), "nonexistent", "consumed.json")
+    with pytest.raises(ExecutionProvenanceError, match="does not exist"):
+        ledger.record_execution(
+            capability=cap,
+            evidence_store=store,
+            consumed_approvals_path=missing_path,
+        )
+
+
+def test_approval_failure_row02_registry_not_a_file(tmp_path):
+    """Row 2: Approval registry path is a directory (not a regular file) fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row02")
+    dir_path = str(tmp_path / "reg_is_dir")
+    os.makedirs(dir_path, exist_ok=True)
+    with pytest.raises(ExecutionProvenanceError, match="is not a regular file"):
+        ledger.record_execution(
+            capability=cap,
+            evidence_store=store,
+            consumed_approvals_path=dir_path,
+        )
+
+
+def test_approval_failure_row03_registry_unreadable(tmp_path):
+    """Row 3: Approval registry unreadable (e.g. PermissionError) fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row03")
+    orig_open = open
+    def mock_open(path, *args, **kwargs):
+        if "consumed_approvals.json" in str(path):
+            raise PermissionError("Permission denied")
+        return orig_open(path, *args, **kwargs)
+
+    with patch("builtins.open", side_effect=mock_open):
+        with pytest.raises(ExecutionProvenanceError, match="Failed to read consumed approvals registry"):
+            ledger.record_execution(
+                capability=cap,
+                evidence_store=store,
+                consumed_approvals_path=consumed_path,
+            )
+
+
+def test_approval_failure_row04_invalid_json(tmp_path):
+    """Row 4: Approval registry corrupted JSON fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row04")
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        f.write("{invalid_json_content: corrupt")
+    with pytest.raises(ExecutionProvenanceError, match="invalid JSON"):
+        ledger.record_execution(
+            capability=cap,
+            evidence_store=store,
+            consumed_approvals_path=consumed_path,
+        )
+
+
+def test_approval_failure_row05_invalid_schema(tmp_path):
+    """Row 5: Approval registry invalid schema (missing version or consumed dict) fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row05")
+
+    # Subcase A: Root is not a dict
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(["not", "a", "dict"], f)
+    with pytest.raises(ExecutionProvenanceError, match="root must be a dict"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+    # Subcase B: Missing version
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump({"consumed": {}}, f)
+    with pytest.raises(ExecutionProvenanceError, match="missing or invalid version"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+    # Subcase C: Consumed is not a dict
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "consumed": "not_a_dict"}, f)
+    with pytest.raises(ExecutionProvenanceError, match="missing or invalid consumed dictionary"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row06_missing_action_receipt(tmp_path):
+    """Row 6: Action receipt missing in registry fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row06")
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "consumed": {}}, f)
+    with pytest.raises(ExecutionProvenanceError, match="has not been consumed in approval registry"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row07_wrong_approval_id(tmp_path):
+    """Row 7: Wrong approval ID in receipt fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row07")
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    cdata["consumed"][clean_aid]["approval_id"] = "APPR-FORGED-0000"
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(cdata, f)
+    with pytest.raises(ExecutionProvenanceError, match="Approval ID mismatch"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row08_wrong_consumption_token(tmp_path):
+    """Row 8: Wrong consumption token in receipt fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row08")
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    cdata["consumed"][clean_aid]["consumption_token"] = "TOKEN-TAMPERED-0000"
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(cdata, f)
+    with pytest.raises(ExecutionProvenanceError, match="Consumption token mismatch"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row09_wrong_program(tmp_path):
+    """Row 9: Wrong program in receipt fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row09")
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    cdata["consumed"][clean_aid]["program_id"] = "program_other"
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(cdata, f)
+    with pytest.raises(ExecutionProvenanceError, match="Program ID mismatch"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row10_wrong_test_account(tmp_path):
+    """Row 10: Wrong test account in receipt fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row10")
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    cdata["consumed"][clean_aid]["test_account"] = "attacker_account"
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(cdata, f)
+    with pytest.raises(ExecutionProvenanceError, match="Test account mismatch"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row11_wrong_target(tmp_path):
+    """Row 11: Wrong target endpoint in receipt fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row11")
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    cdata["consumed"][clean_aid]["target_endpoint"] = "https://unauthorized.target/auth/logout"
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(cdata, f)
+    with pytest.raises(ExecutionProvenanceError, match="Target endpoint mismatch"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row12_wrong_method(tmp_path):
+    """Row 12: Wrong method in receipt fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row12")
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    cdata["consumed"][clean_aid]["method"] = "DELETE"
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(cdata, f)
+    with pytest.raises(ExecutionProvenanceError, match="HTTP method mismatch"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row13_wrong_action_type(tmp_path):
+    """Row 13: Wrong action type in receipt fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row13")
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    cdata["consumed"][clean_aid]["action_type"] = "PASSWORD_CHANGE"
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(cdata, f)
+    with pytest.raises(ExecutionProvenanceError, match="Action type mismatch"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row14_wrong_session_ref(tmp_path):
+    """Row 14: Wrong session reference in receipt fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row14")
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    cdata["consumed"][clean_aid]["session_ref"] = "sess_mismatched_0000000000000000000"
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(cdata, f)
+    with pytest.raises(ExecutionProvenanceError, match="Session reference mismatch"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row15_wrong_principal_id(tmp_path):
+    """Row 15: Wrong principal ID in receipt fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row15")
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    cdata["consumed"][clean_aid]["principal_id"] = "principal_mismatched"
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(cdata, f)
+    with pytest.raises(ExecutionProvenanceError, match="Principal ID mismatch"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_approval_failure_row16_replayed_receipt(tmp_path):
+    """Row 16: Replayed receipt (already linked to execution_id) fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "row16")
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    cdata["consumed"][clean_aid]["execution_id"] = "EXEC-PREVIOUS-RUN-0000000000000000"
+    with open(consumed_path, "w", encoding="utf-8") as f:
+        json.dump(cdata, f)
+    with pytest.raises(ExecutionProvenanceError, match="duplicate execution rejected"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+# ==============================================================================
+# SECTION 7: ADVERSARIAL ATTACKS 1 THROUGH 10
+# ==============================================================================
+
+def test_attack_01_fake_capability_construction(tmp_path):
+    """Attack 1: Construct a fake capability and try to obtain a trusted ledger record."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "att01")
+
+    # Construct completely fabricated capability with arbitrary signature
+    fake_cap = ExecutionCapability(
+        approval_id="APPR-FAKE1234",
+        action_id=clean_aid,
+        action_dossier_digest=clean_aid[4:],
+        program_id=cap.program_id,
+        session_ref=cap.session_ref,
+        principal_id=cap.principal_id,
+        test_account=cap.test_account,
+        target_endpoint=cap.target_endpoint,
+        http_method="POST",
+        action_type="LOGOUT",
+        mutation_evidence_ref=cap.mutation_evidence_ref,
+        mutation_request_digest=cap.mutation_request_digest,
+        mutation_response_digest=cap.mutation_response_digest,
+        mutation_status_code=200,
+        verification_evidence_ref=cap.verification_evidence_ref,
+        verification_request_digest=cap.verification_request_digest,
+        verification_response_digest=cap.verification_response_digest,
+        verification_status_code=401,
+        verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+        invalidation_verification_result="REVOKED",
+        execution_timestamp="2026-11-11T12:00:00Z",
+        verification_timestamp="2026-11-11T12:00:00Z",
+        consumption_token=c_token,
+        capability_id="CAP-" + "0" * 64,
+        signature="CAP-SIG-" + "F" * 64,
+    )
+    with pytest.raises(ExecutionProvenanceError, match="capability signature verification failed"):
+        ledger.record_execution(capability=fake_cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_attack_02_capability_issuer_with_fabricated_evidence(tmp_path):
+    """Attack 2: Call capability issuer with fabricated mutation and verification evidence."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "att02")
+    cap_key = ledger._get_capability_key()
+
+    # Issuer called with non-existent fabricated evidence references
+    fab_cap = issue_execution_capability(
+        action_id=clean_aid,
+        action_dossier_digest=clean_aid[4:],
+        approval_id=app_id,
+        program_id=cap.program_id,
+        session_ref=cap.session_ref,
+        principal_id=cap.principal_id,
+        test_account=cap.test_account,
+        target_endpoint=cap.target_endpoint,
+        http_method="POST",
+        action_type="LOGOUT",
+        mutation_evidence_ref="EVID-112233445566",
+        mutation_request_digest="0" * 64,
+        mutation_response_digest="0" * 64,
+        mutation_status_code=200,
+        verification_evidence_ref="EVID-778899AABBCC",
+        verification_request_digest="0" * 64,
+        verification_response_digest="0" * 64,
+        verification_status_code=401,
+        verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+        invalidation_verification_result="REVOKED",
+        execution_timestamp="2026-11-11T12:00:00Z",
+        verification_timestamp="2026-11-11T12:00:00Z",
+        consumption_token=c_token,
+        capability_key=cap_key,
+    )
+    with pytest.raises(ExecutionProvenanceError, match="not found or corrupted in EvidenceStore"):
+        ledger.record_execution(capability=fab_cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_attack_03_supply_nonexistent_approval_registry(tmp_path):
+    """Attack 3: Supply a nonexistent approval registry path."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "att03")
+    fake_reg = str(tmp_path / "ghost_registry.json")
+    with pytest.raises(ExecutionProvenanceError, match="does not exist"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=fake_reg)
+
+
+def test_attack_04_supply_forged_or_replayed_receipt(tmp_path):
+    """Attack 4: Supply a forged or replayed approval receipt."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "att04")
+
+    # 1. First record succeeds and marks receipt consumed
+    rec1 = ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+    assert rec1 is not None
+
+    # 2. Replay attempt using same capability and consumed approval
+    with pytest.raises(ExecutionProvenanceError, match="duplicate execution rejected"):
+        ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_attack_05_manual_evidence_without_transport_dispatch(tmp_path):
+    """Attack 5: Create evidence files and metadata manually, attempt to pass as genuine Mode B evidence."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "att05")
+
+    # Save evidence without capture_source="CONTROLLED_TRANSPORT_DISPATCH"
+    mut_manual = store.save_http_capture(
+        request_text="POST /logout HTTP/1.1",
+        response_text="HTTP/1.1 200 OK",
+        metadata={
+            "event_type": "SESSION_REVOCATION",
+            "session_ref": cap.session_ref,
+            "principal_id": cap.principal_id,
+            "program_id": cap.program_id,
+            "action_id": clean_aid,
+            "capture_source": "MANUAL_CALLER_UPLOAD",
+        },
+        prefix="att05_mut",
+    )
+    cap_key = ledger._get_capability_key()
+    manual_cap = issue_execution_capability(
+        action_id=clean_aid,
+        action_dossier_digest=clean_aid[4:],
+        approval_id=app_id,
+        program_id=cap.program_id,
+        session_ref=cap.session_ref,
+        principal_id=cap.principal_id,
+        test_account=cap.test_account,
+        target_endpoint=cap.target_endpoint,
+        http_method="POST",
+        action_type="LOGOUT",
+        mutation_evidence_ref=mut_manual["evidence_id"],
+        mutation_request_digest=mut_manual["request_sha256"],
+        mutation_response_digest=mut_manual["response_sha256"],
+        mutation_status_code=200,
+        verification_evidence_ref=cap.verification_evidence_ref,
+        verification_request_digest=cap.verification_request_digest,
+        verification_response_digest=cap.verification_response_digest,
+        verification_status_code=401,
+        verification_method=cap.verification_method,
+        invalidation_verification_result=cap.invalidation_verification_result,
+        execution_timestamp=cap.execution_timestamp,
+        verification_timestamp=cap.verification_timestamp,
+        consumption_token=c_token,
+        capability_key=cap_key,
+    )
+    with pytest.raises(ExecutionProvenanceError, match="Mutation evidence was not captured by controlled transport dispatch"):
+        ledger.record_execution(capability=manual_cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_attack_06_reuse_genuine_capability_across_executions(tmp_path):
+    """Attack 6: Reuse a genuine capability across a different execution."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "att06")
+    rec1 = ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+    assert rec1 is not None
+
+    # Try recording same capability into a fresh ledger
+    state_dir2 = str(tmp_path / "state_att06_new")
+    os.makedirs(state_dir2, exist_ok=True)
+    ledger2 = ExecutionLedger(state_dir=state_dir2, key_dir=ledger._key_dir)
+    # The consumed_approvals at consumed_path already has execution_id recorded!
+    with pytest.raises(ExecutionProvenanceError, match="duplicate execution rejected"):
+        ledger2.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+
+def test_attack_07_modify_evidence_after_issuance(tmp_path):
+    """Attack 7: Modify evidence on disk after a record has been issued."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "att07")
+    rec = ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+    assert rec is not None
+
+    # Tamper with the capture file on disk
+    mut_ev = store.get_evidence(cap.mutation_evidence_ref)
+    assert mut_ev is not None
+    with open(mut_ev["capture_path"], "ab") as f:
+        f.write(b"\nTAMPERED_POST_ISSUANCE")
+
+    # Evidence store get_evidence detects hash mismatch and returns None
+    assert store.get_evidence(cap.mutation_evidence_ref) is None
+
+
+def test_attack_08_windows_dacl_failures(tmp_path):
+    """Attack 8: Cause Windows DACL enforcement or verification to fail."""
+    key_dir = str(tmp_path / "keys_att08")
+    os.makedirs(key_dir, exist_ok=True)
+    with patch("framework.auth_correlation.ledger._enforce_windows_directory_dacl", side_effect=SerializationSecurityError("Fatal DACL error")):
+        with patch("os.name", "nt"):
+            with pytest.raises((ExecutionProvenanceError, SerializationSecurityError), match="Fatal DACL error"):
+                get_or_create_execution_key(key_dir=key_dir)
+
+
+def test_attack_09_interrupted_persistence_midway(tmp_path):
+    """Attack 9: Interrupt evidence or ledger persistence midway fails closed."""
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "att09")
+
+    # Simulate disk failure / crash during ledger atomic save
+    with patch("framework.auth_correlation.ledger.os.replace", side_effect=OSError("Disk write interrupted")):
+        with pytest.raises(ExecutionProvenanceError, match="Failed to update consumed approval registry|Failed to persist execution ledger"):
+            ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+
+    # State file was not corrupted
+    with open(consumed_path, "r", encoding="utf-8") as f:
+        cdata = json.load(f)
+    assert cdata["version"] in (1, "1.0")
+
+
+def test_attack_10_concurrent_approval_consumption(tmp_path):
+    """Attack 10: Attempt concurrent use of the same approval."""
+    import concurrent.futures
+    ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "att10")
+    _ = ledger._get_key()
+    _ = ledger._get_capability_key()
+
+    results = []
+    errors = []
+
+    def run_record():
+        try:
+            r = ledger.record_execution(capability=cap, evidence_store=store, consumed_approvals_path=consumed_path)
+            results.append(r)
+        except ExecutionProvenanceError as e:
+            errors.append(e)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        futures = [ex.submit(run_record) for _ in range(4)]
+        concurrent.futures.wait(futures)
+
+    # Exactly one execution succeeds; remaining 3 fail closed with duplicate execution
+    assert len(results) == 1
+    assert len(errors) == 3
+    for err in errors:
+        assert "duplicate execution" in str(err).lower() or "already been executed" in str(err).lower()

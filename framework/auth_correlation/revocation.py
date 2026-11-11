@@ -987,11 +987,16 @@ class PostRevocationResourceValidator:
         except Exception as e:
             raise ApprovalSecurityError(f"Consumed approvals state storage is corrupted: {e}")
 
-    def _mark_approval_consumed(self, action_id: str, dossier: Dict[str, Any]) -> None:
+    def _mark_approval_consumed(
+        self,
+        action_id: str,
+        dossier: Dict[str, Any],
+        session_ctx: Optional[CorrelatedSessionContext] = None,
+    ) -> str:
         """Atomically marks action approval as consumed; fails closed on corruption."""
         os.makedirs(self._state_dir, exist_ok=True)
         path = self._get_consumed_approvals_path()
-        data: Dict[str, Any] = {"consumed": {}}
+        data: Dict[str, Any] = {"version": 1, "consumed": {}}
         if os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as f:
@@ -1003,7 +1008,13 @@ class PostRevocationResourceValidator:
             except Exception as e:
                 raise ApprovalSecurityError(f"Consumed approvals state storage is corrupted: {e}")
 
+        if "version" not in data:
+            data["version"] = 1
+
         consumption_token = secrets.token_hex(32)
+        sess_ref = getattr(session_ctx, "session_ref", "") if session_ctx else ""
+        p_id = getattr(session_ctx, "principal_id", "") if session_ctx else (dossier.get("test_account") or "")
+
         data["consumed"][action_id] = {
             "consumed_at": time.time(),
             "approval_id": dossier.get("unique_approval_id"),
@@ -1013,6 +1024,8 @@ class PostRevocationResourceValidator:
             "method": dossier.get("method"),
             "action_type": dossier.get("action_type"),
             "test_account": dossier.get("test_account"),
+            "session_ref": sess_ref,
+            "principal_id": p_id,
             "consumption_token": consumption_token,
             "capability_issued": False,
             "execution_id": None,
@@ -1020,7 +1033,11 @@ class PostRevocationResourceValidator:
 
         tmp_path = f"{path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
+            flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            fd = os.open(tmp_path, flags, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             if os.name == "nt":
                 _enforce_windows_file_dacl(tmp_path)
@@ -1292,6 +1309,36 @@ class PostRevocationResourceValidator:
                     return False, "Execution record verification evidence reference mismatch in ledger", None
             except ExecutionProvenanceError as e:
                 return False, f"Execution provenance verification failed: {e}", None
+
+            # Verify consumed approval registry binding
+            consumed_path = self._get_consumed_approvals_path()
+            if not os.path.isfile(consumed_path):
+                return False, "Consumed approvals registry is missing; cannot verify execution provenance", None
+            try:
+                with open(consumed_path, "r", encoding="utf-8") as cf:
+                    c_data = json.load(cf)
+                c_dict = c_data.get("consumed", {}) if isinstance(c_data, dict) else {}
+                c_entry = c_dict.get(exec_rec.action_id)
+                if not c_entry or not isinstance(c_entry, dict):
+                    return False, f"Action receipt '{exec_rec.action_id}' missing in consumed approvals registry", None
+                if c_entry.get("execution_id") != eid:
+                    return False, f"Action receipt '{exec_rec.action_id}' execution_id mismatch in consumed approvals registry", None
+                if c_entry.get("approval_id") != exec_rec.approval_id:
+                    return False, "Action receipt approval_id mismatch in consumed approvals registry", None
+                if c_entry.get("session_ref") != session_ctx.session_ref:
+                    return False, "Action receipt session_ref mismatch in consumed approvals registry", None
+                if c_entry.get("principal_id") != session_ctx.principal_id:
+                    return False, "Action receipt principal_id mismatch in consumed approvals registry", None
+                if c_entry.get("program_id") != target_prog:
+                    return False, "Action receipt program_id mismatch in consumed approvals registry", None
+            except Exception as e:
+                return False, f"Failed to verify consumed approval registry: {e}", None
+
+            # Verify capture source tag on evidence metadata
+            if mut_ev.get("metadata", {}).get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH":
+                return False, "Mutation evidence was not captured by controlled transport dispatch", None
+            if ver_ev.get("metadata", {}).get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH":
+                return False, "Verification evidence was not captured by controlled transport dispatch", None
 
             att_record["trust_classification"] = "INDEPENDENTLY_VERIFIED_WORKFLOW"
             reason = f"Invalidation event attestation verified (Source: {source}, Method: {ver_meth})"
@@ -1678,7 +1725,7 @@ class PostRevocationResourceValidator:
             if self._is_approval_consumed(action_id):
                 raise ApprovalSecurityError(f"Action approval '{action_id}' has already been consumed (replay rejected)")
             # Mark consumed immediately BEFORE network mutation
-            consumption_token = self._mark_approval_consumed(action_id, action_dossier)
+            consumption_token = self._mark_approval_consumed(action_id, action_dossier, session_ctx=session_ctx)
 
         # 8. Execute the controlled invalidation mutation
         from datetime import datetime, timezone
@@ -1800,6 +1847,7 @@ class PostRevocationResourceValidator:
                     "principal_id": session_ctx.principal_id,
                     "program_id": self._program_id,
                     "action_id": action_id,
+                    "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
                 },
                 prefix="controlled_revocation_mutation",
             )
@@ -1813,6 +1861,7 @@ class PostRevocationResourceValidator:
                     "program_id": self._program_id,
                     "action_id": action_id,
                     "verification_method": ver_method,
+                    "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
                 },
                 prefix="controlled_revocation_verification",
             )
