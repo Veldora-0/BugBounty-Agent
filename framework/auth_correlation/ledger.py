@@ -112,6 +112,100 @@ CANONICAL_EXECUTION_FIELDS = (
     "verification_timestamp",
 )
 
+ALLOWED_CONTROLLED_VERIFICATION_METHODS = frozenset({
+    "ACTION_MUTATION_AND_PROBE_VERIFIED",
+    "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+    "MUTATION_STRUCTURED_REVOCATION_CONFIRMED",
+    "MUTATION_LOGIN_REDIRECT_AND_COOKIE_CLEARED",
+    "POST_MUTATION_PROBE_CONFIRMED_401",
+    "POST_MUTATION_PROBE_CONFIRMED_REDIRECT_LOGIN",
+})
+
+CANONICAL_ACTION_FIELDS: Tuple[str, ...] = (
+    "action_type",
+    "created_at",
+    "method",
+    "program_id",
+    "target_endpoint",
+    "test_account",
+    "ttl",
+    "unique_approval_id",
+)
+
+RECEIPT_FIELDS: Tuple[str, ...] = (
+    "action_dossier_digest",
+    "action_id",
+    "action_type",
+    "approval_id",
+    "consumed_at",
+    "consumption_token",
+    "method",
+    "operator_signature",
+    "principal_id",
+    "program_id",
+    "session_ref",
+    "target_endpoint",
+    "test_account",
+)
+
+
+def sign_consumption_receipt(receipt_payload: Dict[str, Any], approval_key: bytes) -> str:
+    """Computes HMAC-SHA256 signature for consumption receipt."""
+    payload_to_sign = {k: receipt_payload[k] for k in RECEIPT_FIELDS}
+    sign_bytes = json.dumps(payload_to_sign, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"RCPT-SIG-{hmac.new(approval_key, sign_bytes, hashlib.sha256).hexdigest().upper()}"
+
+
+def verify_consumed_approval_entry(entry: Dict[str, Any], approval_key: bytes) -> bool:
+    """
+    Cryptographically verifies both the operator authorization signature and
+    the consumption receipt HMAC signature within a consumed approval entry.
+    Guarantees that a consumed approval record cannot be fabricated without approval.key.
+    """
+    if not isinstance(entry, dict):
+        return False
+    for f in RECEIPT_FIELDS:
+        if f not in entry:
+            return False
+    receipt_sig = entry.get("receipt_signature")
+    if not receipt_sig or not isinstance(receipt_sig, str) or not receipt_sig.startswith("RCPT-SIG-"):
+        return False
+    op_sig = entry.get("operator_signature")
+    if not op_sig or not isinstance(op_sig, str) or not op_sig.startswith("SIG-"):
+        return False
+
+    # 1. Verify receipt HMAC signature
+    expected_rcpt_sig = sign_consumption_receipt(entry, approval_key)
+    if not hmac.compare_digest(receipt_sig, expected_rcpt_sig):
+        return False
+
+    # 2. Verify original operator approval signature
+    dossier = entry.get("action_dossier")
+    if not isinstance(dossier, dict):
+        dossier = {
+            "action_id": entry["action_id"],
+            "action_type": entry["action_type"],
+            "method": entry["method"],
+            "program_id": entry["program_id"],
+            "target_endpoint": entry["target_endpoint"],
+            "test_account": entry["test_account"],
+            "unique_approval_id": entry["approval_id"],
+        }
+    canonical_copy = {k: dossier[k] for k in CANONICAL_ACTION_FIELDS if k in dossier}
+    if len(canonical_copy) != len(CANONICAL_ACTION_FIELDS):
+        return False
+    canonical_str = json.dumps(canonical_copy, sort_keys=True)
+    expected_op_hash = hmac.new(approval_key, canonical_str.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(op_sig[4:], expected_op_hash):
+        return False
+
+    # 3. Verify action_id matches canonical dossier hash
+    computed_aid_hash = hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
+    if entry["action_id"] != f"ACT-{computed_aid_hash}":
+        return False
+
+    return True
+
 
 def get_or_create_capability_key(key_dir: Optional[str] = None) -> bytes:
     """
@@ -361,6 +455,7 @@ class ExecutionCapability:
     signature: str = ""
     key_id: str = "KEY-LOCAL-CAPABILITY-1"
     domain: str = CAPABILITY_DOMAIN
+    is_testing_primitive: bool = False
 
     def __repr__(self) -> str:
         cid = _safe_repr(self.capability_id, CAPABILITY_ID_PATTERN, "UNVALIDATED_CAP_ID")
@@ -401,6 +496,7 @@ class ExecutionCapability:
             "signature": self.signature,
             "key_id": self.key_id,
             "domain": self.domain,
+            "is_testing_primitive": self.is_testing_primitive,
         }
 
     def validate(self) -> Dict[str, Any]:
@@ -514,12 +610,92 @@ def issue_execution_capability(
     verification_timestamp: str,
     consumption_token: str,
     capability_key: Optional[bytes] = None,
+    approval_key: Optional[bytes] = None,
     key_dir: Optional[str] = None,
+    state_dir: Optional[str] = None,
+    evidence_store: Optional[Any] = None,
+    consumed_approvals_path: Optional[str] = None,
 ) -> ExecutionCapability:
     """
     Constructs, hashes, and cryptographically signs a genuine ExecutionCapability.
     Invoked strictly upon the successful execution and invalidation confirmation of Mode B mutations.
+    Fails closed if transport evidence or consumed approval receipts cannot be independently verified.
     """
+    # 1. Prerequisite verification: EvidenceStore and transport evidence
+    if evidence_store is None or not hasattr(evidence_store, "get_evidence"):
+        raise ExecutionProvenanceError("EvidenceStore is mandatory for issuing execution capability: transport evidence must be verified")
+
+    mut_ev = evidence_store.get_evidence(mutation_evidence_ref)
+    if mut_ev is None:
+        raise ExecutionProvenanceError(f"Mutation evidence '{mutation_evidence_ref}' not found in EvidenceStore")
+
+    ver_ev = evidence_store.get_evidence(verification_evidence_ref)
+    if ver_ev is None:
+        raise ExecutionProvenanceError(f"Verification evidence '{verification_evidence_ref}' not found in EvidenceStore")
+
+    mut_meta = mut_ev.get("metadata", {})
+    ver_meta = ver_ev.get("metadata", {})
+    if mut_meta.get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH" or ver_meta.get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH":
+        raise ExecutionProvenanceError("Evidence was not captured by controlled transport dispatch")
+    if mut_meta.get("evidence_class") != "CONTROLLED_TRANSPORT_DISPATCH" or ver_meta.get("evidence_class") != "CONTROLLED_TRANSPORT_DISPATCH":
+        raise ExecutionProvenanceError("Evidence is not classified as controlled transport dispatch")
+    if mut_meta.get("verification_method") is not None:
+        raise ExecutionProvenanceError("Mutation evidence metadata cannot be a verification capture: evidence metadata swapped")
+    if ver_meta.get("verification_method") != verification_method:
+        raise ExecutionProvenanceError("Verification evidence metadata verification_method mismatch")
+
+    if mut_ev.get("request_sha256") != mutation_request_digest or mut_ev.get("response_sha256") != mutation_response_digest:
+        raise ExecutionProvenanceError("Mutation request/response digest mismatch with evidence store")
+    if ver_ev.get("request_sha256") != verification_request_digest or ver_ev.get("response_sha256") != verification_response_digest:
+        raise ExecutionProvenanceError("Verification request/response digest mismatch with evidence store")
+
+    # 2. Prerequisite verification: Consumed approval receipt
+    consumed_path = consumed_approvals_path or (os.path.join(state_dir, "consumed_approvals.json") if state_dir else None)
+    if not consumed_path or not os.path.isfile(consumed_path):
+        raise ExecutionProvenanceError(f"Consumed approvals registry '{consumed_path}' not found: approval receipt cannot be verified")
+
+    try:
+        with open(consumed_path, "r", encoding="utf-8") as f:
+            consumed_data = json.load(f)
+        c_dict = consumed_data.get("consumed", {}) if isinstance(consumed_data, dict) else {}
+        entry = c_dict.get(action_id)
+        if not entry or not isinstance(entry, dict):
+            raise ExecutionProvenanceError(f"Action '{action_id}' not found in consumed approvals registry")
+
+        if entry.get("approval_id") != approval_id:
+            raise ExecutionProvenanceError("Approval ID mismatch with consumed approval record")
+        if entry.get("consumption_token") != consumption_token:
+            raise ExecutionProvenanceError("Consumption token mismatch with consumed approval record")
+        if entry.get("program_id") != program_id:
+            raise ExecutionProvenanceError("Program ID mismatch with consumed approval record")
+        if entry.get("session_ref") != session_ref:
+            raise ExecutionProvenanceError("Session reference mismatch with consumed approval record")
+        if entry.get("principal_id") != principal_id:
+            raise ExecutionProvenanceError("Principal ID mismatch with consumed approval record")
+        if entry.get("test_account") != test_account:
+            raise ExecutionProvenanceError("Test account mismatch with consumed approval record")
+        if entry.get("target_endpoint") != target_endpoint:
+            raise ExecutionProvenanceError("Target endpoint mismatch with consumed approval record")
+        if entry.get("method") != http_method:
+            raise ExecutionProvenanceError("HTTP method mismatch with consumed approval record")
+        if entry.get("action_type") != action_type:
+            raise ExecutionProvenanceError("Action type mismatch with consumed approval record")
+
+        from framework.auth_correlation.revocation import get_or_create_approval_key
+        app_key = approval_key or get_or_create_approval_key(key_dir=key_dir)
+        if not verify_consumed_approval_entry(entry, app_key):
+            raise ExecutionProvenanceError("Consumed approval receipt signature verification failed: receipt is forged or tampered")
+    except ExecutionProvenanceError:
+        raise
+    except Exception as e:
+        raise ExecutionProvenanceError(f"Failed to verify consumed approval receipt: {e}")
+
+    # 3. Prerequisite verification: Invalidation outcome
+    if invalidation_verification_result not in ("REVOKED", "VERIFIED", "SESSION_REVOKED"):
+        raise ExecutionProvenanceError(f"Invalidation verification result '{invalidation_verification_result}' does not satisfy verification criteria")
+    if verification_method not in ALLOWED_CONTROLLED_VERIFICATION_METHODS:
+        raise ExecutionProvenanceError(f"Verification method '{verification_method}' is not recognized or authorized")
+
     key = capability_key or get_or_create_capability_key(key_dir=key_dir)
 
     payload: Dict[str, Any] = {
@@ -590,6 +766,113 @@ def issue_execution_capability(
         signature=sig,
         key_id="KEY-LOCAL-CAPABILITY-1",
         domain=CAPABILITY_DOMAIN,
+        is_testing_primitive=False,
+    )
+    cap.validate()
+    return cap
+
+
+def create_test_execution_capability(
+    action_id: str,
+    action_dossier_digest: str,
+    approval_id: str,
+    program_id: str,
+    session_ref: str,
+    principal_id: str,
+    test_account: str,
+    target_endpoint: str,
+    http_method: str,
+    action_type: str,
+    mutation_evidence_ref: str,
+    mutation_request_digest: str,
+    mutation_response_digest: str,
+    mutation_status_code: int,
+    verification_evidence_ref: str,
+    verification_request_digest: str,
+    verification_response_digest: str,
+    verification_status_code: int,
+    verification_method: str,
+    invalidation_verification_result: str,
+    execution_timestamp: str,
+    verification_timestamp: str,
+    consumption_token: str,
+    capability_key: Optional[bytes] = None,
+    key_dir: Optional[str] = None,
+) -> ExecutionCapability:
+    """
+    Low-level testing utility: creates an ExecutionCapability marked explicitly as
+    a test primitive (is_testing_primitive = True).
+    Can NEVER be recorded as genuine execution provenance or accepted by Mode A.
+    """
+    key = capability_key or get_or_create_capability_key(key_dir=key_dir)
+
+    payload: Dict[str, Any] = {
+        "action_dossier_digest": action_dossier_digest,
+        "action_id": action_id,
+        "action_type": action_type,
+        "approval_id": approval_id,
+        "capability_id": "",
+        "consumption_token": consumption_token,
+        "domain": CAPABILITY_DOMAIN,
+        "execution_timestamp": execution_timestamp,
+        "http_method": http_method,
+        "invalidation_verification_result": invalidation_verification_result,
+        "key_id": "KEY-LOCAL-CAPABILITY-1",
+        "mutation_evidence_ref": mutation_evidence_ref,
+        "mutation_request_digest": mutation_request_digest,
+        "mutation_response_digest": mutation_response_digest,
+        "mutation_status_code": mutation_status_code,
+        "principal_id": principal_id,
+        "program_id": program_id,
+        "session_ref": session_ref,
+        "target_endpoint": target_endpoint,
+        "test_account": test_account,
+        "verification_evidence_ref": verification_evidence_ref,
+        "verification_method": verification_method,
+        "verification_request_digest": verification_request_digest,
+        "verification_response_digest": verification_response_digest,
+        "verification_status_code": verification_status_code,
+        "verification_timestamp": verification_timestamp,
+    }
+
+    hash_payload = {k: payload[k] for k in CANONICAL_CAPABILITY_FIELDS if k != "capability_id"}
+    hash_bytes = json.dumps(hash_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    cid = f"CAP-{hashlib.sha256(hash_bytes).hexdigest().upper()}"
+    payload["capability_id"] = cid
+
+    sign_payload = {k: payload[k] for k in CANONICAL_CAPABILITY_FIELDS}
+    sign_bytes = json.dumps(sign_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    sig = f"CAP-SIG-{hmac.new(key, sign_bytes, hashlib.sha256).hexdigest().upper()}"
+
+    cap = ExecutionCapability(
+        approval_id=approval_id,
+        action_id=action_id,
+        action_dossier_digest=action_dossier_digest,
+        program_id=program_id,
+        session_ref=session_ref,
+        principal_id=principal_id,
+        test_account=test_account,
+        target_endpoint=target_endpoint,
+        http_method=http_method,
+        action_type=action_type,
+        mutation_evidence_ref=mutation_evidence_ref,
+        mutation_request_digest=mutation_request_digest,
+        mutation_response_digest=mutation_response_digest,
+        mutation_status_code=mutation_status_code,
+        verification_evidence_ref=verification_evidence_ref,
+        verification_request_digest=verification_request_digest,
+        verification_response_digest=verification_response_digest,
+        verification_status_code=verification_status_code,
+        verification_method=verification_method,
+        invalidation_verification_result=invalidation_verification_result,
+        execution_timestamp=execution_timestamp,
+        verification_timestamp=verification_timestamp,
+        consumption_token=consumption_token,
+        capability_id=cid,
+        signature=sig,
+        key_id="KEY-LOCAL-CAPABILITY-1",
+        domain=CAPABILITY_DOMAIN,
+        is_testing_primitive=True,
     )
     cap.validate()
     return cap
@@ -783,6 +1066,7 @@ class ExecutionLedger:
         state_dir: str,
         execution_key: Optional[bytes] = None,
         capability_key: Optional[bytes] = None,
+        approval_key: Optional[bytes] = None,
         key_dir: Optional[str] = None,
     ):
         self.state_dir = os.path.abspath(state_dir)
@@ -790,6 +1074,7 @@ class ExecutionLedger:
         self.lock_file = os.path.join(self.state_dir, "execution_ledger.lock")
         self._execution_key = execution_key
         self._capability_key = capability_key
+        self._approval_key = approval_key
         self._key_dir = key_dir
 
     @property
@@ -805,6 +1090,12 @@ class ExecutionLedger:
         if self._capability_key is not None:
             return self._capability_key
         return get_or_create_capability_key(key_dir=self._key_dir)
+
+    def _get_approval_key(self) -> bytes:
+        if self._approval_key is not None:
+            return self._approval_key
+        from framework.auth_correlation.revocation import get_or_create_approval_key
+        return get_or_create_approval_key(key_dir=self._key_dir)
 
     def _acquire_lock(self) -> Any:
         from framework.auth_correlation.revocation import CrossProcessFileLock
@@ -864,6 +1155,9 @@ class ExecutionLedger:
         """
         if capability is None or not isinstance(capability, ExecutionCapability):
             raise ExecutionProvenanceError("Ordinary callers cannot create execution records without a verified ExecutionCapability")
+
+        if getattr(capability, "is_testing_primitive", False):
+            raise ExecutionProvenanceError("Execution capability is a testing primitive and cannot be recorded as genuine execution provenance")
 
         if evidence_store is None or not hasattr(evidence_store, "get_evidence"):
             raise ExecutionProvenanceError("EvidenceStore is mandatory for verifying execution evidence binding")
@@ -943,6 +1237,12 @@ class ExecutionLedger:
                 raise ExecutionProvenanceError(
                     f"Action '{capability.action_id}' has already been executed under '{entry['execution_id']}' (duplicate execution rejected)"
                 )
+
+            # Cryptographic verification of consumed approval receipt
+            from framework.auth_correlation.revocation import get_or_create_approval_key
+            app_key = kwargs.get("approval_key") or self._get_approval_key()
+            if not verify_consumed_approval_entry(entry, app_key):
+                raise ExecutionProvenanceError("Consumed approval receipt signature verification failed: receipt is forged or tampered")
 
         # 4. Exact evidence-to-ledger binding (Correction B)
         mut_ev = evidence_store.get_evidence(capability.mutation_evidence_ref)
@@ -1026,7 +1326,13 @@ class ExecutionLedger:
             raise ExecutionProvenanceError("Mutation evidence was not captured by controlled transport dispatch")
         if ver_meta.get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH":
             raise ExecutionProvenanceError("Verification evidence was not captured by controlled transport dispatch")
+        if mut_meta.get("evidence_class") != "CONTROLLED_TRANSPORT_DISPATCH":
+            raise ExecutionProvenanceError("Mutation evidence was not generated as controlled transport dispatch class")
+        if ver_meta.get("evidence_class") != "CONTROLLED_TRANSPORT_DISPATCH":
+            raise ExecutionProvenanceError("Verification evidence was not generated as controlled transport dispatch class")
 
+        if mut_meta.get("verification_method") is not None:
+            raise ExecutionProvenanceError("Mutation evidence metadata cannot be a verification capture: evidence metadata swapped")
         if mut_meta.get("action_id") and mut_meta.get("action_id") != capability.action_id:
             raise ExecutionProvenanceError("Mutation evidence metadata action_id mismatch")
         if mut_meta.get("session_ref") != capability.session_ref:

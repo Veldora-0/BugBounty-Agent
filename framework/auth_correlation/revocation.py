@@ -46,6 +46,8 @@ from framework.auth_correlation.ledger import (
     EXECUTION_ID_PATTERN,
     EXECUTION_SIG_PATTERN,
     EXECUTION_DOMAIN,
+    sign_consumption_receipt,
+    verify_consumed_approval_entry,
 )
 from framework.auth_correlation.model import (
     CorrelatedSessionContext,
@@ -1011,22 +1013,36 @@ class PostRevocationResourceValidator:
         if "version" not in data:
             data["version"] = 1
 
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         consumption_token = secrets.token_hex(32)
         sess_ref = getattr(session_ctx, "session_ref", "") if session_ctx else ""
         p_id = getattr(session_ctx, "principal_id", "") if session_ctx else (dossier.get("test_account") or "")
+        key = self._approval_key or get_or_create_approval_key(key_dir=self._approval_key_dir)
+        op_sig = dossier.get("approval_signature", "")
+
+        receipt_payload: Dict[str, Any] = {
+            "action_dossier_digest": action_id[4:],
+            "action_id": action_id,
+            "action_type": dossier.get("action_type", ""),
+            "approval_id": dossier.get("unique_approval_id", ""),
+            "consumed_at": now_iso,
+            "consumption_token": consumption_token,
+            "method": dossier.get("method", ""),
+            "operator_signature": op_sig,
+            "principal_id": p_id,
+            "program_id": self._program_id,
+            "session_ref": sess_ref,
+            "target_endpoint": dossier.get("target_endpoint", ""),
+            "test_account": dossier.get("test_account", ""),
+        }
+        receipt_sig = sign_consumption_receipt(receipt_payload, key)
+        canonical_dossier_copy = {k: dossier[k] for k in CANONICAL_ACTION_FIELDS if k in dossier}
 
         data["consumed"][action_id] = {
-            "consumed_at": time.time(),
-            "approval_id": dossier.get("unique_approval_id"),
-            "action_dossier_digest": action_id[4:],
-            "program_id": self._program_id,
-            "target_endpoint": dossier.get("target_endpoint"),
-            "method": dossier.get("method"),
-            "action_type": dossier.get("action_type"),
-            "test_account": dossier.get("test_account"),
-            "session_ref": sess_ref,
-            "principal_id": p_id,
-            "consumption_token": consumption_token,
+            **receipt_payload,
+            "action_dossier": canonical_dossier_copy,
+            "receipt_signature": receipt_sig,
             "capability_issued": False,
             "execution_id": None,
         }
@@ -1331,13 +1347,18 @@ class PostRevocationResourceValidator:
                     return False, "Action receipt principal_id mismatch in consumed approvals registry", None
                 if c_entry.get("program_id") != target_prog:
                     return False, "Action receipt program_id mismatch in consumed approvals registry", None
+
+                # Cryptographic verification of consumed approval receipt
+                app_key = self._approval_key or get_or_create_approval_key(key_dir=self._approval_key_dir)
+                if not verify_consumed_approval_entry(c_entry, app_key):
+                    return False, "Action receipt signature verification failed in consumed approvals registry: receipt is forged or tampered", None
             except Exception as e:
                 return False, f"Failed to verify consumed approval registry: {e}", None
 
             # Verify capture source tag on evidence metadata
-            if mut_ev.get("metadata", {}).get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH":
+            if mut_ev.get("metadata", {}).get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH" or mut_ev.get("metadata", {}).get("evidence_class") != "CONTROLLED_TRANSPORT_DISPATCH":
                 return False, "Mutation evidence was not captured by controlled transport dispatch", None
-            if ver_ev.get("metadata", {}).get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH":
+            if ver_ev.get("metadata", {}).get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH" or ver_ev.get("metadata", {}).get("evidence_class") != "CONTROLLED_TRANSPORT_DISPATCH":
                 return False, "Verification evidence was not captured by controlled transport dispatch", None
 
             att_record["trust_classification"] = "INDEPENDENTLY_VERIFIED_WORKFLOW"
@@ -1731,10 +1752,14 @@ class PostRevocationResourceValidator:
         from datetime import datetime, timezone
         exec_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        mut_headers = dict(session_ctx.volatile_headers)
+        mut_headers["X-Correlation-Action"] = action_id
+        mut_headers["X-Correlation-Session"] = session_ctx.session_ref
+        mut_headers["X-Correlation-Principal"] = session_ctx.principal_id
         req = ControlledRequest(
             url=target_endpoint,
             method=method,
-            headers=dict(session_ctx.volatile_headers),
+            headers=mut_headers,
         )
         try:
             resp = self.engine.send_request(req)
@@ -1777,18 +1802,21 @@ class PostRevocationResourceValidator:
             term in loc for term in ("/login", "/auth", "/signin", "/sso", "login.")
         )
 
+        actual_mut_req_text = req.get_sanitized_representation()
+        actual_mut_res_text = resp.get_sanitized_representation()
+
         if resp.status_code in (200, 204) and is_explicit_json_revoked:
             is_invalidation_verified = True
             ver_method = "MUTATION_STRUCTURED_REVOCATION_CONFIRMED"
             ver_result = "REVOKED"
-            ver_request_text = f"VERIFICATION [{ver_method}]: {method} {target_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
-            ver_response_text = f"HTTP {resp.status_code} [STRUCTURED_REVOCATION_CONFIRMED]\n{sanitize_sensitive_data(body_text[:500])}"
+            ver_request_text = f"VERIFICATION [{ver_method}]:\n{actual_mut_req_text}"
+            ver_response_text = f"VERIFICATION [{ver_result}]:\n{actual_mut_res_text}"
         elif is_login_redirect:
             is_invalidation_verified = True
             ver_method = "MUTATION_LOGIN_REDIRECT_AND_COOKIE_CLEARED"
             ver_result = "REVOKED"
-            ver_request_text = f"VERIFICATION [{ver_method}]: {method} {target_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
-            ver_response_text = f"HTTP {resp.status_code} [LOGIN_REDIRECT: {loc}]\nLocation: {loc}"
+            ver_request_text = f"VERIFICATION [{ver_method}]:\n{actual_mut_req_text}"
+            ver_response_text = f"VERIFICATION [{ver_result}]:\n{actual_mut_res_text}"
         else:
             # Generic 200/204 or ambiguous response: perform independent post-mutation verification probe
             probe_endpoint = target_endpoint
@@ -1812,20 +1840,20 @@ class PostRevocationResourceValidator:
                     is_invalidation_verified = True
                     ver_method = "POST_MUTATION_PROBE_CONFIRMED_401"
                     ver_result = "VERIFIED"
-                    ver_request_text = f"VERIFICATION [{ver_method}]: GET {probe_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
-                    ver_response_text = f"HTTP {probe_resp.status_code} [{probe_status}]\n{sanitize_sensitive_data(probe_resp.body_text[:500])}"
+                    ver_request_text = probe_req.get_sanitized_representation()
+                    ver_response_text = probe_resp.get_sanitized_representation()
                 elif probe_status == "REDIRECT_LOGIN":
                     is_invalidation_verified = True
                     ver_method = "POST_MUTATION_PROBE_CONFIRMED_REDIRECT_LOGIN"
                     ver_result = "VERIFIED"
-                    ver_request_text = f"VERIFICATION [{ver_method}]: GET {probe_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
-                    ver_response_text = f"HTTP {probe_resp.status_code} [REDIRECT_LOGIN]\nLocation: {probe_resp.headers.get('location', '')}"
+                    ver_request_text = probe_req.get_sanitized_representation()
+                    ver_response_text = probe_resp.get_sanitized_representation()
                 elif probe_status == "AUTHENTICATION_FAILED":
                     is_invalidation_verified = True
                     ver_method = "ACTION_MUTATION_AND_PROBE_VERIFIED"
                     ver_result = "VERIFIED"
-                    ver_request_text = f"VERIFICATION [{ver_method}]: GET {probe_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
-                    ver_response_text = f"HTTP {probe_resp.status_code} [AUTHENTICATION_FAILED]\n{sanitize_sensitive_data(probe_resp.body_text[:500])}"
+                    ver_request_text = probe_req.get_sanitized_representation()
+                    ver_response_text = probe_resp.get_sanitized_representation()
             except Exception:
                 pass
 
@@ -1835,34 +1863,28 @@ class PostRevocationResourceValidator:
 
         ver_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        clean_req = f"{method} {target_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
-        clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
         try:
-            mut_cap = self._evidence_store.save_http_capture(
-                request_text=clean_req,
-                response_text=clean_res,
-                metadata={
-                    "event_type": "SESSION_REVOCATION",
-                    "session_ref": session_ctx.session_ref,
-                    "principal_id": session_ctx.principal_id,
-                    "program_id": self._program_id,
-                    "action_id": action_id,
-                    "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
-                },
+            mut_cap = self._evidence_store.save_controlled_transport_capture(
+                request_text=actual_mut_req_text,
+                response_text=actual_mut_res_text,
+                action_id=action_id,
+                approval_id=unique_approval_id,
+                session_ref=session_ctx.session_ref,
+                principal_id=session_ctx.principal_id,
+                program_id=self._program_id,
+                event_type="SESSION_REVOCATION",
                 prefix="controlled_revocation_mutation",
             )
-            ver_cap = self._evidence_store.save_http_capture(
+            ver_cap = self._evidence_store.save_controlled_transport_capture(
                 request_text=ver_request_text,
                 response_text=ver_response_text,
-                metadata={
-                    "event_type": "SESSION_REVOCATION",
-                    "session_ref": session_ctx.session_ref,
-                    "principal_id": session_ctx.principal_id,
-                    "program_id": self._program_id,
-                    "action_id": action_id,
-                    "verification_method": ver_method,
-                    "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
-                },
+                action_id=action_id,
+                approval_id=unique_approval_id,
+                session_ref=session_ctx.session_ref,
+                principal_id=session_ctx.principal_id,
+                program_id=self._program_id,
+                event_type="SESSION_REVOCATION",
+                verification_method=ver_method,
                 prefix="controlled_revocation_verification",
             )
 
@@ -1891,6 +1913,9 @@ class PostRevocationResourceValidator:
                 execution_timestamp=exec_ts,
                 verification_timestamp=ver_ts,
                 consumption_token=consumption_token,
+                approval_key=self._approval_key or get_or_create_approval_key(key_dir=self._approval_key_dir),
+                evidence_store=self._evidence_store,
+                consumed_approvals_path=self._get_consumed_approvals_path(),
                 key_dir=self._approval_key_dir,
             )
 
@@ -1899,6 +1924,7 @@ class PostRevocationResourceValidator:
                 capability=capability,
                 evidence_store=self._evidence_store,
                 consumed_approvals_path=self._get_consumed_approvals_path(),
+                approval_key=self._approval_key or get_or_create_approval_key(key_dir=self._approval_key_dir),
             )
 
             att = _create_controlled_invalidation_attestation_from_record(

@@ -121,13 +121,20 @@ class StateManager:
             return {}
 
     def _atomic_write_json(self, filepath: str, data: Any) -> None:
-        """Writes JSON data atomically via a temporary file."""
+        """Writes JSON data atomically via a temporary file with retry for Windows file locks."""
         dir_name = os.path.dirname(filepath)
         with tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, encoding="utf-8") as tf:
             json.dump(data, tf, indent=2)
             temp_path = tf.name
-        # Atomic replace
-        os.replace(temp_path, filepath)
+        # Atomic replace with transient Windows file lock retry
+        for attempt in range(5):
+            try:
+                os.replace(temp_path, filepath)
+                break
+            except PermissionError:
+                if attempt == 4 or os.name != "nt":
+                    raise
+                time.sleep(0.05)
 
     # ---------------- Asset Management ----------------
 

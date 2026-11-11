@@ -96,17 +96,14 @@ class EvidenceStore:
         except Exception:
             return False
 
-    def save_http_capture(
+    def _save_capture_internal(
         self,
         request_text: str,
         response_text: str,
         metadata: Optional[Dict[str, Any]] = None,
         prefix: str = "http",
     ) -> Dict[str, Any]:
-        """
-        Sanitizes and saves an HTTP request/response transaction atomically.
-        Calculates SHA-256 hash for provenance and non-repudiation.
-        """
+        """Internal atomic capture writer applying OS-specific file security."""
         clean_prefix = prefix.strip()
         if not SAFE_PREFIX_PATTERN.match(clean_prefix):
             clean_prefix = "http"
@@ -132,6 +129,11 @@ class EvidenceStore:
             from framework.auth_correlation.state import _enforce_windows_file_dacl, _verify_windows_file_security
             _enforce_windows_file_dacl(tmp_capture)
             _verify_windows_file_security(tmp_capture)
+        else:
+            try:
+                os.chmod(tmp_capture, 0o600)
+            except OSError:
+                pass
         os.replace(tmp_capture, file_path)
 
         # Meta descriptor
@@ -153,6 +155,11 @@ class EvidenceStore:
             from framework.auth_correlation.state import _enforce_windows_file_dacl, _verify_windows_file_security
             _enforce_windows_file_dacl(tmp_meta)
             _verify_windows_file_security(tmp_meta)
+        else:
+            try:
+                os.chmod(tmp_meta, 0o600)
+            except OSError:
+                pass
         os.replace(tmp_meta, meta_path)
 
         return {
@@ -163,6 +170,85 @@ class EvidenceStore:
             "request_sha256": req_digest,
             "response_sha256": res_digest,
         }
+
+    def save_http_capture(
+        self,
+        request_text: str,
+        response_text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        prefix: str = "http",
+    ) -> Dict[str, Any]:
+        """
+        Sanitizes and saves an HTTP request/response transaction atomically.
+        Calculates SHA-256 hash for provenance and non-repudiation.
+        Enforces that ordinary callers cannot forge transport provenance metadata.
+        """
+        user_meta = dict(metadata or {})
+        # Reject attempts by ordinary callers to forge transport provenance
+        if (
+            user_meta.get("capture_source") == "CONTROLLED_TRANSPORT_DISPATCH"
+            or user_meta.get("evidence_class") == "CONTROLLED_TRANSPORT_DISPATCH"
+        ):
+            raise ValueError("Ordinary callers cannot specify controlled transport capture_source metadata")
+
+        user_meta.setdefault("capture_source", "CALLER_SUPPLIED")
+        user_meta.setdefault("evidence_class", "CALLER_SUPPLIED")
+        return self._save_capture_internal(
+            request_text=request_text,
+            response_text=response_text,
+            metadata=user_meta,
+            prefix=prefix,
+        )
+
+    def save_controlled_transport_capture(
+        self,
+        request_text: str,
+        response_text: str,
+        action_id: str,
+        approval_id: str,
+        session_ref: str,
+        principal_id: str,
+        program_id: str,
+        event_type: str = "SESSION_REVOCATION",
+        verification_method: Optional[str] = None,
+        prefix: str = "controlled_transport",
+    ) -> Dict[str, Any]:
+        """
+        Trusted transport boundary evidence writer.
+        Invoked strictly during active, verified controlled transport dispatch (Mode B).
+        Binds request/response wire representations, attribution metadata, and marks
+        capture_source and evidence_class as CONTROLLED_TRANSPORT_DISPATCH.
+        """
+        if not action_id or not isinstance(action_id, str) or not action_id.startswith("ACT-"):
+            raise ValueError("Invalid action_id for controlled transport capture")
+        if not approval_id or not isinstance(approval_id, str):
+            raise ValueError("Invalid approval_id for controlled transport capture")
+        if not session_ref or not isinstance(session_ref, str):
+            raise ValueError("Invalid session_ref for controlled transport capture")
+        if not principal_id or not isinstance(principal_id, str):
+            raise ValueError("Invalid principal_id for controlled transport capture")
+        if not program_id or not isinstance(program_id, str):
+            raise ValueError("Invalid program_id for controlled transport capture")
+
+        metadata: Dict[str, Any] = {
+            "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
+            "evidence_class": "CONTROLLED_TRANSPORT_DISPATCH",
+            "action_id": action_id,
+            "approval_id": approval_id,
+            "session_ref": session_ref,
+            "principal_id": principal_id,
+            "program_id": program_id,
+            "event_type": event_type,
+        }
+        if verification_method:
+            metadata["verification_method"] = verification_method
+
+        return self._save_capture_internal(
+            request_text=request_text,
+            response_text=response_text,
+            metadata=metadata,
+            prefix=prefix,
+        )
 
     def get_evidence(self, evidence_id: str) -> Optional[Dict[str, Any]]:
         """

@@ -11,8 +11,7 @@ Verifies:
 """
 
 import hashlib
-import json
-import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -164,61 +163,89 @@ def make_valid_invalidation_evidence(
     state_dir: Optional[str] = None,
 ) -> str:
     """Helper to persist a valid, attributable invalidation event with authentic attestation into EvidenceStore."""
+    from datetime import datetime, timezone
+    from framework.auth_correlation.revocation import get_or_create_approval_key
+    from framework.auth_correlation.ledger import (
+        sign_consumption_receipt,
+        CANONICAL_ACTION_FIELDS,
+    )
+    prog_id = program_id or "default-program"
+    app_key = get_or_create_approval_key(key_dir=key_dir)
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    app_id = f"APPR-{secrets.token_hex(16)}"
+    c_token = secrets.token_hex(32)
+
+    dossier_data = {
+        "action_type": "LOGOUT",
+        "created_at": time.time(),
+        "method": "POST",
+        "program_id": prog_id,
+        "target_endpoint": "http://127.0.0.1:8080/auth/logout",
+        "test_account": sess.principal_id,
+        "ttl": 300.0,
+        "unique_approval_id": app_id,
+    }
+    canonical_copy = {k: dossier_data[k] for k in CANONICAL_ACTION_FIELDS}
+    canonical_str = json.dumps(canonical_copy, sort_keys=True)
+    aid_hex = hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
+    aid = f"ACT-{aid_hex}"
+    op_sig = f"SIG-{hmac.new(app_key, canonical_str.encode('utf-8'), hashlib.sha256).hexdigest()}"
+
     clean_req = "POST /auth/logout\nAuthorization: Bearer revoked"
     clean_res = 'HTTP 200 OK\n{"status": "logged_out", "revoked": true}'
-    prog_id = program_id or "default-program"
-    res = store.save_http_capture(
+    res = store.save_controlled_transport_capture(
         request_text=clean_req,
         response_text=clean_res,
-        metadata={
-            "event_type": event_type,
-            "session_ref": sess.session_ref,
-            "principal_id": sess.principal_id,
-            "program_id": prog_id,
-            "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
-        },
+        action_id=aid,
+        approval_id=app_id,
+        session_ref=sess.session_ref,
+        principal_id=sess.principal_id,
+        program_id=prog_id,
+        event_type=event_type,
         prefix="inv_proof",
     )
     ver_req = f"GET /auth/verify\nAuthorization: Bearer {sess.session_ref[:8]}"
     ver_res = 'HTTP 401 Unauthorized\n{"error": "Session revoked"}'
-    ver_cap = store.save_http_capture(
+    ver_cap = store.save_controlled_transport_capture(
         request_text=ver_req,
         response_text=ver_res,
-        metadata={
-            "event_type": event_type,
-            "session_ref": sess.session_ref,
-            "principal_id": sess.principal_id,
-            "program_id": prog_id,
-            "verification_method": "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
-            "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
-        },
+        action_id=aid,
+        approval_id=app_id,
+        session_ref=sess.session_ref,
+        principal_id=sess.principal_id,
+        program_id=prog_id,
+        event_type=event_type,
+        verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
         prefix="inv_ver_proof",
     )
-    from datetime import datetime, timezone
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if state_dir is None:
         state_dir = os.path.join(os.path.dirname(os.path.abspath(store.evidence_dir)), "state")
     os.makedirs(state_dir, exist_ok=True)
 
-    aid_hex = hashlib.sha256(f"{res['evidence_id']}_{ver_cap['evidence_id']}_{secrets.token_hex(8)}".encode("utf-8")).hexdigest()
-    aid = f"ACT-{aid_hex}"
-    app_id = f"APPR-{aid_hex[:32]}"
-    c_token = secrets.token_hex(32)
-
     consumed_path = os.path.join(state_dir, "consumed_approvals.json")
-    consumed_entry = {
-        "approval_id": app_id,
+    receipt_payload = {
+        "action_dossier_digest": aid[4:],
         "action_id": aid,
+        "action_type": "LOGOUT",
+        "approval_id": app_id,
+        "consumed_at": ts,
         "consumption_token": c_token,
+        "method": "POST",
+        "operator_signature": op_sig,
+        "principal_id": sess.principal_id,
         "program_id": prog_id,
         "session_ref": sess.session_ref,
-        "principal_id": sess.principal_id,
-        "test_account": sess.principal_id,
         "target_endpoint": "http://127.0.0.1:8080/auth/logout",
-        "method": "POST",
-        "action_type": "LOGOUT",
-        "consumed_at": ts,
+        "test_account": sess.principal_id,
+    }
+    receipt_sig = sign_consumption_receipt(receipt_payload, app_key)
+
+    consumed_entry = {
+        **receipt_payload,
+        "action_dossier": canonical_copy,
+        "receipt_signature": receipt_sig,
         "execution_id": None,
     }
     consumed_data = {"version": "1.0", "consumed": {}}
@@ -234,7 +261,7 @@ def make_valid_invalidation_evidence(
     with open(consumed_path, "w", encoding="utf-8") as f:
         json.dump(consumed_data, f, indent=2)
 
-    ledger = execution_ledger or ExecutionLedger(state_dir=state_dir, key_dir=key_dir)
+    ledger = execution_ledger or ExecutionLedger(state_dir=state_dir, key_dir=key_dir, approval_key=app_key)
     k_dir = key_dir or ledger._key_dir
     cap = issue_execution_capability(
         action_id=aid,
@@ -260,12 +287,16 @@ def make_valid_invalidation_evidence(
         execution_timestamp=ts,
         verification_timestamp=ts,
         consumption_token=c_token,
+        approval_key=app_key,
+        evidence_store=store,
+        consumed_approvals_path=consumed_path,
         key_dir=k_dir,
     )
     exec_rec = ledger.record_execution(
         capability=cap,
         evidence_store=store,
         consumed_approvals_path=consumed_path,
+        approval_key=app_key,
     )
 
     att_rec = _create_controlled_invalidation_attestation_from_record(
@@ -406,8 +437,25 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
         ev_item = store.get_evidence(orig_ref)
         req_dig = ev_item["request_sha256"] if ev_item else "0"*64
         res_dig = ev_item["response_sha256"] if ev_item else "0"*64
-        clean_aid = aid if aid.startswith("ACT-") else f"ACT-{aid.ljust(64, '0')[:64]}"
-        app_id = f"APPR-{clean_aid[4:36]}"
+        from framework.auth_correlation.revocation import get_or_create_approval_key, sign_action_approval
+        from framework.auth_correlation.ledger import sign_consumption_receipt, CANONICAL_ACTION_FIELDS
+        app_key = get_or_create_approval_key(key_dir=ledger.key_dir)
+
+        app_id = f"APPR-{secrets.token_hex(16)}"
+        dossier_data = {
+            "action_type": "LOGOUT",
+            "created_at": time.time(),
+            "method": "POST",
+            "program_id": prog,
+            "target_endpoint": "https://target.local/auth/logout",
+            "test_account": sess_ctx.principal_id,
+            "ttl": 300.0,
+            "unique_approval_id": app_id,
+        }
+        signed_dossier = sign_action_approval(dossier_data, approval_key=app_key)
+        clean_aid = signed_dossier["action_id"]
+        op_sig = signed_dossier["approval_signature"]
+        canonical_copy = {k: dossier_data[k] for k in CANONICAL_ACTION_FIELDS}
 
         if ev_item and "meta_path" in ev_item and os.path.exists(ev_item["meta_path"]):
             try:
@@ -416,40 +464,51 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
                 if "metadata" not in mdata:
                     mdata["metadata"] = {}
                 mdata["metadata"]["capture_source"] = "CONTROLLED_TRANSPORT_DISPATCH"
+                mdata["metadata"]["evidence_class"] = "CONTROLLED_TRANSPORT_DISPATCH"
+                mdata["metadata"]["action_id"] = clean_aid
                 with open(ev_item["meta_path"], "w", encoding="utf-8") as mf:
                     json.dump(mdata, mf, indent=2)
             except Exception:
                 pass
 
-        ver_cap = store.save_http_capture(
+        ver_cap = store.save_controlled_transport_capture(
             request_text=f"GET /auth/verify?aid={clean_aid}\nAuthorization: Bearer {sess_ctx.session_ref[:8]}",
             response_text=f'HTTP 401 Unauthorized\n{{"error": "Session revoked", "action": "{clean_aid}"}}',
-            metadata={
-                "event_type": ev_type,
-                "session_ref": sess_ctx.session_ref,
-                "principal_id": sess_ctx.principal_id,
-                "program_id": prog,
-                "verification_method": "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
-                "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
-            },
+            action_id=clean_aid,
+            approval_id=app_id,
+            session_ref=sess_ctx.session_ref,
+            principal_id=sess_ctx.principal_id,
+            program_id=prog,
+            event_type=ev_type,
+            verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
             prefix=f"ver_{clean_aid[-6:]}",
         )
 
         c_token = secrets.token_hex(32)
         os.makedirs(ledger.state_dir, exist_ok=True)
         consumed_path = os.path.join(ledger.state_dir, "consumed_approvals.json")
-        consumed_entry = {
-            "approval_id": app_id,
+
+        receipt_payload = {
+            "action_dossier_digest": clean_aid[4:],
             "action_id": clean_aid,
+            "action_type": "LOGOUT",
+            "approval_id": app_id,
+            "consumed_at": ts,
             "consumption_token": c_token,
+            "method": "POST",
+            "operator_signature": op_sig,
+            "principal_id": sess_ctx.principal_id,
             "program_id": prog,
             "session_ref": sess_ctx.session_ref,
-            "principal_id": sess_ctx.principal_id,
-            "test_account": sess_ctx.principal_id,
             "target_endpoint": "https://target.local/auth/logout",
-            "method": "POST",
-            "action_type": "LOGOUT",
-            "consumed_at": ts,
+            "test_account": sess_ctx.principal_id,
+        }
+        receipt_sig = sign_consumption_receipt(receipt_payload, app_key)
+
+        consumed_entry = {
+            **receipt_payload,
+            "action_dossier": canonical_copy,
+            "receipt_signature": receipt_sig,
             "execution_id": None,
         }
         consumed_data = {"version": "1.0", "consumed": {}}
@@ -489,12 +548,16 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
             execution_timestamp=ts,
             verification_timestamp=ts,
             consumption_token=c_token,
+            approval_key=app_key,
+            evidence_store=store,
+            consumed_approvals_path=consumed_path,
             key_dir=ledger.key_dir,
         )
         exec_rec = ledger.record_execution(
             capability=cap,
             evidence_store=store,
             consumed_approvals_path=consumed_path,
+            approval_key=app_key,
         )
         return _create_controlled_invalidation_attestation_from_record(
             execution_record=exec_rec,
