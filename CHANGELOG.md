@@ -1,3 +1,11 @@
+## Unreleased — Phase 21 provenance containment
+
+### Security correction
+* Disabled Mode B controlled invalidation before approval consumption or network dispatch until a separate OS-enforced dispatcher trust boundary exists.
+* Disabled caller-invokable trusted transport evidence capture, execution capability issuance, and controlled-workflow attestation issuance.
+* Rejected CONTROLLED_WORKFLOW attestations as independent provenance while the isolated dispatcher is unavailable.
+* Supersedes prior Phase 21 acceptance and wire-fidelity claims. This is fail-closed containment, not completion of Mode B.
+
 # Changelog
 
 All notable changes to the BugBounty-Agent project are documented in this file.

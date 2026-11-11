@@ -251,6 +251,10 @@ class EvidenceStore:
         binds dispatch_op_id and attribution metadata, and marks capture_source and evidence_class
         as CONTROLLED_TRANSPORT_DISPATCH.
         """
+        raise EvidencePersistenceError(
+            "Trusted transport capture is disabled: caller-supplied request/response objects cannot prove transport dispatch"
+        )
+
         if not dispatch_op_id or not isinstance(dispatch_op_id, str) or not dispatch_op_id.startswith("DISP-OP-"):
             raise ValueError("Invalid dispatch_op_id: must be a valid DISP-OP identifier")
         if not action_id or not isinstance(action_id, str) or not action_id.startswith("ACT-"):

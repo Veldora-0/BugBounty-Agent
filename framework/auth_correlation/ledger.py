@@ -612,6 +612,10 @@ def issue_execution_capability(
     Fails closed if dispatch_result is missing, not a genuine dispatch, or if transport evidence,
     dispatch_op_id, and consumed approval receipts cannot be independently verified.
     """
+    raise ExecutionProvenanceError(
+        "Execution capability issuance is disabled: an in-process ControlledDispatchResult and caller-writable artifacts do not prove transport execution"
+    )
+
     if dispatch_result is None:
         raise ExecutionProvenanceError("issue_execution_capability requires a valid ControlledDispatchResult from ControlledDispatchWorkflow")
 

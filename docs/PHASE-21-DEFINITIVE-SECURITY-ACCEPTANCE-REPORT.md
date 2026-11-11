@@ -245,3 +245,19 @@ The following documentation files were updated:
 All 21 mandatory gates have been comprehensively verified through code implementation, cross-platform pytest execution, adversarial attack simulations, and multi-environment synchronization.
 
 **Phase 22 Authorization:** Do NOT begin Phase 22 without explicit user directive.
+
+
+## Security status notice — supersedes prior acceptance language
+
+**Phase 21 controlled execution provenance is NOT ACCEPTED. Mode B is fail-closed and disabled.**
+
+The current Python process does not provide an independent trust boundary between the dispatcher, evidence writer, capability issuer, and ordinary callers. A caller can construct the same Python objects and files that the current implementation treats as proof. HMACs and SHA-256 hashes protect integrity only when their keys and signing authority are outside the caller's security context; they do not prove that a network operation occurred.
+
+Until a separate OS-isolated dispatcher owns network I/O, approval consumption, signing keys, and evidence persistence:
+- controlled mutation dispatch is rejected before network activity or approval consumption;
+- trusted transport evidence capture is rejected;
+- execution capability issuance and controlled-workflow attestation issuance are rejected;
+- stored CONTROLLED_WORKFLOW attestations are not accepted as independent provenance;
+- ordinary observational analysis may continue, but cannot claim independently verified revocation from this disabled path.
+
+This is a deliberate fail-closed containment measure, not completion of the intended Mode B feature. Previous accepted, zero-bypass, wire-capture, and production-ready claims are superseded where they describe this trust boundary.

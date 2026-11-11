@@ -424,3 +424,19 @@ All 5 stages of **Phase 21 (Authentication & Authorization Correlation)** have b
 * **Zero Regressions**: 100% test pass rate across all 56 test modules.
 
 **Status**: Phase 21 is officially **COMPLETED, VERIFIED, AND ACCEPTED**. See [`docs/PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md`](PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md). Do not begin Phase 22 without explicit user authorization.
+
+
+## Security status notice — supersedes prior acceptance language
+
+**Phase 21 controlled execution provenance is NOT ACCEPTED. Mode B is fail-closed and disabled.**
+
+The current Python process does not provide an independent trust boundary between the dispatcher, evidence writer, capability issuer, and ordinary callers. A caller can construct the same Python objects and files that the current implementation treats as proof. HMACs and SHA-256 hashes protect integrity only when their keys and signing authority are outside the caller's security context; they do not prove that a network operation occurred.
+
+Until a separate OS-isolated dispatcher owns network I/O, approval consumption, signing keys, and evidence persistence:
+- controlled mutation dispatch is rejected before network activity or approval consumption;
+- trusted transport evidence capture is rejected;
+- execution capability issuance and controlled-workflow attestation issuance are rejected;
+- stored CONTROLLED_WORKFLOW attestations are not accepted as independent provenance;
+- ordinary observational analysis may continue, but cannot claim independently verified revocation from this disabled path.
+
+This is a deliberate fail-closed containment measure, not completion of the intended Mode B feature. Previous accepted, zero-bypass, wire-capture, and production-ready claims are superseded where they describe this trust boundary.

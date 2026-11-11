@@ -243,6 +243,14 @@ class ControlledDispatchWorkflow:
         Requires mandatory ScopeEngine for non-simulation targets.
         Returns (success: bool, dispatch_result: Optional[ControlledDispatchResult], reason: str).
         """
+        # SECURITY HOLD: this in-process implementation cannot establish genuine transport
+        # provenance against caller-constructed objects or caller-writable evidence. Refuse
+        # before approval consumption, state mutation, or network dispatch until an isolated
+        # OS-enforced dispatcher service owns transport, keys, and evidence persistence.
+        raise ApprovalSecurityError(
+            "Mode B controlled invalidation is disabled: isolated execution provenance boundary is not implemented"
+        )
+
         # 0. EvidenceStore is MANDATORY and must be writable before any mutation dispatch
         if self._evidence_store is None:
             raise ApprovalSecurityError("EvidenceStore is mandatory for Mode B controlled invalidation")

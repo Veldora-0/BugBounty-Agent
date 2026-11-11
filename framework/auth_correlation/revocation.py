@@ -388,6 +388,10 @@ def _create_controlled_invalidation_attestation_from_record(
     Internal trusted factory: creates and persists an authenticated invalidation event
     attestation strictly from an authenticated, un-replayed ExecutionRecord in ExecutionLedger.
     """
+    raise AttestationSecurityError(
+        "Controlled-workflow attestation issuance is disabled until execution provenance is produced by an isolated OS-enforced dispatcher"
+    )
+
     if not isinstance(execution_record, ExecutionRecord):
         raise AttestationSecurityError("Invalid execution record for controlled attestation")
 
@@ -1066,6 +1070,8 @@ class PostRevocationResourceValidator:
             return False, f"Attestation event_type '{event_type}' is not an authorized invalidation event", None
 
         source = att_record.get("source")
+        if source == "CONTROLLED_WORKFLOW":
+            return False, "Controlled-workflow provenance is disabled: no isolated transport authority is configured", None
         if source not in ALLOWED_ATTESTATION_SOURCES:
             return False, f"Attestation source '{source}' is not recognized or authorized", None
 
