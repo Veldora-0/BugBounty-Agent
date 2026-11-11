@@ -49,6 +49,7 @@ from framework.auth_correlation.revocation import (
 from framework.authz.model import ResourceAccessTarget
 from framework.common.evidence import EvidenceStore
 from framework.validation.request import ControlledRequest, ControlledResponse
+from framework.auth_correlation.dispatcher import ControlledDispatchResult
 
 
 class MockValidationEngine:
@@ -60,10 +61,24 @@ class MockValidationEngine:
 
     def send_request(self, req: ControlledRequest) -> ControlledResponse:
         self.dispatched_requests.append(req)
+        method_key = f"{req.method} {req.url}"
+        if method_key in self.responses:
+            return self.responses[method_key]
         auth = req.headers.get("Authorization", "ANONYMOUS")
         key = f"{req.url}|{auth}"
         if key in self.responses:
             return self.responses[key]
+        if req.headers.get("X-Correlation-Dispatch", "").endswith("-VERIFY"):
+            verify_key = f"{req.url}|VERIFY"
+            if verify_key in self.responses:
+                return self.responses[verify_key]
+            if req.url in self.responses:
+                resp = self.responses[req.url]
+                body_str = (resp.body_text or "").lower()
+                if resp.status_code in (200, 204) and any(w in body_str for w in ("logged_out", "revoked", "invalidated", "terminated")):
+                    return ControlledResponse(status_code=401, headers={"Content-Type": "application/json"}, body_bytes=b'{"error": "Session revoked"}')
+                return resp
+            return ControlledResponse(status_code=401, headers={"Content-Type": "application/json"}, body_bytes=b'{"error": "Session revoked"}')
         if req.url in self.responses:
             return self.responses[req.url]
         return ControlledResponse(status_code=404, headers={}, body_bytes=b"Not Found")
@@ -194,29 +209,50 @@ def make_valid_invalidation_evidence(
 
     clean_req = "POST /auth/logout\nAuthorization: Bearer revoked"
     clean_res = 'HTTP 200 OK\n{"status": "logged_out", "revoked": true}'
-    res = store.save_controlled_transport_capture(
-        request_text=clean_req,
-        response_text=clean_res,
+    d_op_id = f"DISP-OP-{secrets.token_hex(32).upper()}"
+    mut_req_obj = ControlledRequest(
+        url="http://127.0.0.1:8080/auth/logout",
+        method="POST",
+        headers={"Authorization": "Bearer revoked", "X-Correlation-Dispatch": d_op_id},
+    )
+    mut_res_obj = ControlledResponse(
+        status_code=200,
+        headers={"Content-Type": "application/json"},
+        body_bytes=b'{"status": "logged_out", "revoked": true}',
+    )
+    res = store.save_transport_dispatch_capture(
+        request=mut_req_obj,
+        response=mut_res_obj,
         action_id=aid,
         approval_id=app_id,
         session_ref=sess.session_ref,
         principal_id=sess.principal_id,
         program_id=prog_id,
-        event_type=event_type,
+        dispatch_op_id=d_op_id,
+        is_verification=False,
         prefix="inv_proof",
     )
-    ver_req = f"GET /auth/verify\nAuthorization: Bearer {sess.session_ref[:8]}"
-    ver_res = 'HTTP 401 Unauthorized\n{"error": "Session revoked"}'
-    ver_cap = store.save_controlled_transport_capture(
-        request_text=ver_req,
-        response_text=ver_res,
+    ver_req_obj = ControlledRequest(
+        url="http://127.0.0.1:8080/auth/verify",
+        method="GET",
+        headers={"Authorization": f"Bearer {sess.session_ref[:8]}", "X-Correlation-Dispatch": f"{d_op_id}-VERIFY"},
+    )
+    ver_res_obj = ControlledResponse(
+        status_code=401,
+        headers={"Content-Type": "application/json"},
+        body_bytes=b'{"error": "Session revoked"}',
+    )
+    ver_cap = store.save_transport_dispatch_capture(
+        request=ver_req_obj,
+        response=ver_res_obj,
         action_id=aid,
         approval_id=app_id,
         session_ref=sess.session_ref,
         principal_id=sess.principal_id,
         program_id=prog_id,
-        event_type=event_type,
-        verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+        dispatch_op_id=d_op_id,
+        is_verification=True,
+        verification_method="POST_MUTATION_PROBE_CONFIRMED_401",
         prefix="inv_ver_proof",
     )
 
@@ -232,6 +268,7 @@ def make_valid_invalidation_evidence(
         "approval_id": app_id,
         "consumed_at": ts,
         "consumption_token": c_token,
+        "dispatch_op_id": d_op_id,
         "method": "POST",
         "operator_signature": op_sig,
         "principal_id": sess.principal_id,
@@ -263,7 +300,8 @@ def make_valid_invalidation_evidence(
 
     ledger = execution_ledger or ExecutionLedger(state_dir=state_dir, key_dir=key_dir, approval_key=app_key)
     k_dir = key_dir or ledger._key_dir
-    cap = issue_execution_capability(
+    dispatch_res = ControlledDispatchResult(
+        dispatch_op_id=d_op_id,
         action_id=aid,
         action_dossier_digest=aid[4:],
         approval_id=app_id,
@@ -282,11 +320,15 @@ def make_valid_invalidation_evidence(
         verification_request_digest=ver_cap["request_sha256"],
         verification_response_digest=ver_cap["response_sha256"],
         verification_status_code=401,
-        verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+        verification_method="POST_MUTATION_PROBE_CONFIRMED_401",
         invalidation_verification_result="REVOKED",
         execution_timestamp=ts,
         verification_timestamp=ts,
         consumption_token=c_token,
+        is_genuine_dispatch=True,
+    )
+    cap = issue_execution_capability(
+        dispatch_result=dispatch_res,
         approval_key=app_key,
         evidence_store=store,
         consumed_approvals_path=consumed_path,
@@ -457,6 +499,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
         op_sig = signed_dossier["approval_signature"]
         canonical_copy = {k: dossier_data[k] for k in CANONICAL_ACTION_FIELDS}
 
+        d_op_id = f"DISP-OP-{secrets.token_hex(32).upper()}"
         if ev_item and "meta_path" in ev_item and os.path.exists(ev_item["meta_path"]):
             try:
                 with open(ev_item["meta_path"], "r", encoding="utf-8") as mf:
@@ -466,20 +509,32 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
                 mdata["metadata"]["capture_source"] = "CONTROLLED_TRANSPORT_DISPATCH"
                 mdata["metadata"]["evidence_class"] = "CONTROLLED_TRANSPORT_DISPATCH"
                 mdata["metadata"]["action_id"] = clean_aid
+                mdata["metadata"]["dispatch_op_id"] = d_op_id
                 with open(ev_item["meta_path"], "w", encoding="utf-8") as mf:
                     json.dump(mdata, mf, indent=2)
             except Exception:
                 pass
 
-        ver_cap = store.save_controlled_transport_capture(
-            request_text=f"GET /auth/verify?aid={clean_aid}\nAuthorization: Bearer {sess_ctx.session_ref[:8]}",
-            response_text=f'HTTP 401 Unauthorized\n{{"error": "Session revoked", "action": "{clean_aid}"}}',
+        ver_req_obj = ControlledRequest(
+            url=f"https://target.local/auth/verify?aid={clean_aid}",
+            method="GET",
+            headers={"Authorization": f"Bearer {sess_ctx.session_ref[:8]}", "X-Correlation-Dispatch": f"{d_op_id}-VERIFY"},
+        )
+        ver_res_obj = ControlledResponse(
+            status_code=401,
+            headers={"Content-Type": "application/json"},
+            body_bytes=f'{{"error": "Session revoked", "action": "{clean_aid}"}}'.encode("utf-8"),
+        )
+        ver_cap = store.save_transport_dispatch_capture(
+            request=ver_req_obj,
+            response=ver_res_obj,
             action_id=clean_aid,
             approval_id=app_id,
             session_ref=sess_ctx.session_ref,
             principal_id=sess_ctx.principal_id,
             program_id=prog,
-            event_type=ev_type,
+            dispatch_op_id=d_op_id,
+            is_verification=True,
             verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
             prefix=f"ver_{clean_aid[-6:]}",
         )
@@ -495,6 +550,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
             "approval_id": app_id,
             "consumed_at": ts,
             "consumption_token": c_token,
+            "dispatch_op_id": d_op_id,
             "method": "POST",
             "operator_signature": op_sig,
             "principal_id": sess_ctx.principal_id,
@@ -524,7 +580,8 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
         with open(consumed_path, "w", encoding="utf-8") as f:
             json.dump(consumed_data, f, indent=2)
 
-        cap = issue_execution_capability(
+        dispatch_res = ControlledDispatchResult(
+            dispatch_op_id=d_op_id,
             action_id=clean_aid,
             action_dossier_digest=clean_aid[4:],
             approval_id=app_id,
@@ -548,6 +605,10 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
             execution_timestamp=ts,
             verification_timestamp=ts,
             consumption_token=c_token,
+            is_genuine_dispatch=True,
+        )
+        cap = issue_execution_capability(
+            dispatch_result=dispatch_res,
             approval_key=app_key,
             evidence_store=store,
             consumed_approvals_path=consumed_path,
@@ -1704,6 +1765,8 @@ def test_controlled_attestation_security_matrix_d1(tmp_path):
             return True
         def save_http_capture(self, *a, **kw):
             raise OSError("Disk quota exceeded")
+        def save_transport_dispatch_capture(self, *a, **kw):
+            raise EvidencePersistenceError("Failed to persist controlled revocation evidence: Disk quota exceeded")
     val_fail_store = PostRevocationResourceValidator(
         validation_engine=engine, evidence_store=FailingStore(), scope_engine=mock_scope,
         approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",

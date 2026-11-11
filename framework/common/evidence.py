@@ -43,6 +43,11 @@ _SENSITIVE_PATTERNS = [
 SAFE_PREFIX_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
+class EvidencePersistenceError(Exception):
+    """Raised when evidence persistence, permission setting, or integrity verification fails."""
+    pass
+
+
 def sanitize_sensitive_data(text: str) -> str:
     """Replaces credentials, authorization tokens, and session cookies with redaction placeholder."""
     if not text:
@@ -132,8 +137,18 @@ class EvidenceStore:
         else:
             try:
                 os.chmod(tmp_capture, 0o600)
-            except OSError:
-                pass
+                st = os.stat(tmp_capture)
+                if (st.st_mode & 0o077 != 0) or ((st.st_mode & 0o777) != 0o600):
+                    raise EvidencePersistenceError("Failed to enforce private POSIX permissions (0o600) on capture")
+            except Exception as e:
+                if os.path.exists(tmp_capture):
+                    try:
+                        os.remove(tmp_capture)
+                    except OSError:
+                        pass
+                if isinstance(e, EvidencePersistenceError):
+                    raise
+                raise EvidencePersistenceError(f"Failed to set private POSIX file permissions on capture: {e}")
         os.replace(tmp_capture, file_path)
 
         # Meta descriptor
@@ -158,8 +173,23 @@ class EvidenceStore:
         else:
             try:
                 os.chmod(tmp_meta, 0o600)
-            except OSError:
-                pass
+                st = os.stat(tmp_meta)
+                if (st.st_mode & 0o077 != 0) or ((st.st_mode & 0o777) != 0o600):
+                    raise EvidencePersistenceError("Failed to enforce private POSIX permissions (0o600) on metadata")
+            except Exception as e:
+                if os.path.exists(tmp_meta):
+                    try:
+                        os.remove(tmp_meta)
+                    except OSError:
+                        pass
+                if os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                if isinstance(e, EvidencePersistenceError):
+                    raise
+                raise EvidencePersistenceError(f"Failed to set private POSIX file permissions on metadata: {e}")
         os.replace(tmp_meta, meta_path)
 
         return {
@@ -200,25 +230,29 @@ class EvidenceStore:
             prefix=prefix,
         )
 
-    def save_controlled_transport_capture(
+    def save_transport_dispatch_capture(
         self,
-        request_text: str,
-        response_text: str,
+        request: Any,
+        response: Any,
         action_id: str,
         approval_id: str,
         session_ref: str,
         principal_id: str,
         program_id: str,
-        event_type: str = "SESSION_REVOCATION",
+        dispatch_op_id: str,
+        is_verification: bool = False,
         verification_method: Optional[str] = None,
         prefix: str = "controlled_transport",
     ) -> Dict[str, Any]:
         """
         Trusted transport boundary evidence writer.
-        Invoked strictly during active, verified controlled transport dispatch (Mode B).
-        Binds request/response wire representations, attribution metadata, and marks
-        capture_source and evidence_class as CONTROLLED_TRANSPORT_DISPATCH.
+        Invoked strictly during active, verified controlled transport dispatch by ControlledDispatchWorkflow.
+        Extracts application-level transport representations from authentic ControlledRequest and ControlledResponse objects,
+        binds dispatch_op_id and attribution metadata, and marks capture_source and evidence_class
+        as CONTROLLED_TRANSPORT_DISPATCH.
         """
+        if not dispatch_op_id or not isinstance(dispatch_op_id, str) or not dispatch_op_id.startswith("DISP-OP-"):
+            raise ValueError("Invalid dispatch_op_id: must be a valid DISP-OP identifier")
         if not action_id or not isinstance(action_id, str) or not action_id.startswith("ACT-"):
             raise ValueError("Invalid action_id for controlled transport capture")
         if not approval_id or not isinstance(approval_id, str):
@@ -230,22 +264,32 @@ class EvidenceStore:
         if not program_id or not isinstance(program_id, str):
             raise ValueError("Invalid program_id for controlled transport capture")
 
+        if not hasattr(request, "get_sanitized_representation"):
+            raise ValueError("request must be an authentic ControlledRequest object")
+        if not hasattr(response, "get_sanitized_representation"):
+            raise ValueError("response must be an authentic ControlledResponse object")
+
+        req_text = request.get_sanitized_representation()
+        res_text = response.get_sanitized_representation()
+
         metadata: Dict[str, Any] = {
             "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
             "evidence_class": "CONTROLLED_TRANSPORT_DISPATCH",
+            "dispatch_op_id": dispatch_op_id,
             "action_id": action_id,
             "approval_id": approval_id,
             "session_ref": session_ref,
             "principal_id": principal_id,
             "program_id": program_id,
-            "event_type": event_type,
+            "event_type": "SESSION_REVOCATION",
+            "is_verification": bool(is_verification),
         }
         if verification_method:
             metadata["verification_method"] = verification_method
 
         return self._save_capture_internal(
-            request_text=request_text,
-            response_text=response_text,
+            request_text=req_text,
+            response_text=res_text,
             metadata=metadata,
             prefix=prefix,
         )

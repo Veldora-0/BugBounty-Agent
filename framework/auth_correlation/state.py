@@ -33,6 +33,7 @@ from framework.auth_correlation.model import (
     CorrelationLifecycle,
     SerializationSecurityError,
     StateSecurityValidationError,
+    ApprovalSecurityError,
     SAFE_IDENTIFIER_PATTERN,
     SESSION_REF_PATTERN,
     ISO_TIMESTAMP_PATTERN,
@@ -807,3 +808,64 @@ class AuthCorrelationStateManager:
                 os.replace(state_file, quarantine_name)
             except OSError:
                 pass
+
+
+class CrossProcessFileLock:
+    """
+    Cross-process file lock supporting Windows (msvcrt) and POSIX (fcntl).
+    Guarantees atomic file operations across multiple processes.
+    """
+
+    def __init__(self, lock_path: str, timeout: float = 10.0, retry_interval: float = 0.05):
+        self.lock_path = lock_path
+        self.timeout = timeout
+        self.retry_interval = retry_interval
+        self._fd: Optional[int] = None
+
+    def __enter__(self) -> CrossProcessFileLock:
+        os.makedirs(os.path.dirname(os.path.abspath(self.lock_path)), exist_ok=True)
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        self._fd = os.open(self.lock_path, flags, 0o600)
+        start = time.time()
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(self._fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except (OSError, IOError):
+                if time.time() - start >= self.timeout:
+                    if self._fd is not None:
+                        try:
+                            os.close(self._fd)
+                        except OSError:
+                            pass
+                        self._fd = None
+                    raise ApprovalSecurityError(f"Timed out acquiring cross-process lock on '{self.lock_path}'")
+                time.sleep(self.retry_interval)
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self._fd is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    try:
+                        msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
+                    except (OSError, IOError):
+                        pass
+                else:
+                    import fcntl
+                    try:
+                        fcntl.flock(self._fd, fcntl.LOCK_UN)
+                    except (OSError, IOError):
+                        pass
+                os.close(self._fd)
+            except OSError:
+                pass
+            finally:
+                self._fd = None

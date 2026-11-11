@@ -64,6 +64,7 @@ from framework.auth_correlation.revocation import (
 )
 from framework.common.evidence import EvidenceStore
 from framework.validation.request import ControlledRequest, ControlledResponse
+from framework.auth_correlation.dispatcher import ControlledDispatchResult
 
 
 def _create_valid_execution_fixture(
@@ -106,35 +107,54 @@ def _create_valid_execution_fixture(
     clean_aid = f"ACT-{hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()}"
     op_sig = f"SIG-{hmac.new(app_key, canonical_str.encode('utf-8'), hashlib.sha256).hexdigest()}"
     c_token = secrets.token_hex(32)
+    d_op_id = f"DISP-OP-{secrets.token_hex(32).upper()}"
 
-    # Save mutation capture using save_controlled_transport_capture
-    mut_req = f"{method} {target_endpoint}\nAction: {clean_aid}\nX-Correlation-Session: {sess_ref}"
-    mut_res = 'HTTP 200 OK\n{"status": "logged_out", "revoked": true}'
-    mut_cap = store.save_controlled_transport_capture(
-        request_text=mut_req,
-        response_text=mut_res,
+    # Save mutation capture using save_transport_dispatch_capture
+    mut_req_obj = ControlledRequest(
+        url=target_endpoint,
+        method=method,
+        headers={"Action": clean_aid, "X-Correlation-Session": sess_ref, "X-Correlation-Dispatch": d_op_id},
+    )
+    mut_res_obj = ControlledResponse(
+        status_code=200,
+        headers={"Content-Type": "application/json"},
+        body_bytes=b'{"status": "logged_out", "revoked": true}',
+    )
+    mut_cap = store.save_transport_dispatch_capture(
+        request=mut_req_obj,
+        response=mut_res_obj,
         action_id=clean_aid,
         approval_id=app_id,
         session_ref=sess_ref,
         principal_id=principal_id,
         program_id=prog_id,
-        event_type="SESSION_REVOCATION",
+        dispatch_op_id=d_op_id,
+        is_verification=False,
         prefix=f"mut_{action_suffix}",
     )
 
-    # Save verification capture using save_controlled_transport_capture
-    ver_req = f"GET /auth/verify?aid={clean_aid}\nAuthorization: Bearer test"
-    ver_res = 'HTTP 401 Unauthorized\n{"error": "Session revoked"}'
-    ver_cap = store.save_controlled_transport_capture(
-        request_text=ver_req,
-        response_text=ver_res,
+    # Save verification capture using save_transport_dispatch_capture
+    ver_req_obj = ControlledRequest(
+        url=f"{target_endpoint}?aid={clean_aid}",
+        method="GET",
+        headers={"Authorization": "Bearer test", "X-Correlation-Dispatch": f"{d_op_id}-VERIFY"},
+    )
+    ver_res_obj = ControlledResponse(
+        status_code=401,
+        headers={"Content-Type": "application/json"},
+        body_bytes=b'{"error": "Session revoked"}',
+    )
+    ver_cap = store.save_transport_dispatch_capture(
+        request=ver_req_obj,
+        response=ver_res_obj,
         action_id=clean_aid,
         approval_id=app_id,
         session_ref=sess_ref,
         principal_id=principal_id,
         program_id=prog_id,
+        dispatch_op_id=d_op_id,
+        is_verification=True,
         verification_method=ver_method,
-        event_type="SESSION_REVOCATION",
         prefix=f"ver_{action_suffix}",
     )
 
@@ -144,6 +164,7 @@ def _create_valid_execution_fixture(
         "approval_id": app_id,
         "action_id": clean_aid,
         "consumption_token": c_token,
+        "dispatch_op_id": d_op_id,
         "program_id": prog_id,
         "session_ref": sess_ref,
         "principal_id": principal_id,
@@ -162,8 +183,8 @@ def _create_valid_execution_fixture(
     with open(consumed_path, "w", encoding="utf-8") as f:
         json.dump(consumed_data, f, indent=2)
 
-    # Issue ExecutionCapability
-    cap = issue_execution_capability(
+    dispatch_res = ControlledDispatchResult(
+        dispatch_op_id=d_op_id,
         action_id=clean_aid,
         action_dossier_digest=consumed_entry["action_dossier_digest"],
         approval_id=app_id,
@@ -187,6 +208,11 @@ def _create_valid_execution_fixture(
         execution_timestamp=ts,
         verification_timestamp=ts,
         consumption_token=c_token,
+        is_genuine_dispatch=True,
+    )
+
+    cap = issue_execution_capability(
+        dispatch_result=dispatch_res,
         key_dir=key_dir,
         evidence_store=store,
         consumed_approvals_path=consumed_path,
@@ -576,7 +602,7 @@ def test_adversarial_at01_direct_call_fabricated_args(tmp_path):
         json.dump({"version": "1.0", "consumed": {}}, f)
 
     aid = "ACT-" + "1" * 64
-    with pytest.raises(ExecutionProvenanceError, match="prerequisite verification failed|not found"):
+    with pytest.raises(ExecutionProvenanceError, match="prerequisite verification failed|not found|requires a valid ControlledDispatchResult"):
         issue_execution_capability(
             action_id=aid,
             action_dossier_digest="1" * 64,
@@ -754,6 +780,7 @@ def test_adversarial_at06_manually_created_consumed_approvals_rejected(tmp_path)
                     "target_endpoint": cap.target_endpoint,
                     "method": cap.http_method,
                     "action_type": cap.action_type,
+                    "dispatch_op_id": cap.dispatch_op_id,
                     "consumed_at": "2026-11-11T12:00:00Z",
                     "execution_id": None,
                     # No operator_signature or receipt_signature!
@@ -800,31 +827,36 @@ def test_adversarial_at10_evidence_reference_substitution_rejected(tmp_path):
     ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "at10")
     cap_key = ledger._get_capability_key()
 
+    d_res = ControlledDispatchResult(
+        dispatch_op_id=cap.dispatch_op_id,
+        action_id=cap.action_id,
+        action_dossier_digest=cap.action_dossier_digest,
+        approval_id=cap.approval_id,
+        program_id=cap.program_id,
+        session_ref=cap.session_ref,
+        principal_id=cap.principal_id,
+        test_account=cap.test_account,
+        target_endpoint=cap.target_endpoint,
+        http_method=cap.http_method,
+        action_type=cap.action_type,
+        mutation_evidence_ref="EVID-FFFFFFFFFFFF",
+        mutation_request_digest=cap.mutation_request_digest,
+        mutation_response_digest=cap.mutation_response_digest,
+        mutation_status_code=cap.mutation_status_code,
+        verification_evidence_ref=cap.verification_evidence_ref,
+        verification_request_digest=cap.verification_request_digest,
+        verification_response_digest=cap.verification_response_digest,
+        verification_status_code=cap.verification_status_code,
+        verification_method=cap.verification_method,
+        invalidation_verification_result=cap.invalidation_verification_result,
+        execution_timestamp=cap.execution_timestamp,
+        verification_timestamp=cap.verification_timestamp,
+        consumption_token=cap.consumption_token,
+        is_genuine_dispatch=True,
+    )
     with pytest.raises(ExecutionProvenanceError, match="not found"):
         issue_execution_capability(
-            action_id=cap.action_id,
-            action_dossier_digest=cap.action_dossier_digest,
-            approval_id=cap.approval_id,
-            program_id=cap.program_id,
-            session_ref=cap.session_ref,
-            principal_id=cap.principal_id,
-            test_account=cap.test_account,
-            target_endpoint=cap.target_endpoint,
-            http_method=cap.http_method,
-            action_type=cap.action_type,
-            mutation_evidence_ref="EVID-FFFFFFFFFFFF",
-            mutation_request_digest=cap.mutation_request_digest,
-            mutation_response_digest=cap.mutation_response_digest,
-            mutation_status_code=cap.mutation_status_code,
-            verification_evidence_ref=cap.verification_evidence_ref,
-            verification_request_digest=cap.verification_request_digest,
-            verification_response_digest=cap.verification_response_digest,
-            verification_status_code=cap.verification_status_code,
-            verification_method=cap.verification_method,
-            invalidation_verification_result=cap.invalidation_verification_result,
-            execution_timestamp=cap.execution_timestamp,
-            verification_timestamp=cap.verification_timestamp,
-            consumption_token=cap.consumption_token,
+            dispatch_result=d_res,
             capability_key=cap_key,
             evidence_store=store,
             consumed_approvals_path=consumed_path,
@@ -837,31 +869,36 @@ def test_adversarial_at11_request_digest_modification_rejected(tmp_path):
     ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "at11")
     cap_key = ledger._get_capability_key()
 
+    d_res = ControlledDispatchResult(
+        dispatch_op_id=cap.dispatch_op_id,
+        action_id=cap.action_id,
+        action_dossier_digest=cap.action_dossier_digest,
+        approval_id=cap.approval_id,
+        program_id=cap.program_id,
+        session_ref=cap.session_ref,
+        principal_id=cap.principal_id,
+        test_account=cap.test_account,
+        target_endpoint=cap.target_endpoint,
+        http_method=cap.http_method,
+        action_type=cap.action_type,
+        mutation_evidence_ref=cap.mutation_evidence_ref,
+        mutation_request_digest="f" * 64,
+        mutation_response_digest=cap.mutation_response_digest,
+        mutation_status_code=cap.mutation_status_code,
+        verification_evidence_ref=cap.verification_evidence_ref,
+        verification_request_digest=cap.verification_request_digest,
+        verification_response_digest=cap.verification_response_digest,
+        verification_status_code=cap.verification_status_code,
+        verification_method=cap.verification_method,
+        invalidation_verification_result=cap.invalidation_verification_result,
+        execution_timestamp=cap.execution_timestamp,
+        verification_timestamp=cap.verification_timestamp,
+        consumption_token=cap.consumption_token,
+        is_genuine_dispatch=True,
+    )
     with pytest.raises(ExecutionProvenanceError, match="digest mismatch"):
         issue_execution_capability(
-            action_id=cap.action_id,
-            action_dossier_digest=cap.action_dossier_digest,
-            approval_id=cap.approval_id,
-            program_id=cap.program_id,
-            session_ref=cap.session_ref,
-            principal_id=cap.principal_id,
-            test_account=cap.test_account,
-            target_endpoint=cap.target_endpoint,
-            http_method=cap.http_method,
-            action_type=cap.action_type,
-            mutation_evidence_ref=cap.mutation_evidence_ref,
-            mutation_request_digest="f" * 64,
-            mutation_response_digest=cap.mutation_response_digest,
-            mutation_status_code=cap.mutation_status_code,
-            verification_evidence_ref=cap.verification_evidence_ref,
-            verification_request_digest=cap.verification_request_digest,
-            verification_response_digest=cap.verification_response_digest,
-            verification_status_code=cap.verification_status_code,
-            verification_method=cap.verification_method,
-            invalidation_verification_result=cap.invalidation_verification_result,
-            execution_timestamp=cap.execution_timestamp,
-            verification_timestamp=cap.verification_timestamp,
-            consumption_token=cap.consumption_token,
+            dispatch_result=d_res,
             capability_key=cap_key,
             evidence_store=store,
             consumed_approvals_path=consumed_path,
@@ -874,31 +911,36 @@ def test_adversarial_at12_response_digest_modification_rejected(tmp_path):
     ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "at12")
     cap_key = ledger._get_capability_key()
 
+    d_res = ControlledDispatchResult(
+        dispatch_op_id=cap.dispatch_op_id,
+        action_id=cap.action_id,
+        action_dossier_digest=cap.action_dossier_digest,
+        approval_id=cap.approval_id,
+        program_id=cap.program_id,
+        session_ref=cap.session_ref,
+        principal_id=cap.principal_id,
+        test_account=cap.test_account,
+        target_endpoint=cap.target_endpoint,
+        http_method=cap.http_method,
+        action_type=cap.action_type,
+        mutation_evidence_ref=cap.mutation_evidence_ref,
+        mutation_request_digest=cap.mutation_request_digest,
+        mutation_response_digest="e" * 64,
+        mutation_status_code=cap.mutation_status_code,
+        verification_evidence_ref=cap.verification_evidence_ref,
+        verification_request_digest=cap.verification_request_digest,
+        verification_response_digest=cap.verification_response_digest,
+        verification_status_code=cap.verification_status_code,
+        verification_method=cap.verification_method,
+        invalidation_verification_result=cap.invalidation_verification_result,
+        execution_timestamp=cap.execution_timestamp,
+        verification_timestamp=cap.verification_timestamp,
+        consumption_token=cap.consumption_token,
+        is_genuine_dispatch=True,
+    )
     with pytest.raises(ExecutionProvenanceError, match="digest mismatch"):
         issue_execution_capability(
-            action_id=cap.action_id,
-            action_dossier_digest=cap.action_dossier_digest,
-            approval_id=cap.approval_id,
-            program_id=cap.program_id,
-            session_ref=cap.session_ref,
-            principal_id=cap.principal_id,
-            test_account=cap.test_account,
-            target_endpoint=cap.target_endpoint,
-            http_method=cap.http_method,
-            action_type=cap.action_type,
-            mutation_evidence_ref=cap.mutation_evidence_ref,
-            mutation_request_digest=cap.mutation_request_digest,
-            mutation_response_digest="e" * 64,
-            mutation_status_code=cap.mutation_status_code,
-            verification_evidence_ref=cap.verification_evidence_ref,
-            verification_request_digest=cap.verification_request_digest,
-            verification_response_digest=cap.verification_response_digest,
-            verification_status_code=cap.verification_status_code,
-            verification_method=cap.verification_method,
-            invalidation_verification_result=cap.invalidation_verification_result,
-            execution_timestamp=cap.execution_timestamp,
-            verification_timestamp=cap.verification_timestamp,
-            consumption_token=cap.consumption_token,
+            dispatch_result=d_res,
             capability_key=cap_key,
             evidence_store=store,
             consumed_approvals_path=consumed_path,
@@ -933,8 +975,37 @@ def test_adversarial_at15_swapped_mutation_and_verification_captures_rejected(tm
     ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "at15")
     cap_key = ledger._get_capability_key()
 
-    with pytest.raises(ExecutionProvenanceError, match="evidence metadata"):
+    swapped_dres = ControlledDispatchResult(
+        dispatch_op_id=cap.dispatch_op_id,
+        action_id=cap.action_id,
+        action_dossier_digest=cap.action_dossier_digest,
+        approval_id=cap.approval_id,
+        program_id=cap.program_id,
+        session_ref=cap.session_ref,
+        principal_id=cap.principal_id,
+        test_account=cap.test_account,
+        target_endpoint=cap.target_endpoint,
+        http_method=cap.http_method,
+        action_type=cap.action_type,
+        mutation_evidence_ref=cap.verification_evidence_ref,  # Swapped
+        mutation_request_digest=cap.verification_request_digest,
+        mutation_response_digest=cap.verification_response_digest,
+        mutation_status_code=cap.verification_status_code,
+        verification_evidence_ref=cap.mutation_evidence_ref,  # Swapped
+        verification_request_digest=cap.mutation_request_digest,
+        verification_response_digest=cap.mutation_response_digest,
+        verification_status_code=cap.mutation_status_code,
+        verification_method=cap.verification_method,
+        invalidation_verification_result=cap.invalidation_verification_result,
+        execution_timestamp=cap.execution_timestamp,
+        verification_timestamp=cap.verification_timestamp,
+        consumption_token=cap.consumption_token,
+        is_genuine_dispatch=True,
+    )
+
+    with pytest.raises(ExecutionProvenanceError, match="evidence metadata swapped|cannot be a verification capture|points to verification evidence"):
         issue_execution_capability(
+            dispatch_result=swapped_dres,
             action_id=cap.action_id,
             action_dossier_digest=cap.action_dossier_digest,
             approval_id=cap.approval_id,
@@ -992,10 +1063,12 @@ def test_adversarial_at16_cross_execution_mutation_evidence_reuse_rejected(tmp_p
     clean_aid2 = f"ACT-{hashlib.sha256(canonical2.encode('utf-8')).hexdigest()}"
     op_sig2 = f"SIG-{hmac.new(ledger._approval_key, canonical2.encode('utf-8'), hashlib.sha256).hexdigest()}"
 
+    d_op_id2 = f"DISP-OP-{secrets.token_hex(32).upper()}"
     entry2 = {
         "approval_id": app_id2,
         "action_id": clean_aid2,
         "consumption_token": c_token2,
+        "dispatch_op_id": d_op_id2,
         "program_id": cap1.program_id,
         "session_ref": cap1.session_ref,
         "principal_id": cap1.principal_id,
@@ -1014,16 +1087,27 @@ def test_adversarial_at16_cross_execution_mutation_evidence_reuse_rejected(tmp_p
     with open(consumed_path2, "w", encoding="utf-8") as f:
         json.dump(cdata, f, indent=2)
 
-    ver_cap2 = store.save_controlled_transport_capture(
-        request_text=f"GET /auth/verify?aid={clean_aid2}\nAuthorization: Bearer test",
-        response_text='HTTP 401 Unauthorized\n{"error": "Session revoked"}',
+    v_req_obj = ControlledRequest(
+        url=f"{cap1.target_endpoint}?aid={clean_aid2}",
+        method="GET",
+        headers={"Authorization": "Bearer test", "X-Correlation-Dispatch": f"{d_op_id2}-VERIFY"},
+    )
+    v_res_obj = ControlledResponse(
+        status_code=401,
+        headers={"Content-Type": "application/json"},
+        body_bytes=b'{"error": "Session revoked"}',
+    )
+    ver_cap2 = store.save_transport_dispatch_capture(
+        request=v_req_obj,
+        response=v_res_obj,
         action_id=clean_aid2,
         approval_id=app_id2,
         session_ref=cap1.session_ref,
         principal_id=cap1.principal_id,
         program_id=cap1.program_id,
+        dispatch_op_id=d_op_id2,
+        is_verification=True,
         verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
-        event_type="SESSION_REVOCATION",
         prefix="ver_at16b",
     )
 
@@ -1052,6 +1136,7 @@ def test_adversarial_at16_cross_execution_mutation_evidence_reuse_rejected(tmp_p
         execution_timestamp="2026-11-11T12:00:00Z",
         verification_timestamp="2026-11-11T12:00:00Z",
         consumption_token=c_token2,
+        dispatch_op_id=d_op_id2,
         capability_id="CAP-" + "2" * 64,
         signature="CAP-SIG-" + "2" * 64,
     )
@@ -1093,10 +1178,12 @@ def test_adversarial_at17_cross_execution_verification_evidence_reuse_rejected(t
     clean_aid2 = f"ACT-{hashlib.sha256(canonical2.encode('utf-8')).hexdigest()}"
     op_sig2 = f"SIG-{hmac.new(ledger._approval_key, canonical2.encode('utf-8'), hashlib.sha256).hexdigest()}"
 
+    d_op_id2 = f"DISP-OP-{secrets.token_hex(32).upper()}"
     entry2 = {
         "approval_id": app_id2,
         "action_id": clean_aid2,
         "consumption_token": c_token2,
+        "dispatch_op_id": d_op_id2,
         "program_id": cap1.program_id,
         "session_ref": cap1.session_ref,
         "principal_id": cap1.principal_id,
@@ -1115,15 +1202,26 @@ def test_adversarial_at17_cross_execution_verification_evidence_reuse_rejected(t
     with open(consumed_path2, "w", encoding="utf-8") as f:
         json.dump(cdata, f, indent=2)
 
-    mut_cap2 = store.save_controlled_transport_capture(
-        request_text=f"POST /logout\nAction: {clean_aid2}",
-        response_text='HTTP 200 OK\n{"status": "ok"}',
+    m_req_obj = ControlledRequest(
+        url=cap1.target_endpoint,
+        method=cap1.http_method,
+        headers={"Action": clean_aid2, "X-Correlation-Dispatch": d_op_id2},
+    )
+    m_res_obj = ControlledResponse(
+        status_code=200,
+        headers={"Content-Type": "application/json"},
+        body_bytes=b'{"status": "ok"}',
+    )
+    mut_cap2 = store.save_transport_dispatch_capture(
+        request=m_req_obj,
+        response=m_res_obj,
         action_id=clean_aid2,
         approval_id=app_id2,
         session_ref=cap1.session_ref,
         principal_id=cap1.principal_id,
         program_id=cap1.program_id,
-        event_type="SESSION_REVOCATION",
+        dispatch_op_id=d_op_id2,
+        is_verification=False,
         prefix="mut_at17b",
     )
 
@@ -1152,6 +1250,7 @@ def test_adversarial_at17_cross_execution_verification_evidence_reuse_rejected(t
         execution_timestamp="2026-11-11T12:00:00Z",
         verification_timestamp="2026-11-11T12:00:00Z",
         consumption_token=c_token2,
+        dispatch_op_id=d_op_id2,
         capability_id="CAP-" + "3" * 64,
         signature="CAP-SIG-" + "3" * 64,
     )
@@ -1557,8 +1656,37 @@ def test_attack_02_capability_issuer_with_fabricated_evidence(tmp_path):
     ledger, cap, store, consumed_path, clean_aid, app_id, c_token = _create_valid_execution_fixture(tmp_path, "att02")
     cap_key = ledger._get_capability_key()
 
+    fake_dres = ControlledDispatchResult(
+        dispatch_op_id="DISP-OP-" + "0" * 64,
+        action_id=clean_aid,
+        action_dossier_digest=clean_aid[4:],
+        approval_id=app_id,
+        program_id=cap.program_id,
+        session_ref=cap.session_ref,
+        principal_id=cap.principal_id,
+        test_account=cap.test_account,
+        target_endpoint=cap.target_endpoint,
+        http_method="POST",
+        action_type="LOGOUT",
+        mutation_evidence_ref="EVID-112233445566",
+        mutation_request_digest="0" * 64,
+        mutation_response_digest="0" * 64,
+        mutation_status_code=200,
+        verification_evidence_ref="EVID-778899AABBCC",
+        verification_request_digest="1" * 64,
+        verification_response_digest="1" * 64,
+        verification_status_code=401,
+        verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+        invalidation_verification_result="REVOKED",
+        execution_timestamp="2026-11-11T12:00:00Z",
+        verification_timestamp="2026-11-11T12:00:00Z",
+        consumption_token=c_token,
+        is_genuine_dispatch=True,
+    )
+
     with pytest.raises(ExecutionProvenanceError, match="not found"):
         issue_execution_capability(
+            dispatch_result=fake_dres,
             action_id=clean_aid,
             action_dossier_digest=clean_aid[4:],
             approval_id=app_id,
@@ -1629,8 +1757,38 @@ def test_attack_05_manual_evidence_without_transport_dispatch(tmp_path):
         prefix="att05_mut",
     )
     cap_key = ledger._get_capability_key()
+
+    manual_dres = ControlledDispatchResult(
+        dispatch_op_id=cap.dispatch_op_id,
+        action_id=clean_aid,
+        action_dossier_digest=clean_aid[4:],
+        approval_id=app_id,
+        program_id=cap.program_id,
+        session_ref=cap.session_ref,
+        principal_id=cap.principal_id,
+        test_account=cap.test_account,
+        target_endpoint=cap.target_endpoint,
+        http_method="POST",
+        action_type="LOGOUT",
+        mutation_evidence_ref=mut_manual["evidence_id"],
+        mutation_request_digest=mut_manual["request_sha256"],
+        mutation_response_digest=mut_manual["response_sha256"],
+        mutation_status_code=200,
+        verification_evidence_ref=cap.verification_evidence_ref,
+        verification_request_digest=cap.verification_request_digest,
+        verification_response_digest=cap.verification_response_digest,
+        verification_status_code=cap.verification_status_code,
+        verification_method=cap.verification_method,
+        invalidation_verification_result=cap.invalidation_verification_result,
+        execution_timestamp=cap.execution_timestamp,
+        verification_timestamp=cap.verification_timestamp,
+        consumption_token=c_token,
+        is_genuine_dispatch=True,
+    )
+
     with pytest.raises(ExecutionProvenanceError, match="was not captured by controlled transport dispatch"):
         issue_execution_capability(
+            dispatch_result=manual_dres,
             action_id=clean_aid,
             action_dossier_digest=clean_aid[4:],
             approval_id=app_id,
@@ -1648,7 +1806,7 @@ def test_attack_05_manual_evidence_without_transport_dispatch(tmp_path):
             verification_evidence_ref=cap.verification_evidence_ref,
             verification_request_digest=cap.verification_request_digest,
             verification_response_digest=cap.verification_response_digest,
-            verification_status_code=401,
+            verification_status_code=cap.verification_status_code,
             verification_method=cap.verification_method,
             invalidation_verification_result=cap.invalidation_verification_result,
             execution_timestamp=cap.execution_timestamp,

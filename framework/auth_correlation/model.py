@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 # Reused external domain models
 from framework.authentication.models import IdentityProfile, SessionProfile as AuthSessionProfile
 from framework.authz.model import PrincipalProfile, SessionProfile as AuthzSessionProfile
+from framework.common.evidence import EvidencePersistenceError
 
 
 class SerializationSecurityError(Exception):
@@ -30,13 +31,13 @@ class StateSecurityValidationError(Exception):
     pass
 
 
-class EvidencePersistenceError(Exception):
-    """Raised when saving an evidence artifact to the EvidenceStore fails."""
+class AttestationSecurityError(Exception):
+    """Raised when invalidation event attestation fails verification, signature validation, or trust boundaries."""
     pass
 
 
-class AttestationSecurityError(Exception):
-    """Raised when invalidation event attestation fails verification, signature validation, or trust boundaries."""
+class ApprovalSecurityError(Exception):
+    """Raised when controlled invalidation action approval is missing, expired, replayed, or tampered."""
     pass
 
 
@@ -76,6 +77,7 @@ EXECUTION_ID_PATTERN = re.compile(r"^EXEC-[0-9A-F]{64}$")
 EXECUTION_SIG_PATTERN = re.compile(r"^EXEC-SIG-[0-9A-F]{64}$")
 CAPABILITY_ID_PATTERN = re.compile(r"^CAP-[0-9A-F]{64}$")
 CAPABILITY_SIG_PATTERN = re.compile(r"^CAP-SIG-[0-9A-F]{64}$")
+DISPATCH_OP_ID_PATTERN = re.compile(r"^DISP-OP-[0-9A-F]{64}$")
 ISO_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 URL_PATH_PATTERN = re.compile(r"^/[a-zA-Z0-9_\-\./?=&%]*$")
 HYPOTHESIS_ID_PATTERN = re.compile(r"^HYP-[a-zA-Z0-9_\-\.]{1,32}$")

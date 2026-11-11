@@ -57,6 +57,7 @@ from framework.auth_correlation.model import (
     SerializationSecurityError,
     EvidencePersistenceError,
     AttestationSecurityError,
+    ApprovalSecurityError,
     EVIDENCE_REF_PATTERN,
     ATTESTATION_REF_PATTERN,
     ATTESTATION_SIG_PATTERN,
@@ -67,6 +68,7 @@ from framework.auth_correlation.model import (
     ISO_TIMESTAMP_PATTERN,
 )
 from framework.auth_correlation.state import (
+    CrossProcessFileLock,
     _enforce_windows_directory_dacl,
     _enforce_windows_file_dacl,
     _verify_windows_directory_security,
@@ -77,11 +79,7 @@ from framework.authz.model import ResourceAccessTarget
 from framework.common.evidence import sanitize_sensitive_data
 from framework.validation.engine import SecurityValidationEngine
 from framework.validation.request import ControlledRequest, ControlledResponse
-
-
-class ApprovalSecurityError(Exception):
-    """Raised when controlled invalidation action approval is missing, expired, replayed, or tampered."""
-    pass
+from framework.auth_correlation.dispatcher import ControlledDispatchWorkflow, ControlledDispatchResult
 
 
 ALLOWED_DOSSIER_KEYS: Set[str] = {
@@ -129,67 +127,6 @@ NEGATIVE_REVOCATION_PHRASES: Tuple[str, ...] = (
     "token still valid",
     "unauthorized access denied",
 )
-
-
-class CrossProcessFileLock:
-    """
-    Cross-process file lock supporting Windows (msvcrt) and POSIX (fcntl).
-    Guarantees that single-use approval checks and marks are strictly atomic across processes.
-    """
-
-    def __init__(self, lock_path: str, timeout: float = 10.0, retry_interval: float = 0.05):
-        self.lock_path = lock_path
-        self.timeout = timeout
-        self.retry_interval = retry_interval
-        self._fd: Optional[int] = None
-
-    def __enter__(self) -> CrossProcessFileLock:
-        os.makedirs(os.path.dirname(os.path.abspath(self.lock_path)), exist_ok=True)
-        flags = os.O_CREAT | os.O_RDWR
-        if hasattr(os, "O_BINARY"):
-            flags |= os.O_BINARY
-        self._fd = os.open(self.lock_path, flags, 0o600)
-        start = time.time()
-        while True:
-            try:
-                if os.name == "nt":
-                    import msvcrt
-                    msvcrt.locking(self._fd, msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return self
-            except (OSError, IOError):
-                if time.time() - start >= self.timeout:
-                    if self._fd is not None:
-                        try:
-                            os.close(self._fd)
-                        except OSError:
-                            pass
-                        self._fd = None
-                    raise ApprovalSecurityError(f"Timed out acquiring cross-process lock on '{self.lock_path}'")
-                time.sleep(self.retry_interval)
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        if self._fd is not None:
-            try:
-                if os.name == "nt":
-                    import msvcrt
-                    try:
-                        msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
-                    except (OSError, IOError):
-                        pass
-                else:
-                    import fcntl
-                    try:
-                        fcntl.flock(self._fd, fcntl.LOCK_UN)
-                    except (OSError, IOError):
-                        pass
-                os.close(self._fd)
-            except OSError:
-                pass
-            finally:
-                self._fd = None
 
 
 def get_or_create_approval_key(key_dir: Optional[str] = None) -> bytes:
@@ -1273,6 +1210,9 @@ class PostRevocationResourceValidator:
             if not ver_ref or not EVIDENCE_REF_PATTERN.match(ver_ref):
                 return False, f"Controlled attestation has invalid verification_evidence_ref '{ver_ref}'", None
 
+            if mut_ref == ver_ref:
+                return False, "Mutation and verification evidence references must be distinct", None
+
             ver_ev = self._evidence_store.get_evidence(ver_ref)
             if ver_ev is None:
                 return False, f"Controlled attestation verification evidence '{ver_ref}' missing from EvidenceStore", None
@@ -1291,6 +1231,8 @@ class PostRevocationResourceValidator:
                     actual_ver_digest = hashlib.sha256(vf.read()).hexdigest()
                 if actual_ver_digest.lower() != ver_ev.get("sha256", "").lower():
                     return False, "Controlled attestation verification capture content corrupted", None
+                if actual_mut_digest.lower() == actual_ver_digest.lower():
+                    return False, "Mutation and verification captures must be distinct", None
             except Exception as e:
                 return False, f"Failed to verify evidence capture bytes: {e}", None
 
@@ -1323,6 +1265,8 @@ class PostRevocationResourceValidator:
                     return False, "Execution record mutation evidence reference mismatch in ledger", None
                 if exec_rec.verification_evidence_ref != ver_ref:
                     return False, "Execution record verification evidence reference mismatch in ledger", None
+                if not getattr(exec_rec, "dispatch_op_id", ""):
+                    return False, "Execution record missing dispatch_op_id in ledger", None
             except ExecutionProvenanceError as e:
                 return False, f"Execution provenance verification failed: {e}", None
 
@@ -1347,6 +1291,8 @@ class PostRevocationResourceValidator:
                     return False, "Action receipt principal_id mismatch in consumed approvals registry", None
                 if c_entry.get("program_id") != target_prog:
                     return False, "Action receipt program_id mismatch in consumed approvals registry", None
+                if c_entry.get("dispatch_op_id") != exec_rec.dispatch_op_id:
+                    return False, "Action receipt dispatch_op_id mismatch in consumed approvals registry", None
 
                 # Cryptographic verification of consumed approval receipt
                 app_key = self._approval_key or get_or_create_approval_key(key_dir=self._approval_key_dir)
@@ -1360,6 +1306,10 @@ class PostRevocationResourceValidator:
                 return False, "Mutation evidence was not captured by controlled transport dispatch", None
             if ver_ev.get("metadata", {}).get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH" or ver_ev.get("metadata", {}).get("evidence_class") != "CONTROLLED_TRANSPORT_DISPATCH":
                 return False, "Verification evidence was not captured by controlled transport dispatch", None
+            if mut_ev.get("metadata", {}).get("dispatch_op_id") != exec_rec.dispatch_op_id:
+                return False, "Mutation evidence dispatch_op_id mismatch", None
+            if ver_ev.get("metadata", {}).get("dispatch_op_id") != exec_rec.dispatch_op_id:
+                return False, "Verification evidence dispatch_op_id mismatch", None
 
             att_record["trust_classification"] = "INDEPENDENTLY_VERIFIED_WORKFLOW"
             reason = f"Invalidation event attestation verified (Source: {source}, Method: {ver_meth})"
@@ -1618,301 +1568,28 @@ class PostRevocationResourceValidator:
         Requires mandatory initialized ScopeEngine.
         Binds execution results into ExecutionLedger for genuine execution provenance.
         """
-        # 0. EvidenceStore is MANDATORY and must be writable before any mutation dispatch
-        if self._evidence_store is None:
-            raise ApprovalSecurityError("EvidenceStore is mandatory for Mode B controlled invalidation")
-        if not hasattr(self._evidence_store, "is_writable") or not self._evidence_store.is_writable():
-            raise ApprovalSecurityError("EvidenceStore is not writable or evidence directory is insecure")
-
-        if not isinstance(action_id, str) or not action_id.startswith("ACT-") or len(action_id) != 68:
-            raise ApprovalSecurityError("Invalid action approval identifier format: expected ACT-<64-hex>")
-
-        if not isinstance(action_dossier, dict):
-            raise ApprovalSecurityError("Action dossier must be a dictionary")
-
-        # 1. Exact allowed keys enforcement (reject missing and unexpected keys)
-        if set(action_dossier.keys()) != ALLOWED_DOSSIER_KEYS:
-            raise ApprovalSecurityError("Action dossier keys do not match approved schema")
-
-        # 2. Strict field type and value validations
-        if action_dossier.get("action_id") != action_id:
-            raise ApprovalSecurityError("Action dossier action_id does not match parameter action_id")
-
-        sig = action_dossier.get("approval_signature")
-        if not isinstance(sig, str) or not sig.startswith("SIG-") or len(sig) != 68:
-            raise ApprovalSecurityError("Invalid operator approval signature format: expected SIG-<64-hex>")
-
-        method = action_dossier.get("method")
-        if not isinstance(method, str) or method not in ALLOWED_MUTATION_METHODS:
-            raise ApprovalSecurityError("Action approval specifies invalid or unsupported HTTP method")
-
-        action_type = action_dossier.get("action_type")
-        if not isinstance(action_type, str) or action_type not in ALLOWED_ACTION_TYPES:
-            raise ApprovalSecurityError("Action approval specifies unsupported action type")
-
-        target_endpoint = action_dossier.get("target_endpoint")
-        if not isinstance(target_endpoint, str) or not target_endpoint:
-            raise ApprovalSecurityError("Action approval target_endpoint must be a non-empty string")
-
-        test_account = action_dossier.get("test_account")
-        if not isinstance(test_account, str) or not test_account:
-            raise ApprovalSecurityError("Action approval test_account must be a non-empty string")
-        if test_account != session_ctx.principal_id:
-            raise ApprovalSecurityError(
-                f"Action approval test_account '{test_account}' does not match session principal_id '{session_ctx.principal_id}'"
-            )
-
-        program_id = action_dossier.get("program_id")
-        if not isinstance(program_id, str) or not program_id:
-            raise ApprovalSecurityError("Action approval program_id must be a non-empty string")
-        if program_id != self._program_id:
-            raise ApprovalSecurityError(
-                f"Action approval program_id '{program_id}' does not match validator program_id '{self._program_id}'"
-            )
-
-        unique_approval_id = action_dossier.get("unique_approval_id")
-        if not isinstance(unique_approval_id, str) or not unique_approval_id:
-            raise ApprovalSecurityError("Action approval unique_approval_id must be a non-empty string")
-
-        created_at_raw = action_dossier.get("created_at")
-        if isinstance(created_at_raw, bool) or not isinstance(created_at_raw, (int, float)):
-            raise ApprovalSecurityError("Action approval created_at must be numeric timestamp")
-        created_at = float(created_at_raw)
-
-        ttl_raw = action_dossier.get("ttl")
-        if isinstance(ttl_raw, bool) or not isinstance(ttl_raw, (int, float)) or ttl_raw <= 0:
-            raise ApprovalSecurityError("Action approval ttl must be positive number")
-        ttl = min(float(ttl_raw), 300.0)
-
-        # 3. Canonical descriptor verification (Integrity)
-        canonical_copy = {k: action_dossier[k] for k in CANONICAL_ACTION_FIELDS}
-        canonical_str = json.dumps(canonical_copy, sort_keys=True)
-        computed_hash = hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
-
-        if computed_hash != action_id[4:]:
-            raise ApprovalSecurityError("Action approval digest mismatch; action dossier has been tampered")
-
-        # 4. Operator authorization signature verification (Authorization)
-        key = self._approval_key or get_or_create_approval_key(key_dir=self._approval_key_dir)
-        expected_sig_hash = hmac.new(key, canonical_str.encode("utf-8"), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(sig[4:], expected_sig_hash):
-            raise ApprovalSecurityError("Operator authorization signature verification failed")
-
-        # 5. Mandatory Scope validation
-        is_simulation = hasattr(self.engine, "lab_port") or type(self.engine).__name__ == "SimulationTransport"
-        if not is_simulation:
-            if self._scope_engine is None:
-                raise ApprovalSecurityError("Mandatory ScopeEngine is required for controlled invalidation mutation")
-        else:
-            if hasattr(self.engine, "validate_target_url"):
-                try:
-                    self.engine.validate_target_url(target_endpoint)
-                except Exception as e:
-                    raise ApprovalSecurityError(f"Target endpoint '{target_endpoint}' failed simulation URL validation: {e}")
-
-        parsed = urlparse(target_endpoint)
-        if parsed.scheme.lower() not in ("http", "https"):
-            raise ApprovalSecurityError(f"Target endpoint '{target_endpoint}' specifies invalid or unsupported scheme")
-        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
-        if port < 1 or port > 65535:
-            raise ApprovalSecurityError(f"Target endpoint '{target_endpoint}' specifies invalid port")
-        if not parsed.hostname:
-            raise ApprovalSecurityError(f"Target endpoint '{target_endpoint}' has missing or empty hostname")
-
-        if self._scope_engine is not None and not is_simulation:
-            try:
-                is_in_scope = self._scope_engine.is_in_scope(target_endpoint)
-                if not is_in_scope:
-                    raise ApprovalSecurityError(f"Target endpoint '{target_endpoint}' for controlled mutation is out of scope")
-            except ApprovalSecurityError:
-                raise
-            except Exception as e:
-                raise ApprovalSecurityError(f"Scope verification failed for controlled mutation: {e}")
-
-        # Bind scope engine to validation engine to ensure redirects are validated
-        if hasattr(self.engine, "scope_engine"):
-            self.engine.scope_engine = self._scope_engine
-
-        # 6. Timestamp and clock tolerance checks
-        now = time.time()
-        if created_at > now + 30.0:
-            raise ApprovalSecurityError("Action approval created_at is future-dated beyond clock tolerance")
-        if now - created_at > ttl:
-            raise ApprovalSecurityError("Action approval has expired")
-
-        # 7. Durable cross-process single-use execution enforcement
-        lock_path = self._get_consumed_approvals_lock_path()
-        with self._consumed_lock, CrossProcessFileLock(lock_path):
-            if self._is_approval_consumed(action_id):
-                raise ApprovalSecurityError(f"Action approval '{action_id}' has already been consumed (replay rejected)")
-            # Mark consumed immediately BEFORE network mutation
-            consumption_token = self._mark_approval_consumed(action_id, action_dossier, session_ctx=session_ctx)
-
-        # 8. Execute the controlled invalidation mutation
-        from datetime import datetime, timezone
-        exec_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        mut_headers = dict(session_ctx.volatile_headers)
-        mut_headers["X-Correlation-Action"] = action_id
-        mut_headers["X-Correlation-Session"] = session_ctx.session_ref
-        mut_headers["X-Correlation-Principal"] = session_ctx.principal_id
-        req = ControlledRequest(
-            url=target_endpoint,
-            method=method,
-            headers=mut_headers,
+        # Enforce execution through the single trusted ControlledDispatchWorkflow boundary
+        workflow = ControlledDispatchWorkflow(
+            program_id=self._program_id,
+            state_dir=self._state_dir,
+            evidence_store=self._evidence_store,
+            transport_engine=self.engine,
+            scope_engine=self._scope_engine,
+            approval_key=self._approval_key,
+            approval_key_dir=self._approval_key_dir,
         )
-        try:
-            resp = self.engine.send_request(req)
-        except Exception as e:
-            raise ApprovalSecurityError(f"Failed to execute controlled invalidation mutation: {e}")
-
-        # Evaluate invalidation outcome against explicitly defined verification criteria:
-        # Rejects negative statements and permissive substrings.
-        is_invalidation_verified = False
-        ver_method = ""
-        ver_result = ""
-        ver_request_text = ""
-        ver_response_text = ""
-        probe_status_code = resp.status_code
-
-        body_text = resp.body_text or ""
-        lower_body = body_text.lower()
-        has_negative_revocation = any(phrase in lower_body for phrase in NEGATIVE_REVOCATION_PHRASES)
-
-        # Structured JSON evaluation of mutation response
-        parsed_mutation_json: Optional[Dict[str, Any]] = None
-        if not has_negative_revocation and body_text.strip().startswith("{"):
-            try:
-                parsed_mutation_json = json.loads(body_text)
-            except Exception:
-                parsed_mutation_json = None
-
-        is_explicit_json_revoked = False
-        if isinstance(parsed_mutation_json, dict):
-            status_val = str(parsed_mutation_json.get("status", "")).lower()
-            if (
-                status_val in ("revoked", "logged_out", "invalidated", "terminated", "session_revoked")
-                or parsed_mutation_json.get("revoked") is True
-                or parsed_mutation_json.get("logged_out") is True
-            ):
-                is_explicit_json_revoked = True
-
-        loc = (resp.headers.get("location") or "").lower()
-        is_login_redirect = resp.status_code in (301, 302, 303, 307, 308) and any(
-            term in loc for term in ("/login", "/auth", "/signin", "/sso", "login.")
+        ok, dispatch_result, reason = workflow.execute(
+            session_ctx=session_ctx,
+            action_id=action_id,
+            action_dossier=action_dossier,
         )
-
-        actual_mut_req_text = req.get_sanitized_representation()
-        actual_mut_res_text = resp.get_sanitized_representation()
-
-        if resp.status_code in (200, 204) and is_explicit_json_revoked:
-            is_invalidation_verified = True
-            ver_method = "MUTATION_STRUCTURED_REVOCATION_CONFIRMED"
-            ver_result = "REVOKED"
-            ver_request_text = f"VERIFICATION [{ver_method}]:\n{actual_mut_req_text}"
-            ver_response_text = f"VERIFICATION [{ver_result}]:\n{actual_mut_res_text}"
-        elif is_login_redirect:
-            is_invalidation_verified = True
-            ver_method = "MUTATION_LOGIN_REDIRECT_AND_COOKIE_CLEARED"
-            ver_result = "REVOKED"
-            ver_request_text = f"VERIFICATION [{ver_method}]:\n{actual_mut_req_text}"
-            ver_response_text = f"VERIFICATION [{ver_result}]:\n{actual_mut_res_text}"
-        else:
-            # Generic 200/204 or ambiguous response: perform independent post-mutation verification probe
-            probe_endpoint = target_endpoint
-            if self._scope_engine is not None and not is_simulation:
-                try:
-                    if not self._scope_engine.is_in_scope(probe_endpoint):
-                        return False
-                except Exception:
-                    return False
-
-            probe_req = ControlledRequest(
-                url=probe_endpoint,
-                method="GET",
-                headers=dict(session_ctx.volatile_headers),
-            )
-            try:
-                probe_resp = self.engine.send_request(probe_req)
-                probe_status_code = probe_resp.status_code
-                probe_status, _ = classify_revocation_response(probe_resp)
-                if probe_status in ("REVOKED", "EXPIRED"):
-                    is_invalidation_verified = True
-                    ver_method = "POST_MUTATION_PROBE_CONFIRMED_401"
-                    ver_result = "VERIFIED"
-                    ver_request_text = probe_req.get_sanitized_representation()
-                    ver_response_text = probe_resp.get_sanitized_representation()
-                elif probe_status == "REDIRECT_LOGIN":
-                    is_invalidation_verified = True
-                    ver_method = "POST_MUTATION_PROBE_CONFIRMED_REDIRECT_LOGIN"
-                    ver_result = "VERIFIED"
-                    ver_request_text = probe_req.get_sanitized_representation()
-                    ver_response_text = probe_resp.get_sanitized_representation()
-                elif probe_status == "AUTHENTICATION_FAILED":
-                    is_invalidation_verified = True
-                    ver_method = "ACTION_MUTATION_AND_PROBE_VERIFIED"
-                    ver_result = "VERIFIED"
-                    ver_request_text = probe_req.get_sanitized_representation()
-                    ver_response_text = probe_resp.get_sanitized_representation()
-            except Exception:
-                pass
-
-        if not is_invalidation_verified:
-            # Cannot establish invalidation; fail closed without issuing CONTROLLED_WORKFLOW attestation
+        if not ok or dispatch_result is None:
             return False
 
-        ver_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
         try:
-            mut_cap = self._evidence_store.save_controlled_transport_capture(
-                request_text=actual_mut_req_text,
-                response_text=actual_mut_res_text,
-                action_id=action_id,
-                approval_id=unique_approval_id,
-                session_ref=session_ctx.session_ref,
-                principal_id=session_ctx.principal_id,
-                program_id=self._program_id,
-                event_type="SESSION_REVOCATION",
-                prefix="controlled_revocation_mutation",
-            )
-            ver_cap = self._evidence_store.save_controlled_transport_capture(
-                request_text=ver_request_text,
-                response_text=ver_response_text,
-                action_id=action_id,
-                approval_id=unique_approval_id,
-                session_ref=session_ctx.session_ref,
-                principal_id=session_ctx.principal_id,
-                program_id=self._program_id,
-                event_type="SESSION_REVOCATION",
-                verification_method=ver_method,
-                prefix="controlled_revocation_verification",
-            )
-
-            # Issue verifiable ExecutionCapability bound to consumed approval receipt and persisted evidence
+            # Issue verifiable ExecutionCapability from genuine ControlledDispatchResult
             capability = issue_execution_capability(
-                action_id=action_id,
-                action_dossier_digest=action_id[4:],
-                approval_id=unique_approval_id,
-                program_id=self._program_id,
-                session_ref=session_ctx.session_ref,
-                principal_id=session_ctx.principal_id,
-                test_account=test_account,
-                target_endpoint=target_endpoint,
-                http_method=method,
-                action_type=action_dossier.get("action_type", "LOGOUT"),
-                mutation_evidence_ref=mut_cap["evidence_id"],
-                mutation_request_digest=mut_cap["request_sha256"],
-                mutation_response_digest=mut_cap["response_sha256"],
-                mutation_status_code=resp.status_code,
-                verification_evidence_ref=ver_cap["evidence_id"],
-                verification_request_digest=ver_cap["request_sha256"],
-                verification_response_digest=ver_cap["response_sha256"],
-                verification_status_code=probe_status_code,
-                verification_method=ver_method,
-                invalidation_verification_result=ver_result,
-                execution_timestamp=exec_ts,
-                verification_timestamp=ver_ts,
-                consumption_token=consumption_token,
+                dispatch_result=dispatch_result,
                 approval_key=self._approval_key or get_or_create_approval_key(key_dir=self._approval_key_dir),
                 evidence_store=self._evidence_store,
                 consumed_approvals_path=self._get_consumed_approvals_path(),
@@ -1934,7 +1611,7 @@ class PostRevocationResourceValidator:
                 attestation_key=self._attestation_key,
                 key_dir=self._approval_key_dir,
                 details={
-                    "target_endpoint": target_endpoint,
+                    "target_endpoint": action_dossier.get("target_endpoint"),
                     "test_account": action_dossier.get("test_account"),
                 },
             )

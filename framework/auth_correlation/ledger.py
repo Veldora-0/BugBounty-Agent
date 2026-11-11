@@ -27,6 +27,7 @@ from framework.auth_correlation.model import (
     ACTION_DOSSIER_DIGEST_PATTERN,
     CAPABILITY_ID_PATTERN,
     CAPABILITY_SIG_PATTERN,
+    DISPATCH_OP_ID_PATTERN,
     EVIDENCE_REF_PATTERN,
     SESSION_REF_PATTERN,
     SAFE_IDENTIFIER_PATTERN,
@@ -62,6 +63,7 @@ CANONICAL_CAPABILITY_FIELDS = (
     "approval_id",
     "capability_id",
     "consumption_token",
+    "dispatch_op_id",
     "domain",
     "execution_timestamp",
     "http_method",
@@ -89,6 +91,7 @@ CANONICAL_EXECUTION_FIELDS = (
     "action_id",
     "action_type",
     "approval_id",
+    "dispatch_op_id",
     "domain",
     "execution_id",
     "execution_timestamp",
@@ -139,6 +142,7 @@ RECEIPT_FIELDS: Tuple[str, ...] = (
     "approval_id",
     "consumed_at",
     "consumption_token",
+    "dispatch_op_id",
     "method",
     "operator_signature",
     "principal_id",
@@ -451,6 +455,7 @@ class ExecutionCapability:
     execution_timestamp: str
     verification_timestamp: str
     consumption_token: str
+    dispatch_op_id: str = ""
     capability_id: str = ""
     signature: str = ""
     key_id: str = "KEY-LOCAL-CAPABILITY-1"
@@ -492,6 +497,7 @@ class ExecutionCapability:
             "execution_timestamp": self.execution_timestamp,
             "verification_timestamp": self.verification_timestamp,
             "consumption_token": self.consumption_token,
+            "dispatch_op_id": self.dispatch_op_id,
             "capability_id": self.capability_id,
             "signature": self.signature,
             "key_id": self.key_id,
@@ -555,6 +561,11 @@ class ExecutionCapability:
         token_pat = re.compile(r"^[0-9a-fA-F]{64}$")
         token = assert_safe_string(self.consumption_token, "consumption_token", token_pat)
 
+        if self.dispatch_op_id:
+            disp_op = assert_safe_string(self.dispatch_op_id, "dispatch_op_id")
+            if not disp_op.startswith("DISP-OP-") or len(disp_op) != 72:
+                raise ExecutionProvenanceError("Invalid dispatch_op_id format in capability")
+
         cid = assert_safe_string(self.capability_id, "capability_id", CAPABILITY_ID_PATTERN)
         sig = assert_safe_string(self.signature, "signature", CAPABILITY_SIG_PATTERN)
 
@@ -586,41 +597,58 @@ class ExecutionCapability:
 
 
 def issue_execution_capability(
-    action_id: str,
-    action_dossier_digest: str,
-    approval_id: str,
-    program_id: str,
-    session_ref: str,
-    principal_id: str,
-    test_account: str,
-    target_endpoint: str,
-    http_method: str,
-    action_type: str,
-    mutation_evidence_ref: str,
-    mutation_request_digest: str,
-    mutation_response_digest: str,
-    mutation_status_code: int,
-    verification_evidence_ref: str,
-    verification_request_digest: str,
-    verification_response_digest: str,
-    verification_status_code: int,
-    verification_method: str,
-    invalidation_verification_result: str,
-    execution_timestamp: str,
-    verification_timestamp: str,
-    consumption_token: str,
+    dispatch_result: Any = None,
     capability_key: Optional[bytes] = None,
     approval_key: Optional[bytes] = None,
     key_dir: Optional[str] = None,
     state_dir: Optional[str] = None,
     evidence_store: Optional[Any] = None,
     consumed_approvals_path: Optional[str] = None,
+    **kwargs: Any,
 ) -> ExecutionCapability:
     """
     Constructs, hashes, and cryptographically signs a genuine ExecutionCapability.
-    Invoked strictly upon the successful execution and invalidation confirmation of Mode B mutations.
-    Fails closed if transport evidence or consumed approval receipts cannot be independently verified.
+    Invoked strictly with a verified ControlledDispatchResult produced by ControlledDispatchWorkflow.
+    Fails closed if dispatch_result is missing, not a genuine dispatch, or if transport evidence,
+    dispatch_op_id, and consumed approval receipts cannot be independently verified.
     """
+    if dispatch_result is None:
+        raise ExecutionProvenanceError("issue_execution_capability requires a valid ControlledDispatchResult from ControlledDispatchWorkflow")
+
+    from framework.auth_correlation.dispatcher import ControlledDispatchResult
+    if not isinstance(dispatch_result, ControlledDispatchResult):
+        raise ExecutionProvenanceError("issue_execution_capability requires an authentic ControlledDispatchResult produced by ControlledDispatchWorkflow")
+
+    if not getattr(dispatch_result, "is_genuine_dispatch", False):
+        raise ExecutionProvenanceError("Execution capability cannot be issued from non-genuine dispatch result")
+
+    validated = dispatch_result.validate()
+
+    action_id = dispatch_result.action_id
+    action_dossier_digest = dispatch_result.action_dossier_digest
+    approval_id = dispatch_result.approval_id
+    program_id = dispatch_result.program_id
+    session_ref = dispatch_result.session_ref
+    principal_id = dispatch_result.principal_id
+    test_account = dispatch_result.test_account
+    target_endpoint = dispatch_result.target_endpoint
+    http_method = dispatch_result.http_method
+    action_type = dispatch_result.action_type
+    mutation_evidence_ref = dispatch_result.mutation_evidence_ref
+    mutation_request_digest = dispatch_result.mutation_request_digest
+    mutation_response_digest = dispatch_result.mutation_response_digest
+    mutation_status_code = dispatch_result.mutation_status_code
+    verification_evidence_ref = dispatch_result.verification_evidence_ref
+    verification_request_digest = dispatch_result.verification_request_digest
+    verification_response_digest = dispatch_result.verification_response_digest
+    verification_status_code = dispatch_result.verification_status_code
+    verification_method = dispatch_result.verification_method
+    invalidation_verification_result = dispatch_result.invalidation_verification_result
+    execution_timestamp = dispatch_result.execution_timestamp
+    verification_timestamp = dispatch_result.verification_timestamp
+    consumption_token = dispatch_result.consumption_token
+    dispatch_op_id = dispatch_result.dispatch_op_id
+
     # 1. Prerequisite verification: EvidenceStore and transport evidence
     if evidence_store is None or not hasattr(evidence_store, "get_evidence"):
         raise ExecutionProvenanceError("EvidenceStore is mandatory for issuing execution capability: transport evidence must be verified")
@@ -633,6 +661,11 @@ def issue_execution_capability(
     if ver_ev is None:
         raise ExecutionProvenanceError(f"Verification evidence '{verification_evidence_ref}' not found in EvidenceStore")
 
+    if mutation_evidence_ref == verification_evidence_ref:
+        raise ExecutionProvenanceError("Mutation and verification evidence cannot be identical: independent verification transaction required")
+    if mutation_request_digest == verification_request_digest:
+        raise ExecutionProvenanceError("Mutation and verification request digests cannot be identical: independent verification transaction required")
+
     mut_meta = mut_ev.get("metadata", {})
     ver_meta = ver_ev.get("metadata", {})
     if mut_meta.get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH" or ver_meta.get("capture_source") != "CONTROLLED_TRANSPORT_DISPATCH":
@@ -643,6 +676,12 @@ def issue_execution_capability(
         raise ExecutionProvenanceError("Mutation evidence metadata cannot be a verification capture: evidence metadata swapped")
     if ver_meta.get("verification_method") != verification_method:
         raise ExecutionProvenanceError("Verification evidence metadata verification_method mismatch")
+
+    # Bound dispatch_op_id verification
+    if mut_meta.get("dispatch_op_id") != dispatch_op_id:
+        raise ExecutionProvenanceError("Mutation evidence dispatch_op_id mismatch with dispatch result")
+    if ver_meta.get("dispatch_op_id") != dispatch_op_id:
+        raise ExecutionProvenanceError("Verification evidence dispatch_op_id mismatch with dispatch result")
 
     if mut_ev.get("request_sha256") != mutation_request_digest or mut_ev.get("response_sha256") != mutation_response_digest:
         raise ExecutionProvenanceError("Mutation request/response digest mismatch with evidence store")
@@ -666,6 +705,8 @@ def issue_execution_capability(
             raise ExecutionProvenanceError("Approval ID mismatch with consumed approval record")
         if entry.get("consumption_token") != consumption_token:
             raise ExecutionProvenanceError("Consumption token mismatch with consumed approval record")
+        if entry.get("dispatch_op_id") != dispatch_op_id:
+            raise ExecutionProvenanceError("Dispatch operation ID mismatch with consumed approval record")
         if entry.get("program_id") != program_id:
             raise ExecutionProvenanceError("Program ID mismatch with consumed approval record")
         if entry.get("session_ref") != session_ref:
@@ -705,6 +746,7 @@ def issue_execution_capability(
         "approval_id": approval_id,
         "capability_id": "",
         "consumption_token": consumption_token,
+        "dispatch_op_id": dispatch_op_id,
         "domain": CAPABILITY_DOMAIN,
         "execution_timestamp": execution_timestamp,
         "http_method": http_method,
@@ -762,6 +804,7 @@ def issue_execution_capability(
         execution_timestamp=execution_timestamp,
         verification_timestamp=verification_timestamp,
         consumption_token=consumption_token,
+        dispatch_op_id=dispatch_op_id,
         capability_id=cid,
         signature=sig,
         key_id="KEY-LOCAL-CAPABILITY-1",
@@ -796,6 +839,7 @@ def create_test_execution_capability(
     execution_timestamp: str,
     verification_timestamp: str,
     consumption_token: str,
+    dispatch_op_id: Optional[str] = None,
     capability_key: Optional[bytes] = None,
     key_dir: Optional[str] = None,
 ) -> ExecutionCapability:
@@ -805,6 +849,7 @@ def create_test_execution_capability(
     Can NEVER be recorded as genuine execution provenance or accepted by Mode A.
     """
     key = capability_key or get_or_create_capability_key(key_dir=key_dir)
+    d_op_id = dispatch_op_id or f"DISP-OP-{secrets.token_hex(32).upper()}"
 
     payload: Dict[str, Any] = {
         "action_dossier_digest": action_dossier_digest,
@@ -813,6 +858,7 @@ def create_test_execution_capability(
         "approval_id": approval_id,
         "capability_id": "",
         "consumption_token": consumption_token,
+        "dispatch_op_id": d_op_id,
         "domain": CAPABILITY_DOMAIN,
         "execution_timestamp": execution_timestamp,
         "http_method": http_method,
@@ -868,6 +914,7 @@ def create_test_execution_capability(
         execution_timestamp=execution_timestamp,
         verification_timestamp=verification_timestamp,
         consumption_token=consumption_token,
+        dispatch_op_id=d_op_id,
         capability_id=cid,
         signature=sig,
         key_id="KEY-LOCAL-CAPABILITY-1",
@@ -914,6 +961,7 @@ class ExecutionRecord:
     attestation_created: bool = False
     attestation_id: Optional[str] = None
     is_testing_primitive: bool = False
+    dispatch_op_id: str = ""
 
     def __repr__(self) -> str:
         eid = _safe_repr(self.execution_id, EXECUTION_ID_PATTERN, "UNVALIDATED_EXEC_ID")
@@ -956,6 +1004,7 @@ class ExecutionRecord:
             "attestation_created": self.attestation_created,
             "attestation_id": self.attestation_id,
             "is_testing_primitive": self.is_testing_primitive,
+            "dispatch_op_id": self.dispatch_op_id,
         }
 
     def validate(self) -> Dict[str, Any]:
@@ -1013,6 +1062,7 @@ class ExecutionRecord:
             raise ExecutionProvenanceError(f"Verification method '{ver_meth}' is not recognized")
 
         sig = assert_safe_string(self.signature, "signature", EXECUTION_SIG_PATTERN)
+        d_op_id = assert_safe_string(self.dispatch_op_id, "dispatch_op_id", DISPATCH_OP_ID_PATTERN)
 
         if self.domain != EXECUTION_DOMAIN:
             raise ExecutionProvenanceError(f"Execution domain mismatch: expected '{EXECUTION_DOMAIN}', got '{self.domain}'")
@@ -1050,6 +1100,7 @@ class ExecutionRecord:
             "attestation_created": bool(self.attestation_created),
             "attestation_id": self.attestation_id,
             "is_testing_primitive": bool(self.is_testing_primitive),
+            "dispatch_op_id": d_op_id,
         }
 
 
@@ -1233,6 +1284,9 @@ class ExecutionLedger:
             if entry.get("principal_id") != capability.principal_id:
                 raise ExecutionProvenanceError("Principal ID mismatch with consumed approval record")
 
+            if entry.get("dispatch_op_id") != capability.dispatch_op_id:
+                raise ExecutionProvenanceError("Dispatch operation ID mismatch with consumed approval record")
+
             if entry.get("execution_id") is not None:
                 raise ExecutionProvenanceError(
                     f"Action '{capability.action_id}' has already been executed under '{entry['execution_id']}' (duplicate execution rejected)"
@@ -1343,6 +1397,8 @@ class ExecutionLedger:
             raise ExecutionProvenanceError("Mutation evidence metadata program_id mismatch")
         if mut_meta.get("event_type") != "SESSION_REVOCATION":
             raise ExecutionProvenanceError("Mutation evidence metadata event_type mismatch")
+        if mut_meta.get("dispatch_op_id") != capability.dispatch_op_id:
+            raise ExecutionProvenanceError("Mutation evidence metadata dispatch_op_id mismatch")
 
         if ver_meta.get("action_id") and ver_meta.get("action_id") != capability.action_id:
             raise ExecutionProvenanceError("Verification evidence metadata action_id mismatch")
@@ -1354,6 +1410,8 @@ class ExecutionLedger:
             raise ExecutionProvenanceError("Verification evidence metadata program_id mismatch")
         if ver_meta.get("verification_method") != capability.verification_method:
             raise ExecutionProvenanceError("Verification evidence metadata verification_method mismatch")
+        if ver_meta.get("dispatch_op_id") != capability.dispatch_op_id:
+            raise ExecutionProvenanceError("Verification evidence metadata dispatch_op_id mismatch")
 
         # 5. Build canonical execution payload and sign under execution key
         canonical_payload: Dict[str, Any] = {
@@ -1361,6 +1419,7 @@ class ExecutionLedger:
             "action_id": capability.action_id,
             "action_type": capability.action_type,
             "approval_id": capability.approval_id,
+            "dispatch_op_id": capability.dispatch_op_id,
             "domain": EXECUTION_DOMAIN,
             "execution_id": "",
             "execution_timestamp": capability.execution_timestamp,
@@ -1426,6 +1485,7 @@ class ExecutionLedger:
             attestation_created=False,
             attestation_id=None,
             is_testing_primitive=False,
+            dispatch_op_id=capability.dispatch_op_id,
         )
         record.validate()
 
@@ -1487,17 +1547,20 @@ class ExecutionLedger:
         invalidation_verification_result: str,
         execution_timestamp: str,
         verification_timestamp: str,
+        dispatch_op_id: Optional[str] = None,
     ) -> ExecutionRecord:
         """
         Low-level internal primitive for unit testing signature math and storage corruption.
         Explicitly flagged as testing primitive (is_testing_primitive=True).
         Never accepted as genuine execution provenance in Mode A verification.
         """
+        d_op_id = dispatch_op_id or f"DISP-OP-{secrets.token_hex(32).upper()}"
         canonical_payload: Dict[str, Any] = {
             "action_dossier_digest": action_dossier_digest,
             "action_id": action_id,
             "action_type": action_type,
             "approval_id": approval_id,
+            "dispatch_op_id": d_op_id,
             "domain": EXECUTION_DOMAIN,
             "execution_id": "",
             "execution_timestamp": execution_timestamp,
@@ -1561,6 +1624,7 @@ class ExecutionLedger:
             attestation_created=False,
             attestation_id=None,
             is_testing_primitive=True,
+            dispatch_op_id=d_op_id,
         )
         record.validate()
 
@@ -1625,6 +1689,7 @@ class ExecutionLedger:
             attestation_created=bool(rec_dict.get("attestation_created", False)),
             attestation_id=rec_dict.get("attestation_id"),
             is_testing_primitive=bool(rec_dict.get("is_testing_primitive", False)),
+            dispatch_op_id=rec_dict.get("dispatch_op_id", ""),
         )
         record.validate()
         return record
