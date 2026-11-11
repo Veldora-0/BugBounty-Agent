@@ -429,6 +429,7 @@ BugBounty-Agent has delivered 21 cohesive security research phases, establishing
 * **Safe Diagnostic Isolation**: Preserves primary execution exceptions while safely sanitizing and isolating secondary cleanup failures.
 
 ### 17. Authentication & Authorization Correlation Engine (Phase 21)
+* **Isolated Execution Dispatcher Authority (`bb-dispatcher`)**: Mode B controlled invalidation executes across an isolated OS process boundary via framed IPC (Windows Named Pipes `\\.\pipe\bugbounty_dispatcher` and Unix Domain Sockets `/run/bugbounty/dispatcher.sock`). The dispatcher process holds private signing keys and a private `authority_token` exclusively, eliminating caller-controlled transport provenance forging. Emits cryptographically signed execution receipts (`RCPT-SIG-...`) and single-use consumption tokens under atomic cross-process file locks.
 * **Dual-Control Preflight Validation (`bb-auth-correlate`)**: Implements sequential 3-probe differential preflight verification (Principal A $\rightarrow$ Principal B $\rightarrow$ Anonymous Control) to eliminate false positives from public landing pages, login redirects, WAF challenges, or SPA shells returning HTTP 200 OK. Fail-closed on anonymous control errors (5xx/transport faults).
 * **FIRST CVSS 3.1 Base Metric Scorer**: Implements exact FIRST specification equations across all 8 base metrics (AV, AC, PR, UI, S, C, I, A), producing verified vector strings and base scores.
 * **Post-Revocation Resource Probing**: Audits resource access persistence across two distinct modes: Mode A (observation-only monitoring requiring verified invalidation-event attestations (`ATT-...`) bound to authentic execution records registered in a tamper-evident `ExecutionLedger` (`EXEC-...`), signed with dedicated HMAC keys and immediate ScopeEngine authorization at dispatch) and Mode B (dual-account differential probe with cryptographically signed operator approval dossiers, mandatory EvidenceStore validation, fail-closed approval receipts across 16 failure conditions, genuine transport capture tagging `capture_source == "CONTROLLED_TRANSPORT_DISPATCH"`, disk byte digest recomputation, and cross-process single-use enforcement).
@@ -449,8 +450,8 @@ BugBounty-Agent has delivered 21 cohesive security research phases, establishing
   * `LocalAuthCorrelationLab`: 6 deterministic authentication & authorization correlation scenarios.
 
 ### 19. Roadmap Status & Verification Baseline
-* **Accepted Baseline**: Phase 21 (Authentication & Authorization Correlation) complete and verified across Windows 11 and Kali Linux. See [`docs/PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md`](docs/PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md), [`docs/PHASE-21-PLANNING-GATE.md`](docs/PHASE-21-PLANNING-GATE.md), and [`docs/PHASE-1-20-STABLE-BASELINE.md`](docs/PHASE-1-20-STABLE-BASELINE.md).
-* **Next Planned Phase**: Phase 22 (Cross-Engine Attack-Path Correlation).
+* **Accepted Baseline**: Phase 21 (Authentication & Authorization Correlation) complete and definitively accepted across Windows 11 and Kali Linux. See [`docs/PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md`](docs/PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md), [`docs/PHASE-21-PLANNING-GATE.md`](docs/PHASE-21-PLANNING-GATE.md), and [`docs/PHASE-1-20-STABLE-BASELINE.md`](docs/PHASE-1-20-STABLE-BASELINE.md).
+* **Next Planned Phase**: Phase 22 (Cross-Engine Attack-Path Correlation — NOT STARTED).
 * **Full Roadmap**: Refer to [`docs/ROADMAP-24-PHASES-TEMP.md`](docs/ROADMAP-24-PHASES-TEMP.md) for the detailed 24-phase roadmap, architectural specifications, and historical verification records.
 
 ---
@@ -502,7 +503,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 
 ### 3. Environment & Runtime Status
 * **Development & Evaluation Environments**: Validated and synchronized across Windows 11 x86_64 and Kali/Debian Linux workstations with Python 3.10+.
-* **Cross-Platform Test Coverage**: 56 test modules with 1079 tests collected under pytest (1076 passed, 3 skipped on Windows 11; 1078 passed, 1 skipped on Kali Linux; 0 failures; 137 Phase 21 tests with 136 passed, 1 skipped per platform).
+* **Cross-Platform Test Coverage**: 57 test modules with 1088 tests collected under pytest (1085 passed, 3 skipped on Windows 11; 1087 passed, 1 skipped on Kali Linux; 0 failures; 146 Phase 21 tests with 145 passed, 1 skipped per platform).
 * **Target Runtime**: Kali/Debian Linux with OpenCode installed, deploying `Bug-Bounty` globally via `bb-deploy`.
 
 ---

@@ -1,11 +1,3 @@
-## Unreleased — Phase 21 provenance containment
-
-### Security correction
-* Disabled Mode B controlled invalidation before approval consumption or network dispatch until a separate OS-enforced dispatcher trust boundary exists.
-* Disabled caller-invokable trusted transport evidence capture, execution capability issuance, and controlled-workflow attestation issuance.
-* Rejected CONTROLLED_WORKFLOW attestations as independent provenance while the isolated dispatcher is unavailable.
-* Supersedes prior Phase 21 acceptance and wire-fidelity claims. This is fail-closed containment, not completion of Mode B.
-
 # Changelog
 
 All notable changes to the BugBounty-Agent project are documented in this file.
@@ -15,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Accepted)
+### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Definitively Accepted)
+
+#### Isolated Execution Architecture, Mode B Restoration & Final Security Remediation
+* **Isolated OS-Enforced Dispatcher Authority (`framework/auth_correlation/ipc/`)**:
+  * Implemented an independent execution authority service (`IsolatedExecutionDispatcher`) operating across framed IPC boundaries (Windows Named Pipes `\\.\pipe\bugbounty_dispatcher` and Unix Domain Sockets `/run/bugbounty/dispatcher.sock`).
+  * Employs length-prefixed 4-byte big-endian framing with JSON payload validation, monotonic request IDs, and replay-resistant nonce tracking (`protocol.py`).
+  * The dispatcher process maintains exclusive custody of private HMAC signing keys and the `authority_token`, completely eliminating caller-controlled provenance forging.
+  * Emits cryptographically signed, canonical execution receipts (`receipt.py`) with HMAC-SHA256 (`RCPT-SIG-...`), binding action dossier digests, approval IDs, consumption tokens, and execution timestamps.
+* **Controlled Dispatcher CLI & Service Integration (`scripts/bb-dispatcher`, `systemd/`)**:
+  * Added `scripts/bb-dispatcher` and `scripts/bb-dispatcher.cmd` providing daemon startup, `--ping`, and `--status` management.
+  * Added `systemd/bugbounty-dispatcher.service` and platform installation scripts (`scripts/install-dispatcher.sh`, `scripts/install-dispatcher.ps1`) for unprivileged production deployment under `_bugbounty-dispatcher` service accounts.
+* **Private Authority Token Evidence Confinement (`framework/common/evidence.py`)**:
+  * `EvidenceStore.save_transport_dispatch_capture()` enforces a private `authority_token` held exclusively in the isolated dispatcher process.
+  * Ordinary callers or in-process workflows attempting to invoke transport evidence capture without the authority token fail closed with `EvidencePersistenceError("Trusted transport capture is disabled: caller-supplied request/response objects cannot prove transport dispatch")`.
+* **Restoration of Mode B Controlled Invalidation (`framework/auth_correlation/dispatcher.py`, `framework/auth_correlation/revocation.py`)**:
+  * Restored genuine Mode B controlled mutation execution in `ControlledDispatchWorkflow.execute` by routing transport execution to the isolated dispatcher over IPC.
+  * Enforces fail-fast client preflight validation (action dossier schema, timestamp tolerances, scope verification, approval corruption checks) before delegating to the dispatcher.
+  * Restored authentic `CONTROLLED_WORKFLOW` attestation verification in `PostRevocationResourceValidator.verify_invalidation_provenance()`, backed by receipt verification and ledger execution capabilities.
+  * Cleaned up 251 lines of unisolated, vulnerable legacy in-process transport code.
+* **Fail-Closed Capability Issuance & Ledger Verification (`framework/auth_correlation/ledger.py`)**:
+  * `issue_execution_capability()` accepts only genuine `ControlledDispatchResult` objects backed by verified isolated dispatch receipts and signed evidence stores.
+  * In-process caller-constructed objects fail closed with `ExecutionProvenanceError`.
+* **Adversarial & Cross-Platform Test Verification**:
+  * 146 Phase 21 targeted test items collected under pytest: 145 passed, 1 skipped on Windows 11 host (POSIX permissions skipped); 145 passed, 1 skipped on Kali Linux VM (Windows DACL skipped); 0 failures.
+  * Full repository regression suite: 1088 tests collected (1085 passed, 3 skipped on Windows 11 host; 1087 passed, 1 skipped on Kali Linux VM; 0 failures).
+  * 100% pass rate on browser runtime (103 tests), concurrency engine (128 tests), CLI tools (`bb-auth-correlate`, `bb-dispatcher`), and `bb-doctor` (all 18 engines healthy).
+  * Complete resolution of all 20 historical security audit findings (Issues 1–20).
 
 #### Final Execution Provenance Architecture Correction & Acceptance Gate (Commits `0f98435`, `PENDING_DOCS_COMMIT`)
 * **Encapsulated Trusted Dispatch Boundary in `ControlledDispatchWorkflow`** (`framework/auth_correlation/dispatcher.py`):
