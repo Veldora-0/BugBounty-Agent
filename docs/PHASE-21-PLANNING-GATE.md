@@ -401,10 +401,16 @@ All 5 stages of **Phase 21 (Authentication & Authorization Correlation)** have b
    * Delivered cryptographic invalidation-event attestation system (`ATT-<SHA256>`) with dedicated key (`invalidation_attestation.key`), domain-separated HMAC signature (`ATT-SIG-<SHA256>`), Win32 DACL inheritance-disabled protection, POSIX `0o700`/`0o600` permissions, and 17-case provenance verification matrix.
    * Delivered mandatory fully authenticated comparison session in `PreMfaPrivilegeValidator`, independent session state validation, and zero network dispatch on invalid or ambiguous session states.
 
-### Cross-Platform Verification Summary (Commit `6b2fcd9c8afdcd4ac7e8bcb48c0144e6f131d860`)
+7. **Definitive Execution Provenance Remediation & Independent Security Acceptance** (Implementation: `293b00183b6c5fd107ca4564cf4b9fa0e0e76958`, `6192d5cb6a4caab455be33e127bcf655e89fd5e4`):
+   * Eliminated public capability minting interfaces (`issue_execution_capability`, `get_or_create_capability_key`) from `framework/auth_correlation/__init__.py`, preventing ordinary callers from constructing trusted execution provenance.
+   * Eliminated fail-open `if os.path.exists(consumed_path):` condition in `ExecutionLedger.record_execution()`, enforcing fail-closed verification across all 16 approval receipt failure conditions.
+   * Enforced mandatory transport boundary evidence tagging (`capture_source == "CONTROLLED_TRANSPORT_DISPATCH"`) and recomputed on-disk SHA-256 byte digests, strictly rejecting synthetic evidence and cross-execution reuse.
+   * Expanded test coverage with 16 dedicated approval failure tests and 10 dedicated adversarial attack scenario tests.
 
-* **Windows 11 Host**: 1013 passed, 3 skipped in 155.11s under pytest. Phase 21 test suite: 73 passed, 1 skipped in 8.72s. bb-doctor: 26/26 categories healthy.
-* **Kali Linux VM**: 1015 passed, 1 skipped in 117.89s under pytest. Phase 21 test suite: 73 passed, 1 skipped in 7.14s. Firefox SPA integration test: 1 passed in 13.98s. Concurrency test: 1 passed in 0.69s. bb-doctor: 26/26 categories healthy.
-* **Zero Regressions**: 100% test pass rate across all 55 test modules.
+### Cross-Platform Verification Summary (Implementation: `293b00183b6c5fd107ca4564cf4b9fa0e0e76958`, `6192d5cb6a4caab455be33e127bcf655e89fd5e4`)
 
-**Status**: Phase 21 is officially **COMPLETED, VERIFIED, AND ACCEPTED**. Proceed to Phase 22 (Cross-Engine Attack-Path Correlation) planning gate when authorized.
+* **Windows 11 Host**: 1056 passed, 3 skipped in 196.24s under pytest (1059 collected). Targeted Phase 21 test suite: 116 passed, 1 skipped (POSIX permissions skipped) in 22.59s (117 collected). bb-doctor: 18/18 engines healthy.
+* **Kali Linux VM**: 1058 passed, 1 skipped in 100.86s under pytest (1059 collected). Targeted Phase 21 test suite: 116 passed, 1 skipped (Windows DACL skipped) in 7.42s (117 collected). Browser runtime: 103 passed. Concurrency engine: 128 passed. bb-doctor: 18/18 engines healthy.
+* **Zero Regressions**: 100% test pass rate across all 56 test modules.
+
+**Status**: Phase 21 is officially **COMPLETED, VERIFIED, AND ACCEPTED**. See [`docs/PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md`](PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md). Proceed to Phase 22 (Cross-Engine Attack-Path Correlation) planning gate when authorized.

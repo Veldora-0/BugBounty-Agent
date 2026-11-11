@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Accepted)
 
+#### Definitive Execution Provenance Remediation & Independent Security Acceptance (Commits `293b001`, `6192d5c`)
+* **Elimination of Public Capability Minting Interfaces** (`framework/auth_correlation/__init__.py`):
+  * Removed `issue_execution_capability`, `get_or_create_capability_key`, and `ExecutionCapability` from public package exports to prevent ordinary callers from constructing trusted execution provenance.
+  * Capability issuance is strictly internal to the trusted Mode B controlled execution workflow (`framework/auth_correlation/revocation.py`).
+* **Fail-Closed Approval Receipt Verification** (`framework/auth_correlation/ledger.py`):
+  * Eliminated fail-open `if os.path.exists(consumed_path):` condition in `ExecutionLedger.record_execution()`.
+  * Enforced fail-closed validation across all 16 approval receipt failure conditions: missing registry, unreadable registry, invalid JSON, invalid schema, missing receipt, wrong approval ID, wrong consumption token, wrong program, wrong test account, wrong target endpoint, wrong method, wrong action type, wrong session/principal, already executed, duplicate execution attempt, and replayed receipt.
+  * Added atomic registration of `execution_id` in `consumed_approvals.json` under cross-process file lock before ledger persistence, ensuring single-use semantics and concurrency safety.
+* **Controlled Transport Dispatch Evidence Tagging** (`framework/auth_correlation/ledger.py`, `framework/auth_correlation/revocation.py`):
+  * Required mandatory `"capture_source": "CONTROLLED_TRANSPORT_DISPATCH"` on mutation and verification evidence metadata.
+  * Both `ExecutionLedger.record_execution()` and `verify_invalidation_provenance()` fail closed if evidence is missing this tag or if on-disk SHA-256 byte digests do not match.
+* **Adversarial Security Test Suite** (`tests/test_phase21_execution_ledger.py`):
+  * Expanded `tests/test_phase21_execution_ledger.py` to 41 tests.
+  * Added 16 dedicated tests covering all 16 approval receipt failure conditions (`test_approval_failure_row01_...` through `row16_...`).
+  * Added 10 dedicated adversarial tests covering Attacks 1 through 10 (`test_attack_01_...` through `attack_10_...`).
+* **Cross-Platform Verification (Zero Regressions)**:
+  * 117 targeted Phase 21 tests collected: 116 passed, 1 skipped on Windows 11 host (POSIX permissions skipped); 116 passed, 1 skipped on Kali Linux VM (Windows DACL skipped).
+  * Full regression test suite: 1059 tests collected (1056 passed, 3 skipped on Windows 11 host; 1058 passed, 1 skipped on Kali Linux VM).
+  * 100% pass rate on browser runtime (103 tests), concurrency engine (128 tests), CLI tools, and `bb-doctor` (18 engines healthy).
+
 #### Final Trust-Boundary Remediation & Definitive Acceptance (Commit `f078b093cddc13bb8fc7054d350451a431e4cb16`)
 * **Genuine Execution Provenance & Capability Workflow** (`framework/auth_correlation/ledger.py`, `framework/auth_correlation/revocation.py`, `framework/auth_correlation/model.py`):
   * Eliminated arbitrary caller creation of execution records via `record_execution()`. Ordinary callers without a verified `ExecutionCapability` fail closed.
