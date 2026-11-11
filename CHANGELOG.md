@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Accepted)
 
+#### Definitive Execution Provenance Remediation, Approval Receipts & Adversarial Verification (Commits `756e511`, `e76b246`)
+* **Strict Transport Provenance Isolation in `EvidenceStore`** (`framework/common/evidence.py`):
+  * Rejects ordinary callers specifying `capture_source="CONTROLLED_TRANSPORT_DISPATCH"` or `evidence_class="CONTROLLED_TRANSPORT_DISPATCH"` via `save_http_capture()` with an immediate `ValueError`.
+  * Added dedicated transport boundary method `save_controlled_transport_capture()` restricted to genuine Mode B controlled dispatches.
+* **Cryptographically Signed Consumed Approval Receipts** (`framework/auth_correlation/ledger.py`, `framework/auth_correlation/revocation.py`):
+  * Consumed approvals in `consumed_approvals.json` require both an operator signature (`SIG-...`) and a cryptographic consumption receipt HMAC (`RCPT-SIG-...`) computed under `approval.key`.
+  * Added `sign_consumption_receipt()` and `verify_consumed_approval_entry()`, enforcing canonical JSON serialization and verifying that entries cannot be forged or manipulated without access to `approval.key`.
+* **Fail-Closed Execution Capability Verification** (`framework/auth_correlation/ledger.py`):
+  * Redesigned `issue_execution_capability()` with strict prerequisite verification: confirms disk transport captures, verifies byte digests, checks consumed approval receipt signatures under `approval.key`, and validates invalidation outcomes.
+  * Added `create_test_execution_capability()` marked with `is_testing_primitive = True`.
+  * Updated `record_execution()` to verify consumed approval receipts under cross-process file lock and reject testing primitives from producing genuine execution records.
+* **Wire Fidelity & Correlation Header Attribution** (`framework/auth_correlation/revocation.py`):
+  * Controlled invalidation captures actual wire request and response transactions via `ControlledRequest.get_sanitized_representation()` and `ControlledResponse.get_sanitized_representation()`.
+  * Carries genuine HTTP correlation headers (`X-Correlation-Action`, `X-Correlation-Session`, `X-Correlation-Principal`) with distinct mutation and verification SHA-256 digests.
+* **Windows File Replacement Resilience** (`framework/state/manager.py`):
+  * Added 5-attempt retry loop with exponential delay to `StateManager._atomic_write_json()` to handle transient Windows file handle locks during rapid sequential state persistence.
+* **Concurrency Test Harness Resilience** (`tests/test_concurrency_engine.py`):
+  * Configured deterministic mock resolver in `test_request_budget_enforcement_blocks_exceeding_15` to ensure offline execution independence from external DNS.
+* **Adversarial Security Test Suite** (`tests/test_phase21_execution_ledger.py`):
+  * Expanded `tests/test_phase21_execution_ledger.py` to 61 tests: covers all 16 approval failure matrix rows, 30 adversarial tests (AT-01 to AT-30), 10 independent review attack scenarios, and end-to-end Mode B lifecycle.
+* **Cross-Platform Verification (Zero Regressions)**:
+  * 137 targeted Phase 21 tests collected: 136 passed, 1 skipped on Windows 11 host (POSIX permissions skipped); 136 passed, 1 skipped on Kali Linux VM (Windows DACL skipped); 0 failures.
+  * Full regression test suite: 1079 tests collected (1076 passed, 3 skipped on Windows 11 host; 1078 passed, 1 skipped on Kali Linux VM; 0 failures).
+  * 100% pass rate on browser runtime (103 tests), concurrency engine (128 tests), CLI tools (`bb-auth-correlate`), and `bb-doctor` (all 18 engines healthy).
+
 #### Definitive Execution Provenance Remediation & Independent Security Acceptance (Commits `293b001`, `6192d5c`)
 * **Elimination of Public Capability Minting Interfaces** (`framework/auth_correlation/__init__.py`):
   * Removed `issue_execution_capability`, `get_or_create_capability_key`, and `ExecutionCapability` from public package exports to prevent ordinary callers from constructing trusted execution provenance.
