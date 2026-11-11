@@ -1138,7 +1138,7 @@ class TestRequestBudgetAndWorkerBounds(unittest.TestCase):
         mock_dispatch = MagicMock()
         mock_dispatch.return_value = ControlledResponse(status_code=200, body_text="{}", headers={})
 
-        policy = ConcurrencySafetyPolicy(max_requests_per_test=5)
+        policy = ConcurrencySafetyPolicy(max_requests_per_test=5, resolver=lambda h: ["93.184.216.34"])
 
         try:
             engine = RaceIntelligenceEngine(
