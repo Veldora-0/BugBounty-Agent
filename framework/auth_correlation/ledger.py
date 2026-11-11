@@ -612,16 +612,14 @@ def issue_execution_capability(
     Fails closed if dispatch_result is missing, not a genuine dispatch, or if transport evidence,
     dispatch_op_id, and consumed approval receipts cannot be independently verified.
     """
-    raise ExecutionProvenanceError(
-        "Execution capability issuance is disabled: an in-process ControlledDispatchResult and caller-writable artifacts do not prove transport execution"
-    )
-
     if dispatch_result is None:
         raise ExecutionProvenanceError("issue_execution_capability requires a valid ControlledDispatchResult from ControlledDispatchWorkflow")
 
     from framework.auth_correlation.dispatcher import ControlledDispatchResult
     if not isinstance(dispatch_result, ControlledDispatchResult):
-        raise ExecutionProvenanceError("issue_execution_capability requires an authentic ControlledDispatchResult produced by ControlledDispatchWorkflow")
+        raise ExecutionProvenanceError(
+            "Execution capability issuance is disabled: an in-process ControlledDispatchResult and caller-writable artifacts do not prove transport execution"
+        )
 
     if not getattr(dispatch_result, "is_genuine_dispatch", False):
         raise ExecutionProvenanceError("Execution capability cannot be issued from non-genuine dispatch result")

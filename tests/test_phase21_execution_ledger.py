@@ -88,7 +88,8 @@ def _create_valid_execution_fixture(
     os.makedirs(ev_dir, exist_ok=True)
 
     app_key = get_or_create_approval_key(key_dir=key_dir)
-    store = EvidenceStore(ev_dir)
+    auth_tok = secrets.token_hex(32)
+    store = EvidenceStore(ev_dir, authority_token=auth_tok)
     ledger = ExecutionLedger(state_dir=state_dir, key_dir=key_dir, approval_key=app_key)
 
     app_id = f"APPR-{'0' * 28}{action_suffix[:4]}"
@@ -131,6 +132,7 @@ def _create_valid_execution_fixture(
         dispatch_op_id=d_op_id,
         is_verification=False,
         prefix=f"mut_{action_suffix}",
+        authority_token=auth_tok,
     )
 
     # Save verification capture using save_transport_dispatch_capture
@@ -156,6 +158,7 @@ def _create_valid_execution_fixture(
         is_verification=True,
         verification_method=ver_method,
         prefix=f"ver_{action_suffix}",
+        authority_token=auth_tok,
     )
 
     # Register consumed approval with cryptographic receipt
@@ -1109,6 +1112,7 @@ def test_adversarial_at16_cross_execution_mutation_evidence_reuse_rejected(tmp_p
         is_verification=True,
         verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
         prefix="ver_at16b",
+        authority_token=store._authority_token,
     )
 
     cap_key = ledger._get_capability_key()
@@ -1223,6 +1227,7 @@ def test_adversarial_at17_cross_execution_verification_evidence_reuse_rejected(t
         dispatch_op_id=d_op_id2,
         is_verification=False,
         prefix="mut_at17b",
+        authority_token=store._authority_token,
     )
 
     cap_key = ledger._get_capability_key()
@@ -1498,7 +1503,8 @@ def test_adversarial_at30_genuine_mode_b_lifecycle_end_to_end(tmp_path):
     os.makedirs(ev_dir, exist_ok=True)
 
     app_key = get_or_create_approval_key(key_dir=key_dir)
-    store = EvidenceStore(ev_dir)
+    auth_tok = secrets.token_hex(32)
+    store = EvidenceStore(ev_dir, authority_token=auth_tok)
     ledger = ExecutionLedger(state_dir=state_dir, key_dir=key_dir, approval_key=app_key)
 
     class MockScopeEngine:
@@ -1568,48 +1574,71 @@ def test_adversarial_at30_genuine_mode_b_lifecycle_end_to_end(tmp_path):
     signed_dossier = sign_action_approval(dossier, approval_key=app_key)
     clean_aid = signed_dossier["action_id"]
 
-    # 1. Execute genuine Mode B invalidation workflow
-    success = validator.execute_controlled_invalidation(
-        session_ctx=sess,
-        action_id=clean_aid,
-        action_dossier=signed_dossier,
+    from framework.auth_correlation.ipc.service import IsolatedExecutionDispatcher
+    from framework.auth_correlation.ipc.client import IsolatedDispatcherClient
+    disp_pipe = rf"\\.\pipe\test_at30_{secrets.token_hex(4)}" if os.name == "nt" else str(tmp_path / "at30.sock")
+    disp = IsolatedExecutionDispatcher(
+        program_id="test_program",
+        pipe_name=disp_pipe if os.name == "nt" else None,
+        socket_path=disp_pipe if os.name != "nt" else None,
+        key_dir=key_dir,
+        state_dir=state_dir,
+        evidence_dir=str(store.evidence_dir),
+        approval_key=app_key,
+        transport_engine=mock_engine,
+        scope_engine=mock_scope,
+        is_lab=True,
     )
-    assert success is True
-    assert sess.lifecycle == CorrelationLifecycle.REVOKED
-    assert sess.invalidation_evidence_ref is not None
+    disp.start()
+    client = IsolatedDispatcherClient(endpoint_type="pipe" if os.name == "nt" else "unix", address=disp_pipe)
+    validator._dispatcher_client = client
+    validator._dispatcher_verification_key = disp.signing_key
 
-    # 2. Verify evidence persistence
-    att_ev = store.get_invalidation_attestation(sess.invalidation_evidence_ref)
-    assert att_ev is not None
-    assert att_ev["event_type"] == "SESSION_REVOCATION"
-
-    # 3. Verify Mode A provenance verification succeeds
-    provenance_valid, reason, _ = validator.verify_invalidation_provenance(
-        invalidation_evidence_ref=sess.invalidation_evidence_ref,
-        session_ctx=sess,
-    )
-    assert provenance_valid is True
-
-    # 4. Single-use approval consumption: Attempting second invalidation with same approval fails closed
-    with pytest.raises(ApprovalSecurityError, match="already been consumed"):
-        validator.execute_controlled_invalidation(
+    try:
+        # 1. Execute genuine Mode B invalidation workflow
+        success = validator.execute_controlled_invalidation(
             session_ctx=sess,
             action_id=clean_aid,
             action_dossier=signed_dossier,
         )
+        assert success is True
+        assert sess.lifecycle == CorrelationLifecycle.REVOKED
+        assert sess.invalidation_evidence_ref is not None
 
-    # 5. Tampering with evidence bytes triggers immediate provenance failure
-    mut_ev_id = att_ev["mutation_evidence_ref"]
-    mut_ev = store.get_evidence(mut_ev_id)
-    with open(mut_ev["capture_path"], "ab") as f:
-        f.write(b"\nTAMPERED_POST_EXECUTION")
+        # 2. Verify evidence persistence
+        att_ev = store.get_invalidation_attestation(sess.invalidation_evidence_ref)
+        assert att_ev is not None
+        assert att_ev["event_type"] == "SESSION_REVOCATION"
 
-    # Mode A provenance re-verification now fails closed
-    provenance_tampered, _, _ = validator.verify_invalidation_provenance(
-        invalidation_evidence_ref=sess.invalidation_evidence_ref,
-        session_ctx=sess,
-    )
-    assert provenance_tampered is False
+        # 3. Verify Mode A provenance verification succeeds
+        provenance_valid, reason, _ = validator.verify_invalidation_provenance(
+            invalidation_evidence_ref=sess.invalidation_evidence_ref,
+            session_ctx=sess,
+        )
+        assert provenance_valid is True
+
+        # 4. Single-use approval consumption: Attempting second invalidation with same approval fails closed
+        with pytest.raises(ApprovalSecurityError, match="already been consumed"):
+            validator.execute_controlled_invalidation(
+                session_ctx=sess,
+                action_id=clean_aid,
+                action_dossier=signed_dossier,
+            )
+
+        # 5. Tampering with evidence bytes triggers immediate provenance failure
+        mut_ev_id = att_ev["mutation_evidence_ref"]
+        mut_ev = store.get_evidence(mut_ev_id)
+        with open(mut_ev["capture_path"], "ab") as f:
+            f.write(b"\nTAMPERED_POST_EXECUTION")
+
+        # Mode A provenance re-verification now fails closed
+        provenance_tampered, _, _ = validator.verify_invalidation_provenance(
+            invalidation_evidence_ref=sess.invalidation_evidence_ref,
+            session_ctx=sess,
+        )
+        assert provenance_tampered is False
+    finally:
+        disp.stop()
 
 
 # ==============================================================================

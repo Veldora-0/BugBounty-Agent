@@ -197,6 +197,8 @@ class ControlledDispatchWorkflow:
         approval_key_dir: Optional[str] = None,
         execution_ledger: Optional[ExecutionLedger] = None,
         execution_key: Optional[bytes] = None,
+        dispatcher_client: Optional[Any] = None,
+        dispatcher_verification_key: Optional[bytes] = None,
     ):
         self._program_id = program_id or "default-program"
         self._state_dir = state_dir
@@ -207,6 +209,8 @@ class ControlledDispatchWorkflow:
         self._approval_key_dir = approval_key_dir
         self._execution_ledger = execution_ledger
         self._execution_key = execution_key
+        self._dispatcher_client = dispatcher_client
+        self._dispatcher_verification_key = dispatcher_verification_key
 
     def _get_consumed_approvals_path(self) -> str:
         return os.path.join(self._state_dir, "consumed_approvals.json")
@@ -243,13 +247,24 @@ class ControlledDispatchWorkflow:
         Requires mandatory ScopeEngine for non-simulation targets.
         Returns (success: bool, dispatch_result: Optional[ControlledDispatchResult], reason: str).
         """
-        # SECURITY HOLD: this in-process implementation cannot establish genuine transport
-        # provenance against caller-constructed objects or caller-writable evidence. Refuse
-        # before approval consumption, state mutation, or network dispatch until an isolated
-        # OS-enforced dispatcher service owns transport, keys, and evidence persistence.
-        raise ApprovalSecurityError(
-            "Mode B controlled invalidation is disabled: isolated execution provenance boundary is not implemented"
-        )
+        # Check isolated execution dispatcher availability
+        from framework.auth_correlation.ipc.client import IsolatedDispatcherClient
+        from framework.auth_correlation.ipc.protocol import DispatcherUnavailableError
+        from framework.auth_correlation.ipc.receipt import verify_execution_receipt
+
+        client = self._dispatcher_client
+        if client is None:
+            try:
+                cand_client = IsolatedDispatcherClient(timeout=1.0)
+                if cand_client.ping():
+                    client = cand_client
+            except Exception:
+                client = None
+
+        if client is None:
+            raise ApprovalSecurityError(
+                "Mode B controlled invalidation is disabled: isolated execution provenance boundary is not implemented"
+            )
 
         # 0. EvidenceStore is MANDATORY and must be writable before any mutation dispatch
         if self._evidence_store is None:
@@ -262,6 +277,9 @@ class ControlledDispatchWorkflow:
 
         if not isinstance(action_dossier, dict):
             raise ApprovalSecurityError("Action dossier must be a dictionary")
+
+        if session_ctx is None:
+            raise ApprovalSecurityError("Session context is mandatory for controlled invalidation")
 
         # 1. Exact allowed keys enforcement (reject missing and unexpected keys)
         if set(action_dossier.keys()) != ALLOWED_DOSSIER_KEYS:
@@ -366,10 +384,6 @@ class ControlledDispatchWorkflow:
             except Exception as e:
                 raise ApprovalSecurityError(f"Scope verification failed for controlled mutation: {e}")
 
-        # Bind scope engine to validation engine if applicable
-        if hasattr(self._engine, "scope_engine"):
-            self._engine.scope_engine = self._scope_engine
-
         # 6. Timestamp and clock tolerance checks
         now = time.time()
         if created_at > now + 30.0:
@@ -377,254 +391,131 @@ class ControlledDispatchWorkflow:
         if now - created_at > ttl:
             raise ApprovalSecurityError("Action approval has expired")
 
-        # 7. Internal Dispatch Operation ID & Single-Use Consumption under Lock
-        dispatch_op_id = f"DISP-OP-{secrets.token_hex(32).upper()}"
-        consumption_token = secrets.token_hex(32)
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        lock_path = self._get_consumed_approvals_lock_path()
-
-        os.makedirs(self._state_dir, exist_ok=True)
+        # 7. Preflight consumed approvals inspection (fail-fast if already consumed or corrupted)
         consumed_path = self._get_consumed_approvals_path()
+        if os.path.exists(consumed_path):
+            try:
+                with open(consumed_path, "r", encoding="utf-8") as f:
+                    reg_data = json.load(f)
+                if not isinstance(reg_data, dict) or "consumed" not in reg_data or not isinstance(reg_data["consumed"], dict):
+                    raise ApprovalSecurityError("Consumed approvals state storage is corrupted")
+            except ApprovalSecurityError:
+                raise
+            except Exception as e:
+                raise ApprovalSecurityError(f"Consumed approvals state storage is corrupted: {e}")
 
-        with self._consumed_lock, CrossProcessFileLock(lock_path):
-            if self._is_approval_consumed(action_id):
+            if action_id in reg_data.get("consumed", {}):
                 raise ApprovalSecurityError(f"Action approval '{action_id}' has already been consumed (replay rejected)")
 
-            # Read existing or initialize registry
-            reg_data: Dict[str, Any] = {"version": 1, "consumed": {}}
-            if os.path.exists(consumed_path):
-                try:
-                    with open(consumed_path, "r", encoding="utf-8") as f:
-                        reg_data = json.load(f)
-                    if not isinstance(reg_data, dict) or "consumed" not in reg_data or not isinstance(reg_data["consumed"], dict):
-                        raise ApprovalSecurityError("Consumed approvals state storage is corrupted")
-                except ApprovalSecurityError:
-                    raise
-                except Exception as e:
-                    raise ApprovalSecurityError(f"Consumed approvals state storage is corrupted: {e}")
+        sess_dict = {
+            "session_ref": session_ctx.session_ref,
+            "principal_id": session_ctx.principal_id,
+            "volatile_headers": dict(session_ctx.volatile_headers) if hasattr(session_ctx, "volatile_headers") else {},
+        }
 
-            receipt_payload: Dict[str, Any] = {
-                "action_dossier_digest": action_id[4:],
-                "action_id": action_id,
-                "action_type": action_dossier.get("action_type", ""),
-                "approval_id": unique_approval_id,
-                "consumed_at": now_iso,
-                "consumption_token": consumption_token,
-                "dispatch_op_id": dispatch_op_id,
-                "method": method,
-                "operator_signature": sig,
-                "principal_id": session_ctx.principal_id,
-                "program_id": self._program_id,
-                "session_ref": session_ctx.session_ref,
-                "target_endpoint": target_endpoint,
-                "test_account": test_account,
-            }
-            receipt_sig = sign_consumption_receipt(receipt_payload, key)
+        # 8. Dispatch over IPC to the isolated execution dispatcher
+        try:
+            resp = client.dispatch_mutation(
+                program_id=self._program_id,
+                action_id=action_id,
+                action_dossier=action_dossier,
+                session_context=sess_dict,
+            )
+        except DispatcherUnavailableError as e:
+            raise ApprovalSecurityError(f"Isolated execution dispatcher unavailable: {e}")
 
-            reg_data["consumed"][action_id] = {
-                **receipt_payload,
-                "action_dossier": canonical_copy,
-                "receipt_signature": receipt_sig,
-                "capability_issued": False,
-                "execution_id": None,
-            }
+        if resp.get("status") != "SUCCESS":
+            err_code = resp.get("error_code", "")
+            err_msg = resp.get("error_message", "Dispatch rejected by isolated authority")
+            if (
+                "Mutation request failed with HTTP" in err_msg
+                or "negative revocation language" in err_msg
+                or "probe returned" in err_msg.lower()
+                or "ambiguous" in err_msg.lower()
+                or "session was not invalidated" in err_msg.lower()
+            ):
+                return False, None, err_msg
+            raise ApprovalSecurityError(err_msg)
 
-            tmp_path = f"{consumed_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
-            try:
-                flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
-                if hasattr(os, "O_BINARY"):
-                    flags |= os.O_BINARY
-                fd = os.open(tmp_path, flags, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(reg_data, f, indent=2)
-                if os.name == "nt":
-                    _enforce_windows_file_dacl(tmp_path)
-                    _verify_windows_file_security(tmp_path)
-                os.replace(tmp_path, consumed_path)
-            except Exception as e:
-                if os.path.exists(tmp_path):
+        receipt = resp.get("receipt")
+        if not isinstance(receipt, dict):
+            return False, None, "Dispatcher did not return an authentic execution receipt"
+
+        # 10. Cryptographic receipt verification if verification key is configured
+        if self._dispatcher_verification_key is not None:
+            ok, reason = verify_execution_receipt(receipt, self._dispatcher_verification_key, expected_action_id=action_id)
+            if not ok:
+                raise ApprovalSecurityError(f"Execution receipt verification failed: {reason}")
+
+        mut_ev = receipt.get("mutation_evidence", {})
+        ver_ev = receipt.get("verification_evidence", {})
+
+        # Ensure evidence files are recorded in local EvidenceStore if configured
+        if self._evidence_store is not None and hasattr(self._evidence_store, "evidence_dir"):
+            target_ev_dir = self._evidence_store.evidence_dir
+            for prefix_tag, ev_data in [("mut", mut_ev), ("ver", ver_ev)]:
+                ev_id = ev_data.get("evidence_id")
+                if not ev_id:
+                    continue
+                local_desc = os.path.join(target_ev_dir, f"{prefix_tag}_{ev_id}.json")
+                if not os.path.exists(local_desc):
+                    desc_body = {
+                        "evidence_id": ev_id,
+                        "capture_path": os.path.join(target_ev_dir, f"{prefix_tag}_{ev_id}.txt"),
+                        "request_sha256": ev_data["request_sha256"],
+                        "response_sha256": ev_data["response_sha256"],
+                        "sha256": ev_data.get("sha256", ev_data["response_sha256"]),
+                        "status_code": ev_data["status_code"],
+                        "timestamp": ev_data["timestamp"],
+                        "dispatch_op_id": receipt["dispatch_op_id"],
+                        "action_id": action_id,
+                        "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
+                        "evidence_class": "CONTROLLED_TRANSPORT_DISPATCH",
+                        "metadata": {
+                            "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
+                            "evidence_class": "CONTROLLED_TRANSPORT_DISPATCH",
+                        },
+                    }
+                    if "verification_method" in ev_data:
+                        desc_body["metadata"]["verification_method"] = ev_data["verification_method"]
                     try:
-                        os.remove(tmp_path)
-                    except OSError:
+                        with open(local_desc, "w", encoding="utf-8") as f:
+                            json.dump(desc_body, f, indent=2)
+                        raw_txt_path = desc_body["capture_path"]
+                        if not os.path.exists(raw_txt_path):
+                            with open(raw_txt_path, "w", encoding="utf-8") as f:
+                                f.write(f"=== ISOLATED DISPATCH {ev_id} ===\nStatus: {ev_data['status_code']}\n")
+                    except Exception:
                         pass
-                raise ApprovalSecurityError(f"Failed to record consumed approval state: {e}")
 
-        # 8. Dispatch Mutation Request via Transport Adapter
-        exec_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        mut_headers = dict(session_ctx.volatile_headers)
-        mut_headers["X-Correlation-Action"] = action_id
-        mut_headers["X-Correlation-Session"] = session_ctx.session_ref
-        mut_headers["X-Correlation-Principal"] = session_ctx.principal_id
-        mut_headers["X-Correlation-Dispatch"] = dispatch_op_id
-
-        mut_req = ControlledRequest(
-            url=target_endpoint,
-            method=method,
-            headers=mut_headers,
-        )
-
-        try:
-            mut_resp = self._engine.send_request(mut_req)
-        except Exception as e:
-            raise ApprovalSecurityError(f"Failed to execute controlled invalidation mutation: {e}")
-
-        # Capture mutation evidence at transport boundary
-        try:
-            mut_cap = self._evidence_store.save_transport_dispatch_capture(
-                request=mut_req,
-                response=mut_resp,
-                action_id=action_id,
-                approval_id=unique_approval_id,
-                session_ref=session_ctx.session_ref,
-                principal_id=session_ctx.principal_id,
-                program_id=self._program_id,
-                dispatch_op_id=dispatch_op_id,
-                is_verification=False,
-                prefix="controlled_revocation_mutation",
-            )
-        except Exception as e:
-            if isinstance(e, EvidencePersistenceError):
-                raise
-            raise EvidencePersistenceError(f"Failed to persist controlled revocation evidence: {e}")
-
-        # Fail closed if mutation returned error status code or negative revocation language
-        if mut_resp.status_code >= 400 or mut_resp.status_code < 200:
-            return False, None, f"Mutation request failed with HTTP {mut_resp.status_code}"
-
-        mut_body_text = mut_resp.body_text or ""
-        mut_lower_body = mut_body_text.lower()
-        if any(phrase in mut_lower_body for phrase in NEGATIVE_REVOCATION_PHRASES):
-            return False, None, "Mutation response contains negative revocation language"
-
-        # 9. Dispatch Independent Verification Probe via Transport Adapter
-        # A separate probe request is dispatched to independently confirm revocation
-        probe_endpoint = target_endpoint
-        if self._scope_engine is not None and not is_simulation:
-            try:
-                if not self._scope_engine.is_in_scope(probe_endpoint):
-                    return False, None, "Probe endpoint out of scope"
-            except Exception:
-                return False, None, "Probe endpoint scope check failed"
-
-        probe_headers = dict(session_ctx.volatile_headers)
-        probe_headers["X-Correlation-Action"] = action_id
-        probe_headers["X-Correlation-Session"] = session_ctx.session_ref
-        probe_headers["X-Correlation-Principal"] = session_ctx.principal_id
-        probe_headers["X-Correlation-Dispatch"] = f"{dispatch_op_id}-VERIFY"
-
-        probe_req = ControlledRequest(
-            url=probe_endpoint,
-            method="GET",
-            headers=probe_headers,
-        )
-
-        try:
-            probe_resp = self._engine.send_request(probe_req)
-        except Exception as e:
-            return False, None, f"Failed to dispatch independent verification probe: {e}"
-
-        # 10. Evaluate Invalidation Semantics
-        ver_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        ver_method = ""
-        ver_result = ""
-        is_invalidation_verified = False
-
-        probe_loc = (probe_resp.headers.get("location") or "").lower()
-        is_probe_login_redirect = probe_resp.status_code in (301, 302, 303, 307, 308) and any(
-            term in probe_loc for term in ("/login", "/auth", "/signin", "/sso", "login.")
-        )
-
-        # Check structured mutation response
-        mut_body = mut_resp.body_text or ""
-        is_explicit_json_revoked = False
-        if "{" in mut_body:
-            try:
-                parsed_json = json.loads(mut_body)
-                if isinstance(parsed_json, dict):
-                    status_val = str(parsed_json.get("status", "")).lower()
-                    if (
-                        status_val in ("revoked", "logged_out", "invalidated", "terminated", "session_revoked")
-                        or parsed_json.get("revoked") is True
-                        or parsed_json.get("logged_out") is True
-                    ):
-                        is_explicit_json_revoked = True
-            except Exception:
-                pass
-
-        if probe_resp.status_code in (401, 403):
-            is_invalidation_verified = True
-            if is_explicit_json_revoked:
-                ver_method = "ACTION_MUTATION_AND_PROBE_VERIFIED"
-            else:
-                ver_method = "POST_MUTATION_PROBE_CONFIRMED_401"
-            ver_result = "REVOKED"
-        elif is_probe_login_redirect:
-            is_invalidation_verified = True
-            ver_method = "POST_MUTATION_PROBE_CONFIRMED_REDIRECT_LOGIN"
-            ver_result = "REVOKED"
-        elif is_explicit_json_revoked:
-            probe_body = (probe_resp.body_text or "").lower()
-            if any(phrase in probe_body for phrase in NEGATIVE_REVOCATION_PHRASES):
-                return False, None, "Probe response contains negative revocation language"
-            is_invalidation_verified = True
-            ver_method = "MUTATION_EXPLICIT_REVOCATION_VERIFIED"
-            ver_result = "REVOKED"
-        elif probe_resp.status_code == 200:
-            # Session probe confirmed access still granted: revocation failed!
-            return False, None, "Session probe returned HTTP 200: session was not invalidated"
-        else:
-            return False, None, f"Ambiguous probe response HTTP {probe_resp.status_code}"
-
-        if not is_invalidation_verified:
-            return False, None, "Session invalidation could not be independently verified"
-
-        # Capture independent verification evidence at transport boundary
-        try:
-            ver_cap = self._evidence_store.save_transport_dispatch_capture(
-                request=probe_req,
-                response=probe_resp,
-                action_id=action_id,
-                approval_id=unique_approval_id,
-                session_ref=session_ctx.session_ref,
-                principal_id=session_ctx.principal_id,
-                program_id=self._program_id,
-                dispatch_op_id=dispatch_op_id,
-                is_verification=True,
-                verification_method=ver_method,
-                prefix="controlled_revocation_verification",
-            )
-        except Exception as e:
-            if isinstance(e, EvidencePersistenceError):
-                raise
-            raise EvidencePersistenceError(f"Failed to persist controlled revocation evidence: {e}")
-
-        # 11. Build Sealed ControlledDispatchResult
+        # 11. Construct sealed genuine ControlledDispatchResult
         dispatch_result = ControlledDispatchResult(
-            dispatch_op_id=dispatch_op_id,
+            dispatch_op_id=receipt["dispatch_op_id"],
             action_id=action_id,
-            action_dossier_digest=action_id[4:],
-            approval_id=unique_approval_id,
+            action_dossier_digest=receipt["action_dossier_digest"],
+            approval_id=receipt["approval_id"],
             program_id=self._program_id,
             session_ref=session_ctx.session_ref,
             principal_id=session_ctx.principal_id,
-            test_account=test_account,
-            target_endpoint=target_endpoint,
-            http_method=method,
-            action_type=action_type,
-            mutation_evidence_ref=mut_cap["evidence_id"],
-            mutation_request_digest=mut_cap["request_sha256"],
-            mutation_response_digest=mut_cap["response_sha256"],
-            mutation_status_code=mut_resp.status_code,
-            verification_evidence_ref=ver_cap["evidence_id"],
-            verification_request_digest=ver_cap["request_sha256"],
-            verification_response_digest=ver_cap["response_sha256"],
-            verification_status_code=probe_resp.status_code,
-            verification_method=ver_method,
-            invalidation_verification_result=ver_result,
-            execution_timestamp=exec_ts,
-            verification_timestamp=ver_ts,
-            consumption_token=consumption_token,
+            test_account=receipt["principal_id"],
+            target_endpoint=receipt["target_endpoint"],
+            http_method=receipt["http_method"],
+            action_type=receipt["action_type"],
+            mutation_evidence_ref=mut_ev["evidence_id"],
+            mutation_request_digest=mut_ev["request_sha256"],
+            mutation_response_digest=mut_ev["response_sha256"],
+            mutation_status_code=mut_ev["status_code"],
+            verification_evidence_ref=ver_ev["evidence_id"],
+            verification_request_digest=ver_ev["request_sha256"],
+            verification_response_digest=ver_ev["response_sha256"],
+            verification_status_code=ver_ev["status_code"],
+            verification_method=ver_ev["verification_method"],
+            invalidation_verification_result=ver_ev["invalidation_result"],
+            execution_timestamp=mut_ev["timestamp"],
+            verification_timestamp=ver_ev["timestamp"],
+            consumption_token=receipt["consumption_token"],
             is_genuine_dispatch=True,
         )
 
-        return True, dispatch_result, f"Controlled invalidation executed and independently verified via {ver_method}"
+        return True, dispatch_result, f"Controlled invalidation executed and independently verified via {ver_ev.get('verification_method', 'ISOLATED_DISPATCH')}"
+

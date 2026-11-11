@@ -353,41 +353,66 @@ def test_engine_mode_a_revocation_orchestration(tmp_path):
 
         # 2. Set invalidation_evidence_ref on s_a: Mode A detects retained access on /scen02/invoices/101!
         import time
+        import secrets
+        import os
         from framework.auth_correlation.revocation import sign_action_approval
+        from framework.auth_correlation.ipc.service import IsolatedExecutionDispatcher
+        from framework.auth_correlation.ipc.client import IsolatedDispatcherClient
         appr_key = b"\x01" * 32
         att_key = b"\x02" * 32
         engine.revocation_validator._approval_key = appr_key
         engine.revocation_validator._attestation_key = att_key
-        dossier = sign_action_approval(
-            {
-                "action_type": "LOGOUT",
-                "created_at": time.time(),
-                "method": "POST",
-                "program_id": "mode_a_test",
-                "target_endpoint": f"http://127.0.0.1:{port}/auth/logout",
-                "test_account": "alice",
-                "ttl": 300,
-                "unique_approval_id": "appr_test_mode_a_revocation_001",
-            },
+
+        disp_pipe = rf"\\.\pipe\test_eng_orch_{secrets.token_hex(4)}" if os.name == "nt" else str(workspace / "disp.sock")
+        disp = IsolatedExecutionDispatcher(
+            program_id="mode_a_test",
+            pipe_name=disp_pipe if os.name == "nt" else None,
+            socket_path=disp_pipe if os.name != "nt" else None,
+            key_dir=str(workspace / "keys"),
+            state_dir=str(workspace / "state"),
+            evidence_dir=str(engine.evidence_store.evidence_dir),
             approval_key=appr_key,
+            transport_engine=transport,
+            is_lab=True,
         )
-        success = engine.revocation_validator.execute_controlled_invalidation(
-            session_ctx=s_a,
-            action_id=dossier["action_id"],
-            action_dossier=dossier,
-        )
-        assert success is True
-        assert s_a.invalidation_evidence_ref is not None
-        s_a.pre_revocation_baseline = ControlledResponse(200, {"content-type": "application/json"}, b'{"invoice_id": "101", "amount": 450.00, "customer": "Alice Corp"}')
-        res_with_ref = engine.run_correlation(
-            target_asset=f"http://127.0.0.1:{port}/scen00/profile",
-            revocation=True,
-        )
-        assert res_with_ref["status"] == "COMPLETED"
-        assert len(res_with_ref["findings"]) >= 1
-        revoke_finding = [f for f in res_with_ref["findings"] if f.get("category") == "SESSION_NOT_INVALIDATED"][0]
-        assert revoke_finding["severity"] == "MEDIUM"
-        assert revoke_finding["cvss_score"] == 5.4
+        disp.start()
+        client = IsolatedDispatcherClient(endpoint_type="pipe" if os.name == "nt" else "unix", address=disp_pipe)
+        engine.revocation_validator._dispatcher_client = client
+        engine.revocation_validator._dispatcher_verification_key = disp.signing_key
+
+        try:
+            dossier = sign_action_approval(
+                {
+                    "action_type": "LOGOUT",
+                    "created_at": time.time(),
+                    "method": "POST",
+                    "program_id": "mode_a_test",
+                    "target_endpoint": f"http://127.0.0.1:{port}/auth/logout",
+                    "test_account": "alice",
+                    "ttl": 300,
+                    "unique_approval_id": "appr_test_mode_a_revocation_001",
+                },
+                approval_key=appr_key,
+            )
+            success = engine.revocation_validator.execute_controlled_invalidation(
+                session_ctx=s_a,
+                action_id=dossier["action_id"],
+                action_dossier=dossier,
+            )
+            assert success is True
+            assert s_a.invalidation_evidence_ref is not None
+            s_a.pre_revocation_baseline = ControlledResponse(200, {"content-type": "application/json"}, b'{"invoice_id": "101", "amount": 450.00, "customer": "Alice Corp"}')
+            res_with_ref = engine.run_correlation(
+                target_asset=f"http://127.0.0.1:{port}/scen00/profile",
+                revocation=True,
+            )
+            assert res_with_ref["status"] == "COMPLETED"
+            assert len(res_with_ref["findings"]) >= 1
+            revoke_finding = [f for f in res_with_ref["findings"] if f.get("category") == "SESSION_NOT_INVALIDATED"][0]
+            assert revoke_finding["severity"] == "MEDIUM"
+            assert revoke_finding["cvss_score"] == 5.4
+        finally:
+            disp.stop()
     finally:
         lab.stop()
 

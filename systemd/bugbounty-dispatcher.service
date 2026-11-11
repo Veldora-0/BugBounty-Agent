@@ -1,0 +1,38 @@
+[Unit]
+Description=BugBounty-Agent Isolated Execution Dispatcher Service (Phase 21)
+Documentation=https://github.com/Veldora-0/BugBounty-Agent
+After=network.target
+
+[Service]
+Type=simple
+User=_bbdispatcher
+Group=bbgroup
+UMask=0027
+
+# Runtime socket directory (/run/bugbounty)
+RuntimeDirectory=bugbounty
+RuntimeDirectoryMode=0775
+
+# Persistent state and keys directory (/var/lib/bugbounty)
+StateDirectory=bugbounty
+StateDirectoryMode=0750
+
+ExecStart=/usr/bin/python3 /opt/BugBounty-Agent/scripts/bb-dispatcher \
+    --socket /run/bugbounty/dispatcher.sock \
+    --key-dir /var/lib/bugbounty/keys \
+    --state-dir /var/lib/bugbounty/state \
+    --evidence-dir /var/lib/bugbounty/evidence
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+
+# OS Security Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/run/bugbounty /var/lib/bugbounty
+
+[Install]
+WantedBy=multi-user.target

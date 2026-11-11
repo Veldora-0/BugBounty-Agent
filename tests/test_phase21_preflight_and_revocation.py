@@ -207,6 +207,10 @@ def make_valid_invalidation_evidence(
     aid = f"ACT-{aid_hex}"
     op_sig = f"SIG-{hmac.new(app_key, canonical_str.encode('utf-8'), hashlib.sha256).hexdigest()}"
 
+    if getattr(store, "_authority_token", None) is None:
+        store._authority_token = secrets.token_hex(32)
+    auth_tok = store._authority_token
+
     clean_req = "POST /auth/logout\nAuthorization: Bearer revoked"
     clean_res = 'HTTP 200 OK\n{"status": "logged_out", "revoked": true}'
     d_op_id = f"DISP-OP-{secrets.token_hex(32).upper()}"
@@ -231,6 +235,7 @@ def make_valid_invalidation_evidence(
         dispatch_op_id=d_op_id,
         is_verification=False,
         prefix="inv_proof",
+        authority_token=auth_tok,
     )
     ver_req_obj = ControlledRequest(
         url="http://127.0.0.1:8080/auth/verify",
@@ -254,6 +259,7 @@ def make_valid_invalidation_evidence(
         is_verification=True,
         verification_method="POST_MUTATION_PROBE_CONFIRMED_401",
         prefix="inv_ver_proof",
+        authority_token=auth_tok,
     )
 
     if state_dir is None:
@@ -525,6 +531,10 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
             headers={"Content-Type": "application/json"},
             body_bytes=f'{{"error": "Session revoked", "action": "{clean_aid}"}}'.encode("utf-8"),
         )
+        if getattr(store, "_authority_token", None) is None:
+            store._authority_token = secrets.token_hex(32)
+        auth_tok = store._authority_token
+
         ver_cap = store.save_transport_dispatch_capture(
             request=ver_req_obj,
             response=ver_res_obj,
@@ -537,6 +547,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
             is_verification=True,
             verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
             prefix=f"ver_{clean_aid[-6:]}",
+            authority_token=auth_tok,
         )
 
         c_token = secrets.token_hex(32)
@@ -1083,6 +1094,30 @@ class MockScopeEngine:
         return any(url.startswith(p) for p in self.allowed_prefixes)
 
 
+def _attach_test_dispatcher(validator, program_id, approval_key, engine, scope, tmp_path, prefix="test_disp"):
+    from framework.auth_correlation.ipc.service import IsolatedExecutionDispatcher
+    from framework.auth_correlation.ipc.client import IsolatedDispatcherClient
+    pipe_name = rf"\\.\pipe\{prefix}_{secrets.token_hex(4)}" if os.name == "nt" else str(tmp_path / f"{prefix}.sock")
+    key_dir = str(tmp_path / f"{prefix}_keys")
+    disp = IsolatedExecutionDispatcher(
+        program_id=program_id,
+        pipe_name=pipe_name if os.name == "nt" else None,
+        socket_path=pipe_name if os.name != "nt" else None,
+        key_dir=key_dir,
+        state_dir=validator._state_dir,
+        evidence_dir=validator._evidence_store.evidence_dir if validator._evidence_store else str(tmp_path / "ev"),
+        approval_key=approval_key,
+        transport_engine=engine,
+        scope_engine=scope,
+        is_lab=True,
+    )
+    disp.start()
+    client = IsolatedDispatcherClient(endpoint_type="pipe" if os.name == "nt" else "unix", address=pipe_name)
+    validator._dispatcher_client = client
+    validator._dispatcher_verification_key = disp.signing_key
+    return disp
+
+
 def test_revocation_mode_b_controlled_invalidation_approval(tmp_path):
     """Verifies Mode B single-use action-specific approval verification and execution."""
     target_url = "https://target.local/auth/logout"
@@ -1102,105 +1137,111 @@ def test_revocation_mode_b_controlled_invalidation_approval(tmp_path):
         evidence_store=store,
         program_id="test_prog",
     )
-    sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", volatile_headers={"Authorization": "Bearer active_token"})
+    disp = _attach_test_dispatcher(validator, "test_prog", test_key, engine, mock_scope, tmp_path, "b_appr")
+    try:
+        sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", volatile_headers={"Authorization": "Bearer active_token"})
 
-    # Build valid dossier and sign with test_key
-    from framework.auth_correlation.revocation import sign_action_approval
-    dossier_data = {
-        "target_endpoint": target_url,
-        "method": "POST",
-        "test_account": "u1",
-        "action_type": "ACTION-LOGOUT",
-        "program_id": "test_prog",
-        "unique_approval_id": "appr_001",
-        "created_at": time.time(),
-        "ttl": 300,
-    }
-    signed_dossier = sign_action_approval(dossier_data, approval_key=test_key)
-    action_id = signed_dossier["action_id"]
+        # Build valid dossier and sign with test_key
+        from framework.auth_correlation.revocation import sign_action_approval
+        dossier_data = {
+            "target_endpoint": target_url,
+            "method": "POST",
+            "test_account": "u1",
+            "action_type": "ACTION-LOGOUT",
+            "program_id": "test_prog",
+            "unique_approval_id": "appr_001",
+            "created_at": time.time(),
+            "ttl": 300,
+        }
+        signed_dossier = sign_action_approval(dossier_data, approval_key=test_key)
+        action_id = signed_dossier["action_id"]
 
-    # 1. Successful controlled invalidation execution
-    res = validator.execute_controlled_invalidation(sess, action_id, signed_dossier)
-    assert res is True
-    assert sess.lifecycle == CorrelationLifecycle.REVOKED
+        # 1. Successful controlled invalidation execution
+        res = validator.execute_controlled_invalidation(sess, action_id, signed_dossier)
+        assert res is True
+        assert sess.lifecycle == CorrelationLifecycle.REVOKED
 
-    # 2. Tampered dossier (mismatched digest)
-    tampered_dossier = {**signed_dossier, "target_endpoint": "https://target.local/auth/other"}
-    with pytest.raises(ApprovalSecurityError, match="digest mismatch"):
-        validator.execute_controlled_invalidation(sess, action_id, tampered_dossier)
+        # 2. Tampered dossier (mismatched digest)
+        tampered_dossier = {**signed_dossier, "target_endpoint": "https://target.local/auth/other"}
+        with pytest.raises(ApprovalSecurityError, match="digest mismatch"):
+            validator.execute_controlled_invalidation(sess, action_id, tampered_dossier)
 
-    # 3. Invalid signature (tampered signature or wrong key)
-    invalid_sig_dossier = {**signed_dossier, "approval_signature": "SIG-" + "0" * 64}
-    with pytest.raises(ApprovalSecurityError, match="authorization signature verification failed"):
-        validator.execute_controlled_invalidation(sess, action_id, invalid_sig_dossier)
+        # 3. Invalid signature (tampered signature or wrong key)
+        invalid_sig_dossier = {**signed_dossier, "approval_signature": "SIG-" + "0" * 64}
+        with pytest.raises(ApprovalSecurityError, match="authorization signature verification failed"):
+            validator.execute_controlled_invalidation(sess, action_id, invalid_sig_dossier)
 
-    # 4. Expired approval
-    exp_dossier_data = {**dossier_data, "created_at": time.time() - 400, "unique_approval_id": "appr_002"}
-    signed_exp = sign_action_approval(exp_dossier_data, approval_key=test_key)
-    with pytest.raises(ApprovalSecurityError, match="expired"):
-        validator.execute_controlled_invalidation(sess, signed_exp["action_id"], signed_exp)
+        # 4. Expired approval
+        exp_dossier_data = {**dossier_data, "created_at": time.time() - 400, "unique_approval_id": "appr_002"}
+        signed_exp = sign_action_approval(exp_dossier_data, approval_key=test_key)
+        with pytest.raises(ApprovalSecurityError, match="expired"):
+            validator.execute_controlled_invalidation(sess, signed_exp["action_id"], signed_exp)
 
-    # 5. Missing ScopeEngine fails closed
-    validator_no_scope = PostRevocationResourceValidator(
-        validation_engine=engine,
-        state_dir=str(tmp_path),
-        scope_engine=None,
-        approval_key=test_key,
-        evidence_store=store,
-        program_id="test_prog",
-    )
-    valid_dossier2 = sign_action_approval({**dossier_data, "unique_approval_id": "appr_003"}, approval_key=test_key)
-    with pytest.raises(ApprovalSecurityError, match="Mandatory ScopeEngine is required"):
-        validator_no_scope.execute_controlled_invalidation(sess, valid_dossier2["action_id"], valid_dossier2)
+        # 5. Missing ScopeEngine fails closed
+        validator_no_scope = PostRevocationResourceValidator(
+            validation_engine=engine,
+            state_dir=str(tmp_path),
+            scope_engine=None,
+            approval_key=test_key,
+            evidence_store=store,
+            program_id="test_prog",
+        )
+        validator_no_scope._dispatcher_client = validator._dispatcher_client
+        valid_dossier2 = sign_action_approval({**dossier_data, "unique_approval_id": "appr_003"}, approval_key=test_key)
+        with pytest.raises(ApprovalSecurityError, match="Mandatory ScopeEngine is required"):
+            validator_no_scope.execute_controlled_invalidation(sess, valid_dossier2["action_id"], valid_dossier2)
 
-    # 6. Out-of-scope target endpoint fails closed
-    out_of_scope_dossier = sign_action_approval({
-        **dossier_data,
-        "target_endpoint": "https://out-of-scope.com/auth/logout",
-        "unique_approval_id": "appr_004",
-    }, approval_key=test_key)
-    with pytest.raises(ApprovalSecurityError, match="out of scope"):
-        validator.execute_controlled_invalidation(sess, out_of_scope_dossier["action_id"], out_of_scope_dossier)
+        # 6. Out-of-scope target endpoint fails closed
+        out_of_scope_dossier = sign_action_approval({
+            **dossier_data,
+            "target_endpoint": "https://out-of-scope.com/auth/logout",
+            "unique_approval_id": "appr_004",
+        }, approval_key=test_key)
+        with pytest.raises(ApprovalSecurityError, match="out of scope"):
+            validator.execute_controlled_invalidation(sess, out_of_scope_dossier["action_id"], out_of_scope_dossier)
 
-    # 7. Unsupported scheme fails closed
-    ftp_dossier = sign_action_approval({
-        **dossier_data,
-        "target_endpoint": "ftp://target.local/auth/logout",
-        "unique_approval_id": "appr_005",
-    }, approval_key=test_key)
-    with pytest.raises(ApprovalSecurityError, match="invalid or unsupported scheme"):
-        validator.execute_controlled_invalidation(sess, ftp_dossier["action_id"], ftp_dossier)
+        # 7. Unsupported scheme fails closed
+        ftp_dossier = sign_action_approval({
+            **dossier_data,
+            "target_endpoint": "ftp://target.local/auth/logout",
+            "unique_approval_id": "appr_005",
+        }, approval_key=test_key)
+        with pytest.raises(ApprovalSecurityError, match="invalid or unsupported scheme"):
+            validator.execute_controlled_invalidation(sess, ftp_dossier["action_id"], ftp_dossier)
 
-    # 8. Missing EvidenceStore fails closed
-    validator_no_store = PostRevocationResourceValidator(
-        validation_engine=engine,
-        state_dir=str(tmp_path),
-        scope_engine=mock_scope,
-        approval_key=test_key,
-        evidence_store=None,
-        program_id="test_prog",
-    )
-    valid_dossier8 = sign_action_approval({**dossier_data, "unique_approval_id": "appr_008"}, approval_key=test_key)
-    with pytest.raises(ApprovalSecurityError, match="EvidenceStore is mandatory"):
-        validator_no_store.execute_controlled_invalidation(sess, valid_dossier8["action_id"], valid_dossier8)
+        # 8. Missing EvidenceStore fails closed
+        validator_no_store = PostRevocationResourceValidator(
+            validation_engine=engine,
+            state_dir=str(tmp_path),
+            scope_engine=mock_scope,
+            approval_key=test_key,
+            evidence_store=None,
+            program_id="test_prog",
+        )
+        validator_no_store._dispatcher_client = validator._dispatcher_client
+        valid_dossier8 = sign_action_approval({**dossier_data, "unique_approval_id": "appr_008"}, approval_key=test_key)
+        with pytest.raises(ApprovalSecurityError, match="EvidenceStore is mandatory"):
+            validator_no_store.execute_controlled_invalidation(sess, valid_dossier8["action_id"], valid_dossier8)
 
-    # 9. Attribution mismatch on test_account
-    dossier_mismatch_acc = sign_action_approval({
-        **dossier_data,
-        "test_account": "wrong_user",
-        "unique_approval_id": "appr_mismatch_acc",
-    }, approval_key=test_key)
-    with pytest.raises(ApprovalSecurityError, match="does not match session principal_id"):
-        validator.execute_controlled_invalidation(sess, dossier_mismatch_acc["action_id"], dossier_mismatch_acc)
+        # 9. Attribution mismatch on test_account
+        dossier_mismatch_acc = sign_action_approval({
+            **dossier_data,
+            "test_account": "wrong_user",
+            "unique_approval_id": "appr_mismatch_acc",
+        }, approval_key=test_key)
+        with pytest.raises(ApprovalSecurityError, match="does not match session principal_id"):
+            validator.execute_controlled_invalidation(sess, dossier_mismatch_acc["action_id"], dossier_mismatch_acc)
 
-    # 10. Attribution mismatch on program_id
-    dossier_mismatch_prog = sign_action_approval({
-        **dossier_data,
-        "program_id": "other_program",
-        "unique_approval_id": "appr_mismatch_prog",
-    }, approval_key=test_key)
-    with pytest.raises(ApprovalSecurityError, match="does not match validator program_id"):
-        validator.execute_controlled_invalidation(sess, dossier_mismatch_prog["action_id"], dossier_mismatch_prog)
+        # 10. Attribution mismatch on program_id
+        dossier_mismatch_prog = sign_action_approval({
+            **dossier_data,
+            "program_id": "other_program",
+            "unique_approval_id": "appr_mismatch_prog",
+        }, approval_key=test_key)
+        with pytest.raises(ApprovalSecurityError, match="does not match validator program_id"):
+            validator.execute_controlled_invalidation(sess, dossier_mismatch_prog["action_id"], dossier_mismatch_prog)
+    finally:
+        disp.stop()
 
 
 def test_revocation_mode_b_replay_and_security_edge_cases(tmp_path):
@@ -1223,71 +1264,78 @@ def test_revocation_mode_b_replay_and_security_edge_cases(tmp_path):
         evidence_store=store,
         program_id="prog1",
     )
+    disp = _attach_test_dispatcher(validator, "prog1", test_key, engine, mock_scope, tmp_path, "b_replay")
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
 
-    def make_dossier(appr_id: str, created_at: float = None):
-        data = {
-            "target_endpoint": target_url,
-            "method": "POST",
-            "test_account": "u1",
-            "action_type": "LOGOUT",
-            "program_id": "prog1",
-            "unique_approval_id": appr_id,
-            "created_at": created_at if created_at is not None else time.time(),
-            "ttl": 300,
-        }
-        signed = sign_action_approval(data, approval_key=test_key)
-        return signed["action_id"], signed
+    try:
+        def make_dossier(appr_id: str, created_at: float = None):
+            data = {
+                "target_endpoint": target_url,
+                "method": "POST",
+                "test_account": "u1",
+                "action_type": "LOGOUT",
+                "program_id": "prog1",
+                "unique_approval_id": appr_id,
+                "created_at": created_at if created_at is not None else time.time(),
+                "ttl": 300,
+            }
+            signed = sign_action_approval(data, approval_key=test_key)
+            return signed["action_id"], signed
 
-    # 1. Single-use execution succeeds first time
-    act_id1, dossier1 = make_dossier("appr_single_use_01")
-    assert validator.execute_controlled_invalidation(sess, act_id1, dossier1) is True
+        # 1. Single-use execution succeeds first time
+        act_id1, dossier1 = make_dossier("appr_single_use_01")
+        assert validator.execute_controlled_invalidation(sess, act_id1, dossier1) is True
 
-    # 2. Replay attempt with same unique_approval_id must fail closed
-    with pytest.raises(ApprovalSecurityError, match="has already been consumed"):
-        validator.execute_controlled_invalidation(sess, act_id1, dossier1)
+        # 2. Replay attempt with same unique_approval_id must fail closed
+        with pytest.raises(ApprovalSecurityError, match="has already been consumed"):
+            validator.execute_controlled_invalidation(sess, act_id1, dossier1)
 
-    # 3. Future-dated approval (timestamp skew attack) must fail closed
-    future_time = time.time() + 3600
-    act_id_fut, dossier_fut = make_dossier("appr_future_01", created_at=future_time)
-    with pytest.raises(ApprovalSecurityError, match="future"):
-        validator.execute_controlled_invalidation(sess, act_id_fut, dossier_fut)
+        # 3. Future-dated approval (timestamp skew attack) must fail closed
+        future_time = time.time() + 3600
+        act_id_fut, dossier_fut = make_dossier("appr_future_01", created_at=future_time)
+        with pytest.raises(ApprovalSecurityError, match="future"):
+            validator.execute_controlled_invalidation(sess, act_id_fut, dossier_fut)
 
-    # 4. Corrupted consumed_approvals.json fails closed
-    consumed_file = tmp_path / "consumed_approvals.json"
-    consumed_file.write_text("{malformed json...", encoding="utf-8")
-    act_id3, dossier3 = make_dossier("appr_03")
-    with pytest.raises(ApprovalSecurityError, match="is corrupted"):
-        validator.execute_controlled_invalidation(sess, act_id3, dossier3)
+        # 4. Corrupted consumed_approvals.json fails closed
+        consumed_file = tmp_path / "consumed_approvals.json"
+        consumed_file.write_text("{malformed json...", encoding="utf-8")
+        act_id3, dossier3 = make_dossier("appr_03")
+        with pytest.raises(ApprovalSecurityError, match="is corrupted"):
+            validator.execute_controlled_invalidation(sess, act_id3, dossier3)
 
-    # 5. Failed mutation leaves approval consumed (cannot be reused)
-    engine_error = MockValidationEngine()
-    def raise_network_fault(req):
-        raise ConnectionResetError("Connection reset by peer")
-    engine_error.send_request = raise_network_fault
+        # 5. Failed mutation leaves approval consumed (cannot be reused)
+        engine_error = MockValidationEngine()
+        def raise_network_fault(req):
+            raise ConnectionResetError("Connection reset by peer")
+        engine_error.send_request = raise_network_fault
 
-    consumed_dir2 = tmp_path / "consumed_test2"
-    consumed_dir2.mkdir()
-    store_dir2 = consumed_dir2 / "ev"
-    store_dir2.mkdir()
-    store2 = EvidenceStore(str(store_dir2))
-    validator_err = PostRevocationResourceValidator(
-        validation_engine=engine_error,
-        state_dir=str(consumed_dir2),
-        scope_engine=mock_scope,
-        approval_key=test_key,
-        evidence_store=store2,
-        program_id="prog1",
-    )
-    act_id4, dossier4 = make_dossier("appr_failed_mutation_04")
-    with pytest.raises(ApprovalSecurityError, match="Failed to execute controlled invalidation mutation"):
-        validator_err.execute_controlled_invalidation(sess, act_id4, dossier4)
-    # Proves approval was consumed BEFORE network attempt: subsequent attempt fails as already consumed
-    with pytest.raises(ApprovalSecurityError, match="has already been consumed"):
-        validator_err.execute_controlled_invalidation(sess, act_id4, dossier4)
-    # Proves approval was consumed BEFORE network attempt: subsequent attempt fails as already consumed
-    with pytest.raises(ApprovalSecurityError, match="has already been consumed"):
-        validator_err.execute_controlled_invalidation(sess, act_id4, dossier4)
+        consumed_dir2 = tmp_path / "consumed_test2"
+        consumed_dir2.mkdir()
+        store_dir2 = consumed_dir2 / "ev"
+        store_dir2.mkdir()
+        store2 = EvidenceStore(str(store_dir2))
+        validator_err = PostRevocationResourceValidator(
+            validation_engine=engine_error,
+            state_dir=str(consumed_dir2),
+            scope_engine=mock_scope,
+            approval_key=test_key,
+            evidence_store=store2,
+            program_id="prog1",
+        )
+        disp_err = _attach_test_dispatcher(validator_err, "prog1", test_key, engine_error, mock_scope, consumed_dir2, "b_replay_err")
+        try:
+            act_id4, dossier4 = make_dossier("appr_failed_mutation_04")
+            with pytest.raises(ApprovalSecurityError, match="Failed to execute controlled invalidation mutation"):
+                validator_err.execute_controlled_invalidation(sess, act_id4, dossier4)
+            # Proves approval was consumed BEFORE network attempt: subsequent attempt fails as already consumed
+            with pytest.raises(ApprovalSecurityError, match="has already been consumed"):
+                validator_err.execute_controlled_invalidation(sess, act_id4, dossier4)
+            with pytest.raises(ApprovalSecurityError, match="has already been consumed"):
+                validator_err.execute_controlled_invalidation(sess, act_id4, dossier4)
+        finally:
+            disp_err.stop()
+    finally:
+        disp.stop()
 
 
 def test_preflight_response_classification_distinctions():
@@ -1440,7 +1488,7 @@ def test_preflight_anonymous_control_differential_cases():
     assert s5b_a.lifecycle == CorrelationLifecycle.UNKNOWN
 
 
-def test_controlled_attestation_security_matrix_d1(tmp_path):
+def test_controlled_attestation_security_matrix_d1(tmp_path, request):
     """
     Comprehensive regression test suite for Correction D1: Controlled Invalidation Attestation.
     Covers all 26 required security scenarios fail-closed.
@@ -1474,7 +1522,8 @@ def test_controlled_attestation_security_matrix_d1(tmp_path):
         state_dir=state_dir,
         program_id="test_d1_program",
     )
-
+    disp = _attach_test_dispatcher(validator, "test_d1_program", appr_key, engine, mock_scope, tmp_path, "d1")
+    request.addfinalizer(disp.stop)
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", volatile_headers={"Authorization": "Bearer t1"})
     target = ResourceAccessTarget(resource_id="res_01", resource_type="DOC", endpoint=doc_url, method="GET")
     baseline = ControlledResponse(200, {"content-type": "application/json"}, doc_body)
@@ -1553,6 +1602,8 @@ def test_controlled_attestation_security_matrix_d1(tmp_path):
         validation_engine=engine, evidence_store=store, scope_engine=RejectScope(),
         approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",
     )
+    val_out_of_scope._dispatcher_client = validator._dispatcher_client
+    val_out_of_scope._dispatcher_verification_key = validator._dispatcher_verification_key
     dossier7 = sign_action_approval({
         "action_type": "LOGOUT",
         "created_at": time.time(),
@@ -1644,6 +1695,8 @@ def test_controlled_attestation_security_matrix_d1(tmp_path):
         validation_engine=engine_fail, evidence_store=store, scope_engine=mock_scope,
         approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",
     )
+    disp_fail = _attach_test_dispatcher(val_fail, "test_d1_program", appr_key, engine_fail, mock_scope, tmp_path, "d1_fail")
+    request.addfinalizer(disp_fail.stop)
     dossier14 = sign_action_approval({
         "action_type": "LOGOUT",
         "created_at": time.time(),
@@ -1667,6 +1720,8 @@ def test_controlled_attestation_security_matrix_d1(tmp_path):
         validation_engine=engine_ambig, evidence_store=store, scope_engine=mock_scope,
         approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",
     )
+    disp_ambig = _attach_test_dispatcher(val_ambig, "test_d1_program", appr_key, engine_ambig, mock_scope, tmp_path, "d1_ambig")
+    request.addfinalizer(disp_ambig.stop)
     dossier15 = sign_action_approval({
         "action_type": "LOGOUT",
         "created_at": time.time(),
@@ -1771,6 +1826,7 @@ def test_controlled_attestation_security_matrix_d1(tmp_path):
         validation_engine=engine, evidence_store=FailingStore(), scope_engine=mock_scope,
         approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",
     )
+    val_fail_store._dispatcher_client = validator._dispatcher_client
     dossier26 = sign_action_approval({
         "action_type": "LOGOUT",
         "created_at": time.time(),
@@ -1807,6 +1863,8 @@ def test_controlled_attestation_security_matrix_d1(tmp_path):
         validation_engine=engine_neg, evidence_store=store, scope_engine=mock_scope,
         approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",
     )
+    disp_neg = _attach_test_dispatcher(val_neg, "test_d1_program", appr_key, engine_neg, mock_scope, tmp_path, "d1_neg")
+    request.addfinalizer(disp_neg.stop)
     dossier29 = sign_action_approval({
         "action_type": "LOGOUT",
         "created_at": time.time(),
@@ -1830,6 +1888,8 @@ def test_controlled_attestation_security_matrix_d1(tmp_path):
         validation_engine=engine, evidence_store=UnwritableStore(), scope_engine=mock_scope,
         approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",
     )
+    val_unwritable._dispatcher_client = validator._dispatcher_client
+    val_unwritable._dispatcher_verification_key = validator._dispatcher_verification_key
     dossier30 = sign_action_approval({
         "action_type": "LOGOUT",
         "created_at": time.time(),

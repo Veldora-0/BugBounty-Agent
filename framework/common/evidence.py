@@ -61,8 +61,9 @@ def sanitize_sensitive_data(text: str) -> str:
 class EvidenceStore:
     """Manages evidence files inside the local program workspace."""
 
-    def __init__(self, evidence_dir: str):
+    def __init__(self, evidence_dir: str, authority_token: Optional[str] = None):
         self.evidence_dir = os.path.abspath(evidence_dir)
+        self._authority_token = authority_token
         os.makedirs(self.evidence_dir, exist_ok=True)
         self._enforce_directory_security()
 
@@ -243,17 +244,17 @@ class EvidenceStore:
         is_verification: bool = False,
         verification_method: Optional[str] = None,
         prefix: str = "controlled_transport",
+        authority_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Trusted transport boundary evidence writer.
-        Invoked strictly during active, verified controlled transport dispatch by ControlledDispatchWorkflow.
-        Extracts application-level transport representations from authentic ControlledRequest and ControlledResponse objects,
-        binds dispatch_op_id and attribution metadata, and marks capture_source and evidence_class
-        as CONTROLLED_TRANSPORT_DISPATCH.
+        Invoked strictly during active, verified controlled transport dispatch by the isolated authority.
+        Fails closed for ordinary callers that do not possess the dispatcher authority token.
         """
-        raise EvidencePersistenceError(
-            "Trusted transport capture is disabled: caller-supplied request/response objects cannot prove transport dispatch"
-        )
+        if self._authority_token is None or authority_token != self._authority_token:
+            raise EvidencePersistenceError(
+                "Trusted transport capture is disabled: caller-supplied request/response objects cannot prove transport dispatch"
+            )
 
         if not dispatch_op_id or not isinstance(dispatch_op_id, str) or not dispatch_op_id.startswith("DISP-OP-"):
             raise ValueError("Invalid dispatch_op_id: must be a valid DISP-OP identifier")

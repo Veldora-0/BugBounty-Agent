@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""
+bb-dispatcher — BugBounty-Agent Isolated Execution Dispatcher Service CLI.
+
+Manages the lifecycle of the isolated execution authority for Mode B controlled invalidation.
+Supports foreground execution, status query, ping, and integration with system service managers.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import sys
+import time
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.auth_correlation.ipc.service import IsolatedExecutionDispatcher
+from framework.auth_correlation.ipc.client import IsolatedDispatcherClient, get_default_ipc_endpoint
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="bb-dispatcher",
+        description="Phase 21: Isolated Execution Dispatcher Service.",
+    )
+    parser.add_argument("--program", default="default-program", help="Target bug bounty program identifier")
+    parser.add_argument("--socket", help="Path to Unix domain socket (Linux)")
+    parser.add_argument("--pipe", help="Name of Windows Named Pipe")
+    parser.add_argument("--key-dir", help="Protected directory for dispatcher private signing keys")
+    parser.add_argument("--state-dir", help="Directory for consumed approvals registry")
+    parser.add_argument("--evidence-dir", help="Protected directory for transport evidence persistence")
+    parser.add_argument("--lab", action="store_true", help="Enable simulation lab loopback allowance")
+    parser.add_argument("--ping", action="store_true", help="Ping the running dispatcher service")
+    parser.add_argument("--status", action="store_true", help="Query status of the running dispatcher service")
+
+    args = parser.parse_args()
+
+    endpoint_type, endpoint_addr = get_default_ipc_endpoint()
+    if args.socket:
+        endpoint_type, endpoint_addr = "unix", args.socket
+    elif args.pipe:
+        endpoint_type, endpoint_addr = "pipe", args.pipe
+
+    client = IsolatedDispatcherClient(endpoint_type=endpoint_type, address=endpoint_addr)
+
+    if args.ping:
+        if client.ping():
+            print(f"[+] Dispatcher at '{endpoint_addr}' ({endpoint_type}) is ALIVE.")
+            return 0
+        else:
+            print(f"[-] Dispatcher at '{endpoint_addr}' is NOT RESPONDING.", file=sys.stderr)
+            return 1
+
+    if args.status:
+        try:
+            status_resp = client.get_status()
+            print(json.dumps(status_resp, indent=2))
+            return 0
+        except Exception as e:
+            print(f"[-] Failed to query dispatcher status: {e}", file=sys.stderr)
+            return 1
+
+    # Foreground Service Execution
+    print(f"[*] Initializing Isolated Execution Dispatcher for program '{args.program}'...")
+    print(f"    Endpoint: {endpoint_type}://{endpoint_addr}")
+
+    dispatcher = IsolatedExecutionDispatcher(
+        program_id=args.program,
+        socket_path=endpoint_addr if endpoint_type == "unix" else None,
+        pipe_name=endpoint_addr if endpoint_type == "pipe" else None,
+        key_dir=args.key_dir,
+        state_dir=args.state_dir,
+        evidence_dir=args.evidence_dir,
+        is_lab=args.lab,
+    )
+
+    dispatcher.start()
+    print("[+] Isolated Execution Dispatcher successfully started.")
+    print("    Press Ctrl+C to terminate.")
+
+    # Handle termination signals cleanly
+    stop_event = False
+
+    def _sig_handler(signum, frame):
+        nonlocal stop_event
+        stop_event = True
+
+    signal.signal(signal.SIGINT, _sig_handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _sig_handler)
+
+    try:
+        while not stop_event:
+            time.sleep(0.5)
+    finally:
+        print("[*] Shutting down dispatcher...")
+        dispatcher.stop()
+        print("[+] Dispatcher stopped cleanly.")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
