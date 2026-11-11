@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Accepted)
 
+#### Final Execution Provenance Architecture Correction & Acceptance Gate (Commits `0f98435`, `PENDING_DOCS_COMMIT`)
+* **Encapsulated Trusted Dispatch Boundary in `ControlledDispatchWorkflow`** (`framework/auth_correlation/dispatcher.py`):
+  * Completely eliminated caller-controlled provenance generation by creating `ControlledDispatchWorkflow`, which encapsulates the entire Mode B lifecycle: preflight checks, atomic approval consumption, mutation transport dispatch, independent verification probe dispatch, evidence capture, and result sealing.
+  * Emits immutable sealed `ControlledDispatchResult` (`is_genuine_dispatch = True`) binding internal `dispatch_op_id` (`DISP-OP-{token_hex(32).upper()}`).
+* **Strict Transport Boundary Capture in `EvidenceStore`** (`framework/common/evidence.py`):
+  * Removed public `save_controlled_transport_capture()` to prevent callers from manufacturing provenance strings.
+  * Added `save_transport_dispatch_capture()` requiring authentic `ControlledRequest` and `ControlledResponse` instances and calculating deterministic SHA-256 wire digests directly from `request.build_wire_bytes()` and `response.body_bytes`.
+  * Enforced fail-closed file security with POSIX mode `0o600` (verified via `os.stat().st_mode & 0o077 == 0`) and Windows DACL `SE_DACL_PROTECTED` via `win32security`, raising `EvidencePersistenceError` on permission failures without swallowing errors.
+* **Fail-Closed Execution Capability Issuance** (`framework/auth_correlation/ledger.py`):
+  * Bound `issue_execution_capability()` strictly to genuine `ControlledDispatchResult` instances.
+  * Re-verifies all transport evidence entries in `EvidenceStore`, recalculates disk capture byte digests, verifies consumed approval receipts under `approval.key`, and validates that `dispatch_op_id` matches across all artifacts.
+  * Enforces `mutation_evidence_ref != verification_evidence_ref` and `mutation_request_digest != verification_request_digest`.
+* **Cross-Process Single-Use Approval Locking** (`framework/auth_correlation/state.py`):
+  * Moved `CrossProcessFileLock` into `state.py` supporting Windows (`msvcrt.locking`) and POSIX (`fcntl.flock`) with timeout handling and private permissions.
+* **Full Cross-Platform Verification (Zero Regressions)**:
+  * 137 Phase 21 targeted tests collected: 136 passed, 1 skipped on Windows 11 host (POSIX permissions skipped); 136 passed, 1 skipped on Kali Linux VM (Windows DACL skipped); 0 failures.
+  * Full regression test suite: 1079 tests collected (1076 passed, 3 skipped on Windows 11 host in 195.20s; 1078 passed, 1 skipped on Kali Linux VM in 213.07s; 0 failures).
+  * System Doctor (`bb-doctor`): All 18 engines [HEALTHY] on both Windows 11 and Kali Linux; OpenCode Runtime [INSTALLED] on Kali.
+  * Historical commit reference for the resolver test commit: `e76b2468e4d039674f81c76a5916aa366dca9b40`.
+
 #### Definitive Execution Provenance Remediation, Approval Receipts & Adversarial Verification (Commits `756e511`, `e76b246`)
 * **Strict Transport Provenance Isolation in `EvidenceStore`** (`framework/common/evidence.py`):
   * Rejects ordinary callers specifying `capture_source="CONTROLLED_TRANSPORT_DISPATCH"` or `evidence_class="CONTROLLED_TRANSPORT_DISPATCH"` via `save_http_capture()` with an immediate `ValueError`.

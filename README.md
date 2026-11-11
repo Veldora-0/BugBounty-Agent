@@ -128,7 +128,7 @@ BugBounty-Agent/
 │   ├── report.md              # 17-section markdown report template
 │   └── config.example.yaml    # Global framework configuration template
 │
-├── tests/                     # Automated regression test suite (56 test modules; 1059 tests under pytest)
+├── tests/                     # Automated regression test suite (56 test modules; 1079 tests under pytest)
 │   ├── test_scope.py          # Scope boundaries and DNS resolution tests
 │   ├── test_asset_engine.py   # Asset graph and subdomain intelligence tests
 │   ├── test_api_engine.py     # OpenAPI, GraphQL, and streaming byte budget tests
