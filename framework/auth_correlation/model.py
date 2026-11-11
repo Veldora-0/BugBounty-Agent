@@ -72,6 +72,8 @@ ATTESTATION_REF_PATTERN = re.compile(r"^ATT-[a-fA-F0-9]{64}$")
 ATTESTATION_SIG_PATTERN = re.compile(r"^ATT-SIG-[a-fA-F0-9]{64}$")
 ACTION_ID_PATTERN = re.compile(r"^ACT-[a-fA-F0-9]{64}$")
 ACTION_DOSSIER_DIGEST_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
+EXECUTION_ID_PATTERN = re.compile(r"^EXEC-[0-9A-F]{64}$")
+EXECUTION_SIG_PATTERN = re.compile(r"^EXEC-SIG-[0-9A-F]{64}$")
 ISO_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 URL_PATH_PATTERN = re.compile(r"^/[a-zA-Z0-9_\-\./?=&%]*$")
 HYPOTHESIS_ID_PATTERN = re.compile(r"^HYP-[a-zA-Z0-9_\-\.]{1,32}$")
@@ -367,6 +369,8 @@ class ControlledExecutionResult:
     invalidation_verification_result: str
     verification_method: str
     verification_evidence_ref: str
+    execution_id: Optional[str] = None
+    execution_signature: Optional[str] = None
 
     def __repr__(self) -> str:
         aid = _safe_repr(self.action_id, ACTION_ID_PATTERN, "UNVALIDATED_ACTION_ID")
@@ -407,8 +411,23 @@ class ControlledExecutionResult:
             raise AttestationSecurityError(f"Invalidation verification result '{ver_res}' does not satisfy verification criteria")
 
         ver_meth = assert_safe_string(self.verification_method, "verification_method")
-        if ver_meth not in ("ACTION_MUTATION_AND_PROBE_VERIFIED", "MUTATION_EXPLICIT_REVOCATION_VERIFIED"):
+        if ver_meth not in (
+            "ACTION_MUTATION_AND_PROBE_VERIFIED",
+            "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+            "MUTATION_STRUCTURED_REVOCATION_CONFIRMED",
+            "MUTATION_LOGIN_REDIRECT_AND_COOKIE_CLEARED",
+            "POST_MUTATION_PROBE_CONFIRMED_401",
+            "POST_MUTATION_PROBE_CONFIRMED_REDIRECT_LOGIN",
+        ):
             raise AttestationSecurityError(f"Verification method '{ver_meth}' is not recognized")
+
+        eid = None
+        if self.execution_id is not None:
+            eid = assert_safe_string(self.execution_id, "execution_id", EXECUTION_ID_PATTERN)
+
+        esig = None
+        if self.execution_signature is not None:
+            esig = assert_safe_string(self.execution_signature, "execution_signature", EXECUTION_SIG_PATTERN)
 
         return {
             "action_id": aid,
@@ -428,6 +447,8 @@ class ControlledExecutionResult:
             "invalidation_verification_result": ver_res,
             "verification_method": ver_meth,
             "verification_evidence_ref": ver_ref,
+            "execution_id": eid,
+            "execution_signature": esig,
         }
 
     def to_dict(self) -> Dict[str, Any]:

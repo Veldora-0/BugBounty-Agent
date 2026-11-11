@@ -31,6 +31,7 @@ from framework.auth_correlation.model import (
     CorrelationLifecycle,
     ProbeStatus,
 )
+from framework.auth_correlation.ledger import ExecutionLedger
 from framework.auth_correlation.preflight import DualControlPreflightValidator
 from framework.auth_correlation.revocation import PostRevocationResourceValidator, ApprovalSecurityError
 from framework.auth_correlation.pre_mfa import PreMfaPrivilegeValidator
@@ -79,6 +80,7 @@ class AuthCorrelationEngine:
         if self.evidence_store is None:
             from framework.common.evidence import EvidenceStore
             self.evidence_store = EvidenceStore(os.path.join(self.workspace_root, "evidence"))
+        self.execution_ledger = ExecutionLedger(state_dir=os.path.join(self.workspace_root, "state"))
         self.preflight_validator = DualControlPreflightValidator(
             validation_engine=self.validation_engine,
             program_dir=self.workspace_root,
@@ -90,6 +92,7 @@ class AuthCorrelationEngine:
             state_dir=os.path.join(self.workspace_root, "state"),
             scope_engine=self.scope_engine,
             evidence_store=self.evidence_store,
+            execution_ledger=self.execution_ledger,
         )
         self.pre_mfa_validator = PreMfaPrivilegeValidator(
             validation_engine=self.validation_engine,

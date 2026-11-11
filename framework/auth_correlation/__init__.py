@@ -33,6 +33,12 @@ from framework.auth_correlation.cvss import (
 from framework.auth_correlation.preflight import (
     DualControlPreflightValidator,
 )
+from framework.auth_correlation.ledger import (
+    ExecutionLedger,
+    ExecutionRecord,
+    ExecutionProvenanceError,
+    get_or_create_execution_key,
+)
 from framework.auth_correlation.revocation import (
     PostRevocationResourceValidator,
     ApprovalSecurityError,
@@ -85,6 +91,10 @@ __all__ = [
     "DualControlPreflightValidator",
     "PostRevocationResourceValidator",
     "ApprovalSecurityError",
+    "ExecutionLedger",
+    "ExecutionRecord",
+    "ExecutionProvenanceError",
+    "get_or_create_execution_key",
     "get_or_create_attestation_key",
     "create_controlled_invalidation_attestation",
     "create_operator_invalidation_attestation",

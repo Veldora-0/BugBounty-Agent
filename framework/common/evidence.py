@@ -3,6 +3,7 @@ Evidence Manager and Data Sanitizer for BugBounty-Agent.
 
 Preserves raw HTTP captures, requests, responses, and screenshots with cryptographic
 hash integrity while redacting sensitive tokens, session cookies, and API keys.
+Enforces private permissions, symlink rejection, atomic writes, and fail-closed digest verification.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import stat
 from typing import Any, Dict, Optional
 
 
@@ -37,6 +40,7 @@ _SENSITIVE_PATTERNS = [
     (re.compile(r"-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9_-]+ )?PRIVATE KEY-----", re.IGNORECASE), "[REDACTED_PRIVATE_KEY_BY_BB_AGENT]"),
 ]
 
+SAFE_PREFIX_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def sanitize_sensitive_data(text: str) -> str:
@@ -55,6 +59,45 @@ class EvidenceStore:
     def __init__(self, evidence_dir: str):
         self.evidence_dir = os.path.abspath(evidence_dir)
         os.makedirs(self.evidence_dir, exist_ok=True)
+        self._enforce_directory_security()
+
+    def _enforce_directory_security(self) -> None:
+        """Verifies that evidence_dir is secure, rejecting symlinks and loose permissions."""
+        if os.path.islink(self.evidence_dir):
+            raise ValueError(f"Evidence directory '{self.evidence_dir}' is a symbolic link")
+        if os.name == "nt":
+            from framework.auth_correlation.state import _enforce_windows_directory_dacl, _verify_windows_directory_security
+            try:
+                _enforce_windows_directory_dacl(self.evidence_dir)
+            except Exception:
+                pass
+            _verify_windows_directory_security(self.evidence_dir)
+        else:
+            st = os.lstat(self.evidence_dir)
+            if st.st_uid != os.getuid():
+                raise ValueError("Evidence directory ownership mismatch")
+            if st.st_mode & 0o077 != 0:
+                try:
+                    os.chmod(self.evidence_dir, 0o700)
+                except OSError:
+                    pass
+            st_after = os.lstat(self.evidence_dir)
+            if st_after.st_mode & 0o077 != 0:
+                raise ValueError("Evidence directory permissions are not private (0700 required)")
+
+    def is_writable(self) -> bool:
+        """Verifies that the evidence directory exists, is secure, and is writable."""
+        try:
+            if not os.path.isdir(self.evidence_dir) or os.path.islink(self.evidence_dir):
+                return False
+            test_fname = f".write_test_{os.getpid()}_{secrets.token_hex(4)}.tmp"
+            test_path = os.path.join(self.evidence_dir, test_fname)
+            with open(test_path, "w", encoding="utf-8") as f:
+                f.write("probe")
+            os.remove(test_path)
+            return True
+        except Exception:
+            return False
 
     def save_http_capture(
         self,
@@ -64,46 +107,64 @@ class EvidenceStore:
         prefix: str = "http",
     ) -> Dict[str, Any]:
         """
-        Sanitizes and saves an HTTP request/response transaction.
+        Sanitizes and saves an HTTP request/response transaction atomically.
         Calculates SHA-256 hash for provenance and non-repudiation.
         """
+        clean_prefix = prefix.strip()
+        if not SAFE_PREFIX_PATTERN.match(clean_prefix):
+            clean_prefix = "http"
+
         clean_req = sanitize_sensitive_data(request_text)
         clean_res = sanitize_sensitive_data(response_text)
+
+        req_digest = hashlib.sha256(clean_req.encode("utf-8")).hexdigest()
+        res_digest = hashlib.sha256(clean_res.encode("utf-8")).hexdigest()
 
         combined = f"--- REQUEST ---\n{clean_req}\n\n--- RESPONSE ---\n{clean_res}\n"
         digest = hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
         timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        filename = f"{prefix}_{timestamp_str}_{digest[:8]}.txt"
+        filename = f"{clean_prefix}_{timestamp_str}_{digest[:8]}.txt"
         file_path = os.path.join(self.evidence_dir, filename)
 
-        with open(file_path, "w", encoding="utf-8", newline="\n") as f:
+        # Atomic write of capture content
+        tmp_capture = f"{file_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
+        with open(tmp_capture, "w", encoding="utf-8", newline="\n") as f:
             f.write(combined)
+        os.replace(tmp_capture, file_path)
 
         # Meta descriptor
-        meta_filename = f"{prefix}_{timestamp_str}_{digest[:8]}.meta.json"
+        meta_filename = f"{clean_prefix}_{timestamp_str}_{digest[:8]}.meta.json"
         meta_path = os.path.join(self.evidence_dir, meta_filename)
         meta_info = {
             "evidence_id": f"EVID-{digest[:12].upper()}",
             "filename": filename,
             "sha256": digest,
+            "request_sha256": req_digest,
+            "response_sha256": res_digest,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "metadata": metadata or {},
         }
-        with open(meta_path, "w", encoding="utf-8") as f:
+        tmp_meta = f"{meta_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
+        with open(tmp_meta, "w", encoding="utf-8") as f:
             json.dump(meta_info, f, indent=2)
+        os.replace(tmp_meta, meta_path)
 
         return {
             "evidence_id": meta_info["evidence_id"],
             "path": file_path,
             "sha256": digest,
             "meta_path": meta_path,
+            "request_sha256": req_digest,
+            "response_sha256": res_digest,
         }
 
     def get_evidence(self, evidence_id: str) -> Optional[Dict[str, Any]]:
         """
         Retrieves evidence descriptor by evidence ID from the evidence directory.
-        Returns meta dict if found, or None if not found or malformed.
+        Verifies that the capture file exists on disk, is a regular file within evidence_dir,
+        and recomputes SHA-256 byte digest to ensure byte integrity.
+        Returns meta dict if valid and uncorrupted, or None if not found, malformed, or tampered.
         """
         if not evidence_id or not isinstance(evidence_id, str):
             return None
@@ -115,15 +176,40 @@ class EvidenceStore:
             for fname in sorted(os.listdir(self.evidence_dir)):
                 if fname.endswith(".meta.json"):
                     meta_path = os.path.join(self.evidence_dir, fname)
+                    if os.path.islink(meta_path):
+                        continue
                     try:
                         with open(meta_path, "r", encoding="utf-8") as f:
                             meta = json.load(f)
                         if isinstance(meta, dict) and meta.get("evidence_id") == target_id:
+                            filename = meta.get("filename")
+                            if not filename or not isinstance(filename, str):
+                                continue
+                            # Prevent directory traversal
+                            base_filename = os.path.basename(filename)
+                            if base_filename != filename or ".." in filename or "/" in filename or "\\" in filename:
+                                continue
+
+                            capture_path = os.path.join(self.evidence_dir, base_filename)
+                            if not os.path.isfile(capture_path) or os.path.islink(capture_path):
+                                continue
+
+                            # Verify capture file is inside evidence_dir
+                            real_dir = os.path.realpath(self.evidence_dir)
+                            real_cap = os.path.realpath(capture_path)
+                            if os.path.commonpath([real_dir, real_cap]) != real_dir:
+                                continue
+
+                            # Recompute SHA-256 byte digest
+                            stored_sha256 = meta.get("sha256", "")
+                            with open(capture_path, "rb") as cf:
+                                actual_digest = hashlib.sha256(cf.read()).hexdigest()
+                            if actual_digest.lower() != stored_sha256.lower():
+                                continue
+
                             meta_copy = dict(meta)
                             meta_copy["meta_path"] = meta_path
-                            filename = meta_copy.get("filename")
-                            if filename and isinstance(filename, str):
-                                meta_copy["capture_path"] = os.path.join(self.evidence_dir, os.path.basename(filename))
+                            meta_copy["capture_path"] = capture_path
                             return meta_copy
                     except Exception:
                         continue
@@ -133,8 +219,9 @@ class EvidenceStore:
 
     def save_invalidation_attestation(self, attestation_record: Dict[str, Any]) -> str:
         """
-        Persists an authenticated invalidation event attestation record.
-        Saves as attestation_<original_evidence_ref>.att.json in evidence_dir.
+        Persists an authenticated invalidation event attestation record atomically.
+        Saves as attestation_<attestation_id>.att.json in evidence_dir with an alias
+        attestation_<original_evidence_ref>.att.json.
         Returns attestation_id.
         """
         if not isinstance(attestation_record, dict):
@@ -149,14 +236,19 @@ class EvidenceStore:
         filename = f"attestation_{att_clean}.att.json"
         att_path = os.path.join(self.evidence_dir, filename)
 
-        with open(att_path, "w", encoding="utf-8") as f:
+        # Atomic write of primary attestation record
+        tmp_att = f"{att_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
+        with open(tmp_att, "w", encoding="utf-8") as f:
             json.dump(attestation_record, f, indent=2)
+        os.replace(tmp_att, att_path)
 
-        # Also persist direct lookup alias by original evidence reference
+        # Also persist direct lookup alias by original evidence reference atomically
         orig_alias_path = os.path.join(self.evidence_dir, f"attestation_{orig_clean}.att.json")
         try:
-            with open(orig_alias_path, "w", encoding="utf-8") as f:
+            tmp_alias = f"{orig_alias_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
+            with open(tmp_alias, "w", encoding="utf-8") as f:
                 json.dump(attestation_record, f, indent=2)
+            os.replace(tmp_alias, orig_alias_path)
         except Exception:
             pass
 
@@ -166,6 +258,7 @@ class EvidenceStore:
         """
         Retrieves an invalidation event attestation record by attestation ID (ATT-...)
         or by associated original evidence reference (EVID-...).
+        Verifies that the attestation file is a regular file within evidence_dir and not a symlink.
         Returns dict copy with att_path, or None if not found or malformed.
         """
         if not reference or not isinstance(reference, str):
@@ -176,7 +269,7 @@ class EvidenceStore:
 
         # 1. Direct lookup by original_evidence_ref
         direct_path = os.path.join(self.evidence_dir, f"attestation_{target_ref}.att.json")
-        if os.path.isfile(direct_path):
+        if os.path.isfile(direct_path) and not os.path.islink(direct_path):
             try:
                 with open(direct_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -192,6 +285,8 @@ class EvidenceStore:
             for fname in sorted(os.listdir(self.evidence_dir)):
                 if fname.endswith(".att.json"):
                     att_path = os.path.join(self.evidence_dir, fname)
+                    if os.path.islink(att_path) or not os.path.isfile(att_path):
+                        continue
                     try:
                         with open(att_path, "r", encoding="utf-8") as f:
                             data = json.load(f)

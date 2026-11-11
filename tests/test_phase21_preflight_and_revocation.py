@@ -17,6 +17,11 @@ import time
 import pytest
 
 from framework.auth_correlation.cvss import CVSS31Calculator
+from framework.auth_correlation.ledger import (
+    ExecutionLedger,
+    ExecutionRecord,
+    ExecutionProvenanceError,
+)
 from framework.auth_correlation.model import (
     CorrelatedSessionContext,
     ControlledExecutionResult,
@@ -31,6 +36,7 @@ from framework.auth_correlation.revocation import (
     ApprovalSecurityError,
     classify_revocation_response,
     create_controlled_invalidation_attestation,
+    _create_controlled_invalidation_attestation_from_record,
     _create_controlled_invalidation_attestation_from_result,
     create_operator_invalidation_attestation,
     get_or_create_attestation_key,
@@ -149,10 +155,13 @@ def make_valid_invalidation_evidence(
     program_id: Optional[str] = None,
     attestation_key: Optional[bytes] = None,
     key_dir: Optional[str] = None,
+    execution_ledger: Optional[Any] = None,
+    state_dir: Optional[str] = None,
 ) -> str:
     """Helper to persist a valid, attributable invalidation event with authentic attestation into EvidenceStore."""
     clean_req = "POST /auth/logout\nAuthorization: Bearer revoked"
     clean_res = 'HTTP 200 OK\n{"status": "logged_out", "revoked": true}'
+    prog_id = program_id or "default-program"
     res = store.save_http_capture(
         request_text=clean_req,
         response_text=clean_res,
@@ -160,7 +169,7 @@ def make_valid_invalidation_evidence(
             "event_type": event_type,
             "session_ref": sess.session_ref,
             "principal_id": sess.principal_id,
-            "program_id": program_id or "default-program",
+            "program_id": prog_id,
         },
         prefix="inv_proof",
     )
@@ -171,7 +180,7 @@ def make_valid_invalidation_evidence(
             "event_type": event_type,
             "session_ref": sess.session_ref,
             "principal_id": sess.principal_id,
-            "program_id": program_id or "default-program",
+            "program_id": prog_id,
             "verification_method": "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
         },
         prefix="inv_ver_proof",
@@ -179,27 +188,40 @@ def make_valid_invalidation_evidence(
     from datetime import datetime, timezone
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     aid = "ACT-0000000000000000000000000000000000000000000000000000000000000001"
-    exec_result = ControlledExecutionResult(
+
+    if state_dir is None:
+        state_dir = os.path.join(os.path.dirname(os.path.abspath(store.evidence_dir)), "state")
+    os.makedirs(state_dir, exist_ok=True)
+
+    ledger = execution_ledger or ExecutionLedger(state_dir=state_dir, key_dir=key_dir)
+    exec_rec = ledger.record_execution(
         action_id=aid,
         action_dossier_digest=aid[4:],
-        original_evidence_ref=res["evidence_id"],
-        mutation_evidence_ref=res["evidence_id"],
-        mutation_request_evidence=clean_req,
-        mutation_response_evidence=clean_res,
+        approval_id="APPR-00000000000000000000000000000001",
+        program_id=prog_id,
         session_ref=sess.session_ref,
         principal_id=sess.principal_id,
-        program_id=program_id or "default-program",
+        test_account=sess.principal_id,
         target_endpoint="http://127.0.0.1:8080/auth/logout",
         http_method="POST",
         action_type="LOGOUT",
+        mutation_evidence_ref=res["evidence_id"],
+        mutation_request_digest=res["request_sha256"],
+        mutation_response_digest=res["response_sha256"],
+        mutation_status_code=200,
+        verification_evidence_ref=ver_cap["evidence_id"],
+        verification_request_digest=ver_cap["request_sha256"],
+        verification_response_digest=ver_cap["response_sha256"],
+        verification_status_code=401,
+        verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+        invalidation_verification_result="REVOKED",
         execution_timestamp=ts,
         verification_timestamp=ts,
-        invalidation_verification_result="REVOKED",
-        verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
-        verification_evidence_ref=ver_cap["evidence_id"],
     )
-    att_rec = _create_controlled_invalidation_attestation_from_result(
-        execution_result=exec_result,
+
+    att_rec = _create_controlled_invalidation_attestation_from_record(
+        execution_record=exec_rec,
+        execution_ledger=ledger,
         evidence_store=store,
         attestation_key=attestation_key,
         key_dir=key_dir,
@@ -331,27 +353,38 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
     def _make_att(aid, orig_ref, sess_ctx, prog="default-program", ev_type="SESSION_REVOCATION", key=att_key):
         from datetime import datetime, timezone
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        res = ControlledExecutionResult(
-            action_id=aid,
-            action_dossier_digest=aid[4:] if aid.startswith("ACT-") else "0"*64,
-            original_evidence_ref=orig_ref,
-            mutation_evidence_ref=orig_ref,
-            mutation_request_evidence="POST /logout",
-            mutation_response_evidence="HTTP 200 OK\nlogged_out",
+        ledger = validator.ledger
+        ev_item = store.get_evidence(orig_ref)
+        req_dig = ev_item["request_sha256"] if ev_item else "0"*64
+        res_dig = ev_item["response_sha256"] if ev_item else "0"*64
+        clean_aid = aid if aid.startswith("ACT-") else f"ACT-{aid.ljust(64, '0')[:64]}"
+        exec_rec = ledger.record_execution(
+            action_id=clean_aid,
+            action_dossier_digest=clean_aid[4:],
+            approval_id=f"APPR-{clean_aid[4:36]}",
+            program_id=prog,
             session_ref=sess_ctx.session_ref,
             principal_id=sess_ctx.principal_id,
-            program_id=prog,
+            test_account=sess_ctx.principal_id,
             target_endpoint="https://target.local/auth/logout",
             http_method="POST",
             action_type="LOGOUT",
+            mutation_evidence_ref=orig_ref,
+            mutation_request_digest=req_dig,
+            mutation_response_digest=res_dig,
+            mutation_status_code=200,
+            verification_evidence_ref=orig_ref,
+            verification_request_digest=req_dig,
+            verification_response_digest=res_dig,
+            verification_status_code=401,
+            verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+            invalidation_verification_result="REVOKED",
             execution_timestamp=ts,
             verification_timestamp=ts,
-            invalidation_verification_result="REVOKED",
-            verification_method="MUTATION_EXPLICIT_REVOCATION_VERIFIED",
-            verification_evidence_ref=orig_ref,
         )
-        return _create_controlled_invalidation_attestation_from_result(
-            execution_result=res,
+        return _create_controlled_invalidation_attestation_from_record(
+            execution_record=exec_rec,
+            execution_ledger=ledger,
             evidence_store=store,
             attestation_key=key,
         )
@@ -545,7 +578,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
 
     # 11. Missing original capture rejection
     res11 = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
+        request_text="POST /logout\nTest: 11", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
     _make_att(
@@ -564,7 +597,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
 
     # 12. Modified original capture rejection
     res12 = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
+        request_text="POST /logout\nTest: 12", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
     _make_att(
@@ -578,13 +611,13 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
         f.write(b"\nTAMPERED_CONTENT_DIGEST_CORRUPTED")
     v12_ok, v12_reason, _ = validator.verify_invalidation_provenance(res12["evidence_id"], sess)
     assert not v12_ok
-    assert "digest mismatch" in v12_reason
+    assert "digest mismatch" in v12_reason or "missing from EvidenceStore" in v12_reason
     s12, f12 = validator.evaluate_revoked_session(sess, target, baseline, res12["evidence_id"])
     assert s12 == "INCONCLUSIVE" and f12 is None
 
     # 13. Unknown key identifier rejection
     res13 = store.save_http_capture(
-        request_text="POST /logout", response_text="HTTP 200 OK",
+        request_text="POST /logout\nTest: 13", response_text="HTTP 200 OK",
         metadata={"event_type": "SESSION_REVOCATION", "session_ref": sess.session_ref, "principal_id": sess.principal_id, "program_id": "default-program"},
     )
     att13 = _make_att(
@@ -811,11 +844,16 @@ def test_revocation_mode_b_controlled_invalidation_approval(tmp_path):
     })
     test_key = b"A" * 32
     mock_scope = MockScopeEngine()
+    store_dir = tmp_path / "ev_store_b_approval"
+    store_dir.mkdir()
+    store = EvidenceStore(str(store_dir))
     validator = PostRevocationResourceValidator(
         validation_engine=engine,
         state_dir=str(tmp_path),
         scope_engine=mock_scope,
         approval_key=test_key,
+        evidence_store=store,
+        program_id="test_prog",
     )
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1", volatile_headers={"Authorization": "Bearer active_token"})
 
@@ -824,7 +862,7 @@ def test_revocation_mode_b_controlled_invalidation_approval(tmp_path):
     dossier_data = {
         "target_endpoint": target_url,
         "method": "POST",
-        "test_account": "user_test_b",
+        "test_account": "u1",
         "action_type": "ACTION-LOGOUT",
         "program_id": "test_prog",
         "unique_approval_id": "appr_001",
@@ -861,6 +899,8 @@ def test_revocation_mode_b_controlled_invalidation_approval(tmp_path):
         state_dir=str(tmp_path),
         scope_engine=None,
         approval_key=test_key,
+        evidence_store=store,
+        program_id="test_prog",
     )
     valid_dossier2 = sign_action_approval({**dossier_data, "unique_approval_id": "appr_003"}, approval_key=test_key)
     with pytest.raises(ApprovalSecurityError, match="Mandatory ScopeEngine is required"):
@@ -884,6 +924,37 @@ def test_revocation_mode_b_controlled_invalidation_approval(tmp_path):
     with pytest.raises(ApprovalSecurityError, match="invalid or unsupported scheme"):
         validator.execute_controlled_invalidation(sess, ftp_dossier["action_id"], ftp_dossier)
 
+    # 8. Missing EvidenceStore fails closed
+    validator_no_store = PostRevocationResourceValidator(
+        validation_engine=engine,
+        state_dir=str(tmp_path),
+        scope_engine=mock_scope,
+        approval_key=test_key,
+        evidence_store=None,
+        program_id="test_prog",
+    )
+    valid_dossier8 = sign_action_approval({**dossier_data, "unique_approval_id": "appr_008"}, approval_key=test_key)
+    with pytest.raises(ApprovalSecurityError, match="EvidenceStore is mandatory"):
+        validator_no_store.execute_controlled_invalidation(sess, valid_dossier8["action_id"], valid_dossier8)
+
+    # 9. Attribution mismatch on test_account
+    dossier_mismatch_acc = sign_action_approval({
+        **dossier_data,
+        "test_account": "wrong_user",
+        "unique_approval_id": "appr_mismatch_acc",
+    }, approval_key=test_key)
+    with pytest.raises(ApprovalSecurityError, match="does not match session principal_id"):
+        validator.execute_controlled_invalidation(sess, dossier_mismatch_acc["action_id"], dossier_mismatch_acc)
+
+    # 10. Attribution mismatch on program_id
+    dossier_mismatch_prog = sign_action_approval({
+        **dossier_data,
+        "program_id": "other_program",
+        "unique_approval_id": "appr_mismatch_prog",
+    }, approval_key=test_key)
+    with pytest.raises(ApprovalSecurityError, match="does not match validator program_id"):
+        validator.execute_controlled_invalidation(sess, dossier_mismatch_prog["action_id"], dossier_mismatch_prog)
+
 
 def test_revocation_mode_b_replay_and_security_edge_cases(tmp_path):
     """Verifies replay rejection, future timestamps, and corrupted approval tracking in Mode B."""
@@ -894,11 +965,16 @@ def test_revocation_mode_b_replay_and_security_edge_cases(tmp_path):
     })
     test_key = b"B" * 32
     mock_scope = MockScopeEngine()
+    store_dir = tmp_path / "ev_store_b_replay"
+    store_dir.mkdir()
+    store = EvidenceStore(str(store_dir))
     validator = PostRevocationResourceValidator(
         validation_engine=engine,
         state_dir=str(tmp_path),
         scope_engine=mock_scope,
         approval_key=test_key,
+        evidence_store=store,
+        program_id="prog1",
     )
     sess = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000001", principal_id="u1")
 
@@ -906,7 +982,7 @@ def test_revocation_mode_b_replay_and_security_edge_cases(tmp_path):
         data = {
             "target_endpoint": target_url,
             "method": "POST",
-            "test_account": "user_test_b",
+            "test_account": "u1",
             "action_type": "LOGOUT",
             "program_id": "prog1",
             "unique_approval_id": appr_id,
@@ -945,14 +1021,22 @@ def test_revocation_mode_b_replay_and_security_edge_cases(tmp_path):
 
     consumed_dir2 = tmp_path / "consumed_test2"
     consumed_dir2.mkdir()
+    store_dir2 = consumed_dir2 / "ev"
+    store_dir2.mkdir()
+    store2 = EvidenceStore(str(store_dir2))
     validator_err = PostRevocationResourceValidator(
         validation_engine=engine_error,
         state_dir=str(consumed_dir2),
         scope_engine=mock_scope,
         approval_key=test_key,
+        evidence_store=store2,
+        program_id="prog1",
     )
     act_id4, dossier4 = make_dossier("appr_failed_mutation_04")
     with pytest.raises(ApprovalSecurityError, match="Failed to execute controlled invalidation mutation"):
+        validator_err.execute_controlled_invalidation(sess, act_id4, dossier4)
+    # Proves approval was consumed BEFORE network attempt: subsequent attempt fails as already consumed
+    with pytest.raises(ApprovalSecurityError, match="has already been consumed"):
         validator_err.execute_controlled_invalidation(sess, act_id4, dossier4)
     # Proves approval was consumed BEFORE network attempt: subsequent attempt fails as already consumed
     with pytest.raises(ApprovalSecurityError, match="has already been consumed"):
@@ -1430,6 +1514,8 @@ def test_controlled_attestation_security_matrix_d1(tmp_path):
 
     # 26. Evidence persistence failure
     class FailingStore:
+        def is_writable(self):
+            return True
         def save_http_capture(self, *a, **kw):
             raise OSError("Disk quota exceeded")
     val_fail_store = PostRevocationResourceValidator(
@@ -1447,8 +1533,97 @@ def test_controlled_attestation_security_matrix_d1(tmp_path):
         "unique_approval_id": "appr_d1_26",
     }, approval_key=appr_key)
     sess26 = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000026", principal_id="u1")
-    with pytest.raises(EvidencePersistenceError, match="Failed to persist controlled revocation evidence"):
+    with pytest.raises(EvidencePersistenceError, match="Failed to record execution or issue attestation|Failed to persist controlled revocation evidence"):
         val_fail_store.execute_controlled_invalidation(sess26, dossier26["action_id"], dossier26)
+
+    # 27. Fabricated execution ID in attestation (not found in ExecutionLedger)
+    first_eid = base_rec["execution_id"]
+    att_rec27 = dict(base_rec)
+    att_rec27["execution_id"] = "EXEC-" + "0" * 64
+    store.save_invalidation_attestation(att_rec27)
+    v27_ok, v27_reason, _ = validator.verify_invalidation_provenance(sess.invalidation_evidence_ref, sess, program_id="test_d1_program")
+    assert v27_ok is False
+    assert "digest mismatch" in v27_reason or "missing from ExecutionLedger" in v27_reason
+    store.save_invalidation_attestation(base_rec)
+
+    # 28. Single-use execution record claim replay rejected
+    with pytest.raises(ExecutionProvenanceError, match="already been claimed"):
+        validator.ledger.claim_for_attestation(first_eid, "ATT-REPLAY-ATTEMPT-01")
+
+    # 29. Negative revocation statement in mutation response fails closed
+    engine_neg = MockValidationEngine({
+        logout_url: ControlledResponse(200, {"content-type": "application/json"}, b'{"status": "Your session was not revoked"}'),
+    })
+    val_neg = PostRevocationResourceValidator(
+        validation_engine=engine_neg, evidence_store=store, scope_engine=mock_scope,
+        approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",
+    )
+    dossier29 = sign_action_approval({
+        "action_type": "LOGOUT",
+        "created_at": time.time(),
+        "method": "POST",
+        "program_id": "test_d1_program",
+        "target_endpoint": logout_url,
+        "test_account": "u1",
+        "ttl": 300,
+        "unique_approval_id": "appr_d1_29",
+    }, approval_key=appr_key)
+    sess29 = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000029", principal_id="u1")
+    success29 = val_neg.execute_controlled_invalidation(sess29, dossier29["action_id"], dossier29)
+    assert success29 is False
+    assert sess29.invalidation_evidence_ref is None
+
+    # 30. Unwritable EvidenceStore before mutation fails closed
+    class UnwritableStore:
+        def is_writable(self):
+            return False
+    val_unwritable = PostRevocationResourceValidator(
+        validation_engine=engine, evidence_store=UnwritableStore(), scope_engine=mock_scope,
+        approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",
+    )
+    dossier30 = sign_action_approval({
+        "action_type": "LOGOUT",
+        "created_at": time.time(),
+        "method": "POST",
+        "program_id": "test_d1_program",
+        "target_endpoint": logout_url,
+        "test_account": "u1",
+        "ttl": 300,
+        "unique_approval_id": "appr_d1_30",
+    }, approval_key=appr_key)
+    sess30 = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000030", principal_id="u1")
+    with pytest.raises(ApprovalSecurityError, match="EvidenceStore is not writable or evidence directory is insecure"):
+        val_unwritable.execute_controlled_invalidation(sess30, dossier30["action_id"], dossier30)
+
+    # 31. Attribution mismatch on test_account in Mode B fails closed
+    dossier31 = sign_action_approval({
+        "action_type": "LOGOUT",
+        "created_at": time.time(),
+        "method": "POST",
+        "program_id": "test_d1_program",
+        "target_endpoint": logout_url,
+        "test_account": "wrong_account",
+        "ttl": 300,
+        "unique_approval_id": "appr_d1_31",
+    }, approval_key=appr_key)
+    sess31 = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000031", principal_id="u1")
+    with pytest.raises(ApprovalSecurityError, match="does not match session principal_id"):
+        validator.execute_controlled_invalidation(sess31, dossier31["action_id"], dossier31)
+
+    # 32. Attribution mismatch on program_id in Mode B fails closed
+    dossier32 = sign_action_approval({
+        "action_type": "LOGOUT",
+        "created_at": time.time(),
+        "method": "POST",
+        "program_id": "foreign_program",
+        "target_endpoint": logout_url,
+        "test_account": "u1",
+        "ttl": 300,
+        "unique_approval_id": "appr_d1_32",
+    }, approval_key=appr_key)
+    sess32 = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000032", principal_id="u1")
+    with pytest.raises(ApprovalSecurityError, match="does not match validator program_id"):
+        validator.execute_controlled_invalidation(sess32, dossier32["action_id"], dossier32)
 
 
 def test_operator_attestation_security_matrix_d2(tmp_path):

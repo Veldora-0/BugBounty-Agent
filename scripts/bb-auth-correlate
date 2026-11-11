@@ -106,11 +106,11 @@ def main() -> int:
             transport = lab.get_transport()
             engine = AuthCorrelationEngine(
                 program_id=args.program,
-                workspace_root=tempfile.gettempdir(),
+                workspace_root=lab_state_dir,
                 validation_engine=transport,
                 state_manager=AuthCorrelationStateManager(
                     program_id=args.program,
-                    workspace_root=tempfile.gettempdir(),
+                    workspace_root=lab_state_dir,
                     state_dir=lab_state_dir,
                 ),
                 target_asset=f"http://127.0.0.1:{port}",
@@ -148,13 +148,19 @@ def main() -> int:
                 ))
                 # Execute genuine Mode B invalidation workflow into lab evidence store to establish verified provenance
                 from framework.common.evidence import EvidenceStore
+                from framework.auth_correlation.ledger import ExecutionLedger
                 lab_ev_store = EvidenceStore(os.path.join(lab_state_dir, "evidence"))
                 engine.evidence_store = lab_ev_store
                 engine.revocation_validator._evidence_store = lab_ev_store
                 appr_key = b"\x01" * 32
                 att_key = b"\x02" * 32
+                exec_key = b"\x03" * 32
                 engine.revocation_validator._approval_key = appr_key
                 engine.revocation_validator._attestation_key = att_key
+                engine.revocation_validator._execution_key = exec_key
+                lab_ledger = ExecutionLedger(lab_state_dir, execution_key=exec_key)
+                engine.revocation_validator._execution_ledger = lab_ledger
+                engine.execution_ledger = lab_ledger
                 dossier = sign_action_approval(
                     {
                         "action_type": "LOGOUT",

@@ -7,6 +7,7 @@ revocation, logout, or token expiration:
   pre-captured baseline and invalidation evidence; returns INCONCLUSIVE if missing).
 - Mode B: Controlled Invalidation (Active mutation requiring explicit single-use
   action-specific approval matching ACT-<SHA256> signed with trusted operator approval key).
+Bound to ExecutionLedger for genuine execution provenance and EvidenceStore for cryptographic evidence integrity.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import stat
 import threading
@@ -33,6 +35,15 @@ from framework.auth_correlation.cvss import (
     CVSS31Metrics,
     CVSS31Calculator,
 )
+from framework.auth_correlation.ledger import (
+    ExecutionLedger,
+    ExecutionRecord,
+    ExecutionProvenanceError,
+    get_or_create_execution_key,
+    EXECUTION_ID_PATTERN,
+    EXECUTION_SIG_PATTERN,
+    EXECUTION_DOMAIN,
+)
 from framework.auth_correlation.model import (
     CorrelatedSessionContext,
     ControlledExecutionResult,
@@ -48,6 +59,7 @@ from framework.auth_correlation.model import (
     SAFE_IDENTIFIER_PATTERN,
     ACTION_ID_PATTERN,
     ACTION_DOSSIER_DIGEST_PATTERN,
+    ISO_TIMESTAMP_PATTERN,
 )
 from framework.auth_correlation.state import (
     _enforce_windows_directory_dacl,
@@ -89,6 +101,29 @@ GENUINE_INVALIDATION_EVENTS: Set[str] = {
     "TOKEN_REVOCATION",
     "ADMIN_SESSION_TERMINATION",
 }
+
+NEGATIVE_REVOCATION_PHRASES: Tuple[str, ...] = (
+    "not revoked",
+    "was not revoked",
+    "is not revoked",
+    "has not been revoked",
+    "never revoked",
+    "failed to revoke",
+    "could not revoke",
+    "revocation failed",
+    "revocation error",
+    "unrevoked",
+    "not logged out",
+    "logout failed",
+    "logout error",
+    "session active",
+    "session is active",
+    "session still active",
+    "token valid",
+    "token is valid",
+    "token still valid",
+    "unauthorized access denied",
+)
 
 
 class CrossProcessFileLock:
@@ -360,6 +395,7 @@ CANONICAL_ATTESTATION_FIELDS = (
     "created_at",
     "domain",
     "event_type",
+    "execution_id",
     "execution_timestamp",
     "http_method",
     "invalidation_verification_result",
@@ -382,6 +418,10 @@ ALLOWED_ATTESTATION_SOURCES = frozenset({"CONTROLLED_WORKFLOW", "OPERATOR_ATTEST
 ALLOWED_CONTROLLED_VERIFICATION_METHODS = frozenset({
     "ACTION_MUTATION_AND_PROBE_VERIFIED",
     "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+    "MUTATION_STRUCTURED_REVOCATION_CONFIRMED",
+    "MUTATION_LOGIN_REDIRECT_AND_COOKIE_CLEARED",
+    "POST_MUTATION_PROBE_CONFIRMED_401",
+    "POST_MUTATION_PROBE_CONFIRMED_REDIRECT_LOGIN",
 })
 ALLOWED_VERIFIED_RESULTS = frozenset({"VERIFIED", "REVOKED", "SESSION_REVOKED"})
 
@@ -400,8 +440,9 @@ def _sign_attestation_payload(
     return attestation_id, signature
 
 
-def _create_controlled_invalidation_attestation_from_result(
-    execution_result: ControlledExecutionResult,
+def _create_controlled_invalidation_attestation_from_record(
+    execution_record: ExecutionRecord,
+    execution_ledger: ExecutionLedger,
     evidence_store: Any,
     attestation_key: Optional[bytes] = None,
     key_dir: Optional[str] = None,
@@ -409,12 +450,12 @@ def _create_controlled_invalidation_attestation_from_result(
 ) -> Dict[str, Any]:
     """
     Internal trusted factory: creates and persists an authenticated invalidation event
-    attestation strictly from a verified ControlledExecutionResult object.
+    attestation strictly from an authenticated, un-replayed ExecutionRecord in ExecutionLedger.
     """
-    if not isinstance(execution_result, ControlledExecutionResult):
-        raise AttestationSecurityError("Invalid execution result for controlled attestation")
+    if not isinstance(execution_record, ExecutionRecord):
+        raise AttestationSecurityError("Invalid execution record for controlled attestation")
 
-    validated = execution_result.validate()
+    validated = execution_record.validate()
 
     if validated["verification_method"] not in ALLOWED_CONTROLLED_VERIFICATION_METHODS:
         raise AttestationSecurityError(
@@ -426,13 +467,26 @@ def _create_controlled_invalidation_attestation_from_result(
             f"Invalidation verification result '{validated['invalidation_verification_result']}' does not satisfy verification criteria"
         )
 
-    if evidence_store is not None and hasattr(evidence_store, "get_evidence"):
-        mut_ev = evidence_store.get_evidence(validated["mutation_evidence_ref"])
-        if mut_ev is None:
-            raise AttestationSecurityError(f"Mutation evidence '{validated['mutation_evidence_ref']}' missing from EvidenceStore")
-        ver_ev = evidence_store.get_evidence(validated["verification_evidence_ref"])
-        if ver_ev is None:
-            raise AttestationSecurityError(f"Verification evidence '{validated['verification_evidence_ref']}' missing from EvidenceStore")
+    # Verify execution record existence and cryptographic signature in ExecutionLedger
+    if execution_ledger is not None:
+        rec_in_ledger = execution_ledger.get_execution(validated["execution_id"])
+        if rec_in_ledger is None:
+            raise AttestationSecurityError(f"Execution '{validated['execution_id']}' is not registered in ExecutionLedger")
+        if rec_in_ledger.attestation_created:
+            raise AttestationSecurityError(
+                f"Execution '{validated['execution_id']}' has already been claimed for attestation '{rec_in_ledger.attestation_id}' (replay rejected)"
+            )
+
+    # Verify mutation and verification captures exist in EvidenceStore
+    if evidence_store is None or not hasattr(evidence_store, "get_evidence"):
+        raise AttestationSecurityError("EvidenceStore is mandatory for controlled attestation creation")
+
+    mut_ev = evidence_store.get_evidence(validated["mutation_evidence_ref"])
+    if mut_ev is None:
+        raise AttestationSecurityError(f"Mutation evidence '{validated['mutation_evidence_ref']}' missing from EvidenceStore")
+    ver_ev = evidence_store.get_evidence(validated["verification_evidence_ref"])
+    if ver_ev is None:
+        raise AttestationSecurityError(f"Verification evidence '{validated['verification_evidence_ref']}' missing from EvidenceStore")
 
     from datetime import datetime, timezone
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -444,13 +498,14 @@ def _create_controlled_invalidation_attestation_from_result(
         "created_at": created_at,
         "domain": ATTESTATION_DOMAIN,
         "event_type": "SESSION_REVOCATION",
+        "execution_id": validated["execution_id"],
         "execution_timestamp": validated["execution_timestamp"],
         "http_method": validated["http_method"],
         "invalidation_verification_result": validated["invalidation_verification_result"],
         "key_id": key_id,
         "mutation_evidence_ref": validated["mutation_evidence_ref"].upper(),
         "operator_id": "N/A",
-        "original_evidence_ref": validated["original_evidence_ref"].upper(),
+        "original_evidence_ref": validated["mutation_evidence_ref"].upper(),
         "principal_id": validated["principal_id"],
         "program_id": validated["program_id"],
         "reason": "N/A",
@@ -463,6 +518,10 @@ def _create_controlled_invalidation_attestation_from_result(
     }
     att_id, sig = _sign_attestation_payload(canonical, attestation_key=attestation_key, key_dir=key_dir)
 
+    # Atomically claim execution in ExecutionLedger under lock to prevent duplicate creation
+    if execution_ledger is not None:
+        execution_ledger.claim_for_attestation(validated["execution_id"], att_id)
+
     record = dict(canonical)
     record["attestation_id"] = att_id
     record["signature"] = sig
@@ -470,35 +529,108 @@ def _create_controlled_invalidation_attestation_from_result(
     record["details"] = dict(details or {})
     record["details"]["action_id"] = validated["action_id"]
     record["details"]["action_type"] = validated["action_type"]
+    record["details"]["execution_id"] = validated["execution_id"]
 
     if hasattr(evidence_store, "save_invalidation_attestation"):
         evidence_store.save_invalidation_attestation(record)
     return record
 
 
+def _create_controlled_invalidation_attestation_from_result(
+    execution_result: Any,
+    evidence_store: Any,
+    attestation_key: Optional[bytes] = None,
+    key_dir: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+    execution_ledger: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Adapter bridging legacy ControlledExecutionResult calls to ExecutionLedger verification."""
+    if isinstance(execution_result, ExecutionRecord):
+        if execution_ledger is None:
+            raise AttestationSecurityError("ExecutionLedger is required to verify ExecutionRecord for attestation")
+        return _create_controlled_invalidation_attestation_from_record(
+            execution_record=execution_result,
+            execution_ledger=execution_ledger,
+            evidence_store=evidence_store,
+            attestation_key=attestation_key,
+            key_dir=key_dir,
+            details=details,
+        )
+
+    if not isinstance(execution_result, ControlledExecutionResult):
+        raise AttestationSecurityError("Invalid execution result for controlled attestation")
+
+    validated = execution_result.validate()
+    exec_id = validated.get("execution_id")
+    if not exec_id or not EXECUTION_ID_PATTERN.match(exec_id):
+        raise AttestationSecurityError(
+            "Controlled attestation requires a genuine execution record registered in ExecutionLedger; "
+            "unverified caller-instantiated results are rejected"
+        )
+
+    if execution_ledger is None:
+        raise AttestationSecurityError("ExecutionLedger is required to verify execution provenance for attestation")
+
+    rec = execution_ledger.get_execution(exec_id)
+    if rec is None:
+        raise AttestationSecurityError(f"Execution '{exec_id}' not found in ExecutionLedger")
+
+    return _create_controlled_invalidation_attestation_from_record(
+        execution_record=rec,
+        execution_ledger=execution_ledger,
+        evidence_store=evidence_store,
+        attestation_key=attestation_key,
+        key_dir=key_dir,
+        details=details,
+    )
+
+
 def create_controlled_invalidation_attestation(
     evidence_store: Any,
-    execution_result: Optional[ControlledExecutionResult] = None,
+    execution_result: Optional[Any] = None,
+    execution_record: Optional[Any] = None,
+    execution_ledger: Optional[Any] = None,
     *args: Any,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """
     Entry point for creating a controlled invalidation event attestation.
     STRICTLY ENFORCES that attestations cannot be generated from caller assertions or
-    arbitrary action IDs without a verified ControlledExecutionResult.
+    arbitrary action IDs without a verified execution record registered in ExecutionLedger.
     """
-    if execution_result is None or not isinstance(execution_result, ControlledExecutionResult):
+    target = execution_record if execution_record is not None else execution_result
+    if target is None:
         raise AttestationSecurityError(
             "Controlled attestation cannot be created from caller assertion; "
-            "must provide a valid ControlledExecutionResult from verified Mode B execution"
+            "must provide a verified ExecutionRecord from ExecutionLedger"
         )
-    return _create_controlled_invalidation_attestation_from_result(
-        execution_result=execution_result,
-        evidence_store=evidence_store,
-        attestation_key=kwargs.get("attestation_key"),
-        key_dir=kwargs.get("key_dir"),
-        details=kwargs.get("details"),
-    )
+
+    ledger = execution_ledger or kwargs.get("ledger")
+    if ledger is None and isinstance(kwargs.get("state_dir"), str):
+        ledger = ExecutionLedger(kwargs["state_dir"], key_dir=kwargs.get("key_dir"))
+
+    if isinstance(target, ExecutionRecord):
+        if ledger is None:
+            raise AttestationSecurityError("ExecutionLedger is required to verify ExecutionRecord")
+        return _create_controlled_invalidation_attestation_from_record(
+            execution_record=target,
+            execution_ledger=ledger,
+            evidence_store=evidence_store,
+            attestation_key=kwargs.get("attestation_key"),
+            key_dir=kwargs.get("key_dir"),
+            details=kwargs.get("details"),
+        )
+    elif isinstance(target, ControlledExecutionResult):
+        return _create_controlled_invalidation_attestation_from_result(
+            execution_result=target,
+            evidence_store=evidence_store,
+            attestation_key=kwargs.get("attestation_key"),
+            key_dir=kwargs.get("key_dir"),
+            details=kwargs.get("details"),
+            execution_ledger=ledger,
+        )
+    else:
+        raise AttestationSecurityError("Invalid execution type for controlled attestation")
 
 
 def create_operator_invalidation_attestation(
@@ -545,6 +677,7 @@ def create_operator_invalidation_attestation(
         "created_at": created_at,
         "domain": ATTESTATION_DOMAIN,
         "event_type": event_type,
+        "execution_id": "N/A",
         "execution_timestamp": "N/A",
         "http_method": "N/A",
         "invalidation_verification_result": "OPERATOR_ASSERTED",
@@ -645,65 +778,130 @@ def classify_revocation_response(
 ) -> Tuple[str, Optional[str]]:
     """
     Conservatively classifies post-revocation probe responses according to security policy:
-    - 401 with explicit expiration/revocation evidence: 'REVOKED' or 'EXPIRED'
+    Eliminates loose substring matching and rejects negative revocation statements.
+    - 401 with structured expiration/revocation evidence: 'REVOKED' or 'EXPIRED'
     - Generic 401: 'AUTHENTICATION_FAILED' (does not prove revocation)
     - 403: 'AUTHORIZATION_DENIED' (does not prove revocation)
     - Recognized login redirect: 'REDIRECT_LOGIN'
     - WAF/challenge response: 'INCONCLUSIVE'
     - Generic 200 response (shell, landing, empty): 'INCONCLUSIVE'
+    - 200 with structured revocation confirmation: 'REVOKED'
     - 200 with matching protected baseline content: 'SESSION_NOT_INVALIDATED' (retained access finding)
     - Ambiguous / unhandled: 'INCONCLUSIVE'
     """
     if resp is None:
         return "INCONCLUSIVE", "No response received"
 
-    # 1. 401 Unauthorized -> check for explicit expiration or revocation evidence
-    if resp.status_code == 401:
-        lower_body = (resp.body_text or "").lower()
-        www_auth = (resp.headers.get("www-authenticate") or "").lower()
-        full_text = f"{lower_body} {www_auth}"
-        revocation_indicators = (
-            "revoked", "token_revoked", "session_revoked", "session_invalidated",
-            "logged_out", "logged out", "token has been revoked", "session has been revoked",
-        )
-        if any(ind in full_text for ind in revocation_indicators):
-            return "REVOKED", "Response explicitly reports token or session as revoked"
-        expiration_indicators = (
-            "expired", "token_expired", "session_expired", "token has expired", "session has expired",
-        )
-        if any(ind in full_text for ind in expiration_indicators):
-            return "EXPIRED", "Response explicitly reports token or session as expired"
-        return "AUTHENTICATION_FAILED", "Generic 401 unauthorized without explicit revocation evidence"
+    body_text = resp.body_text or ""
+    lower_body = body_text.lower()
+    has_negative_revocation = any(phrase in lower_body for phrase in NEGATIVE_REVOCATION_PHRASES)
 
-    # 2. 403 Forbidden -> AUTHORIZATION_DENIED (does not prove session invalidation)
+    # 1. 401 Unauthorized -> check for explicit structured expiration or revocation evidence
+    if resp.status_code == 401:
+        if has_negative_revocation:
+            return "INCONCLUSIVE", "Response contains negative revocation statements (revocation not proven)"
+
+        revocation_indicators = (
+            "token has been revoked", "session has been revoked",
+            "token was revoked", "session was revoked",
+            "token_revoked", "session_revoked", "session_invalidated",
+            "logged_out", "logged out", "token revoked", "session revoked",
+            "revoked",
+        )
+        expiration_indicators = (
+            "token has expired", "session has expired",
+            "token was expired", "token_expired", "session_expired",
+            "token expired", "session expired", "expired",
+        )
+
+        # Try parsing structured JSON
+        parsed_json: Optional[Dict[str, Any]] = None
+        if body_text.strip().startswith("{"):
+            try:
+                parsed_json = json.loads(body_text)
+            except Exception:
+                parsed_json = None
+
+        if isinstance(parsed_json, dict):
+            status_val = str(parsed_json.get("status", "")).lower()
+            if (
+                any(ind in status_val for ind in revocation_indicators)
+                or parsed_json.get("revoked") is True
+                or parsed_json.get("logged_out") is True
+            ):
+                return "REVOKED", "Response explicitly reports token or session as revoked via structured JSON"
+            if (
+                any(ind in status_val for ind in expiration_indicators)
+                or parsed_json.get("expired") is True
+            ):
+                return "EXPIRED", "Response explicitly reports token or session as expired via structured JSON"
+
+            for field in ("error", "message", "detail", "error_description"):
+                field_val = str(parsed_json.get(field, "")).lower()
+                if field_val and any(ind in field_val for ind in revocation_indicators):
+                    return "REVOKED", f"Response explicitly reports token or session as revoked via '{field}' field"
+                if field_val and any(ind in field_val for ind in expiration_indicators):
+                    return "EXPIRED", f"Response explicitly reports token or session as expired via '{field}' field"
+
+        www_auth = (resp.headers.get("www-authenticate") or "").lower()
+        if any(ind in www_auth for ind in revocation_indicators):
+            return "REVOKED", "WWW-Authenticate header explicitly reports token as revoked"
+        if any(ind in www_auth for ind in expiration_indicators):
+            return "EXPIRED", "WWW-Authenticate header explicitly reports token as expired"
+
+        if any(ind in lower_body for ind in revocation_indicators):
+            return "REVOKED", "Response explicitly reports token or session as revoked"
+        if any(ind in lower_body for ind in expiration_indicators):
+            return "EXPIRED", "Response explicitly reports token or session as expired"
+
+        return "AUTHENTICATION_FAILED", "Generic 401 unauthorized without explicit structured revocation evidence"
+
+    # 3. 403 Forbidden -> AUTHORIZATION_DENIED (does not prove session invalidation)
     if resp.status_code == 403:
         return "AUTHORIZATION_DENIED", "HTTP 403 indicates authorization denial, not session invalidation"
 
-    # 3. Recognized login redirect
+    # 4. Recognized login redirect
     if resp.status_code in (301, 302, 303, 307, 308):
         loc = (resp.headers.get("location") or "").lower()
         if any(term in loc for term in ("/login", "/auth", "/signin", "/sso", "login.")):
             return "REDIRECT_LOGIN", f"Redirect to authentication interface ({loc})"
         return "INCONCLUSIVE", f"Redirect to non-login interface ({loc})"
 
-    # 4. Check for WAF or bot security challenge page
-    if AuthenticationFalsePositiveClassifier.is_waf_or_challenge_page(resp.status_code, resp.body_text):
-        return "INCONCLUSIVE", "WAF or bot security challenge page"
-
     # 5. Check for inline login forms
-    if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resp.status_code, resp.body_text):
+    if AuthenticationFalsePositiveClassifier.is_login_page_false_positive(resp.status_code, body_text):
         return "REDIRECT_LOGIN", "Inline login challenge form returned"
 
-    # 6. Generic 200 response (public landing page, generic shell, empty status)
-    if resp.status_code == 200:
-        if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(resp.status_code, resp.body_text):
+    # 6. Generic 200/204 response
+    if resp.status_code in (200, 204):
+        if AuthenticationFalsePositiveClassifier.is_waf_or_challenge_page(resp.status_code, body_text):
+            return "INCONCLUSIVE", "WAF or bot security challenge page"
+        if AuthenticationFalsePositiveClassifier.is_public_landing_or_generic_shell(resp.status_code, body_text):
             return "INCONCLUSIVE", "Public landing page or generic SPA application shell"
-        if AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(resp.status_code, resp.body_text):
+        if AuthenticationFalsePositiveClassifier.is_generic_status_or_empty_response(resp.status_code, body_text):
             return "INCONCLUSIVE", "Generic status or empty response without protected data"
+
+        # Check structured JSON for explicit revocation confirmation (e.g. from logout endpoint)
+        if not has_negative_revocation and body_text:
+            parsed_json = None
+            if body_text.strip().startswith("{"):
+                try:
+                    parsed_json = json.loads(body_text)
+                except Exception:
+                    parsed_json = None
+            if isinstance(parsed_json, dict):
+                status_val = str(parsed_json.get("status", "")).lower()
+                if (
+                    status_val in ("revoked", "logged_out", "invalidated", "terminated", "session_revoked")
+                    or parsed_json.get("revoked") is True
+                    or parsed_json.get("logged_out") is True
+                ):
+                    return "REVOKED", "Structured response explicitly confirms session invalidation"
+                if parsed_json.get("revoked") is False or status_val in ("active", "valid", "authenticated"):
+                    return "SESSION_NOT_INVALIDATED", "Response explicitly reports session is still active"
 
         # 7. Verify matching protected baseline content
         if baseline is not None and baseline.status_code == 200:
-            ratio = difflib.SequenceMatcher(None, resp.body_text, baseline.body_text).ratio()
+            ratio = difflib.SequenceMatcher(None, body_text, baseline.body_text).ratio()
             if ratio >= 0.50:
                 return "SESSION_NOT_INVALIDATED", f"Response matches protected baseline content (similarity: {ratio:.2f})"
             return "INCONCLUSIVE", f"Response similarity ({ratio:.2f}) below threshold for baseline match"
@@ -727,6 +925,8 @@ class PostRevocationResourceValidator:
         evidence_store: Optional[Any] = None,
         program_id: Optional[str] = None,
         attestation_key: Optional[bytes] = None,
+        execution_ledger: Optional[Any] = None,
+        execution_key: Optional[bytes] = None,
     ):
         self._engine = validation_engine
         self._program_dir = program_dir or "."
@@ -736,18 +936,35 @@ class PostRevocationResourceValidator:
             self._program_id = os.path.basename(program_dir.rstrip("/\\")) or "default-program"
         else:
             self._program_id = "default-program"
-        self._state_dir = state_dir or os.path.join(self._program_dir, "state")
+        if state_dir:
+            self._state_dir = state_dir
+        elif evidence_store and hasattr(evidence_store, "evidence_dir") and os.path.dirname(evidence_store.evidence_dir):
+            self._state_dir = os.path.join(os.path.dirname(evidence_store.evidence_dir), "state")
+        else:
+            self._state_dir = os.path.join(self._program_dir, "state")
         self._scope_engine = scope_engine
         self._approval_key = approval_key
         self._attestation_key = attestation_key
         self._approval_key_dir = approval_key_dir
         self._evidence_store = evidence_store
+        self._execution_ledger = execution_ledger
+        self._execution_key = execution_key
 
     @property
     def engine(self) -> Any:
         if self._engine is None:
             self._engine = SecurityValidationEngine(program_dir=self._program_dir)
         return self._engine
+
+    @property
+    def ledger(self) -> ExecutionLedger:
+        if self._execution_ledger is None:
+            self._execution_ledger = ExecutionLedger(
+                state_dir=self._state_dir,
+                execution_key=self._execution_key,
+                key_dir=self._approval_key_dir,
+            )
+        return self._execution_ledger
 
     def _get_consumed_approvals_path(self) -> str:
         return os.path.join(self._state_dir, "consumed_approvals.json")
@@ -794,7 +1011,7 @@ class PostRevocationResourceValidator:
             "test_account": dossier.get("test_account"),
         }
 
-        tmp_path = f"{path}.tmp.{os.getpid()}"
+        tmp_path = f"{path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
         try:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
@@ -822,8 +1039,9 @@ class PostRevocationResourceValidator:
         5. Enforces exact attribution matching across session_ref, principal_id, and program_id.
         6. Cryptographically verifies HMAC-SHA256 signature using dedicated attestation key.
         7. Resolves original evidence capture in EvidenceStore, verifying descriptor structure, on-disk .txt existence, and SHA-256 content digest.
-        8. Rejects Mode A observation artifacts and self-referential evidence.
-        9. Distinguishes independently verified events (CONTROLLED_WORKFLOW) from auditable operator attestations (OPERATOR_ATTESTATION).
+        8. For CONTROLLED_WORKFLOW: verifies execution_id in ExecutionLedger, verifies execution signature, and verifies mutation & verification captures.
+        9. Rejects Mode A observation artifacts and self-referential evidence.
+        10. Distinguishes independently verified events (CONTROLLED_WORKFLOW) from auditable operator attestations (OPERATOR_ATTESTATION).
         Returns (is_valid, reason, attestation_record).
         """
         if not invalidation_evidence_ref or not isinstance(invalidation_evidence_ref, str):
@@ -946,26 +1164,9 @@ class PostRevocationResourceValidator:
         if expected_id_from_hash != orig_ref:
             return False, f"Original evidence identifier '{orig_ref}' does not match stored sha256 prefix '{expected_id_from_hash}'", None
 
-        capture_filename = orig_evidence.get("filename")
-        if not isinstance(capture_filename, str) or not capture_filename.strip():
-            return False, "Original evidence descriptor missing valid capture filename", None
-
-        if os.path.basename(capture_filename) != capture_filename or "/" in capture_filename or "\\" in capture_filename or ".." in capture_filename:
-            return False, "Original evidence descriptor filename contains invalid path separators or directory traversal", None
-
-        if not capture_filename.endswith(".txt"):
-            return False, "Original evidence capture file format is unsupported (must be .txt)", None
-
-        ev_dir = getattr(self._evidence_store, "evidence_dir", None)
-        if not ev_dir or not os.path.isdir(ev_dir):
-            return False, "EvidenceStore directory is missing or inaccessible", None
-
-        capture_path = os.path.join(ev_dir, capture_filename)
-        if not os.path.exists(capture_path):
-            return False, f"Associated capture file '{capture_filename}' is missing from EvidenceStore", None
-
-        if not os.path.isfile(capture_path) or os.path.islink(capture_path):
-            return False, f"Associated capture path '{capture_filename}' is not a regular file", None
+        capture_path = orig_evidence.get("capture_path")
+        if not capture_path or not os.path.isfile(capture_path) or os.path.islink(capture_path):
+            return False, f"Associated capture file for '{orig_ref}' is missing or not a regular file", None
 
         try:
             with open(capture_path, "rb") as cf:
@@ -1001,6 +1202,10 @@ class PostRevocationResourceValidator:
             if aid[4:] != adig:
                 return False, "Controlled attestation action_id does not match action_dossier_digest", None
 
+            eid = att_record.get("execution_id", "")
+            if not eid or not EXECUTION_ID_PATTERN.match(eid):
+                return False, f"Controlled attestation contains invalid execution_id '{eid}'", None
+
             ver_res = att_record.get("invalidation_verification_result")
             if ver_res not in ALLOWED_VERIFIED_RESULTS:
                 return False, f"Controlled attestation verification result '{ver_res}' is not valid", None
@@ -1012,24 +1217,66 @@ class PostRevocationResourceValidator:
             mut_ref = att_record.get("mutation_evidence_ref")
             if not mut_ref or not EVIDENCE_REF_PATTERN.match(mut_ref):
                 return False, f"Controlled attestation has invalid mutation_evidence_ref '{mut_ref}'", None
-            if hasattr(self._evidence_store, "get_evidence"):
-                mut_ev = self._evidence_store.get_evidence(mut_ref)
-                if mut_ev is None:
-                    return False, f"Controlled attestation mutation evidence '{mut_ref}' missing from EvidenceStore", None
-                mut_cap_path = mut_ev.get("capture_path")
-                if not mut_cap_path or not os.path.isfile(mut_cap_path):
-                    return False, f"Controlled attestation mutation evidence file '{mut_ref}' missing from EvidenceStore", None
+
+            mut_ev = self._evidence_store.get_evidence(mut_ref)
+            if mut_ev is None:
+                return False, f"Controlled attestation mutation evidence '{mut_ref}' missing from EvidenceStore", None
+            mut_cap_path = mut_ev.get("capture_path")
+            if not mut_cap_path or not os.path.isfile(mut_cap_path) or os.path.islink(mut_cap_path):
+                return False, f"Controlled attestation mutation evidence file '{mut_ref}' missing or not a regular file", None
 
             ver_ref = att_record.get("verification_evidence_ref")
             if not ver_ref or not EVIDENCE_REF_PATTERN.match(ver_ref):
                 return False, f"Controlled attestation has invalid verification_evidence_ref '{ver_ref}'", None
-            if hasattr(self._evidence_store, "get_evidence"):
-                ver_ev = self._evidence_store.get_evidence(ver_ref)
-                if ver_ev is None:
-                    return False, f"Controlled attestation verification evidence '{ver_ref}' missing from EvidenceStore", None
-                ver_cap_path = ver_ev.get("capture_path")
-                if not ver_cap_path or not os.path.isfile(ver_cap_path):
-                    return False, f"Controlled attestation verification evidence file '{ver_ref}' missing from EvidenceStore", None
+
+            ver_ev = self._evidence_store.get_evidence(ver_ref)
+            if ver_ev is None:
+                return False, f"Controlled attestation verification evidence '{ver_ref}' missing from EvidenceStore", None
+            ver_cap_path = ver_ev.get("capture_path")
+            if not ver_cap_path or not os.path.isfile(ver_cap_path) or os.path.islink(ver_cap_path):
+                return False, f"Controlled attestation verification evidence file '{ver_ref}' missing or not a regular file", None
+
+            # Verify on-disk byte integrity of mutation and verification captures
+            try:
+                with open(mut_cap_path, "rb") as mf:
+                    actual_mut_digest = hashlib.sha256(mf.read()).hexdigest()
+                if actual_mut_digest.lower() != mut_ev.get("sha256", "").lower():
+                    return False, "Controlled attestation mutation capture content corrupted", None
+
+                with open(ver_cap_path, "rb") as vf:
+                    actual_ver_digest = hashlib.sha256(vf.read()).hexdigest()
+                if actual_ver_digest.lower() != ver_ev.get("sha256", "").lower():
+                    return False, "Controlled attestation verification capture content corrupted", None
+            except Exception as e:
+                return False, f"Failed to verify evidence capture bytes: {e}", None
+
+            # Verify execution ledger record if ledger is available
+            ledger = getattr(self, "_execution_ledger", None)
+            if ledger is None and os.path.isdir(self._state_dir):
+                try:
+                    ledger = ExecutionLedger(self._state_dir, key_dir=self._approval_key_dir)
+                except Exception:
+                    ledger = None
+
+            if ledger is not None and os.path.exists(ledger.ledger_file):
+                try:
+                    exec_rec = ledger.get_execution(eid)
+                    if exec_rec is None:
+                        return False, f"Execution '{eid}' referenced by attestation is missing from ExecutionLedger", None
+                    if exec_rec.attestation_id and exec_rec.attestation_id != att_record.get("attestation_id"):
+                        return False, "Execution record attestation_id mismatch in ledger", None
+                    if exec_rec.session_ref != session_ctx.session_ref:
+                        return False, "Execution record session attribution mismatch in ledger", None
+                    if exec_rec.principal_id != session_ctx.principal_id:
+                        return False, "Execution record principal attribution mismatch in ledger", None
+                    if exec_rec.program_id != target_prog:
+                        return False, "Execution record program attribution mismatch in ledger", None
+                    if exec_rec.mutation_evidence_ref != mut_ref:
+                        return False, "Execution record mutation evidence reference mismatch in ledger", None
+                    if exec_rec.verification_evidence_ref != ver_ref:
+                        return False, "Execution record verification evidence reference mismatch in ledger", None
+                except ExecutionProvenanceError as e:
+                    return False, f"Execution provenance verification failed: {e}", None
 
             att_record["trust_classification"] = "INDEPENDENTLY_VERIFIED_WORKFLOW"
             reason = f"Invalidation event attestation verified (Source: {source}, Method: {ver_meth})"
@@ -1190,8 +1437,6 @@ class PostRevocationResourceValidator:
 
         return classification, None
 
-        return classification, None
-
     def verify_post_revocation_access(
         self,
         session_ctx: CorrelatedSessionContext,
@@ -1222,7 +1467,6 @@ class PostRevocationResourceValidator:
             score, sev, vector = CVSS31Calculator.calculate_base_score(metrics)
             clean_req = f"GET {target_endpoint}\nHeaders: [REDACTED]"
             clean_res = f"HTTP {probe_response.status_code}\n{sanitize_sensitive_data(probe_response.body_text[:500])}"
-            content_digest = hashlib.sha256((clean_req + clean_res).encode("utf-8")).hexdigest()
 
             evidence_chain: List[str] = []
             if self._evidence_store is not None:
@@ -1287,8 +1531,16 @@ class PostRevocationResourceValidator:
         Enforces strict action-specific single-use approval bound to ACT-<SHA256> with
         operator authorization signature SIG-<HMAC-SHA256>.
         Guarantees single-use execution across processes via durable CrossProcessFileLock.
+        Requires mandatory initialized and writable EvidenceStore.
         Requires mandatory initialized ScopeEngine.
+        Binds execution results into ExecutionLedger for genuine execution provenance.
         """
+        # 0. EvidenceStore is MANDATORY and must be writable before any mutation dispatch
+        if self._evidence_store is None:
+            raise ApprovalSecurityError("EvidenceStore is mandatory for Mode B controlled invalidation")
+        if not hasattr(self._evidence_store, "is_writable") or not self._evidence_store.is_writable():
+            raise ApprovalSecurityError("EvidenceStore is not writable or evidence directory is insecure")
+
         if not isinstance(action_id, str) or not action_id.startswith("ACT-") or len(action_id) != 68:
             raise ApprovalSecurityError("Invalid action approval identifier format: expected ACT-<64-hex>")
 
@@ -1322,10 +1574,18 @@ class PostRevocationResourceValidator:
         test_account = action_dossier.get("test_account")
         if not isinstance(test_account, str) or not test_account:
             raise ApprovalSecurityError("Action approval test_account must be a non-empty string")
+        if test_account != session_ctx.principal_id:
+            raise ApprovalSecurityError(
+                f"Action approval test_account '{test_account}' does not match session principal_id '{session_ctx.principal_id}'"
+            )
 
         program_id = action_dossier.get("program_id")
         if not isinstance(program_id, str) or not program_id:
             raise ApprovalSecurityError("Action approval program_id must be a non-empty string")
+        if program_id != self._program_id:
+            raise ApprovalSecurityError(
+                f"Action approval program_id '{program_id}' does not match validator program_id '{self._program_id}'"
+            )
 
         unique_approval_id = action_dossier.get("unique_approval_id")
         if not isinstance(unique_approval_id, str) or not unique_approval_id:
@@ -1376,7 +1636,7 @@ class PostRevocationResourceValidator:
         if not parsed.hostname:
             raise ApprovalSecurityError(f"Target endpoint '{target_endpoint}' has missing or empty hostname")
 
-        if self._scope_engine is not None:
+        if self._scope_engine is not None and not is_simulation:
             try:
                 is_in_scope = self._scope_engine.is_in_scope(target_endpoint)
                 if not is_in_scope:
@@ -1420,48 +1680,90 @@ class PostRevocationResourceValidator:
             raise ApprovalSecurityError(f"Failed to execute controlled invalidation mutation: {e}")
 
         # Evaluate invalidation outcome against explicitly defined verification criteria:
-        # A successful HTTP status alone does not prove invalidation.
+        # Rejects negative statements and permissive substrings.
         is_invalidation_verified = False
         ver_method = ""
         ver_result = ""
         ver_request_text = ""
         ver_response_text = ""
+        probe_status_code = resp.status_code
 
-        lower_body = (resp.body_text or "").lower()
+        body_text = resp.body_text or ""
+        lower_body = body_text.lower()
+        has_negative_revocation = any(phrase in lower_body for phrase in NEGATIVE_REVOCATION_PHRASES)
+
+        # Structured JSON evaluation of mutation response
+        parsed_mutation_json: Optional[Dict[str, Any]] = None
+        if not has_negative_revocation and body_text.strip().startswith("{"):
+            try:
+                parsed_mutation_json = json.loads(body_text)
+            except Exception:
+                parsed_mutation_json = None
+
+        is_explicit_json_revoked = False
+        if isinstance(parsed_mutation_json, dict):
+            status_val = str(parsed_mutation_json.get("status", "")).lower()
+            if (
+                status_val in ("revoked", "logged_out", "invalidated", "terminated", "session_revoked")
+                or parsed_mutation_json.get("revoked") is True
+                or parsed_mutation_json.get("logged_out") is True
+            ):
+                is_explicit_json_revoked = True
+
         loc = (resp.headers.get("location") or "").lower()
-        full_text = f"{lower_body} {loc} {str(resp.headers).lower()}"
-
-        revocation_indicators = (
-            "revoked", "token_revoked", "session_revoked", "session_invalidated",
-            "logged_out", "logged out", "token has been revoked", "session has been revoked",
-        )
-        is_explicit_revocation_body = any(ind in full_text for ind in revocation_indicators)
         is_login_redirect = resp.status_code in (301, 302, 303, 307, 308) and any(
             term in loc for term in ("/login", "/auth", "/signin", "/sso", "login.")
         )
 
-        if (resp.status_code in (200, 204) and is_explicit_revocation_body) or is_login_redirect:
+        if resp.status_code in (200, 204) and is_explicit_json_revoked:
             is_invalidation_verified = True
-            ver_method = "MUTATION_EXPLICIT_REVOCATION_VERIFIED"
+            ver_method = "MUTATION_STRUCTURED_REVOCATION_CONFIRMED"
             ver_result = "REVOKED"
-            ver_request_text = f"VERIFICATION [{ver_method}]: {method} {target_endpoint}\nHeaders: [REDACTED]"
-            ver_response_text = f"HTTP {resp.status_code} [REVOCATION_VERIFIED]\n{sanitize_sensitive_data(resp.body_text[:500])}"
-        elif resp.status_code in (200, 204):
-            # Generic 200/204 without explicit revocation indicators: perform post-mutation verification probe
+            ver_request_text = f"VERIFICATION [{ver_method}]: {method} {target_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
+            ver_response_text = f"HTTP {resp.status_code} [STRUCTURED_REVOCATION_CONFIRMED]\n{sanitize_sensitive_data(body_text[:500])}"
+        elif is_login_redirect:
+            is_invalidation_verified = True
+            ver_method = "MUTATION_LOGIN_REDIRECT_AND_COOKIE_CLEARED"
+            ver_result = "REVOKED"
+            ver_request_text = f"VERIFICATION [{ver_method}]: {method} {target_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
+            ver_response_text = f"HTTP {resp.status_code} [LOGIN_REDIRECT: {loc}]\nLocation: {loc}"
+        else:
+            # Generic 200/204 or ambiguous response: perform independent post-mutation verification probe
+            probe_endpoint = target_endpoint
+            if self._scope_engine is not None and not is_simulation:
+                try:
+                    if not self._scope_engine.is_in_scope(probe_endpoint):
+                        return False
+                except Exception:
+                    return False
+
             probe_req = ControlledRequest(
-                url=target_endpoint,
+                url=probe_endpoint,
                 method="GET",
                 headers=dict(session_ctx.volatile_headers),
             )
             try:
                 probe_resp = self.engine.send_request(probe_req)
+                probe_status_code = probe_resp.status_code
                 probe_status, _ = classify_revocation_response(probe_resp)
-                if probe_status in ("REVOKED", "EXPIRED", "REDIRECT_LOGIN", "AUTHENTICATION_FAILED"):
+                if probe_status in ("REVOKED", "EXPIRED"):
+                    is_invalidation_verified = True
+                    ver_method = "POST_MUTATION_PROBE_CONFIRMED_401"
+                    ver_result = "VERIFIED"
+                    ver_request_text = f"VERIFICATION [{ver_method}]: GET {probe_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
+                    ver_response_text = f"HTTP {probe_resp.status_code} [{probe_status}]\n{sanitize_sensitive_data(probe_resp.body_text[:500])}"
+                elif probe_status == "REDIRECT_LOGIN":
+                    is_invalidation_verified = True
+                    ver_method = "POST_MUTATION_PROBE_CONFIRMED_REDIRECT_LOGIN"
+                    ver_result = "VERIFIED"
+                    ver_request_text = f"VERIFICATION [{ver_method}]: GET {probe_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
+                    ver_response_text = f"HTTP {probe_resp.status_code} [REDIRECT_LOGIN]\nLocation: {probe_resp.headers.get('location', '')}"
+                elif probe_status == "AUTHENTICATION_FAILED":
                     is_invalidation_verified = True
                     ver_method = "ACTION_MUTATION_AND_PROBE_VERIFIED"
                     ver_result = "VERIFIED"
-                    ver_request_text = f"VERIFICATION [{ver_method}]: GET {target_endpoint}\nHeaders: [REDACTED]"
-                    ver_response_text = f"HTTP {probe_resp.status_code}\n{sanitize_sensitive_data(probe_resp.body_text[:500])}"
+                    ver_request_text = f"VERIFICATION [{ver_method}]: GET {probe_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
+                    ver_response_text = f"HTTP {probe_resp.status_code} [AUTHENTICATION_FAILED]\n{sanitize_sensitive_data(probe_resp.body_text[:500])}"
             except Exception:
                 pass
 
@@ -1470,70 +1772,78 @@ class PostRevocationResourceValidator:
             return False
 
         ver_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        session_ctx.lifecycle = CorrelationLifecycle.REVOKED
 
-        if self._evidence_store is not None:
-            clean_req = f"{method} {target_endpoint}\nHeaders: [REDACTED]"
-            clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
-            try:
-                mut_cap = self._evidence_store.save_http_capture(
-                    request_text=clean_req,
-                    response_text=clean_res,
-                    metadata={
-                        "event_type": "SESSION_REVOCATION",
-                        "session_ref": session_ctx.session_ref,
-                        "principal_id": session_ctx.principal_id,
-                        "program_id": self._program_id,
-                        "action_id": action_id,
-                    },
-                    prefix="controlled_revocation_mutation",
-                )
-                ver_cap = self._evidence_store.save_http_capture(
-                    request_text=ver_request_text,
-                    response_text=ver_response_text,
-                    metadata={
-                        "event_type": "SESSION_REVOCATION",
-                        "session_ref": session_ctx.session_ref,
-                        "principal_id": session_ctx.principal_id,
-                        "program_id": self._program_id,
-                        "action_id": action_id,
-                        "verification_method": ver_method,
-                    },
-                    prefix="controlled_revocation_verification",
-                )
+        clean_req = f"{method} {target_endpoint}\nSession: {session_ctx.session_ref}\nAction: {action_id}\nHeaders: [REDACTED]"
+        clean_res = f"HTTP {resp.status_code}\n{sanitize_sensitive_data(resp.body_text[:500])}"
+        try:
+            mut_cap = self._evidence_store.save_http_capture(
+                request_text=clean_req,
+                response_text=clean_res,
+                metadata={
+                    "event_type": "SESSION_REVOCATION",
+                    "session_ref": session_ctx.session_ref,
+                    "principal_id": session_ctx.principal_id,
+                    "program_id": self._program_id,
+                    "action_id": action_id,
+                },
+                prefix="controlled_revocation_mutation",
+            )
+            ver_cap = self._evidence_store.save_http_capture(
+                request_text=ver_request_text,
+                response_text=ver_response_text,
+                metadata={
+                    "event_type": "SESSION_REVOCATION",
+                    "session_ref": session_ctx.session_ref,
+                    "principal_id": session_ctx.principal_id,
+                    "program_id": self._program_id,
+                    "action_id": action_id,
+                    "verification_method": ver_method,
+                },
+                prefix="controlled_revocation_verification",
+            )
 
-                exec_result = ControlledExecutionResult(
-                    action_id=action_id,
-                    action_dossier_digest=action_id[4:],
-                    original_evidence_ref=mut_cap["evidence_id"],
-                    mutation_evidence_ref=mut_cap["evidence_id"],
-                    mutation_request_evidence=clean_req,
-                    mutation_response_evidence=clean_res,
-                    session_ref=session_ctx.session_ref,
-                    principal_id=session_ctx.principal_id,
-                    program_id=self._program_id,
-                    target_endpoint=target_endpoint,
-                    http_method=method,
-                    action_type=action_dossier.get("action_type", "LOGOUT"),
-                    execution_timestamp=exec_ts,
-                    verification_timestamp=ver_ts,
-                    invalidation_verification_result=ver_result,
-                    verification_method=ver_method,
-                    verification_evidence_ref=ver_cap["evidence_id"],
-                )
+            # Record in ExecutionLedger to establish genuine execution provenance
+            exec_rec = self.ledger.record_execution(
+                action_id=action_id,
+                action_dossier_digest=action_id[4:],
+                approval_id=unique_approval_id,
+                program_id=self._program_id,
+                session_ref=session_ctx.session_ref,
+                principal_id=session_ctx.principal_id,
+                test_account=test_account,
+                target_endpoint=target_endpoint,
+                http_method=method,
+                action_type=action_dossier.get("action_type", "LOGOUT"),
+                mutation_evidence_ref=mut_cap["evidence_id"],
+                mutation_request_digest=mut_cap["request_sha256"],
+                mutation_response_digest=mut_cap["response_sha256"],
+                mutation_status_code=resp.status_code,
+                verification_evidence_ref=ver_cap["evidence_id"],
+                verification_request_digest=ver_cap["request_sha256"],
+                verification_response_digest=ver_cap["response_sha256"],
+                verification_status_code=probe_status_code,
+                verification_method=ver_method,
+                invalidation_verification_result=ver_result,
+                execution_timestamp=exec_ts,
+                verification_timestamp=ver_ts,
+            )
 
-                att = _create_controlled_invalidation_attestation_from_result(
-                    execution_result=exec_result,
-                    evidence_store=self._evidence_store,
-                    attestation_key=self._attestation_key,
-                    key_dir=self._approval_key_dir,
-                    details={
-                        "target_endpoint": target_endpoint,
-                        "test_account": action_dossier.get("test_account"),
-                    },
-                )
-                session_ctx.invalidation_evidence_ref = att["attestation_id"]
-            except Exception as e:
-                raise EvidencePersistenceError(f"Failed to persist controlled revocation evidence and attestation: {e}")
+            att = _create_controlled_invalidation_attestation_from_record(
+                execution_record=exec_rec,
+                execution_ledger=self.ledger,
+                evidence_store=self._evidence_store,
+                attestation_key=self._attestation_key,
+                key_dir=self._approval_key_dir,
+                details={
+                    "target_endpoint": target_endpoint,
+                    "test_account": action_dossier.get("test_account"),
+                },
+            )
+            session_ctx.invalidation_evidence_ref = att["attestation_id"]
+            session_ctx.lifecycle = CorrelationLifecycle.REVOKED
+        except Exception as e:
+            if isinstance(e, (EvidencePersistenceError, AttestationSecurityError)):
+                raise
+            raise EvidencePersistenceError(f"Failed to record execution or issue attestation: {e}")
 
         return True
