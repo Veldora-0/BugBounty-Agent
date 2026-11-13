@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Phase 21 — Authentication & Authorization Correlation Engine (Completed & Definitively Accepted)
+### Phase 21 — Authentication & Authorization Correlation Engine (Accepted with Documented Limitations)
+
+#### Final Trust-Boundary & Acceptance Remediation (Blockers A–G)
+* **Linux Service Isolation & IPC Permissions Hardening (Blocker B)**:
+  * Hardened `/run/bugbounty` to mode `0750` owned by `_bbdispatcher:bbgroup` in `scripts/install-dispatcher.sh` and `systemd/bugbounty-dispatcher.service`, allowing group members to connect to the socket while preventing them from deleting or replacing `dispatcher.sock`.
+  * Set `/var/lib/bugbounty/keys` and `state` to mode `0700` and `/var/lib/bugbounty/evidence` to `0750`.
+  * In `IsolatedExecutionDispatcher.start()`, enforced that parent directories cannot be world-writable or group-writable without the sticky bit, and automatically tightened permissions when owned by the caller. UNIX socket file permissions set to `0660`.
+* **Explicit Windows Service Isolation Status (Blocker A)**:
+  * Marked Windows production service isolation under a dedicated service account as `NOT IMPLEMENTED` in `scripts/install-dispatcher.ps1` and `STATUS` response in `service.py`, maintaining Named Pipe IPC for local development and testing only.
+* **Mandatory Operator Approval & Signature Verification (Blocker C)**:
+  * Enforced mandatory operator approval key in `IsolatedExecutionDispatcher`; missing or malformed keys (< 32 bytes) reject dispatch fail-closed with `MISSING_APPROVAL_KEY` or `MALFORMED_APPROVAL_KEY`.
+  * Enforced `verify_action_approval` on all incoming dossiers; invalid signatures reject dispatch with `INVALID_APPROVAL_SIGNATURE`.
+* **Mandatory ScopeEngine & Safe Transport Routing (Blocker D)**:
+  * Enforced mandatory `ScopeEngine` in production dispatch (`SCOPE_OR_DESTINATION_DENIED` if missing or unvetted).
+  * Removed `urllib.request` fallback entirely; routed all production mutations through `safe_fetch_url()` with DNS pinning, intermediate redirect validation, and anti-SSRF protections.
+* **Mandatory Receipt Verification & Client Nonce Binding (Blocker E)**:
+  * Bound client-generated nonce (`client_nonce`) to IPC requests, verified inside signed HMAC receipts (`verify_execution_receipt()`), rejecting receipt tampering or replay across dispatches. Receipt verification key is strictly mandatory in `ControlledDispatchWorkflow`.
+* **Evidence Integrity & Terminology Alignment (Blocker F)**:
+  * Removed artificial placeholder capture files (`=== ISOLATED DISPATCH...`), enforcing disk-level verification via `EvidenceStore.get_evidence()`.
+  * Clarified terminology across docs and comments to distinguish application-level sanitized HTTP request/response captures from raw wire packet captures.
+* **Elimination of Security-Error Swallowing (Blocker G)**:
+  * Replaced broad exception swallowing with explicit `PermissionError` and `OSError` raises across directory setup, chmod operations, key generation, and socket binding.
+* **Focused 20-Test Security Suite (`tests/test_phase21_security_remediation.py`)**:
+  * 20 adversarial tests validating all seven acceptance blockers: 17 passed, 3 skipped on Windows 11; 20 passed, 0 skipped on Kali Linux VM.
+  * Phase 21 test suites: 162 passed, 4 skipped on Windows 11; 165 passed, 1 skipped on Kali Linux VM.
+  * Full regression test suite: 1085 passed, 3 skipped on Windows 11; 1087 passed, 1 skipped on Kali Linux VM.
+  * System diagnostics: all 18 diagnostic engines `[HEALTHY]` on both platforms.
 
 #### Isolated Execution Architecture, Mode B Restoration & Final Security Remediation
 * **Isolated OS-Enforced Dispatcher Authority (`framework/auth_correlation/ipc/`)**:

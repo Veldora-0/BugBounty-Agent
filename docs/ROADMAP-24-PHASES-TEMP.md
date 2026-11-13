@@ -209,18 +209,19 @@ Safety boundaries:
 - **Accepted with Documented Limitations**: Concurrency probing is bounded to 2-10 requests; high-volume volumetric floods or DoS attacks are strictly prohibited; out-of-scope targets fail closed offline.
 
 ### Phase 21 — Authentication & Authorization Correlation
-**Status:** Complete (Accepted; Stages 1–5 verified at `6b2fcd9c8afdcd4ac7e8bcb48c0144e6f131d860`).
+**Status:** Complete (Accepted with Documented Limitations: Linux production service isolation fully verified under `_bbdispatcher:bbgroup`; Windows service isolation documented as not implemented).
 **Delivered:**
 - **Core Models & Safe Representations**: Implemented `framework/auth_correlation/model.py` with `CorrelatedPrincipalContext`, `CorrelatedSessionContext`, `CorrelationHypothesis`, `CorrelationFinding`, and `CorrelationLifecycle`. Masked credentials in `__repr__` and `__str__`.
 - **CVSS 3.1 Base Metric Calculator**: Implemented `framework/auth_correlation/cvss.py` strictly evaluating FIRST CVSS 3.1 equations across all 8 base metrics with 10 reference vector regression verifications.
 - **Dual-Control Preflight Validation**: Implemented `framework/auth_correlation/preflight.py` (`DualControlPreflightValidator`) verifying session validity differentials against baseline targets to prevent false-positive access control reports.
 - **Post-Revocation Resource Probing & Invalidation Attestation**: Implemented `framework/auth_correlation/revocation.py` (`PostRevocationResourceValidator`) supporting Mode A (observation-only requiring cryptographically signed invalidation attestations `ATT-...` with dedicated attestation key and 17-case provenance verification) and Mode B (dual-account differential probe with human approval gate).
+- **Isolated Execution Dispatcher Authority & Provenance Boundary**: Implemented `framework/auth_correlation/ipc/` (`IsolatedExecutionDispatcher`, `IsolatedDispatcherClient`, `protocol.py`, `receipt.py`), framed IPC boundaries, private signing key custody, replay-resistant client nonces, and unprivileged systemd deployment (`_bbdispatcher:bbgroup`).
 - **Pre-MFA & Step-Up Boundary Auditing**: Implemented `framework/auth_correlation/pre_mfa.py` (`PreMfaPrivilegeValidator`) auditing sensitive resource access prior to MFA completion, requiring mandatory comparison with a verified fully authenticated session and enforcing zero network dispatch on invalid or ambiguous session states.
 - **Multi-Tenant Cross-Channel Desynchronization**: Implemented `framework/auth_correlation/tenant.py` (`MultiTenantDesyncValidator`) testing route path, query parameter, and custom header tenant substitution using two valid, cryptographically signed tenant identities while preserving JWT signatures.
 - **Orchestration, State, Lab & CLI**: Implemented `AuthCorrelationEngine`, hardened `AuthCorrelationStateManager` with atomic file-descriptor replacement and strict POSIX/Windows DACL permissions, `SimulationTransport` (confined to numeric `127.0.0.1:<lab_port>`), `LocalAuthCorrelationLab` (6 deterministic scenarios), CLI script `scripts/bb-auth-correlate` (`bb-auth-correlate.cmd`), and Category 26 in `framework/tools/doctor.py`.
-- **Cross-Platform Verification Metrics (117 targeted Phase 21 tests / 1059 full suite tests)**:
-  - Windows 11: 116 passed, 1 skipped (POSIX permissions skipped) in Phase 21 (22.59s); 1056 passed, 3 skipped in full test suite (196.24s); bb-doctor: 18/18 engines healthy.
-  - Kali Linux VM: 116 passed, 1 skipped (Windows DACL skipped) in Phase 21 (7.42s); 1058 passed, 1 skipped in full test suite (100.86s); browser runtime (103 passed); concurrency engine (128 passed); bb-doctor: 18/18 engines healthy.
+- **Cross-Platform Verification Metrics (166 targeted Phase 21 tests / 1108 full suite tests)**:
+  - Windows 11: 162 passed, 4 skipped in Phase 21 (59.82s); 1085 passed, 3 skipped in full test suite; bb-doctor: 18/18 engines healthy.
+  - Kali Linux VM: 165 passed, 1 skipped in Phase 21 (29.66s); 1087 passed, 1 skipped in full test suite; browser runtime (103 passed); concurrency engine (128 passed); bb-doctor: 18/18 engines healthy.
 
 ### Phase 22 — Cross-Engine Attack-Path Correlation
 **Goal:** Build a shared correlation layer that relates assets, endpoints, identities, vulnerabilities, evidence, and prerequisites into explainable attack paths. Preserve individual finding identity, provenance, confidence, and lifecycle; do not inflate severity solely because findings are connected.

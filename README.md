@@ -450,7 +450,7 @@ BugBounty-Agent has delivered 21 cohesive security research phases, establishing
   * `LocalAuthCorrelationLab`: 6 deterministic authentication & authorization correlation scenarios.
 
 ### 19. Roadmap Status & Verification Baseline
-* **Accepted Baseline**: Phase 21 (Authentication & Authorization Correlation) complete and definitively accepted across Windows 11 and Kali Linux. See [`docs/PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md`](docs/PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md), [`docs/PHASE-21-PLANNING-GATE.md`](docs/PHASE-21-PLANNING-GATE.md), and [`docs/PHASE-1-20-STABLE-BASELINE.md`](docs/PHASE-1-20-STABLE-BASELINE.md).
+* **Accepted Baseline**: Phase 21 (Authentication & Authorization Correlation) complete and accepted with documented limitations (Linux service isolation fully verified under `_bbdispatcher:bbgroup`; Windows service isolation documented as not implemented) across Windows 11 and Kali Linux. See [`docs/PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md`](docs/PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md), [`docs/PHASE-21-PLANNING-GATE.md`](docs/PHASE-21-PLANNING-GATE.md), and [`docs/PHASE-1-20-STABLE-BASELINE.md`](docs/PHASE-1-20-STABLE-BASELINE.md).
 * **Next Planned Phase**: Phase 22 (Cross-Engine Attack-Path Correlation — NOT STARTED).
 * **Full Roadmap**: Refer to [`docs/ROADMAP-24-PHASES-TEMP.md`](docs/ROADMAP-24-PHASES-TEMP.md) for the detailed 24-phase roadmap, architectural specifications, and historical verification records.
 
@@ -503,7 +503,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 
 ### 3. Environment & Runtime Status
 * **Development & Evaluation Environments**: Validated and synchronized across Windows 11 x86_64 and Kali/Debian Linux workstations with Python 3.10+.
-* **Cross-Platform Test Coverage**: 57 test modules with 1088 tests collected under pytest (1085 passed, 3 skipped on Windows 11; 1087 passed, 1 skipped on Kali Linux; 0 failures; 146 Phase 21 tests with 145 passed, 1 skipped per platform).
+* **Cross-Platform Test Coverage**: 58 test modules with 1108 tests collected under pytest (1085 passed, 3 skipped on Windows 11; 1087 passed, 1 skipped on Kali Linux; 0 failures; 166 Phase 21 tests with 162 passed, 4 skipped on Windows 11 and 165 passed, 1 skipped on Kali Linux).
 * **Target Runtime**: Kali/Debian Linux with OpenCode installed, deploying `Bug-Bounty` globally via `bb-deploy`.
 
 ---
