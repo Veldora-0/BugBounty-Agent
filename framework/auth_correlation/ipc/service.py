@@ -792,9 +792,16 @@ class IsolatedExecutionDispatcher:
             if p_stat.st_mode & 0o002 != 0:
                 raise PermissionError(f"Socket directory '{parent_dir}' is world-writable; insecure for IPC")
             if (p_stat.st_mode & 0o020 != 0) and (p_stat.st_mode & 0o1000 == 0):
-                raise PermissionError(
-                    f"Socket directory '{parent_dir}' is group-writable without sticky bit (01000); insecure for IPC"
-                )
+                if hasattr(os, "getuid") and p_stat.st_uid == os.getuid():
+                    try:
+                        os.chmod(parent_dir, p_stat.st_mode & ~0o020)
+                        p_stat = os.stat(parent_dir)
+                    except OSError:
+                        pass
+                if (p_stat.st_mode & 0o020 != 0) and (p_stat.st_mode & 0o1000 == 0):
+                    raise PermissionError(
+                        f"Socket directory '{parent_dir}' is group-writable without sticky bit (01000); insecure for IPC"
+                    )
 
             if os.path.exists(self.endpoint_address) or os.path.islink(self.endpoint_address):
                 st = os.lstat(self.endpoint_address)
