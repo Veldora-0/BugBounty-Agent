@@ -10,12 +10,14 @@ Group=bbgroup
 UMask=0027
 
 # Runtime socket directory (/run/bugbounty)
+# Crucial security fix: 0750 ensures group members cannot delete/replace the socket entry
 RuntimeDirectory=bugbounty
-RuntimeDirectoryMode=0775
+RuntimeDirectoryMode=0750
 
 # Persistent state and keys directory (/var/lib/bugbounty)
+# Crucial security fix: 0700 ensures state and keys are completely private to _bbdispatcher
 StateDirectory=bugbounty
-StateDirectoryMode=0750
+StateDirectoryMode=0700
 
 ExecStart=/usr/bin/python3 /opt/BugBounty-Agent/scripts/bb-dispatcher \
     --socket /run/bugbounty/dispatcher.sock \

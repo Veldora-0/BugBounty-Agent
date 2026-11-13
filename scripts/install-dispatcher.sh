@@ -45,7 +45,8 @@ fi
 echo "[*] 3. Setting up secure directory hierarchy..."
 mkdir -p /run/bugbounty
 chown "${DISPATCHER_USER}:${DISPATCHER_GROUP}" /run/bugbounty
-chmod 0775 /run/bugbounty
+# Crucial security fix: 0750 prevents members of bbgroup from deleting or replacing the socket file
+chmod 0750 /run/bugbounty
 
 mkdir -p /var/lib/bugbounty/keys
 chown "${DISPATCHER_USER}:${DISPATCHER_USER}" /var/lib/bugbounty/keys

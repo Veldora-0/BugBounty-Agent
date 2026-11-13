@@ -184,13 +184,14 @@ class IsolatedDispatcherClient:
         action_dossier: Dict[str, Any],
         session_context: Dict[str, Any],
         scope_rules: Optional[Dict[str, Any]] = None,
+        nonce: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Sends an approved Mode B mutation request to the isolated dispatcher.
         Returns the dispatcher response containing the signed ExecutionReceipt.
         """
         req_id = f"REQ-{secrets.token_hex(16).upper()}"
-        nonce = f"NONCE-{secrets.token_hex(16).upper()}"
+        nonce = nonce or f"NONCE-{secrets.token_hex(16).upper()}"
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         req = {

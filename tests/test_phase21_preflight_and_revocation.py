@@ -1827,6 +1827,7 @@ def test_controlled_attestation_security_matrix_d1(tmp_path, request):
         approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",
     )
     val_fail_store._dispatcher_client = validator._dispatcher_client
+    val_fail_store._dispatcher_verification_key = validator._dispatcher_verification_key
     dossier26 = sign_action_approval({
         "action_type": "LOGOUT",
         "created_at": time.time(),

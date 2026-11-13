@@ -414,12 +414,14 @@ class ControlledDispatchWorkflow:
         }
 
         # 8. Dispatch over IPC to the isolated execution dispatcher
+        client_nonce = f"NONCE-{secrets.token_hex(16).upper()}"
         try:
             resp = client.dispatch_mutation(
                 program_id=self._program_id,
                 action_id=action_id,
                 action_dossier=action_dossier,
                 session_context=sess_dict,
+                nonce=client_nonce,
             )
         except DispatcherUnavailableError as e:
             raise ApprovalSecurityError(f"Isolated execution dispatcher unavailable: {e}")
@@ -439,54 +441,67 @@ class ControlledDispatchWorkflow:
 
         receipt = resp.get("receipt")
         if not isinstance(receipt, dict):
-            return False, None, "Dispatcher did not return an authentic execution receipt"
+            raise ApprovalSecurityError("Dispatcher did not return an authentic execution receipt")
 
-        # 10. Cryptographic receipt verification if verification key is configured
-        if self._dispatcher_verification_key is not None:
-            ok, reason = verify_execution_receipt(receipt, self._dispatcher_verification_key, expected_action_id=action_id)
-            if not ok:
-                raise ApprovalSecurityError(f"Execution receipt verification failed: {reason}")
+        # 10. Mandatory Cryptographic Receipt Verification
+        if self._dispatcher_verification_key is None:
+            raise ApprovalSecurityError("Dispatcher receipt verification key is mandatory for controlled invalidation")
 
-        mut_ev = receipt.get("mutation_evidence", {})
-        ver_ev = receipt.get("verification_evidence", {})
+        ok, reason = verify_execution_receipt(
+            receipt,
+            self._dispatcher_verification_key,
+            expected_action_id=action_id,
+            expected_nonce=client_nonce,
+            expected_program_id=self._program_id,
+        )
+        if not ok:
+            raise ApprovalSecurityError(f"Execution receipt verification failed: {reason}")
 
-        # Ensure evidence files are recorded in local EvidenceStore if configured
-        if self._evidence_store is not None and hasattr(self._evidence_store, "evidence_dir"):
-            target_ev_dir = self._evidence_store.evidence_dir
-            for prefix_tag, ev_data in [("mut", mut_ev), ("ver", ver_ev)]:
-                ev_id = ev_data.get("evidence_id")
-                if not ev_id:
-                    continue
-                local_desc = os.path.join(target_ev_dir, f"{prefix_tag}_{ev_id}.json")
-                if not os.path.exists(local_desc):
-                    desc_body = {
-                        "evidence_id": ev_id,
-                        "capture_path": os.path.join(target_ev_dir, f"{prefix_tag}_{ev_id}.txt"),
-                        "request_sha256": ev_data["request_sha256"],
-                        "response_sha256": ev_data["response_sha256"],
-                        "sha256": ev_data.get("sha256", ev_data["response_sha256"]),
-                        "status_code": ev_data["status_code"],
-                        "timestamp": ev_data["timestamp"],
-                        "dispatch_op_id": receipt["dispatch_op_id"],
-                        "action_id": action_id,
-                        "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
-                        "evidence_class": "CONTROLLED_TRANSPORT_DISPATCH",
-                        "metadata": {
-                            "capture_source": "CONTROLLED_TRANSPORT_DISPATCH",
-                            "evidence_class": "CONTROLLED_TRANSPORT_DISPATCH",
-                        },
-                    }
-                    if "verification_method" in ev_data:
-                        desc_body["metadata"]["verification_method"] = ev_data["verification_method"]
-                    try:
-                        with open(local_desc, "w", encoding="utf-8") as f:
-                            json.dump(desc_body, f, indent=2)
-                        raw_txt_path = desc_body["capture_path"]
-                        if not os.path.exists(raw_txt_path):
-                            with open(raw_txt_path, "w", encoding="utf-8") as f:
-                                f.write(f"=== ISOLATED DISPATCH {ev_id} ===\nStatus: {ev_data['status_code']}\n")
-                    except Exception:
-                        pass
+        # Bindings verification
+        if receipt.get("approval_id") != unique_approval_id:
+            raise ApprovalSecurityError(
+                f"Receipt approval_id '{receipt.get('approval_id')}' does not match expected '{unique_approval_id}'"
+            )
+        if receipt.get("target_endpoint") != target_endpoint:
+            raise ApprovalSecurityError(
+                f"Receipt target_endpoint '{receipt.get('target_endpoint')}' does not match expected '{target_endpoint}'"
+            )
+        if receipt.get("http_method") != method:
+            raise ApprovalSecurityError(
+                f"Receipt http_method '{receipt.get('http_method')}' does not match expected '{method}'"
+            )
+        if receipt.get("action_type") != action_type:
+            raise ApprovalSecurityError(
+                f"Receipt action_type '{receipt.get('action_type')}' does not match expected '{action_type}'"
+            )
+
+        mut_ev = receipt.get("mutation_evidence")
+        ver_ev = receipt.get("verification_evidence")
+        if not isinstance(mut_ev, dict) or not isinstance(ver_ev, dict):
+            raise ApprovalSecurityError("Receipt missing mutation or verification evidence descriptors")
+
+        mut_ev_id = mut_ev.get("evidence_id")
+        ver_ev_id = ver_ev.get("evidence_id")
+        if not mut_ev_id or not ver_ev_id:
+            raise ApprovalSecurityError("Receipt evidence records missing evidence identifiers")
+
+        # 11. Independent Evidence Verification on disk (strictly verified; no placeholders)
+        if self._evidence_store is not None and hasattr(self._evidence_store, "get_evidence"):
+            mut_meta = self._evidence_store.get_evidence(mut_ev_id)
+            if mut_meta is None:
+                raise ApprovalSecurityError(
+                    f"Mutation evidence '{mut_ev_id}' not found or failed integrity checks in EvidenceStore"
+                )
+            ver_meta = self._evidence_store.get_evidence(ver_ev_id)
+            if ver_meta is None:
+                raise ApprovalSecurityError(
+                    f"Verification evidence '{ver_ev_id}' not found or failed integrity checks in EvidenceStore"
+                )
+
+            if mut_meta.get("request_sha256") != mut_ev.get("request_sha256") or mut_meta.get("response_sha256") != mut_ev.get("response_sha256"):
+                raise ApprovalSecurityError("Mutation evidence on-disk digests do not match receipt digests")
+            if ver_meta.get("request_sha256") != ver_ev.get("request_sha256") or ver_meta.get("response_sha256") != ver_ev.get("response_sha256"):
+                raise ApprovalSecurityError("Verification evidence on-disk digests do not match receipt digests")
 
         # 11. Construct sealed genuine ControlledDispatchResult
         dispatch_result = ControlledDispatchResult(

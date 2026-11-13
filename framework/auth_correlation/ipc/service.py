@@ -132,17 +132,14 @@ class IsolatedExecutionDispatcher:
         os.makedirs(self.evidence_dir, exist_ok=True)
 
         if os.name == "nt":
-            try:
-                _enforce_windows_directory_dacl(self.key_dir)
-                _enforce_windows_directory_dacl(self.state_dir)
-            except Exception:
-                pass
+            _enforce_windows_directory_dacl(self.key_dir)
+            _enforce_windows_directory_dacl(self.state_dir)
         else:
             try:
                 os.chmod(self.key_dir, 0o700)
                 os.chmod(self.state_dir, 0o700)
-            except OSError:
-                pass
+            except OSError as e:
+                raise PermissionError(f"Failed to enforce private permissions (0700) on dispatcher directory: {e}")
 
         from framework.common.evidence import EvidenceStore
         self._authority_token = secrets.token_hex(32)
@@ -150,6 +147,11 @@ class IsolatedExecutionDispatcher:
 
         # Operator approval key and Dispatcher private signing key
         self.approval_key = approval_key
+        if self.approval_key is None and not self.is_lab:
+            key_file = os.path.join(self.key_dir, "operator_approval.key")
+            if os.path.exists(key_file):
+                with open(key_file, "rb") as f:
+                    self.approval_key = f.read().strip()
         self.signing_key = signing_key or self._get_or_create_signing_key()
         self.dispatcher_id = f"DISPATCHER-{secrets.token_hex(8).upper()}"
         self.dispatcher_key_id = "KEY-DISPATCHER-V1"
@@ -171,15 +173,12 @@ class IsolatedExecutionDispatcher:
         key_file = os.path.join(self.key_dir, "dispatcher_signing_key.bin")
         if os.path.exists(key_file):
             if os.name == "nt":
-                try:
-                    _enforce_windows_file_dacl(key_file)
-                except Exception:
-                    pass
+                _enforce_windows_file_dacl(key_file)
             else:
                 try:
                     os.chmod(key_file, 0o600)
-                except OSError:
-                    pass
+                except OSError as e:
+                    raise PermissionError(f"Failed to enforce private permissions (0600) on dispatcher key file: {e}")
             with open(key_file, "rb") as f:
                 key = f.read()
             if len(key) >= 32:
@@ -194,12 +193,19 @@ class IsolatedExecutionDispatcher:
             with os.fdopen(fd, "wb") as f:
                 f.write(key)
             if os.name == "nt":
+                _enforce_windows_file_dacl(key_file)
+            else:
                 try:
-                    _enforce_windows_file_dacl(key_file)
-                except Exception:
+                    os.chmod(key_file, 0o600)
+                except OSError as e:
+                    raise PermissionError(f"Failed to enforce private permissions (0600) on dispatcher key file: {e}")
+        except Exception as e:
+            if os.path.exists(key_file):
+                try:
+                    os.remove(key_file)
+                except OSError:
                     pass
-        except Exception:
-            pass
+            raise PermissionError(f"Failed to initialize dispatcher signing key: {e}")
         return key
 
     def _get_consumed_registry_path(self) -> str:
@@ -214,7 +220,7 @@ class IsolatedExecutionDispatcher:
         - Scheme must be http or https
         - Port must be valid (1-65535)
         - Hostname cannot be a prohibited cloud metadata IP or loopback escape
-        - Passes ScopeEngine if configured
+        - Passes ScopeEngine (mandatory for production dispatches)
         """
         parsed = urlparse(target_endpoint)
         if parsed.scheme.lower() not in ("http", "https"):
@@ -236,10 +242,23 @@ class IsolatedExecutionDispatcher:
         if is_loopback and not self.is_lab and not hasattr(self.transport_engine, "lab_port"):
             raise ValueError(f"Loopback destination '{host}' is prohibited outside deterministic simulation lab")
 
+        # Production dispatch requires authoritative ScopeEngine
+        if not self.is_lab and self.scope_engine is None:
+            raise ValueError("ScopeEngine is mandatory for production dispatch; missing scope configuration")
+
         if self.scope_engine is not None and not self.is_lab:
             try:
-                if not self.scope_engine.is_in_scope(target_endpoint):
+                if hasattr(self.scope_engine, "is_in_scope"):
+                    in_scope = self.scope_engine.is_in_scope(target_endpoint)
+                elif hasattr(self.scope_engine, "check"):
+                    dec = self.scope_engine.check(target_endpoint)
+                    in_scope = (getattr(dec, "status", None) == "IN_SCOPE")
+                else:
+                    in_scope = False
+                if not in_scope:
                     raise ValueError(f"Target endpoint '{target_endpoint}' is out of configured program scope")
+            except ValueError:
+                raise
             except Exception as e:
                 raise ValueError(f"Scope verification failed for controlled mutation: {e}")
 
@@ -304,10 +323,7 @@ class IsolatedExecutionDispatcher:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(reg, f, indent=2)
                 if os.name == "nt":
-                    try:
-                        _enforce_windows_file_dacl(tmp_path)
-                    except Exception:
-                        pass
+                    _enforce_windows_file_dacl(tmp_path)
                 os.replace(tmp_path, consumed_path)
             except Exception as e:
                 if os.path.exists(tmp_path):
@@ -381,24 +397,25 @@ class IsolatedExecutionDispatcher:
 
         if self.transport_engine is not None and hasattr(self.transport_engine, "send_request"):
             mut_resp = self.transport_engine.send_request(mut_req)
+        elif self.is_lab:
+            raise ValueError("Deterministic simulation lab requires a registered transport engine")
         else:
-            # Fallback simple internal safe HTTP transport
-            import urllib.request
-            urllib_req = urllib.request.Request(target_endpoint, headers=mut_headers, method=method)
-            try:
-                with urllib.request.urlopen(urllib_req, timeout=10.0) as u_resp:
-                    body = u_resp.read()
-                    mut_resp = ControlledResponse(
-                        status_code=u_resp.status,
-                        headers=dict(u_resp.headers),
-                        body_bytes=body,
-                    )
-            except urllib.error.HTTPError as e:
-                mut_resp = ControlledResponse(
-                    status_code=e.code,
-                    headers=dict(e.headers),
-                    body_bytes=e.read(),
-                )
+            # Production safe transport: enforces destination-IP pinning, redirect checks, and anti-SSRF
+            from framework.common.transport import safe_fetch_url
+            fetch_res = safe_fetch_url(
+                url=target_endpoint,
+                method=method,
+                headers=mut_headers,
+                timeout=10.0,
+                scope_engine=self.scope_engine,
+            )
+            if fetch_res is None:
+                raise ValueError("Safe transport dispatch failed: target rejected by scope, DNS pinning, or anti-SSRF validation")
+            mut_resp = ControlledResponse(
+                status_code=fetch_res["status_code"],
+                headers=fetch_res["headers"],
+                body_bytes=fetch_res.get("body_bytes", b""),
+            )
 
         if mut_resp.status_code >= 400 or mut_resp.status_code < 200:
             raise ValueError(f"Mutation request failed with HTTP {mut_resp.status_code}")
@@ -422,22 +439,24 @@ class IsolatedExecutionDispatcher:
 
         if self.transport_engine is not None and hasattr(self.transport_engine, "send_request"):
             probe_resp = self.transport_engine.send_request(probe_req)
+        elif self.is_lab:
+            raise ValueError("Deterministic simulation lab requires a registered transport engine")
         else:
-            urllib_probe = urllib.request.Request(target_endpoint, headers=probe_headers, method="GET")
-            try:
-                with urllib.request.urlopen(urllib_probe, timeout=10.0) as u_resp:
-                    body = u_resp.read()
-                    probe_resp = ControlledResponse(
-                        status_code=u_resp.status,
-                        headers=dict(u_resp.headers),
-                        body_bytes=body,
-                    )
-            except urllib.error.HTTPError as e:
-                probe_resp = ControlledResponse(
-                    status_code=e.code,
-                    headers=dict(e.headers),
-                    body_bytes=e.read(),
-                )
+            from framework.common.transport import safe_fetch_url
+            fetch_res = safe_fetch_url(
+                url=target_endpoint,
+                method="GET",
+                headers=probe_headers,
+                timeout=10.0,
+                scope_engine=self.scope_engine,
+            )
+            if fetch_res is None:
+                raise ValueError("Safe transport verification probe failed: target rejected by scope, DNS pinning, or anti-SSRF validation")
+            probe_resp = ControlledResponse(
+                status_code=fetch_res["status_code"],
+                headers=fetch_res["headers"],
+                body_bytes=fetch_res.get("body_bytes", b""),
+            )
 
         # Evaluate invalidation semantics
         probe_loc = (probe_resp.headers.get("location") or "").lower()
@@ -518,6 +537,11 @@ class IsolatedExecutionDispatcher:
                     "endpoint_type": self.endpoint_type,
                     "endpoint_address": self.endpoint_address,
                     "evidence_dir": self.evidence_dir,
+                    "is_lab": self.is_lab,
+                    "has_approval_key": self.approval_key is not None,
+                    "has_scope_engine": self.scope_engine is not None,
+                    "production_isolation_supported": (os.name != "nt"),
+                    "platform_limitation": None if os.name != "nt" else "Windows service isolation under dedicated service account is NOT IMPLEMENTED",
                 },
             }
 
@@ -545,21 +569,56 @@ class IsolatedExecutionDispatcher:
                         "receipt": None,
                     }
 
-                # 2. Operator authorization signature check
+                # 2. Operator authorization key and signature check (MANDATORY)
+                if not self.approval_key:
+                    return {
+                        "version": PROTOCOL_VERSION,
+                        "request_id": req_id,
+                        "response_nonce": resp_nonce,
+                        "timestamp": now_iso,
+                        "status": "REJECTED",
+                        "error_code": "MISSING_APPROVAL_KEY",
+                        "error_message": "Operator approval key is mandatory; missing approval key in dispatcher configuration",
+                        "receipt": None,
+                    }
+
+                if len(self.approval_key) < 32:
+                    return {
+                        "version": PROTOCOL_VERSION,
+                        "request_id": req_id,
+                        "response_nonce": resp_nonce,
+                        "timestamp": now_iso,
+                        "status": "REJECTED",
+                        "error_code": "MALFORMED_APPROVAL_KEY",
+                        "error_message": "Operator approval key is malformed (must be at least 32 bytes)",
+                        "receipt": None,
+                    }
+
                 sig = dossier.get("approval_signature", "")
-                if self.approval_key is not None:
-                    expected_sig = hmac.new(self.approval_key, canonical_str.encode("utf-8"), hashlib.sha256).hexdigest()
-                    if not hmac.compare_digest(sig[4:], expected_sig):
-                        return {
-                            "version": PROTOCOL_VERSION,
-                            "request_id": req_id,
-                            "response_nonce": resp_nonce,
-                            "timestamp": now_iso,
-                            "status": "REJECTED",
-                            "error_code": "INVALID_OPERATOR_SIGNATURE",
-                            "error_message": "Operator authorization signature verification failed",
-                            "receipt": None,
-                        }
+                if not sig or not sig.startswith("SIG-"):
+                    return {
+                        "version": PROTOCOL_VERSION,
+                        "request_id": req_id,
+                        "response_nonce": resp_nonce,
+                        "timestamp": now_iso,
+                        "status": "REJECTED",
+                        "error_code": "INVALID_OPERATOR_SIGNATURE",
+                        "error_message": "Missing or malformed operator approval signature format",
+                        "receipt": None,
+                    }
+
+                expected_sig = hmac.new(self.approval_key, canonical_str.encode("utf-8"), hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(sig[4:], expected_sig):
+                    return {
+                        "version": PROTOCOL_VERSION,
+                        "request_id": req_id,
+                        "response_nonce": resp_nonce,
+                        "timestamp": now_iso,
+                        "status": "REJECTED",
+                        "error_code": "INVALID_OPERATOR_SIGNATURE",
+                        "error_message": "Operator authorization signature verification failed",
+                        "receipt": None,
+                    }
 
                 # 3. Destination and Scope verification
                 target_endpoint = dossier.get("target_endpoint", "")
@@ -683,6 +742,7 @@ class IsolatedExecutionDispatcher:
                     "issued_at": now_iso,
                 }
                 receipt_dict["signature"] = sign_execution_receipt(receipt_dict, self.signing_key)
+                receipt_dict["receipt_signature"] = receipt_dict["signature"]
 
                 return {
                     "version": PROTOCOL_VERSION,
@@ -725,17 +785,36 @@ class IsolatedExecutionDispatcher:
 
         self._running = True
         if self.endpoint_type == "unix":
-            if os.path.exists(self.endpoint_address):
+            parent_dir = os.path.dirname(os.path.abspath(self.endpoint_address))
+            if not os.path.exists(parent_dir):
+                raise FileNotFoundError(f"Socket parent directory '{parent_dir}' does not exist")
+            p_stat = os.stat(parent_dir)
+            if p_stat.st_mode & 0o002 != 0:
+                raise PermissionError(f"Socket directory '{parent_dir}' is world-writable; insecure for IPC")
+            if (p_stat.st_mode & 0o020 != 0) and (p_stat.st_mode & 0o1000 == 0):
+                raise PermissionError(
+                    f"Socket directory '{parent_dir}' is group-writable without sticky bit (01000); insecure for IPC"
+                )
+
+            if os.path.exists(self.endpoint_address) or os.path.islink(self.endpoint_address):
+                st = os.lstat(self.endpoint_address)
+                if stat.S_ISLNK(st.st_mode):
+                    raise PermissionError(f"Socket path '{self.endpoint_address}' is a symbolic link; rejecting")
                 try:
                     os.unlink(self.endpoint_address)
-                except OSError:
-                    pass
+                except OSError as e:
+                    raise PermissionError(f"Cannot unlink stale socket '{self.endpoint_address}': {e}")
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.bind(self.endpoint_address)
             try:
-                os.chmod(self.endpoint_address, 0o600)
-            except OSError:
-                pass
+                sock.bind(self.endpoint_address)
+            except OSError as e:
+                sock.close()
+                raise PermissionError(f"Failed to bind Unix socket at '{self.endpoint_address}': {e}")
+            try:
+                os.chmod(self.endpoint_address, 0o660)
+            except OSError as e:
+                sock.close()
+                raise PermissionError(f"Failed to set permissions (0660) on socket '{self.endpoint_address}': {e}")
             sock.listen(5)
             self._listener_obj = sock
 

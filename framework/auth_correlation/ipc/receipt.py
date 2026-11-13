@@ -134,7 +134,7 @@ def verify_execution_receipt(
     if not isinstance(receipt_dict, dict):
         return False, "Receipt must be a dictionary"
 
-    sig = receipt_dict.get("signature")
+    sig = receipt_dict.get("signature") or receipt_dict.get("receipt_signature")
     if not isinstance(sig, str) or not SIG_PATTERN.match(sig):
         return False, f"Invalid receipt signature format: '{sig}'"
 

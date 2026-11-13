@@ -2,7 +2,7 @@
 
 > **TEMPORARY PROJECT MEMORY FILE.** This file was requested to preserve the agreed continuation roadmap during planning. Delete it when the user explicitly asks. It is not a runtime configuration file and must not contain target data, credentials, or findings.
 >
-> **Current Repository Baseline:** `cc32611` (Phase 21 Isolated Execution Authority & Mode B Restoration completed, framed IPC dispatcher implemented, private authority token enforced, 100% verified across Windows 11 and Kali Linux; previous baselines: `0d88adc65919d8060d9c75641ccadd1a8cf4fe54`, `0f98435`, `59878e9fc770a8938fa654e0e0f153a27c333c95`, `45b4edb1210ac02144b26d1226d104d9f1d15042`)
+> **Current Repository Baseline:** `cc32611` (Phase 21 Isolated Execution Authority & Mode B Restoration completed, framed IPC dispatcher implemented, private authority token enforced, 100% verified across Windows 11 and Kali Linux; previous baselines: `0d88adc65919d8060d9c75641ccadd1a8cf4fe54`, `0f98435`, `59878e9fc770a8938fa654e0e0f153a27c333c95`, `45b4edb1210ac02144b26d1226d104d9f1d15042`; historical Phase 1–20 baseline: `396ed0e5986f9f1e41bb0bec1201ee217011bc56`; Stage C baseline: `1841280b2f71b103b0e9217b961f1d859bd94272`; starting baseline: `c8bfebefe91c24b2fa5fd1ad20240f76cc7390ae`)
 > **Current phase:** Phase 21 — Authentication & Authorization Correlation (Definitively Accepted; Next Phase: Phase 22 — Cross-Engine Attack-Path Correlation — NOT STARTED)
 > **Architecture invariants:** one custom OpenCode agent (`Bug-Bounty`); subagents disabled; no Xalgorix/Strix; runtime program data and secrets stay outside Git; scope enforcement fails closed; no destructive or unauthorized testing; no automatic report submission.
 
