@@ -22,10 +22,10 @@ This is the single consolidated register for material unresolved project problem
 - **Remediation:** Phase guides now distinguish repository implementation from live effectiveness and call out limits. Add a repeatable CI matrix and dated acceptance manifests as part of Phase 24.
 - **Acceptance gate:** Each maintained acceptance record identifies commit, exact commands, environment/dependencies, pass/skip/fail counts and untested live boundaries.
 
-### AUD-04 — Live OOB integrations are not operationally confirmed
+### AUD-04 — Live OOB integrations for SSRF/XXE are unavailable (Phases 9 and 18)
 
 - **Severity:** Medium; affects confirmation of blind SSRF/XXE only.
-- **Evidence:** Existing Phase 18 acceptance material reports that configured adapters lack operational live wire polling; simulated callbacks are explicitly not live findings.
+- **Evidence:** `framework/ssrf/provider.py` reports configured Interactsh/Burp Collaborator providers as `UNAVAILABLE` because live polling is not implemented; `framework/ssrf/engine.py` and `framework/xxe/engine.py` fail closed and keep simulated callbacks labeled as simulation. The Phase 1–20 baseline records this limitation for Phase 9, and Phase 18 acceptance records it for XXE.
 - **Impact:** Blind server-side interaction hypotheses may remain unconfirmed even if local simulations pass.
 - **Remediation:** Implement supported provider polling and credential configuration with safe correlation identifiers, timeout/rate limits, scope checks and auditable callback provenance, or keep status unavailable.
 - **Acceptance gate:** An isolated owned test endpoint verifies attributable live callback receipt; mock providers remain labeled simulation and cannot create confirmed findings.
