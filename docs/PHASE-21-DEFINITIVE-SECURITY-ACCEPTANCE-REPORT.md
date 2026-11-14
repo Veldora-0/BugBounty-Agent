@@ -279,7 +279,15 @@ The Linux verification command is `sudo bash tests/verify-dispatcher-isolation.s
 | Kali Linux | `sudo bash scripts/install-dispatcher.sh` | **Passed after startup fixes:** runtime installed under `/opt/BugBounty-Agent`; systemd started as `_bbdispatcher:bbgroup`; pinned public key published. |
 | Kali Linux | `sudo bash tests/verify-dispatcher-isolation.sh veldora` | **Passed:** service identity, key/state/evidence permissions, public-key access, and agent IPC ping verified. |
 | Kali Linux | Cross-process invalid-approval rejection probe | **Passed:** run as `veldora` against the active `_bbdispatcher` service; real IPC request rejected with `MISSING_APPROVAL_KEY` before execution and returned no receipt. |
-| Kali Linux | State/evidence immutability around invalid request | **Pending:** updated root-run isolation script fingerprints both protected trees before and after the probe. |
+| Kali Linux | State/evidence immutability around invalid request | **Passed:** root-run isolation script fingerprints both protected trees before and after the probe; both remained unchanged. |
 | Windows | Full Phase 21 and repository suites | **Not run:** this Windows workspace has only an unavailable Microsoft Store Python launcher. |
 
-The code and tests now exercise Ed25519 receipt verification and reject signatures made using only the public key. The first service failure came from placing the runtime inside the agent user's non-traversable home; the second came from the CLI eagerly creating its default user socket directory even though systemd supplied `--socket`. After those corrections, the user installed the service and the live identity, permission, public-key access, and IPC ping checks passed. The invalid-approval probe also passed over the real Unix socket and was rejected with `MISSING_APPROVAL_KEY`; the updated root-run script still needs to confirm protected state/evidence are unchanged around that request. Windows regression results remain outstanding, so Phase 21 is **not accepted**.
+### Current rerun on commit `6607610`
+
+With the real dispatcher installed and active, Kali results are:
+
+* `python3 -m pytest -k phase21`: **165 passed, 1 skipped, 942 deselected** (20.27s).
+* `python3 -m pytest tests/`: **1,107 passed, 1 skipped** (131.85s).
+* `sudo bash tests/verify-dispatcher-isolation.sh veldora`: **PASS**, including unchanged protected state and evidence fingerprints after the real IPC invalid-approval request.
+
+The code and tests exercise Ed25519 receipt verification and reject signatures made using only the public key. The first service failure came from placing the runtime inside the agent user's non-traversable home; the second came from the CLI eagerly creating its default user socket directory even though systemd supplied `--socket`. After those corrections, the user installed the service and the live identity, permission, public-key access, IPC, and immutability checks passed. Windows regression results remain outstanding, so Phase 21 is **not accepted** pending Windows verification and final cross-platform reconciliation.
