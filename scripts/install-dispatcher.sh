@@ -82,7 +82,17 @@ if [[ -f "${REPO_DIR}/systemd/bugbounty-dispatcher.service" ]]; then
     systemctl enable bugbounty-dispatcher
     systemctl reset-failed bugbounty-dispatcher
     systemctl restart bugbounty-dispatcher
-    if ! systemctl is-active --quiet bugbounty-dispatcher; then
+    service_ready=false
+    for _ in $(seq 1 15); do
+        if systemctl is-active --quiet bugbounty-dispatcher \
+            && [[ -S /run/bugbounty/dispatcher.sock ]] \
+            && [[ -s /var/lib/bugbounty/keys/dispatcher_verification.pub ]]; then
+            service_ready=true
+            break
+        fi
+        sleep 1
+    done
+    if [[ "$service_ready" != true ]]; then
         echo "[!] Dispatcher service failed to start; diagnostic output follows:" >&2
         systemctl status bugbounty-dispatcher --no-pager -l >&2 || true
         journalctl -u bugbounty-dispatcher -n 40 --no-pager >&2 || true
@@ -91,10 +101,6 @@ if [[ -f "${REPO_DIR}/systemd/bugbounty-dispatcher.service" ]]; then
 
     # Publish only the Ed25519 public key to the agent's trust store.
     # The private key remains readable only by _bbdispatcher.
-    if [[ ! -s /var/lib/bugbounty/keys/dispatcher_verification.pub ]]; then
-        echo "[!] Dispatcher started without producing its public verification key." >&2
-        exit 1
-    fi
     install -d -o root -g root -m 0755 /etc/bugbounty
     install -o root -g root -m 0644 \
         /var/lib/bugbounty/keys/dispatcher_verification.pub \

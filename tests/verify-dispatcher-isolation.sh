@@ -45,8 +45,7 @@ for protected in "$STATE" "$EVIDENCE"; do
 done
 runuser -u "$AGENT_USER" -- test -r "$PUBLIC_KEY" || { echo "Agent cannot read the pinned public verification key." >&2; exit 1; }
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-runuser -u "$AGENT_USER" -- /usr/bin/python3 "$REPO_DIR/scripts/bb-dispatcher" \
+runuser -u "$AGENT_USER" -- /usr/bin/python3 /opt/BugBounty-Agent/scripts/bb-dispatcher \
     --ping --socket "$SOCKET"
 
 echo "PASS: dispatcher identity, private-key isolation, protected data permissions, and agent IPC access verified."

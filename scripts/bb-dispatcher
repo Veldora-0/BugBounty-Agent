@@ -41,11 +41,12 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    endpoint_type, endpoint_addr = get_default_ipc_endpoint()
     if args.socket:
         endpoint_type, endpoint_addr = "unix", args.socket
     elif args.pipe:
         endpoint_type, endpoint_addr = "pipe", args.pipe
+    else:
+        endpoint_type, endpoint_addr = get_default_ipc_endpoint()
 
     client = IsolatedDispatcherClient(endpoint_type=endpoint_type, address=endpoint_addr)
 
