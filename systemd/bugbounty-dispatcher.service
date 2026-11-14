@@ -2,6 +2,8 @@
 Description=BugBounty-Agent Isolated Execution Dispatcher Service (Phase 21)
 Documentation=https://github.com/Veldora-0/BugBounty-Agent
 After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple

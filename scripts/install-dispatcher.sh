@@ -19,6 +19,7 @@ fi
 
 DISPATCHER_USER="_bbdispatcher"
 DISPATCHER_GROUP="bbgroup"
+INSTALL_DIR="/opt/BugBounty-Agent"
 
 echo "[*] 1. Creating dedicated service group: ${DISPATCHER_GROUP}..."
 if ! getent group "${DISPATCHER_GROUP}" >/dev/null; then
@@ -64,17 +65,35 @@ echo "[*] 4. Installing systemd unit..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# ProtectHome=read-only still cannot traverse a user's 0700 home directory.
+# Install a root-owned, read-only runtime copy outside /home for the service identity.
+echo "[*] Installing dispatcher runtime into ${INSTALL_DIR}..."
+install -d -o root -g root -m 0755 "${INSTALL_DIR}/framework" "${INSTALL_DIR}/scripts"
+cp -a "${REPO_DIR}/framework/." "${INSTALL_DIR}/framework/"
+install -o root -g root -m 0644 "${REPO_DIR}/scripts/bb-dispatcher" "${INSTALL_DIR}/scripts/bb-dispatcher"
+chown -R root:root "${INSTALL_DIR}"
+chmod -R a+rX,go-w "${INSTALL_DIR}"
+
 if [[ -f "${REPO_DIR}/systemd/bugbounty-dispatcher.service" ]]; then
     cp "${REPO_DIR}/systemd/bugbounty-dispatcher.service" /etc/systemd/system/bugbounty-dispatcher.service
-    # Update repository path if not in /opt
-    sed -i "s|/opt/BugBounty-Agent|${REPO_DIR}|g" /etc/systemd/system/bugbounty-dispatcher.service
     systemctl daemon-reload
     echo "[+] systemd unit installed and daemon reloaded."
     echo "[*] Enabling and starting the isolated dispatcher..."
-    systemctl enable --now bugbounty-dispatcher
+    systemctl enable bugbounty-dispatcher
+    systemctl restart bugbounty-dispatcher
+    if ! systemctl is-active --quiet bugbounty-dispatcher; then
+        echo "[!] Dispatcher service failed to start; diagnostic output follows:" >&2
+        systemctl status bugbounty-dispatcher --no-pager -l >&2 || true
+        journalctl -u bugbounty-dispatcher -n 40 --no-pager >&2 || true
+        exit 1
+    fi
 
     # Publish only the Ed25519 public key to the agent's trust store.
     # The private key remains readable only by _bbdispatcher.
+    if [[ ! -s /var/lib/bugbounty/keys/dispatcher_verification.pub ]]; then
+        echo "[!] Dispatcher started without producing its public verification key." >&2
+        exit 1
+    fi
     install -d -o root -g root -m 0755 /etc/bugbounty
     install -o root -g root -m 0644 \
         /var/lib/bugbounty/keys/dispatcher_verification.pub \

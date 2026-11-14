@@ -276,8 +276,8 @@ The Linux verification command is `sudo bash tests/verify-dispatcher-isolation.s
 |---|---|---|
 | Kali Linux | `python3 -m pytest -k phase21` | **165 passed, 1 skipped, 942 deselected** (25.34s) |
 | Kali Linux | `python3 -m pytest tests/` | **1,107 passed, 1 skipped** (325.69s) |
-| Kali Linux | `sudo bash scripts/install-dispatcher.sh` | **Not run:** non-interactive sudo reported that a password is required. Before installation, `systemctl` reported the service inactive and dispatcher directories absent. |
-| Kali Linux | `sudo bash tests/verify-dispatcher-isolation.sh veldora` | **Pending:** requires the service installation above. |
+| Kali Linux | `sudo bash scripts/install-dispatcher.sh` | **Failed on first attempt:** systemd could not read the launcher beneath `/home/veldora` (`Permission denied` under `ProtectHome=read-only`); no public key was produced. |
+| Kali Linux | `sudo bash tests/verify-dispatcher-isolation.sh veldora` | **Failed:** service had no live MainPID because startup failed. |
 | Windows | Full Phase 21 and repository suites | **Not run:** this Windows workspace has only an unavailable Microsoft Store Python launcher. |
 
-The code and tests now exercise Ed25519 receipt verification and reject signatures made using only the public key. The real systemd cross-process boundary and Windows regression results remain outstanding, so Phase 21 is **not accepted**. No live service or privileged filesystem changes were made on Kali because sudo requested an interactive password.
+The code and tests now exercise Ed25519 receipt verification and reject signatures made using only the public key. The service failure is caused by the dispatcher source being placed inside the agent user's non-traversable home directory while the unit runs as `_bbdispatcher`. The installer has since been changed to install a root-owned runtime copy under `/opt/BugBounty-Agent`, check service health before publishing the public key, and print systemd diagnostics on startup failure. Those follow-up installer changes have not yet been run on Kali. The real systemd cross-process boundary and Windows regression results remain outstanding, so Phase 21 is **not accepted**.
