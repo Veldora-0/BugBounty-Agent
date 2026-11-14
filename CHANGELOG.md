@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Phase 21 — Authentication & Authorization Correlation Engine (Accepted with Documented Limitations)
+### Phase 21 — Authentication & Authorization Correlation Engine (Partially Implemented; Not Accepted)
+
+> The entries below include historical implementation and test records. Their older acceptance language is superseded: execution-capability and controlled-attestation issuance remain disabled. See [the current Phase 21 report](docs/PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md) and [project issue register](docs/PROJECT-AUDIT-ISSUES.md) for current status.
 
 #### Final Trust-Boundary & Acceptance Remediation (Blockers A–G)
 * **Linux Service Isolation & IPC Permissions Hardening (Blocker B)**:

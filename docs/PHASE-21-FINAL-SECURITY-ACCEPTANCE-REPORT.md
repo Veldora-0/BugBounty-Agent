@@ -1,4 +1,6 @@
 # Phase 21 — Authentication & Authorization Correlation Engine
+
+> **HISTORICAL REPORT — SUPERSEDED:** Its accepted verdict below is obsolete. Phase 21 is currently not accepted because trusted execution capability and controlled-attestation issuance remain disabled. See [the current definitive report](PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md) and [issue register](PROJECT-AUDIT-ISSUES.md).
 # Final Security Remediation, Trust-Boundary Closure & Definitive Acceptance Report
 
 **Repository:** `https://github.com/Veldora-0/BugBounty-Agent`  

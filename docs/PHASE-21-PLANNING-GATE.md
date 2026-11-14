@@ -1,4 +1,6 @@
 # BugBounty-Agent — Phase 21 Planning Gate
+
+> **SUPERSEDED STATUS NOTICE:** This plan contains historical “completed/accepted” claims that are no longer current. Phase 21 remains partially implemented and **not accepted** because capability and controlled-attestation issuance are disabled. Use [the definitive report](PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md), [current phase guide](phases/PHASE-21-authentication-authorization-correlation.md), and [issue register](PROJECT-AUDIT-ISSUES.md) for the current status.
 ## Authentication & Authorization Correlation Engine
 
 ---

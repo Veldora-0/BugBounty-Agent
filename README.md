@@ -9,6 +9,12 @@ A professional, modular Bug Bounty Security Research Agent framework for **OpenC
 
 BugBounty-Agent is an orchestrated security research system designed to operate with the rigor of a senior penetration tester. Instead of indiscriminately running vulnerability scanners, the agent applies **deterministic scope enforcement**, **hypothesis-driven testing**, **cryptographic evidence validation**, and **local research state persistence**.
 
+## Project handbook and phase status
+
+This project is intended to find and document vulnerabilities on **explicitly authorized bug bounty targets**. Start with the [Project Handbook](docs/PROJECT-HANDBOOK.md) for a newcomer-oriented overview and operating workflow. The [24-Phase Roadmap](docs/ROADMAP-24-PHASES.md) links to one detailed guide per phase; unresolved risks and blockers are maintained in the [Project Audit Issues](docs/PROJECT-AUDIT-ISSUES.md), and candidate work is listed in [Future Improvements](docs/FUTURE-IMPROVEMENTS.md).
+
+**Current status:** Phases 1–20 have implementations with phase-specific limitations. Phase 21 is partially implemented and not accepted: the Linux isolated dispatcher and invalid-approval rejection are verified, but trusted execution capability and controlled-attestation issuance remain disabled. Phases 22–24 are planned. See the issue register before relying on any phase as production-ready.
+
 ---
 
 ## Key Principles & Architectural Invariants
@@ -450,9 +456,7 @@ BugBounty-Agent has delivered 21 cohesive security research phases, establishing
   * `LocalAuthCorrelationLab`: 6 deterministic authentication & authorization correlation scenarios.
 
 ### 19. Roadmap Status & Verification Baseline
-* **Accepted Baseline**: Phase 21 (Authentication & Authorization Correlation) complete and accepted with documented limitations (Linux service isolation fully verified under `_bbdispatcher:bbgroup`; Windows service isolation documented as not implemented) across Windows 11 and Kali Linux. See [`docs/PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md`](docs/PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md), [`docs/PHASE-21-PLANNING-GATE.md`](docs/PHASE-21-PLANNING-GATE.md), and [`docs/PHASE-1-20-STABLE-BASELINE.md`](docs/PHASE-1-20-STABLE-BASELINE.md).
-* **Next Planned Phase**: Phase 22 (Cross-Engine Attack-Path Correlation — NOT STARTED).
-* **Full Roadmap**: Refer to [`docs/ROADMAP-24-PHASES-TEMP.md`](docs/ROADMAP-24-PHASES-TEMP.md) for the detailed 24-phase roadmap, architectural specifications, and historical verification records.
+The older Phase 21 acceptance documents cited below contain superseded conclusions. Phase 21 is **not accepted**: execution capability and controlled-attestation issuance remain disabled. See the [canonical roadmap](docs/ROADMAP-24-PHASES.md), [Phase 21 guide](docs/phases/PHASE-21-authentication-authorization-correlation.md), and [project issue register](docs/PROJECT-AUDIT-ISSUES.md). The old roadmap path is retained only for historical references.
 
 ---
 
