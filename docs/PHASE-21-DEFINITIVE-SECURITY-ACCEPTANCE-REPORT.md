@@ -290,4 +290,17 @@ With the real dispatcher installed and active, Kali results are:
 * `python3 -m pytest tests/`: **1,107 passed, 1 skipped** (131.85s).
 * `sudo bash tests/verify-dispatcher-isolation.sh veldora`: **PASS**, including unchanged protected state and evidence fingerprints after the real IPC invalid-approval request.
 
-The code and tests exercise Ed25519 receipt verification and reject signatures made using only the public key. The first service failure came from placing the runtime inside the agent user's non-traversable home; the second came from the CLI eagerly creating its default user socket directory even though systemd supplied `--socket`. After those corrections, the user installed the service and the live identity, permission, public-key access, IPC, and immutability checks passed. Windows regression results remain outstanding, so Phase 21 is **not accepted** pending Windows verification and final cross-platform reconciliation.
+### Windows rerun on source commit `6607610` (report commit `8532fc9`)
+
+Windows Python was found at `C:\Users\varun\AppData\Local\Python\bin\python.exe` (Python 3.14.7). The installed runtime already had pytest 9.1.1 and PyYAML 6.0.3. `cryptography` 50.0.2 and its wheel dependencies were installed into a temporary directory and exposed through `PYTHONPATH`; the project and user-wide Python environment were not changed by dependency installation.
+
+* `python -m pytest -k phase21`: **162 passed, 4 skipped, 942 deselected** (38.89s).
+* `python -m pytest tests/`: **1,102 passed, 6 skipped** (191.42s).
+
+### Cross-platform reconciliation
+
+Both platforms collected 1,108 repository tests and 166 Phase 21 tests. Kali passed 1,107 with one Windows-only DACL test skipped. Windows passed 1,102 with six skips: four POSIX-only permission/socket tests and two real-browser tests whose headless Chromium and Firefox runtimes were unavailable. The Windows DACL test ran and passed. Thus the five-test difference in pass/skip totals is explained by platform-specific coverage; neither suite reported a failure.
+
+### Acceptance status
+
+Windows verification and test-count reconciliation are complete. The Linux service identity, key permissions, IPC, and no-mutation rejection checks also passed. However, the repository still marks `PROVENANCE_BOUNDARY_STATUS` as `UNAVAILABLE` and hard-disables execution-capability and controlled-attestation issuance in `provenance_boundary.py`, `ledger.py`, and `revocation.py`. The live service check proved rejection of an invalid approval; it did not establish an end-to-end successful Mode B execution and attestation through those gates. Phase 21 therefore remains **not accepted** until that intentional fail-closed state is resolved and independently verified. Windows production service isolation remains a documented limitation.
