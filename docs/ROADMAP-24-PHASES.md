@@ -27,7 +27,7 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 19 | Infrastructure & Configuration Exposure | Implemented; read-only and size bounded |
 | 20 | Race Conditions & Distributed Workflows | Implemented with low-volume bounds |
 | 21 | Authentication & Authorization Correlation | **Partially implemented; acceptance blocked** |
-| 22 | Cross-Engine Attack-Path Correlation | Planned |
+| 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Planned; required to identify and safely validate higher-impact chains |
 | 23 | Autonomous Research Planning & Coverage Intelligence | Planned; human-directed recommendations required |
 | 24 | Final Integration & Production Readiness | Planned |
 
@@ -48,4 +48,4 @@ Each phase guide is independently readable and linked to its implementation. Pha
 - [09 SSRF Intelligence](phases/PHASE-09-ssrf-intelligence.md) · [10 Injection Intelligence](phases/PHASE-10-injection-intelligence.md) · [11 HTTP Trust & Protocol Security](phases/PHASE-11-http-trust-protocol-security.md) · [12 Business Logic Intelligence](phases/PHASE-12-business-logic-intelligence.md)
 - [13 Cloud Security](phases/PHASE-13-cloud-security.md) · [14 Authentication, Session & Identity](phases/PHASE-14-authentication-session-identity.md) · [15 File Upload, Path Traversal & LFE](phases/PHASE-15-file-upload-path-traversal-local-file-exposure.md) · [16 Browser Runtime & Client-Side Security](phases/PHASE-16-browser-runtime-client-side-security.md)
 - [17 Advanced API Security](phases/PHASE-17-advanced-api-security.md) · [18 SSRF, XXE & Server-Side Parsers](phases/PHASE-18-ssrf-xxe-server-side-parsers.md) · [19 Infrastructure & Configuration Exposure](phases/PHASE-19-infrastructure-configuration-exposure.md) · [20 Race Conditions & Distributed Workflows](phases/PHASE-20-race-conditions-distributed-workflows.md)
-- [21 Authentication & Authorization Correlation](phases/PHASE-21-authentication-authorization-correlation.md) · [22 Cross-Engine Attack-Path Correlation](phases/PHASE-22-cross-engine-attack-path-correlation.md) · [23 Research Planning & Coverage](phases/PHASE-23-autonomous-research-planning-coverage-intelligence.md) · [24 Integration & Production Readiness](phases/PHASE-24-final-integration-production-readiness.md)
+- [21 Authentication & Authorization Correlation](phases/PHASE-21-authentication-authorization-correlation.md) · [22 Attack-Path Correlation and Vulnerability Chaining](phases/PHASE-22-cross-engine-attack-path-correlation.md) · [23 Research Planning & Coverage](phases/PHASE-23-autonomous-research-planning-coverage-intelligence.md) · [24 Integration & Production Readiness](phases/PHASE-24-final-integration-production-readiness.md)

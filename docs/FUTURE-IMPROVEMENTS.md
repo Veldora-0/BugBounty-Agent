@@ -15,7 +15,8 @@ This document captures candidate improvements for completing the roadmap and mak
 
 - Create a typed graph of assets, endpoints, identities, observations, hypotheses, findings and evidence.
 - Define provenance-bearing edges, confidence and freshness; distinguish observed relationships from validated exploit paths.
-- Rank chains by demonstrated impact and prerequisites without summing severity mechanically.
+- Starting from a validated bug, search for other in-scope weaknesses that could combine with it to produce a demonstrated higher-impact outcome. This bug-chaining workflow is a required Phase 22 deliverable.
+- Rank chains by demonstrated impact and prerequisites without summing severity mechanically. Keep component severities separate from the chain's evidenced impact.
 - Explain every proposed path, show missing evidence, inherit scope restrictions, and require human approval before any active follow-up.
 - Provide graph export and reproducible path reports without exposing secrets.
 

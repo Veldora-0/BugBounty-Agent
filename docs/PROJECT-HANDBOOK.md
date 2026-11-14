@@ -32,6 +32,7 @@ The architecture intentionally uses one `Bug-Bounty` agent and skills rather tha
 | Surface mapping | Parse web, JavaScript and API surfaces; record authentication and technology observations. | Endpoints, parameters and observations |
 | Hypothesis | State the suspected control failure, affected asset, preconditions and a safe proof. | Testable, prioritized hypothesis |
 | Validation | Run only the minimum approved, non-destructive checks; stop on uncertainty or impact. | Evidence-backed finding or ruled-out hypothesis |
+| Chain analysis | Starting from a validated bug, look for other in-scope weaknesses that could combine into a higher-impact path; keep inferred links separate from proven steps. | Explainable attack-path hypothesis and safe follow-up plan (Phase 22, planned) |
 | Quality and reporting | Challenge confidence, deduplicate root causes, redact and prepare a human-reviewed disclosure report. | Local report and evidence bundle |
 
 ## Current implementation status

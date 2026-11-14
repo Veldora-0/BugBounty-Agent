@@ -115,5 +115,6 @@ flowchart TD
 
 5. **Validation, Deduplication & Reporting**:
    * `validation` challenges candidate findings against the 6-gate checklist.
+   * After a finding is validated, `Bug-Bounty` considers whether other **in-scope** weaknesses can be safely chained with it to demonstrate greater impact. Each proposed edge must cite evidence; inferred paths remain hypotheses. Follow-up requests require human approval, and theoretical chains must not inflate severity. The integrated graph and chain validation engine is planned for Phase 22.
    * `deduplication` merges root-cause duplicates and flags existing coverage.
    * `reporting` renders standard 17-section Markdown disclosure reports in `reports/` for human review.
