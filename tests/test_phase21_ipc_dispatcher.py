@@ -34,6 +34,7 @@ from framework.auth_correlation.ipc.protocol import (
 )
 from framework.auth_correlation.ipc.receipt import (
     canonicalize_receipt,
+    derive_verification_key,
     sign_execution_receipt,
     verify_execution_receipt,
 )
@@ -144,20 +145,27 @@ def test_receipt_signing_and_tamper_detection():
     receipt["signature"] = sign_execution_receipt(receipt, signing_key)
 
     # 1. Authentic receipt verifies cleanly
-    ok, reason = verify_execution_receipt(receipt, signing_key, expected_action_id=aid, expected_nonce=req_nonce)
+    verification_key = derive_verification_key(signing_key)
+    ok, reason = verify_execution_receipt(receipt, verification_key, expected_action_id=aid, expected_nonce=req_nonce)
     assert ok is True
     assert reason == "Receipt cryptographically verified"
+
+    # The public key can verify but cannot produce a receipt accepted as dispatcher-signed.
+    forged = dict(receipt)
+    forged["signature"] = sign_execution_receipt(forged, verification_key)
+    ok, _ = verify_execution_receipt(forged, verification_key)
+    assert ok is False
 
     # 2. Tampered field fails closed
     tampered_receipt = dict(receipt)
     tampered_receipt["target_endpoint"] = "https://attacker.com/evil"
-    ok, reason = verify_execution_receipt(tampered_receipt, signing_key)
+    ok, reason = verify_execution_receipt(tampered_receipt, verification_key)
     assert ok is False
     assert "cryptographic signature verification failed" in reason
 
     # 3. Wrong verification key fails closed
     wrong_key = secrets.token_bytes(32)
-    ok, reason = verify_execution_receipt(receipt, wrong_key)
+    ok, reason = verify_execution_receipt(receipt, derive_verification_key(wrong_key))
     assert ok is False
     assert "cryptographic signature verification failed" in reason
 
@@ -166,7 +174,7 @@ def test_receipt_signing_and_tamper_detection():
     unrevoked_receipt["verification_evidence"] = dict(receipt["verification_evidence"])
     unrevoked_receipt["verification_evidence"]["invalidation_result"] = "NOT_REVOKED"
     unrevoked_receipt["signature"] = sign_execution_receipt(unrevoked_receipt, signing_key)
-    ok, reason = verify_execution_receipt(unrevoked_receipt, signing_key)
+    ok, reason = verify_execution_receipt(unrevoked_receipt, verification_key)
     assert ok is False
     assert "invalidation_result='NOT_REVOKED'" in reason
 
@@ -258,7 +266,7 @@ def test_dispatcher_service_ipc_lifecycle(tmp_path):
         assert receipt["verification_evidence"]["invalidation_result"] == "REVOKED"
 
         # Verify receipt cryptographically
-        ok, reason = verify_execution_receipt(receipt, disp.signing_key, expected_action_id=aid)
+        ok, reason = verify_execution_receipt(receipt, disp.verification_key, expected_action_id=aid)
         assert ok is True
 
         # 4. Replay attack rejection: calling same action_id must be rejected

@@ -444,12 +444,19 @@ class ControlledDispatchWorkflow:
             raise ApprovalSecurityError("Dispatcher did not return an authentic execution receipt")
 
         # 10. Mandatory Cryptographic Receipt Verification
-        if self._dispatcher_verification_key is None:
-            raise ApprovalSecurityError("Dispatcher receipt verification key is mandatory for controlled invalidation")
+        verification_key = self._dispatcher_verification_key
+        if verification_key is None:
+            from framework.auth_correlation.ipc.receipt import load_dispatcher_verification_key
+            try:
+                verification_key = load_dispatcher_verification_key()
+            except ValueError as exc:
+                raise ApprovalSecurityError(
+                    f"Dispatcher receipt public verification key is mandatory for controlled invalidation: {exc}"
+                ) from exc
 
         ok, reason = verify_execution_receipt(
             receipt,
-            self._dispatcher_verification_key,
+            verification_key,
             expected_action_id=action_id,
             expected_nonce=client_nonce,
             expected_program_id=self._program_id,

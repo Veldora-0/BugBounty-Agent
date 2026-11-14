@@ -49,11 +49,11 @@ chown "${DISPATCHER_USER}:${DISPATCHER_GROUP}" /run/bugbounty
 chmod 0750 /run/bugbounty
 
 mkdir -p /var/lib/bugbounty/keys
-chown "${DISPATCHER_USER}:${DISPATCHER_USER}" /var/lib/bugbounty/keys
+chown "${DISPATCHER_USER}:${DISPATCHER_GROUP}" /var/lib/bugbounty/keys
 chmod 0700 /var/lib/bugbounty/keys
 
 mkdir -p /var/lib/bugbounty/state
-chown "${DISPATCHER_USER}:${DISPATCHER_USER}" /var/lib/bugbounty/state
+chown "${DISPATCHER_USER}:${DISPATCHER_GROUP}" /var/lib/bugbounty/state
 chmod 0700 /var/lib/bugbounty/state
 
 mkdir -p /var/lib/bugbounty/evidence
@@ -70,8 +70,17 @@ if [[ -f "${REPO_DIR}/systemd/bugbounty-dispatcher.service" ]]; then
     sed -i "s|/opt/BugBounty-Agent|${REPO_DIR}|g" /etc/systemd/system/bugbounty-dispatcher.service
     systemctl daemon-reload
     echo "[+] systemd unit installed and daemon reloaded."
-    echo "[*] To start service: sudo systemctl start bugbounty-dispatcher"
-    echo "[*] To enable on boot: sudo systemctl enable bugbounty-dispatcher"
+    echo "[*] Enabling and starting the isolated dispatcher..."
+    systemctl enable --now bugbounty-dispatcher
+
+    # Publish only the Ed25519 public key to the agent's trust store.
+    # The private key remains readable only by _bbdispatcher.
+    install -d -o root -g root -m 0755 /etc/bugbounty
+    install -o root -g root -m 0644 \
+        /var/lib/bugbounty/keys/dispatcher_verification.pub \
+        /etc/bugbounty/dispatcher.pub
+    echo "[+] Agent verification key installed at /etc/bugbounty/dispatcher.pub."
+    echo "[+] Service identity: $(systemctl show -p User --value bugbounty-dispatcher):$(systemctl show -p Group --value bugbounty-dispatcher)"
 fi
 
 echo "[+] Linux isolated execution dispatcher setup complete."

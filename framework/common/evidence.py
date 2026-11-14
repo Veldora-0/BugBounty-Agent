@@ -1,8 +1,8 @@
 """
 Evidence Manager and Data Sanitizer for BugBounty-Agent.
 
-Preserves raw HTTP captures, requests, responses, and screenshots with cryptographic
-hash integrity while redacting sensitive tokens, session cookies, and API keys.
+Stores sanitized application-level request and response representations, plus screenshots,
+with cryptographic hash integrity while redacting sensitive tokens, session cookies, and API keys.
 Enforces private permissions, symlink rejection, atomic writes, and fail-closed digest verification.
 """
 

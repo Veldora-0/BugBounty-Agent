@@ -1114,7 +1114,7 @@ def _attach_test_dispatcher(validator, program_id, approval_key, engine, scope, 
     disp.start()
     client = IsolatedDispatcherClient(endpoint_type="pipe" if os.name == "nt" else "unix", address=pipe_name)
     validator._dispatcher_client = client
-    validator._dispatcher_verification_key = disp.signing_key
+    validator._dispatcher_verification_key = disp.verification_key
     return disp
 
 
@@ -2052,4 +2052,3 @@ def test_operator_attestation_security_matrix_d2(tmp_path):
     s9, f9 = validator.evaluate_revoked_session(sess, target, baseline, op_att["attestation_id"])
     assert s9 == "INCONCLUSIVE"
     assert f9 is None
-

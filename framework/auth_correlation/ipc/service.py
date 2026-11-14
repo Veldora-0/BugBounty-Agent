@@ -5,7 +5,7 @@ The independent execution authority that owns:
 1. Operator approval verification and atomic single-use consumption.
 2. Immediate pre-execution scope and destination validation (SSRF defense).
 3. Network transport execution (mutation and verification probe).
-4. Raw transport evidence capture and disk persistence.
+4. Sanitized application-level request/response evidence persistence.
 5. Cryptographic signing of ExecutionReceipts using a dedicated private key.
 
 Operates over Unix Domain Sockets on Linux/POSIX and Named Pipes on Windows.
@@ -43,6 +43,7 @@ from framework.auth_correlation.ipc.protocol import (
 )
 from framework.auth_correlation.ipc.receipt import (
     canonicalize_receipt,
+    derive_verification_key,
     sign_execution_receipt,
 )
 from framework.auth_correlation.state import (
@@ -153,8 +154,18 @@ class IsolatedExecutionDispatcher:
                 with open(key_file, "rb") as f:
                     self.approval_key = f.read().strip()
         self.signing_key = signing_key or self._get_or_create_signing_key()
+        self.verification_key = derive_verification_key(self.signing_key)
+        public_key_path = os.path.join(self.key_dir, "dispatcher_verification.pub")
+        flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        fd = os.open(public_key_path, flags, 0o644)
+        with os.fdopen(fd, "wb") as public_file:
+            public_file.write(self.verification_key)
+        if os.name != "nt":
+            os.chmod(public_key_path, 0o644)
         self.dispatcher_id = f"DISPATCHER-{secrets.token_hex(8).upper()}"
-        self.dispatcher_key_id = "KEY-DISPATCHER-V1"
+        self.dispatcher_key_id = "KEY-DISPATCHER-ED25519-V1"
 
         # IPC endpoint setup
         self.endpoint_type = "pipe" if os.name == "nt" else "unix"
@@ -350,7 +361,7 @@ class IsolatedExecutionDispatcher:
         verification_method: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Persists raw transport request and response capture directly to protected evidence store.
+        Persists sanitized application-level request and response representations to the protected evidence store.
         Returns evidence descriptor with evidence_id, request_sha256, response_sha256, etc.
         """
         desc = self._evidence_store.save_transport_dispatch_capture(

@@ -44,6 +44,7 @@ from framework.auth_correlation.ipc.protocol import (
 )
 from framework.auth_correlation.ipc.receipt import (
     canonicalize_receipt,
+    derive_verification_key,
     sign_execution_receipt,
     verify_execution_receipt,
 )
@@ -296,7 +297,7 @@ def test_06_private_and_metadata_ip_destinations(tmp_path):
 # ==============================================================================
 # TEST 7: Missing Receipt Verification Key
 # ==============================================================================
-def test_07_missing_receipt_verification_key(tmp_path):
+def test_07_missing_receipt_verification_key(tmp_path, monkeypatch):
     """Workflow must fail closed if receipt verification key is missing."""
     store = EvidenceStore(str(tmp_path / "ev"))
     class DummyClient:
@@ -305,6 +306,7 @@ def test_07_missing_receipt_verification_key(tmp_path):
         def dispatch_mutation(self, *args, **kwargs):
             return {"status": "SUCCESS", "receipt": {}}
 
+    monkeypatch.setenv("BUGBOUNTY_DISPATCHER_PUBLIC_KEY", str(tmp_path / "missing-dispatcher.pub"))
     app_key = secrets.token_bytes(32)
     workflow = ControlledDispatchWorkflow(
         program_id="test_prog",
@@ -318,7 +320,7 @@ def test_07_missing_receipt_verification_key(tmp_path):
     )
     sess = CorrelatedSessionContext(VALID_SESSION_REF, "alice")
     dossier = _make_signed_dossier(app_key, "test_prog", "https://target.local/logout")
-    with pytest.raises(ApprovalSecurityError, match="verification key is mandatory"):
+    with pytest.raises(ApprovalSecurityError, match="public verification key is mandatory"):
         workflow.execute(sess, dossier["action_id"], dossier)
 
 
@@ -369,12 +371,13 @@ def test_08_tampered_receipt():
     }
     rcpt["signature"] = sign_execution_receipt(rcpt, key)
     # Valid
-    ok, _ = verify_execution_receipt(rcpt, key)
+    public_key = derive_verification_key(key)
+    ok, _ = verify_execution_receipt(rcpt, public_key)
     assert ok is True
     # Tampered target
     tampered = dict(rcpt)
     tampered["target_endpoint"] = "https://tampered.local/logout"
-    ok, reason = verify_execution_receipt(tampered, key)
+    ok, reason = verify_execution_receipt(tampered, public_key)
     assert ok is False
     assert "signature verification failed" in reason
 
@@ -425,15 +428,16 @@ def test_09_wrong_action_nonce_or_program_in_receipt():
     }
     rcpt["signature"] = sign_execution_receipt(rcpt, key)
     # Action mismatch
-    ok, reason = verify_execution_receipt(rcpt, key, expected_action_id="ACT-" + "1" * 64)
+    public_key = derive_verification_key(key)
+    ok, reason = verify_execution_receipt(rcpt, public_key, expected_action_id="ACT-" + "1" * 64)
     assert ok is False
     assert "does not match expected" in reason
     # Nonce mismatch
-    ok, reason = verify_execution_receipt(rcpt, key, expected_nonce="NONCE-" + "9" * 32)
+    ok, reason = verify_execution_receipt(rcpt, public_key, expected_nonce="NONCE-" + "9" * 32)
     assert ok is False
     assert "nonce" in reason
     # Program mismatch
-    ok, reason = verify_execution_receipt(rcpt, key, expected_program_id="prog_b")
+    ok, reason = verify_execution_receipt(rcpt, public_key, expected_program_id="prog_b")
     assert ok is False
     assert "program_id" in reason
 
@@ -447,7 +451,8 @@ def test_10_missing_evidence(tmp_path):
     app_key = secrets.token_bytes(32)
     dossier = _make_signed_dossier(app_key, "test_prog", "https://target.local/logout")
     aid = dossier["action_id"]
-    vkey = secrets.token_bytes(32)
+    signing_key = secrets.token_bytes(32)
+    vkey = derive_verification_key(signing_key)
     mock_resp = {
         "status": "SUCCESS",
         "receipt": {
@@ -495,7 +500,7 @@ def test_10_missing_evidence(tmp_path):
             return True
         def dispatch_mutation(self, program_id, action_id, action_dossier, session_context, scope_rules=None, nonce=None):
             mock_resp["receipt"]["request_nonce"] = nonce or f"NONCE-{secrets.token_hex(16).upper()}"
-            mock_resp["receipt"]["signature"] = sign_execution_receipt(mock_resp["receipt"], vkey)
+            mock_resp["receipt"]["signature"] = sign_execution_receipt(mock_resp["receipt"], signing_key)
             return mock_resp
 
     workflow = ControlledDispatchWorkflow(
@@ -592,6 +597,10 @@ def test_13_agent_cannot_read_dispatcher_signing_key_permissions(tmp_path):
     kfile = os.path.join(str(kdir), "dispatcher_signing_key.bin")
     st = os.stat(kfile)
     assert st.st_mode & 0o077 == 0  # No group or world access
+    public_key_file = os.path.join(str(kdir), "dispatcher_verification.pub")
+    assert os.stat(public_key_file).st_mode & 0o777 == 0o644
+    with open(public_key_file, "rb") as f:
+        assert f.read() == disp.verification_key
 
 
 def test_14_state_and_evidence_permissions(tmp_path):

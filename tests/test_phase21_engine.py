@@ -378,7 +378,7 @@ def test_engine_mode_a_revocation_orchestration(tmp_path):
         disp.start()
         client = IsolatedDispatcherClient(endpoint_type="pipe" if os.name == "nt" else "unix", address=disp_pipe)
         engine.revocation_validator._dispatcher_client = client
-        engine.revocation_validator._dispatcher_verification_key = disp.signing_key
+        engine.revocation_validator._dispatcher_verification_key = disp.verification_key
 
         try:
             dossier = sign_action_approval(
@@ -415,4 +415,3 @@ def test_engine_mode_a_revocation_orchestration(tmp_path):
             disp.stop()
     finally:
         lab.stop()
-

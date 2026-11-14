@@ -11,18 +11,20 @@ Receipts bind:
 - Target endpoint, HTTP method, action type, and scope decision
 - Evidence record references and integrity digests (SHA-256)
 - Independent verification outcome ('REVOKED')
-- Cryptographic HMAC-SHA256 signature produced with dispatcher private key
+- Ed25519 signature produced with dispatcher private key and checked with public key
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
-import hmac
 import json
+import os
 import re
 from typing import Any, Dict, Optional, Tuple
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 
 RECEIPT_VERSION = 1
@@ -33,7 +35,7 @@ APPROVAL_ID_PATTERN = re.compile(r"^APPR-[0-9A-Fa-f]{16,64}$")
 EXECUTION_ID_PATTERN = re.compile(r"^EXEC-[0-9A-Fa-f]{32}$")
 NONCE_PATTERN = re.compile(r"^NONCE-[0-9A-Fa-f]{32}$")
 EVIDENCE_REF_PATTERN = re.compile(r"^EVID-[0-9A-F]{12}$")
-SIG_PATTERN = re.compile(r"^SIG-[0-9a-f]{64}$")
+SIG_PATTERN = re.compile(r"^SIG-[0-9a-f]{128}$")
 
 CANONICAL_RECEIPT_FIELDS = (
     "action_dossier_digest",
@@ -104,15 +106,45 @@ def canonicalize_receipt(receipt_dict: Dict[str, Any]) -> str:
 
 def sign_execution_receipt(receipt_dict: Dict[str, Any], signing_key: bytes) -> str:
     """
-    Computes cryptographic HMAC-SHA256 signature over the canonical receipt string.
-    Returns signature formatted as SIG-<64-hex>.
+    Computes an Ed25519 signature over the canonical receipt string.
+    signing_key is a 32-byte private seed. Returns SIG-<128-hex>.
     """
-    if not isinstance(signing_key, (bytes, bytearray)) or len(signing_key) < 32:
-        raise ValueError("Dispatcher signing key must be at least 32 bytes")
+    if not isinstance(signing_key, (bytes, bytearray)) or len(signing_key) != 32:
+        raise ValueError("Dispatcher Ed25519 private key must be exactly 32 bytes")
 
     canonical_str = canonicalize_receipt(receipt_dict)
-    sig_hex = hmac.new(signing_key, canonical_str.encode("utf-8"), hashlib.sha256).hexdigest()
+    sig_hex = Ed25519PrivateKey.from_private_bytes(bytes(signing_key)).sign(
+        canonical_str.encode("utf-8")
+    ).hex()
     return f"SIG-{sig_hex}"
+
+
+def derive_verification_key(signing_key: bytes) -> bytes:
+    """Return the 32-byte Ed25519 public key corresponding to a private seed."""
+    if not isinstance(signing_key, (bytes, bytearray)) or len(signing_key) != 32:
+        raise ValueError("Dispatcher Ed25519 private key must be exactly 32 bytes")
+    return Ed25519PrivateKey.from_private_bytes(bytes(signing_key)).public_key().public_bytes_raw()
+
+
+def load_dispatcher_verification_key(path: Optional[str] = None) -> bytes:
+    """Load the pinned public key provisioned for the agent; never load a private key."""
+    key_path = path or os.environ.get("BUGBOUNTY_DISPATCHER_PUBLIC_KEY")
+    if key_path is None:
+        if os.name == "nt":
+            key_path = os.path.join(
+                os.environ.get("PROGRAMDATA", r"C:\ProgramData"),
+                "BugBounty", "Dispatcher", "dispatcher.pub",
+            )
+        else:
+            key_path = "/etc/bugbounty/dispatcher.pub"
+    try:
+        with open(key_path, "rb") as key_file:
+            key = key_file.read()
+    except OSError as exc:
+        raise ValueError(f"Dispatcher public verification key is unavailable: {key_path}: {exc}") from exc
+    if len(key) != 32:
+        raise ValueError(f"Dispatcher public verification key must be exactly 32 bytes: {key_path}")
+    return key
 
 
 def verify_execution_receipt(
@@ -128,7 +160,7 @@ def verify_execution_receipt(
     2. Validates version == 1 and scope_decision == 'ALLOWED'.
     3. Validates invalidation_result == 'REVOKED'.
     4. Validates matching action_id, nonce, program_id if expected values provided.
-    5. Cryptographically verifies HMAC-SHA256 signature using verification_key.
+    5. Cryptographically verifies Ed25519 signature using the public verification_key.
     Returns (is_valid: bool, reason: str).
     """
     if not isinstance(receipt_dict, dict):
@@ -182,8 +214,13 @@ def verify_execution_receipt(
     except Exception as e:
         return False, f"Failed to canonicalize receipt: {e}"
 
-    expected_sig_hex = hmac.new(verification_key, canonical_str.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig[4:], expected_sig_hex):
+    if not isinstance(verification_key, (bytes, bytearray)) or len(verification_key) != 32:
+        return False, "Dispatcher Ed25519 verification key must be exactly 32 bytes"
+    try:
+        Ed25519PublicKey.from_public_bytes(bytes(verification_key)).verify(
+            bytes.fromhex(sig[4:]), canonical_str.encode("utf-8")
+        )
+    except (InvalidSignature, ValueError):
         return False, "Receipt cryptographic signature verification failed (tampered or wrong key)"
 
     return True, "Receipt cryptographically verified"

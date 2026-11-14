@@ -1592,7 +1592,7 @@ def test_adversarial_at30_genuine_mode_b_lifecycle_end_to_end(tmp_path):
     disp.start()
     client = IsolatedDispatcherClient(endpoint_type="pipe" if os.name == "nt" else "unix", address=disp_pipe)
     validator._dispatcher_client = client
-    validator._dispatcher_verification_key = disp.signing_key
+    validator._dispatcher_verification_key = disp.verification_key
 
     try:
         # 1. Execute genuine Mode B invalidation workflow

@@ -240,9 +240,9 @@ The following documentation files were updated:
 
 ## 17. Explicit Phase 21 Acceptance Decision
 
-### Final Verdict: ACCEPTED & CLOSED
+### Prior Verdict: ACCEPTED & CLOSED — SUPERSEDED
 
-All 21 mandatory gates have been comprehensively verified through code implementation, cross-platform pytest execution, adversarial attack simulations, and multi-environment synchronization.
+The acceptance claims above are historical and are superseded by the security status notice below and the remediation record that follows. They are not evidence that the isolated dispatcher boundary was installed or verified.
 
 **Phase 22 Authorization:** Do NOT begin Phase 22 without explicit user directive.
 
@@ -261,3 +261,11 @@ Until a separate OS-isolated dispatcher owns network I/O, approval consumption, 
 - ordinary observational analysis may continue, but cannot claim independently verified revocation from this disabled path.
 
 This is a deliberate fail-closed containment measure, not completion of the intended Mode B feature. Previous accepted, zero-bypass, wire-capture, and production-ready claims are superseded where they describe this trust boundary.
+
+## Remediation record — 2026-11-14
+
+The current remediation replaces dispatcher receipt HMAC with Ed25519. Only the dispatcher holds the 32-byte private seed; the agent reads a pinned 32-byte public key from `/etc/bugbounty/dispatcher.pub` (or the path in `BUGBOUNTY_DISPATCHER_PUBLIC_KEY`). Linux installation starts the systemd service and copies only the public key into that trust store. Windows production service isolation remains unimplemented.
+
+Evidence files contain sanitized application-level request and response representations. Their SHA-256 hashes cover those stored representations; this implementation does not claim raw wire capture.
+
+The Linux verification command is `sudo bash tests/verify-dispatcher-isolation.sh veldora`. It checks the active systemd service UID/GID, socket ownership and agent IPC access, public-key access, and agent denial when reading the private signing key or writing protected state/evidence. Results and exact test commands are recorded only after those checks have actually run.
