@@ -19,6 +19,14 @@ PUBLIC_KEY=/etc/bugbounty/dispatcher.pub
 STATE=/var/lib/bugbounty/state
 EVIDENCE=/var/lib/bugbounty/evidence
 
+tree_fingerprint() {
+    local root="$1"
+    {
+        find "$root" -type f -printf '%P|%m|%u|%g|%s|%T@\n' | sort
+        find "$root" -type f -print0 | sort -z | xargs -0r sha256sum
+    } | sha256sum | cut -d' ' -f1
+}
+
 [[ "$(systemctl is-active "$SERVICE")" == active ]] || { echo "Dispatcher service is not active." >&2; exit 1; }
 [[ "$(systemctl show -p User --value "$SERVICE")" == _bbdispatcher ]] || { echo "Unexpected dispatcher service user." >&2; exit 1; }
 [[ "$(systemctl show -p Group --value "$SERVICE")" == bbgroup ]] || { echo "Unexpected dispatcher service group." >&2; exit 1; }
@@ -48,4 +56,10 @@ runuser -u "$AGENT_USER" -- test -r "$PUBLIC_KEY" || { echo "Agent cannot read t
 runuser -u "$AGENT_USER" -- /usr/bin/python3 /opt/BugBounty-Agent/scripts/bb-dispatcher \
     --ping --socket "$SOCKET"
 
-echo "PASS: dispatcher identity, private-key isolation, protected data permissions, and agent IPC access verified."
+STATE_BEFORE="$(tree_fingerprint "$STATE")"
+EVIDENCE_BEFORE="$(tree_fingerprint "$EVIDENCE")"
+runuser -u "$AGENT_USER" -- /usr/bin/python3 /opt/BugBounty-Agent/tests/dispatcher_ipc_probe.py "$SOCKET"
+[[ "$(tree_fingerprint "$STATE")" == "$STATE_BEFORE" ]] || { echo "Invalid approval changed dispatcher state." >&2; exit 1; }
+[[ "$(tree_fingerprint "$EVIDENCE")" == "$EVIDENCE_BEFORE" ]] || { echo "Invalid approval created or changed evidence." >&2; exit 1; }
+
+echo "PASS: dispatcher identity, key and data isolation, agent IPC, and cross-process invalid-approval rejection verified."
