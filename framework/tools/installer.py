@@ -379,7 +379,9 @@ class ToolInstaller:
                         if member.issym() or member.islnk():
                             link_target = os.path.abspath(os.path.join(os.path.dirname(target_p), member.linkname))
                             if not (link_target == tmp_dir or link_target.startswith(tmp_dir + os.sep)):
-                                raise InstallerSecurityError(f"Malicious symlink detected in archive: {member.name} -> {linkname}")
+                                raise InstallerSecurityError(
+                                    f"Malicious symlink detected in archive: {member.name} -> {member.linkname}"
+                                )
                     if hasattr(tarfile, "data_filter"):
                         tf.extractall(tmp_dir, filter="data")
                     else:

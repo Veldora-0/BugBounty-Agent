@@ -1,6 +1,6 @@
 # Project Audit Issues and Known Problems
 
-This is the single consolidated register for material unresolved project problems found during the repository and documentation audit. Small documentation fixes made in this audit are not listed as open issues. Status is based on the local tree and matching `origin/main` at audit start (`e79038b`).
+This is the single consolidated register for material unresolved project problems found during the repository and code audit. Small issues fixed during the audit are recorded below. The audit began from local `main` at `55ed3c8`; checks are being run on Windows and Kali/Linux.
 
 ## Open issues
 
@@ -51,7 +51,11 @@ This is the single consolidated register for material unresolved project problem
 - Replaced the stale “temporary” roadmap's incorrect Phase 21 accepted/Phase 22-next status with the current canonical 24-phase status index.
 - Added an onboarding handbook, 24 phase-specific guides, a consolidated issue register and future-improvements roadmap; pointed the canonical roadmap to these documents.
 - Removed generated `.pytest_cache/` and `bugbounty_agent.egg-info/` artifacts from the working tree; they are reproducible and ignored. Kept `.planning/`, `state/`, and `evidence/` because they contain planning history or runtime/user data rather than disposable build output.
+- Increased the artificial race window in `LocalConcurrencyLab` after a full Windows run reproduced a scheduling-sensitive false negative in the Phase 20 voting-limit fixture. This changes only the local simulation timing; production target request timing is unaffected. The adjusted test passed 20 consecutive isolated runs, followed by the full Windows suite.
+- Disabled ambient `HTTP_PROXY`/`HTTPS_PROXY` inheritance in scope-checked pinned transports used by Phases 2/3/4/5/6/10. Python's default `urllib` opener can otherwise route through an environment proxy and let that proxy resolve the destination independently of the locally vetted/pinned address. Added a regression test for the shared transport. This was a small, cross-cutting fix and is not an open issue.
+- Bandit static scan findings were manually triaged: standard XML parsing occurs only after a bounded Expat security-inspection pass; tar extraction has path/symlink/special-file validation plus Python's data filter where available; installer URLs are constrained to fixed GitHub endpoints and archives require a pinned SHA-256; dispatcher socket mode `0660` is intentional for the dedicated service group. The proxy finding was actionable and has been fixed.
+- Fixed a real installer error-path defect: malicious TAR symlink rejection interpolated an undefined variable, raising `NameError` instead of the documented `InstallerSecurityError`. Added an adversarial archive regression test.
 
 ## Audit boundaries
 
-This register is a code/documentation audit, not a live-target security assessment. No bounty target was contacted. The repository's existing test/acceptance records were reviewed; tests were not rerun solely to create these documents. Review current program rules and scope before use.
+This register records repository review and current audit-run evidence, not a live-target security assessment. No bounty target was contacted. Review current program rules and scope before use.

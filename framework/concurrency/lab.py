@@ -67,7 +67,9 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         if path == "/scenario/coupon-race":
             # Check-then-act gap: read limit before updating
             current_redemptions = server.coupon_redemptions
-            time.sleep(0.04)  # Simulate DB query / asynchronous gap
+            # Leave enough scheduling room for every barrier-released worker to
+            # read the same pre-update value on slower/loaded Windows hosts.
+            time.sleep(0.15)  # Simulate DB query / asynchronous gap
             if current_redemptions < 1:
                 server.coupon_redemptions += 1
                 self._send_json(200, {
@@ -84,7 +86,9 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         if path == "/scenario/balance-transfer":
             amount = float(body.get("amount", 100.0))
             current_balance = server.account_balance
-            time.sleep(0.04)  # Gap between balance check and debit
+            # See coupon-race above: this is a controlled local fixture window,
+            # not a target-side delay or a production request setting.
+            time.sleep(0.15)  # Gap between balance check and debit
             if current_balance >= amount:
                 server.account_balance -= amount
                 self._send_json(200, {
@@ -100,7 +104,7 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         # Scenario 3: Voting Limit Overrun (Vulnerable LIMIT_OVERRUN)
         if path == "/scenario/voting-limit":
             current_votes = server.voting_count
-            time.sleep(0.04)  # Gap between quota check and vote registration
+            time.sleep(0.15)  # Gap between quota check and vote registration
             if current_votes < 1:
                 server.voting_count += 1
                 self._send_json(200, {
@@ -116,7 +120,7 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         if path == "/scenario/idempotency-race":
             key = self.headers.get("Idempotency-Key") or body.get("idempotency_key", "default_key")
             already_cached = key in server.cached_idempotency_keys
-            time.sleep(0.04)  # Gap between cache lookup and writing key to distributed store
+            time.sleep(0.15)  # Gap between cache lookup and writing key to distributed store
             if not already_cached:
                 server.cached_idempotency_keys.add(key)
                 server.order_count += 1

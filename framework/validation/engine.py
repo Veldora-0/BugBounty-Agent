@@ -419,7 +419,10 @@ class SecurityValidationEngine:
         )
         http_handler = PinnedHTTPHandler(ip_map=ip_map)
         https_handler = PinnedHTTPSHandler(ip_map=ip_map, context=ctx, check_hostname=True if ctx else None)
-        opener = urllib.request.build_opener(redirect_handler, http_handler, https_handler)
+        # Do not let urllib's ambient HTTP(S)_PROXY settings replace the
+        # destination-IP-pinned connections with proxy-side DNS resolution.
+        proxy_handler = urllib.request.ProxyHandler({})
+        opener = urllib.request.build_opener(proxy_handler, redirect_handler, http_handler, https_handler)
 
         # Optional delay
         if self.policy.delay_seconds > 0:

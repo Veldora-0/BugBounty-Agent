@@ -44,6 +44,7 @@ Phases 1–20 have corresponding engines, skills or integrations, and tests. The
 - [Phase guides](phases/): implementation and planned detail for each phase.
 - [Project audit issues](PROJECT-AUDIT-ISSUES.md): the consolidated unresolved errors, contradictions, risks and blockers.
 - [Future improvements](FUTURE-IMPROVEMENTS.md): proposed work after and alongside the current roadmap.
+- [Tooling recommendations](TOOLING-RECOMMENDATIONS.md): optional Kali-oriented tools and safe integration gates.
 - [Security](security.md), [scope](scope.md), [workflow](workflow.md), [architecture](architecture.md), [skills](skills.md), [runtime](runtime.md), and [installation](installation.md): operational references.
 - Historical Phase 21 design/acceptance documents may contain superseded verdicts. The current verdict is the explicit status in the [definitive report](PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md) and the issue register.
 

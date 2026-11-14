@@ -448,7 +448,8 @@ class ApiIntelligenceEngine:
             )
             http_handler = PinnedHTTPHandler(ip_map=ip_map)
             https_handler = ApiPinnedHTTPSHandler(ip_map=ip_map, context=ssl_ctx, check_hostname=True)
-            opener = urllib.request.build_opener(redirect_handler, http_handler, https_handler)
+            proxy_handler = urllib.request.ProxyHandler({})
+            opener = urllib.request.build_opener(proxy_handler, redirect_handler, http_handler, https_handler)
 
             req = urllib.request.Request(
                 canon_url,
@@ -992,7 +993,8 @@ class ApiIntelligenceEngine:
             )
             http_handler = PinnedHTTPHandler(ip_map=ip_map)
             https_handler = ApiPinnedHTTPSHandler(ip_map=ip_map, context=ssl_ctx, check_hostname=True)
-            opener = urllib.request.build_opener(redirect_handler, http_handler, https_handler)
+            proxy_handler = urllib.request.ProxyHandler({})
+            opener = urllib.request.build_opener(proxy_handler, redirect_handler, http_handler, https_handler)
 
             body_bytes = query_payload.encode("utf-8")
             req = urllib.request.Request(

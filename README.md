@@ -11,7 +11,7 @@ BugBounty-Agent is an orchestrated security research system designed to operate 
 
 ## Project handbook and phase status
 
-This project is intended to find and document vulnerabilities on **explicitly authorized bug bounty targets**. Start with the [Project Handbook](docs/PROJECT-HANDBOOK.md) for a newcomer-oriented overview and operating workflow. The [24-Phase Roadmap](docs/ROADMAP-24-PHASES.md) links to one detailed guide per phase; unresolved risks and blockers are maintained in the [Project Audit Issues](docs/PROJECT-AUDIT-ISSUES.md), and candidate work is listed in [Future Improvements](docs/FUTURE-IMPROVEMENTS.md).
+This project is intended to find and document vulnerabilities on **explicitly authorized bug bounty targets**. Start with the [Project Handbook](docs/PROJECT-HANDBOOK.md) for a newcomer-oriented overview and operating workflow. The [24-Phase Roadmap](docs/ROADMAP-24-PHASES.md) links to one detailed guide per phase; unresolved risks and blockers are maintained in the [Project Audit Issues](docs/PROJECT-AUDIT-ISSUES.md), candidate work is listed in [Future Improvements](docs/FUTURE-IMPROVEMENTS.md), and optional Kali-oriented tools are discussed in [Tooling Recommendations](docs/TOOLING-RECOMMENDATIONS.md).
 
 **Current status:** Phases 1–20 have implementations with phase-specific limitations. Phase 21 is partially implemented and not accepted: the Linux isolated dispatcher and invalid-approval rejection are verified, but trusted execution capability and controlled-attestation issuance remain disabled. Phases 22–24 are planned. See the issue register before relying on any phase as production-ready.
 

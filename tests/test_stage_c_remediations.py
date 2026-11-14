@@ -471,6 +471,42 @@ def test_sec02_transport_blocks_private_and_metadata_ips():
     assert safe_fetch_url("http://192.168.1.1/router") is None
 
 
+def test_sec02_transport_ignores_ambient_proxy_settings(monkeypatch):
+    """Pinned requests must not hand DNS resolution to an environment proxy."""
+    import socket
+    import urllib.error
+    import urllib.request
+
+    from unittest.mock import Mock
+
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:8888")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:8888")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+    )
+    opener = Mock()
+    opener.open.side_effect = urllib.error.URLError("stop after opener construction")
+    captured_handlers = []
+
+    def capture_opener(*handlers):
+        captured_handlers.extend(handlers)
+        return opener
+
+    monkeypatch.setattr(urllib.request, "build_opener", capture_opener)
+    assert safe_fetch_url("http://authorized.example/", timeout=0.1) is None
+
+    proxy_handlers = [h for h in captured_handlers if isinstance(h, urllib.request.ProxyHandler)]
+    assert len(proxy_handlers) == 1
+    assert proxy_handlers[0].proxies == {}
+
+
 def test_sec02_redirect_ssrf_blocking():
     """Verifies safe_fetch_url redirect handler blocks redirection to metadata, private targets, and protocol downgrades."""
     from framework.common.transport import SafeRedirectHandler
@@ -844,6 +880,52 @@ def test_sec07_installer_tar_special_files_rejected():
         with pytest.raises(InstallerSecurityError) as exc_info:
             installer._download_and_extract_release("special_file_tool")
         assert "Special device file detected" in str(exc_info.value)
+
+
+def test_sec07_installer_tar_symlink_escape_rejected():
+    """Rejects an archive symlink escaping the extraction root with a typed error."""
+    from framework.tools.detector import get_system_architecture
+
+    os_name, arch = get_system_architecture()
+    installer = ToolInstaller()
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w:gz") as tf:
+        link = tarfile.TarInfo(name="bin/escape")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../../outside"
+        tf.addfile(link)
+    tar_bytes = tar_buf.getvalue()
+
+    tool = ToolDef({
+        "name": "symlink_tool",
+        "category": "recon",
+        "binary": "symlink_tool",
+        "tier": "CORE",
+        "description": "test",
+        "capabilities": [],
+        "platforms": ["linux", "windows", "darwin"],
+        "install": {
+            "release_repo": "test/symlink_tool",
+            "sha256": hashlib.sha256(tar_bytes).hexdigest(),
+        },
+    })
+    installer.registry._tools["symlink_tool"] = tool
+
+    with patch("urllib.request.urlopen") as mock_open, patch("urllib.request.urlretrieve") as mock_retrieve:
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = (
+            f'{{"assets": [{{"name": "symlink_tool_{os_name}_{arch}.tar.gz", '
+            '"browser_download_url": "https://github.com/test/symlink_tool/releases/download/v1.0/test.tar.gz"}]}'
+        ).encode("utf-8")
+        mock_open.return_value.__enter__.return_value = mock_resp
+
+        def write_tar(url, dest):
+            with open(dest, "wb") as archive:
+                archive.write(tar_bytes)
+
+        mock_retrieve.side_effect = write_tar
+        with pytest.raises(InstallerSecurityError, match="Malicious symlink"):
+            installer._download_and_extract_release("symlink_tool")
 
 
 # ==============================================================================

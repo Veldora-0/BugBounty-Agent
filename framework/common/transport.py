@@ -613,7 +613,11 @@ def safe_fetch_url(
     )
     http_handler = PinnedHTTPHandler(ip_map=ip_map)
     https_handler = PinnedHTTPSHandler(ip_map=ip_map, context=ctx, check_hostname=True if ctx else None)
-    opener = urllib.request.build_opener(redirect_handler, http_handler, https_handler)
+    # urllib otherwise imports HTTP(S)_PROXY from the process environment. An
+    # ambient proxy can resolve the destination independently of our pinned IP
+    # map, so target traffic must connect directly through the vetted handlers.
+    proxy_handler = urllib.request.ProxyHandler({})
+    opener = urllib.request.build_opener(proxy_handler, redirect_handler, http_handler, https_handler)
 
     try:
         with opener.open(req, timeout=timeout) as resp:
