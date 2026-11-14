@@ -80,6 +80,7 @@ if [[ -f "${REPO_DIR}/systemd/bugbounty-dispatcher.service" ]]; then
     echo "[+] systemd unit installed and daemon reloaded."
     echo "[*] Enabling and starting the isolated dispatcher..."
     systemctl enable bugbounty-dispatcher
+    systemctl reset-failed bugbounty-dispatcher
     systemctl restart bugbounty-dispatcher
     if ! systemctl is-active --quiet bugbounty-dispatcher; then
         echo "[!] Dispatcher service failed to start; diagnostic output follows:" >&2
