@@ -18,6 +18,7 @@ KEY=/var/lib/bugbounty/keys/dispatcher_signing_key.bin
 PUBLIC_KEY=/etc/bugbounty/dispatcher.pub
 STATE=/var/lib/bugbounty/state
 EVIDENCE=/var/lib/bugbounty/evidence
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 tree_fingerprint() {
     local root="$1"
@@ -58,7 +59,7 @@ runuser -u "$AGENT_USER" -- /usr/bin/python3 /opt/BugBounty-Agent/scripts/bb-dis
 
 STATE_BEFORE="$(tree_fingerprint "$STATE")"
 EVIDENCE_BEFORE="$(tree_fingerprint "$EVIDENCE")"
-runuser -u "$AGENT_USER" -- /usr/bin/python3 /opt/BugBounty-Agent/tests/dispatcher_ipc_probe.py "$SOCKET"
+runuser -u "$AGENT_USER" -- /usr/bin/python3 "$REPO_DIR/tests/dispatcher_ipc_probe.py" "$SOCKET"
 [[ "$(tree_fingerprint "$STATE")" == "$STATE_BEFORE" ]] || { echo "Invalid approval changed dispatcher state." >&2; exit 1; }
 [[ "$(tree_fingerprint "$EVIDENCE")" == "$EVIDENCE_BEFORE" ]] || { echo "Invalid approval created or changed evidence." >&2; exit 1; }
 

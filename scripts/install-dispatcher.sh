@@ -68,10 +68,9 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ProtectHome=read-only still cannot traverse a user's 0700 home directory.
 # Install a root-owned, read-only runtime copy outside /home for the service identity.
 echo "[*] Installing dispatcher runtime into ${INSTALL_DIR}..."
-install -d -o root -g root -m 0755 "${INSTALL_DIR}/framework" "${INSTALL_DIR}/scripts" "${INSTALL_DIR}/tests"
+install -d -o root -g root -m 0755 "${INSTALL_DIR}/framework" "${INSTALL_DIR}/scripts"
 cp -a "${REPO_DIR}/framework/." "${INSTALL_DIR}/framework/"
 install -o root -g root -m 0644 "${REPO_DIR}/scripts/bb-dispatcher" "${INSTALL_DIR}/scripts/bb-dispatcher"
-install -o root -g root -m 0644 "${REPO_DIR}/tests/dispatcher_ipc_probe.py" "${INSTALL_DIR}/tests/dispatcher_ipc_probe.py"
 chown -R root:root "${INSTALL_DIR}"
 chmod -R a+rX,go-w "${INSTALL_DIR}"
 
