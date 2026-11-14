@@ -1,6 +1,6 @@
 # Project Audit Issues and Known Problems
 
-This is the single consolidated register for material unresolved project problems found during the repository and code audit. Small issues fixed during the audit are recorded below. The audit began from local `main` at `55ed3c8`; checks are being run on Windows and Kali/Linux.
+This is the single consolidated register for material unresolved project problems found during the repository and code audit. Small issues fixed during the audit are recorded below. The audited source is commit `2787f6a` on `main`.
 
 ## Open issues
 
@@ -13,14 +13,6 @@ This is the single consolidated register for material unresolved project problem
 - **Impact:** Phase 21 cannot claim trusted revocation or controlled execution findings through Mode B. Do not treat a dispatcher ping or test pass count as proof of successful authorized execution.
 - **Recommended resolution:** Define a threat model and end-to-end protocol where OS-isolated service owns transport and signing authority; pin/rotate its verification key safely; bind approval, scope, exact request and evidence; make persistence atomic/replay resistant; document Linux/Windows support boundaries. Then add adversarial tests and independently review a successful authorized test workflow plus all rejection paths before enabling issuance.
 - **Acceptance gate:** A test-only target and explicit approval demonstrate request dispatch, verifiable evidence, single-use receipt, ledger record and attestation, with no agent access to signing secrets or protected storage; altered/replayed/out-of-scope requests fail before dispatch on every claimed supported platform.
-
-### AUD-02 — Contradictory Phase 21 verdicts remain in historical source documents
-
-- **Severity:** High documentation correctness risk.
-- **Evidence:** `PHASE-21-PLANNING-GATE.md`, `PHASE-21-FINAL-ACCEPTANCE-REPORT.md`, `PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md`, and older sections of the baseline/roadmap contain accepted/closed verdicts; the definitive report later supersedes them and states Phase 21 is not accepted.
-- **Impact:** A new contributor could rely on obsolete acceptance wording and enable unsafe assumptions about provenance.
-- **Remediation:** The handbook and canonical roadmap now identify current status and point to this register and definitive report. Historical reports still contain contradictory passages and must be clearly stamped as superseded or archived in a later cleanup.
-- **Acceptance gate:** No maintained document presents Phase 21 as accepted without a clear supersession notice and link to the current verdict.
 
 ### AUD-03 — Verification evidence differs in age and scope across phases
 
@@ -55,7 +47,16 @@ This is the single consolidated register for material unresolved project problem
 - Disabled ambient `HTTP_PROXY`/`HTTPS_PROXY` inheritance in scope-checked pinned transports used by Phases 2/3/4/5/6/10. Python's default `urllib` opener can otherwise route through an environment proxy and let that proxy resolve the destination independently of the locally vetted/pinned address. Added a regression test for the shared transport. This was a small, cross-cutting fix and is not an open issue.
 - Bandit static scan findings were manually triaged: standard XML parsing occurs only after a bounded Expat security-inspection pass; tar extraction has path/symlink/special-file validation plus Python's data filter where available; installer URLs are constrained to fixed GitHub endpoints and archives require a pinned SHA-256; dispatcher socket mode `0660` is intentional for the dedicated service group. The proxy finding was actionable and has been fixed.
 - Fixed a real installer error-path defect: malicious TAR symlink rejection interpolated an undefined variable, raising `NameError` instead of the documented `InstallerSecurityError`. Added an adversarial archive regression test.
+- Marked contradictory historical Phase 21 acceptance reports as superseded at the top of each document and replaced the stale roadmap path with a pointer to the canonical status. The old acceptance text is retained as historical record, not current status.
 
 ## Audit boundaries
 
 This register records repository review and current audit-run evidence, not a live-target security assessment. No bounty target was contacted. Review current program rules and scope before use.
+
+## Verification performed for audited commit `2787f6a`
+
+- **Kali Linux, Python 3.14.8:** `python3 -m pytest tests/ -ra` — **1,109 passed, 1 skipped**. The sole skip is the Windows-only DACL test.
+- **Windows, Python 3.14.7:** Full suite before the final TAR error-message fix — **1,103 passed, 6 skipped**. Six skips: two real-browser tests because Chromium/Firefox were unavailable and four POSIX-only permission/socket tests. The final TAR symlink and ambient-proxy regressions both passed in a focused run.
+- **Phase 20 fixture stability:** The previously failing voting-limit test passed 20 consecutive Windows repetitions after the local timing adjustment.
+- **Static security scan:** Bandit scanned 51,075 lines. Findings were reviewed; proxy inheritance was fixed, while archive extraction, XML parser and permission flags were assessed against the code's explicit guards and documented service group design.
+- **Documentation:** `git diff --check` passed; relative Markdown links were checked before the final tooling guide was added.
