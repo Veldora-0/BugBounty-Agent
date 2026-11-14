@@ -1,19 +1,22 @@
 """Regression tests for fail-closed Phase 21 provenance containment."""
 import pytest
 from framework.auth_correlation.dispatcher import ControlledDispatchWorkflow
+from framework.auth_correlation.ipc.client import IsolatedDispatcherClient
 from framework.auth_correlation.ledger import ExecutionProvenanceError, issue_execution_capability
 from framework.auth_correlation.model import ApprovalSecurityError, AttestationSecurityError
 from framework.auth_correlation.revocation import _create_controlled_invalidation_attestation_from_record
 from framework.common.evidence import EvidencePersistenceError, EvidenceStore
 
 
-def test_mode_b_refuses_before_transport_or_approval_side_effects(tmp_path):
+def test_mode_b_refuses_before_transport_or_approval_side_effects(tmp_path, monkeypatch):
     class NeverDispatch:
         calls = 0
         def send_request(self, request):
             self.calls += 1
             raise AssertionError("transport must never be called")
     engine = NeverDispatch()
+    # Keep the regression deterministic even when a real service is installed locally.
+    monkeypatch.setattr(IsolatedDispatcherClient, "ping", lambda self: False)
     workflow = ControlledDispatchWorkflow(program_id="test", state_dir=str(tmp_path / "state"), evidence_store=object(), transport_engine=engine)
     with pytest.raises(ApprovalSecurityError, match="isolated execution provenance boundary"):
         workflow.execute(None, "ACT-" + "0" * 64, {})
