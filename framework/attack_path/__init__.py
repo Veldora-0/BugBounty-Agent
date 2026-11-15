@@ -8,6 +8,11 @@ and bounded correlation search.
 
 from __future__ import annotations
 
+from framework.attack_path.correlator import (
+    AttackPathCorrelator,
+    CorrelationResult,
+    FeasibilityResult,
+)
 from framework.attack_path.discovery import (
     CandidateRelationshipEngine,
     SUPPORTED_TENANT_ISOLATION_FLAWS,
@@ -47,6 +52,7 @@ __all__ = [
     "AttackGraphEdge",
     "AttackGraphNode",
     "AttackPath",
+    "AttackPathCorrelator",
     "AttackPathStateError",
     "AttackPathStateManager",
     "BoundedTraversalEngine",
@@ -55,8 +61,10 @@ __all__ = [
     "CapabilityType",
     "CausalityProofType",
     "ChainState",
+    "CorrelationResult",
     "EdgeType",
     "ExtractedCapability",
+    "FeasibilityResult",
     "FindingNormalizer",
     "NodeType",
     "RelationshipProvenance",

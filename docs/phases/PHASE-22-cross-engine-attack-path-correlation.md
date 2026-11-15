@@ -1,9 +1,23 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** In Progress (Milestones 22.1 implemented & hardened; Milestone 22.2 candidate discovery & bounded traversal implemented; Milestone 22.3 on hold pending review)
+**Status:** In Progress (Milestone 22.1 completed & hardened; Milestone 22.2 sub-milestones 22.2.1, 22.2.2, 22.2.3 completed; 22.2.4 pending; Milestones 22.3 and 22.4 pending)
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
 **Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
+
+## Phase 22 Milestone Structure
+
+Phase 22 is organized into four sequential top-level milestones:
+1. **Milestone 22.1**: Attack Graph Model, State Management & Finding Normalization (Completed & Hardened).
+2. **Milestone 22.2**: Cross-Engine Path Correlation & Feasibility Rules (In Progress).
+   - **22.2.1**: Architecture & Acceptance Criteria — Candidate Relationship Discovery & Bounded Traversal (Completed).
+   - **22.2.2**: Core Implementation — Candidate Relationship Discovery & Bounded Traversal (Completed).
+   - **22.2.3**: Attack Path Correlator & Feasibility Evaluation Engine (Completed).
+   - **22.2.4**: Milestone 22.2 Integration Hardening, State Persistence Validation & Verification (Pending).
+3. **Milestone 22.3**: Safe Validation Planning & Approval Gates (`framework/attack_path/validator.py`) (Pending / Not Started).
+4. **Milestone 22.4**: CLI, Reporting & Dual-Environment Acceptance (`scripts/bb-chain`, `framework/attack_path/reporter.py`, full verification) (Pending / Not Started).
+
+---
 
 ## Milestone 22.1 Implementation Summary (Completed & Hardened)
 
@@ -26,39 +40,58 @@ Milestone 22.1 delivers the foundational data models, state persistence, and fin
   - `tests/test_phase22_normalizer.py`: 5 tests covering normalization, observed vs. inferred capabilities, clock skew, secret stripping, and batch ingestion.
   - `tests/test_phase22_audit_hardening.py`: 9 focused adversarial tests covering disk tampering, claimed hash mismatch, caller metadata containment, credential pattern detection, clock boundary conditions, enum deserialization rejection, and index consistency.
 
-## Milestone 22.2 Implementation Summary (Completed)
+---
 
-Milestone 22.2 delivers the Candidate Relationship Discovery engine, Bounded Traversal engine, and comprehensive acceptance test suite:
+## Milestone 22.2 Sub-Milestones Summary
+
+Milestone 22.2 implements cross-engine path correlation, bounded traversal, and feasibility rule evaluation:
+
+### Sub-Milestone 22.2.1 — Architecture & Acceptance Criteria (Completed)
+- Designed the `CandidateRelationshipEngine` and `BoundedTraversalEngine` specifications.
+- Established complexity limits (`MAX_TRAVERSAL_DEPTH = 5`, `MAX_VISITED_NODES = 2000`, `MAX_EXAMINED_EDGES = 10000`, `MAX_CANDIDATE_PATHS = 100`, `MAX_PATHS_PER_ENTRY = 10`, `MAX_WALL_CLOCK_SECONDS = 5.0`).
+- Formulated the 10 acceptance criteria (AC-22.2-01 through AC-22.2-10).
+
+### Sub-Milestone 22.2.2 — Core Discovery & Bounded Traversal (Completed)
 - **Candidate Relationship Engine (`framework/attack_path/discovery.py`)**:
-  - Implemented `CandidateRelationshipEngine` with semantic capability-to-precondition matching rules:
-    - `KNOWLEDGE_EXPOSURE` $\to$ parameters / schema matching via parameter alias sets (`user_id`, `tenant_id`, `email`, `role`, etc.).
-    - `SESSION_HIJACK` / `TOKEN_ACQUISITION` $\to$ authenticated roles / endpoints.
-    - `SSRF_PIVOT` $\to$ internal endpoints and cloud metadata targets (`169.254.169.254`).
-    - `OPEN_REDIRECT` $\to$ OAuth workflows, login callbacks, and external token delivery.
-    - `ARBITRARY_FILE_READ` $\to$ configuration, keys, and source code exposure.
-    - `PRIVILEGE_ESCALATION` $\to$ administrative and privileged endpoints.
-    - `WORKFLOW_BYPASS` $\to$ multi-step business logic transitions.
-  - Strict edge-state boundary: discovered edges are initialized strictly as `RelationshipState.THEORETICAL` or `RelationshipState.CONTEXTUALLY_ALIGNED`. Graph discovery can never emit `LINK_VALIDATED` edges.
-  - Supported cross-tenant flaw enforcement: cross-tenant links require explicit tenant-isolation vulnerability types (`SUPPORTED_TENANT_ISOLATION_FLAWS`: `{"bola", "idor", "tenant_isolation", "tenant_bypass", "multi_tenant_leak", "cross_tenant_access", "tenant_desync"}`).
+  - Implemented `CandidateRelationshipEngine` with semantic capability-to-precondition matching rules (`KNOWLEDGE_EXPOSURE`, `SESSION_HIJACK`, `TOKEN_ACQUISITION`, `SSRF_PIVOT`, `OPEN_REDIRECT`, `ARBITRARY_FILE_READ`, `PRIVILEGE_ESCALATION`, `WORKFLOW_BYPASS`).
+  - Strict edge-state boundary: discovered edges are initialized strictly as `RelationshipState.THEORETICAL` or `RelationshipState.CONTEXTUALLY_ALIGNED`.
+  - Supported cross-tenant flaw whitelist (`SUPPORTED_TENANT_ISOLATION_FLAWS`).
 - **Bounded Traversal Engine (`framework/attack_path/traversal.py`)**:
   - Implemented `BoundedTraversalEngine` executing deterministic, shortest-path-first BFS traversal with branch-level cycle elimination.
   - Generates deterministic `path_id` (`PATH-<sha256>`) and semantic vulnerability transition fingerprints.
-  - Strict computational limits: `MAX_TRAVERSAL_DEPTH = 5`, `MAX_VISITED_NODES = 2000`, `MAX_EXAMINED_EDGES = 10000`, `MAX_CANDIDATE_PATHS = 100`, `MAX_PATHS_PER_ENTRY = 10`, `MAX_WALL_CLOCK_SECONDS = 5.0`.
-  - Path truncation metadata: `TraversalResult` records `paths`, `traversal_truncated`, `visited_nodes_count`, `examined_edges_count`, and `truncated_reason`.
-  - Multi-tenant and scope isolation: cross-tenant traversal requires supported flaw; out-of-scope assets mark candidate paths as `ChainState.BLOCKED` or prune them.
-  - Anti-inflation invariant: generated attack paths are strictly initialized with `ChainState.HYPOTHESIS`. Path existence never inflates component finding severities.
-- **Milestone 22.2 Acceptance Test Suite (`tests/test_phase22_traversal.py`)**:
-  - 10 rigorous acceptance tests validating criteria AC-22.2-01 through AC-22.2-10:
-    - AC-22.2-01: Deterministic 2+ step candidate path discovery.
-    - AC-22.2-02: Branch-level cycle detection and elimination.
-    - AC-22.2-03: Multi-tenant boundary enforcement and cross-tenant restriction.
-    - AC-22.2-04: Out-of-scope asset handling and blocking.
-    - AC-22.2-05: Non-inflation invariant (connectivity does not equal validation; state remains HYPOTHESIS).
-    - AC-22.2-06: Deterministic execution and canonical ordering (shortest-path-first BFS).
-    - AC-22.2-07: Resilience against malformed nodes and dangling edges.
-    - AC-22.2-08: Traversal budget and complexity limits enforcement (depth, nodes, edges, wall-clock).
-    - AC-22.2-09: Compound impact and zero-secret guarantee across generated candidate paths.
-    - AC-22.2-10: Dual-platform parity and integration consistency.
+  - Anti-inflation invariant: generated attack paths are strictly initialized with `ChainState.HYPOTHESIS`.
+- **Milestone 22.2.2 Acceptance Test Suite (`tests/test_phase22_traversal.py`)**:
+  - 10 rigorous acceptance tests validating criteria AC-22.2-01 through AC-22.2-10 with 100% pass rate.
+
+### Sub-Milestone 22.2.3 — Attack Path Correlator & Feasibility Engine (Completed)
+- **Attack Path Correlator (`framework/attack_path/correlator.py`)**:
+  - Implemented `AttackPathCorrelator` orchestrating finding ingestion, candidate relationship discovery, bounded traversal, feasibility evaluation, and state persistence.
+  - Implemented `evaluate_path_feasibility` enforcing semantic checks:
+    - **ADV-22-01 (Parameter Format Compatibility)**: Prunes paths with incompatible parameter bindings or formats.
+    - **ADV-22-02 (Privilege Progression Consistency)**: Prunes paths requiring unearned elevated roles without privilege escalation.
+    - **ADV-22-03 (Tenant Isolation Consistency)**: Prunes unauthorized cross-tenant transitions lacking supported flaw types.
+    - **ADV-22-04 (Principal / Session Alignment)**: Prunes cross-principal transitions lacking session hijack capabilities.
+    - **ADV-22-05 (Capability Freshness)**: Prunes paths relying on expired capabilities.
+    - **ADV-22-06 (Decoupled State Invariant)**: Enforces that all emitted paths remain strictly in `ChainState.HYPOTHESIS`.
+- **Milestone 22.2.3 Acceptance Test Suite (`tests/test_phase22_correlator.py`)**:
+  - 10 comprehensive tests covering criteria AC-22.3-01 through AC-22.3-10 with 100% pass rate.
+
+### Sub-Milestone 22.2.4 — Milestone 22.2 Integration Hardening & Verification (Pending)
+- Reserved for comprehensive integration hardening, edge-case stress testing, and state persistence audit across dense multigraphs prior to initiating Milestone 22.3.
+
+---
+
+## Milestone 22.3 — Safe Validation Planning & Approval Gates (Pending / Not Started)
+- **Planned deliverable**: `framework/attack_path/validator.py` (`SafeChainValidationPlanner`).
+- Generates non-destructive `ChainValidationPlan` using existing Phase 6/8/21 engines; mandatory human confirmation before active dispatch; strict scope checks.
+
+---
+
+## Milestone 22.4 — CLI, Reporting & Dual-Environment Acceptance (Pending / Not Started)
+- **Planned deliverables**: `scripts/bb-chain`, `framework/attack_path/reporter.py`, documentation updates.
+- CLI integration, Markdown reporting of chained attacks, and full Windows/Kali dual-environment verification.
+
+---
 
 ## Purpose and bounty value
 
