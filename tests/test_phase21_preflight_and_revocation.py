@@ -306,6 +306,50 @@ def make_valid_invalidation_evidence(
 
     ledger = execution_ledger or ExecutionLedger(state_dir=state_dir, key_dir=key_dir, approval_key=app_key)
     k_dir = key_dir or ledger._key_dir
+
+    from framework.auth_correlation.ipc.receipt import sign_execution_receipt, derive_verification_key
+    disp_priv = secrets.token_bytes(32)
+    disp_pub = derive_verification_key(disp_priv)
+    rcpt_dict = {
+        "version": 1,
+        "receipt_id": f"RCPT-{secrets.token_hex(16).upper()}",
+        "dispatcher_id": "DISPATCHER-TEST",
+        "dispatcher_key_id": "KEY-DISPATCHER-ED25519-V1",
+        "dispatch_op_id": d_op_id,
+        "action_id": aid,
+        "action_dossier_digest": aid[4:],
+        "approval_id": app_id,
+        "request_nonce": f"NONCE-{secrets.token_hex(16).upper()}",
+        "execution_id": f"EXEC-{secrets.token_hex(16).upper()}",
+        "program_id": prog_id,
+        "principal_id": sess.principal_id,
+        "session_ref": sess.session_ref,
+        "target_endpoint": "http://127.0.0.1:8080/auth/logout",
+        "http_method": "POST",
+        "action_type": "LOGOUT",
+        "scope_decision": "ALLOWED",
+        "execution_outcome": "REVOCATION_VERIFIED",
+        "mutation_evidence": {
+            "evidence_id": res["evidence_id"],
+            "request_sha256": res["request_sha256"],
+            "response_sha256": res["response_sha256"],
+            "status_code": 200,
+            "timestamp": ts,
+        },
+        "verification_evidence": {
+            "evidence_id": ver_cap["evidence_id"],
+            "invalidation_result": "REVOKED",
+            "request_sha256": ver_cap["request_sha256"],
+            "response_sha256": ver_cap["response_sha256"],
+            "status_code": 401,
+            "timestamp": ts,
+            "verification_method": "POST_MUTATION_PROBE_CONFIRMED_401",
+        },
+        "consumption_token": c_token,
+        "issued_at": ts,
+    }
+    rcpt_dict["signature"] = sign_execution_receipt(rcpt_dict, disp_priv)
+
     dispatch_res = ControlledDispatchResult(
         dispatch_op_id=d_op_id,
         action_id=aid,
@@ -332,6 +376,7 @@ def make_valid_invalidation_evidence(
         verification_timestamp=ts,
         consumption_token=c_token,
         is_genuine_dispatch=True,
+        receipt=rcpt_dict,
     )
     cap = issue_execution_capability(
         dispatch_result=dispatch_res,
@@ -339,6 +384,7 @@ def make_valid_invalidation_evidence(
         evidence_store=store,
         consumed_approvals_path=consumed_path,
         key_dir=k_dir,
+        dispatcher_verification_key=disp_pub,
     )
     exec_rec = ledger.record_execution(
         capability=cap,
@@ -591,6 +637,49 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
         with open(consumed_path, "w", encoding="utf-8") as f:
             json.dump(consumed_data, f, indent=2)
 
+        from framework.auth_correlation.ipc.receipt import sign_execution_receipt, derive_verification_key
+        disp_priv = secrets.token_bytes(32)
+        disp_pub = derive_verification_key(disp_priv)
+        rcpt_dict = {
+            "version": 1,
+            "receipt_id": f"RCPT-{secrets.token_hex(16).upper()}",
+            "dispatcher_id": "DISPATCHER-TEST",
+            "dispatcher_key_id": "KEY-DISPATCHER-ED25519-V1",
+            "dispatch_op_id": d_op_id,
+            "action_id": clean_aid,
+            "action_dossier_digest": clean_aid[4:],
+            "approval_id": app_id,
+            "request_nonce": f"NONCE-{secrets.token_hex(16).upper()}",
+            "execution_id": f"EXEC-{secrets.token_hex(16).upper()}",
+            "program_id": prog,
+            "principal_id": sess_ctx.principal_id,
+            "session_ref": sess_ctx.session_ref,
+            "target_endpoint": "https://target.local/auth/logout",
+            "http_method": "POST",
+            "action_type": "LOGOUT",
+            "scope_decision": "ALLOWED",
+            "execution_outcome": "REVOCATION_VERIFIED",
+            "mutation_evidence": {
+                "evidence_id": orig_ref,
+                "request_sha256": req_dig,
+                "response_sha256": res_dig,
+                "status_code": 200,
+                "timestamp": ts,
+            },
+            "verification_evidence": {
+                "evidence_id": ver_cap["evidence_id"],
+                "invalidation_result": "REVOKED",
+                "request_sha256": ver_cap["request_sha256"],
+                "response_sha256": ver_cap["response_sha256"],
+                "status_code": 401,
+                "timestamp": ts,
+                "verification_method": "MUTATION_EXPLICIT_REVOCATION_VERIFIED",
+            },
+            "consumption_token": c_token,
+            "issued_at": ts,
+        }
+        rcpt_dict["signature"] = sign_execution_receipt(rcpt_dict, disp_priv)
+
         dispatch_res = ControlledDispatchResult(
             dispatch_op_id=d_op_id,
             action_id=clean_aid,
@@ -617,6 +706,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
             verification_timestamp=ts,
             consumption_token=c_token,
             is_genuine_dispatch=True,
+            receipt=rcpt_dict,
         )
         cap = issue_execution_capability(
             dispatch_result=dispatch_res,
@@ -624,6 +714,7 @@ def test_revocation_mode_a_provenance_verification_matrix(tmp_path):
             evidence_store=store,
             consumed_approvals_path=consumed_path,
             key_dir=ledger.key_dir,
+            dispatcher_verification_key=disp_pub,
         )
         exec_rec = ledger.record_execution(
             capability=cap,

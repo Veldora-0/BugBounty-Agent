@@ -1,6 +1,6 @@
 # Phase 21 — Authentication & Authorization Correlation
 
-**Status:** Partially implemented; Mode B acceptance blocked
+**Status:** Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; Linux systemd service verified)
 **Implementation:** framework/auth_correlation/, skills/authentication/, skills/authorization/, scripts/bb-auth-correlate
 
 ## Purpose and bounty value
@@ -27,7 +27,7 @@ Expected outputs are phase-specific observations/hypotheses, state updates, and 
 - Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
 
 ## Remaining work and limitations
-Resolve provenance gates and prove successful approved end-to-end operation with independent security review; implement Windows service isolation or document supported platform boundary. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+Provenance gates have been resolved via independent Ed25519 execution receipt verification and dynamic capability assessment. Windows production service isolation remains a documented platform limitation (Named Pipes used for local development/testing; production isolation under dedicated service account active on Linux). See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) and [the 24-phase roadmap](../ROADMAP-24-PHASES.md). Phase 22 remains planned and strictly NOT STARTED. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
 
 ## Source references
 Relevant tests: test_phase21_*.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).

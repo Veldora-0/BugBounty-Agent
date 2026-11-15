@@ -1598,6 +1598,7 @@ class PostRevocationResourceValidator:
                 evidence_store=self._evidence_store,
                 consumed_approvals_path=self._get_consumed_approvals_path(),
                 key_dir=self._approval_key_dir,
+                dispatcher_verification_key=getattr(self, "_dispatcher_verification_key", None),
             )
 
             # Record in ExecutionLedger with capability and evidence_store

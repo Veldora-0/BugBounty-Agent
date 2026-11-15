@@ -131,6 +131,7 @@ class ControlledDispatchResult:
     verification_timestamp: str
     consumption_token: str
     is_genuine_dispatch: bool = True
+    receipt: Optional[Dict[str, Any]] = None
 
     def validate(self) -> Dict[str, Any]:
         """Validates all fields against strict patterns and domain invariants."""
@@ -537,6 +538,7 @@ class ControlledDispatchWorkflow:
             verification_timestamp=ver_ev["timestamp"],
             consumption_token=receipt["consumption_token"],
             is_genuine_dispatch=True,
+            receipt=receipt,
         )
 
         return True, dispatch_result, f"Controlled invalidation executed and independently verified via {ver_ev.get('verification_method', 'ISOLATED_DISPATCH')}"

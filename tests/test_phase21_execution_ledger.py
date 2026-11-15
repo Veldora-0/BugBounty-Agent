@@ -186,6 +186,49 @@ def _create_valid_execution_fixture(
     with open(consumed_path, "w", encoding="utf-8") as f:
         json.dump(consumed_data, f, indent=2)
 
+    from framework.auth_correlation.ipc.receipt import sign_execution_receipt, derive_verification_key
+    disp_priv = secrets.token_bytes(32)
+    disp_pub = derive_verification_key(disp_priv)
+    rcpt_dict = {
+        "version": 1,
+        "receipt_id": f"RCPT-{secrets.token_hex(16).upper()}",
+        "dispatcher_id": "DISPATCHER-TEST",
+        "dispatcher_key_id": "KEY-DISPATCHER-ED25519-V1",
+        "dispatch_op_id": d_op_id,
+        "action_id": clean_aid,
+        "action_dossier_digest": consumed_entry["action_dossier_digest"],
+        "approval_id": app_id,
+        "request_nonce": f"NONCE-{secrets.token_hex(16).upper()}",
+        "execution_id": f"EXEC-{secrets.token_hex(16).upper()}",
+        "program_id": prog_id,
+        "principal_id": principal_id,
+        "session_ref": sess_ref,
+        "target_endpoint": target_endpoint,
+        "http_method": method,
+        "action_type": action_type,
+        "scope_decision": "ALLOWED",
+        "execution_outcome": "REVOCATION_VERIFIED",
+        "mutation_evidence": {
+            "evidence_id": mut_cap["evidence_id"],
+            "request_sha256": mut_cap["request_sha256"],
+            "response_sha256": mut_cap["response_sha256"],
+            "status_code": 200,
+            "timestamp": ts,
+        },
+        "verification_evidence": {
+            "evidence_id": ver_cap["evidence_id"],
+            "invalidation_result": invalidation_result,
+            "request_sha256": ver_cap["request_sha256"],
+            "response_sha256": ver_cap["response_sha256"],
+            "status_code": 401,
+            "timestamp": ts,
+            "verification_method": ver_method,
+        },
+        "consumption_token": c_token,
+        "issued_at": ts,
+    }
+    rcpt_dict["signature"] = sign_execution_receipt(rcpt_dict, disp_priv)
+
     dispatch_res = ControlledDispatchResult(
         dispatch_op_id=d_op_id,
         action_id=clean_aid,
@@ -212,6 +255,7 @@ def _create_valid_execution_fixture(
         verification_timestamp=ts,
         consumption_token=c_token,
         is_genuine_dispatch=True,
+        receipt=rcpt_dict,
     )
 
     cap = issue_execution_capability(
@@ -220,6 +264,7 @@ def _create_valid_execution_fixture(
         evidence_store=store,
         consumed_approvals_path=consumed_path,
         approval_key=app_key,
+        dispatcher_verification_key=disp_pub,
     )
 
     return ledger, cap, store, consumed_path, clean_aid, app_id, c_token

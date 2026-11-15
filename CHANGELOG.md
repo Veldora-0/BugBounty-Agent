@@ -7,9 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Phase 21 — Authentication & Authorization Correlation Engine (Partially Implemented; Not Accepted)
+### Phase 21 — Authentication & Authorization Correlation Engine (Implemented; Accepted with Documented Limitations)
 
-> The entries below include historical implementation and test records. Their older acceptance language is superseded: execution-capability and controlled-attestation issuance remain disabled. See [the current Phase 21 report](docs/PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md) and [project issue register](docs/PROJECT-AUDIT-ISSUES.md) for current status.
+#### Phase 21 Final Provenance Boundary & Live Dispatcher Verification
+* **Independent Capability Verification (`framework/auth_correlation/ledger.py`)**:
+  * `issue_execution_capability()` independently verifies the Ed25519 execution receipt against the pinned dispatcher public verification key (`dispatcher.pub`).
+  * Cross-checks receipt ID, action ID, dispatch operation ID, target endpoint, HTTP method, action type, principal ID, session reference, consumption token, evidence IDs, and SHA-256 digests.
+  * Fails closed with `ExecutionProvenanceError` if receipt is absent, forged, or altered.
+* **Dynamic Provenance Boundary Assessment (`framework/auth_correlation/provenance_boundary.py`)**:
+  * Replaced static hardcoded `UNAVAILABLE` status with dynamic capability assessment (`assess_provenance_boundary()`).
+  * Distinguishes daemon reachability (IPC PING), public verification key availability & validity (pinned 32-byte Ed25519 key), receipt verification functionality, evidence store containment, and OS privilege isolation support.
+  * Reports `AVAILABLE` on Linux when daemon, key, and verification subsystems succeed; reports `AVAILABLE_WITH_LIMITATIONS` on Windows with documented platform limitation.
+* **Persistent Replay & Lifetime Protection (`framework/auth_correlation/ipc/service.py`)**:
+  * Added persistent nonce tracking (`consumed_nonces.json` under durable file lock) rejecting replayed request nonces (`NONCE_REPLAY_DETECTED`) across sessions and reboots.
+  * Added approval lifetime enforcement rejecting expired approvals (`APPROVAL_EXPIRED`) and future-dated approvals (`APPROVAL_FUTURE_DATED`) before network transmission.
+* **11-Test Adversarial Regression Suite (`tests/test_phase21_provenance_architecture.py`)**:
+  * Validates 11 adversarial scenarios: forged Ed25519 receipts, tampered receipt fields, forged `ControlledDispatchResult` without receipt, altered receipts, nonce and action replay rejection, expired and future approvals, daemon reboot persistence, rogue IPC endpoint substitution, unauthorized evidence writes without authority token, failed post-mutation verification probe, and dynamic provenance boundary reporting.
+* **Live Systemd Probe & Verification Suite (`tests/dispatcher_live_probe.py`, `tests/verify-dispatcher-live-execution.sh`)**:
+  * Probes the live running systemd service on Linux (`bugbounty-dispatcher.service` under `_bbdispatcher:bbgroup`): verifies PING, STATUS, public key validity, and negative rejection of unapproved mutations.
+  * Accurately reports NOT RUN for service mutation execution when unprivileged user lacks sudo to configure `/var/lib/bugbounty/keys`.
+  * Standalone isolated execution test verifies full end-to-end execution, Ed25519 receipt verification, and replay rejection across processes.
+* **State Manager Atomic Write Fix (`framework/state/manager.py`)**:
+  * Added missing `import time` to resolve `NameError` during Windows transient file lock retries in `_atomic_write_json()`.
 
 #### Final Trust-Boundary & Acceptance Remediation (Blockers A–G)
 * **Linux Service Isolation & IPC Permissions Hardening (Blocker B)**:

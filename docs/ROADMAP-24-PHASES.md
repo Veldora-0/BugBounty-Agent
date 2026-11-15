@@ -2,7 +2,7 @@
 
 This is the canonical status index. Detailed plans, implementation paths, safety boundaries and completion criteria live in [the per-phase guides](phases/) and [project handbook](PROJECT-HANDBOOK.md). Status describes the code and documentation currently present; historic test success does not establish live-target effectiveness.
 
-**Current work:** Phase 21 is partially implemented and not accepted. The Linux dispatcher isolation and invalid-approval rejection check pass, but successful end-to-end capability and attestation issuance remain disabled. See [issue register](PROJECT-AUDIT-ISSUES.md). Phases 22–24 are planned.
+**Current work:** Phase 21 execution provenance remediation and live dispatcher verification complete with documented platform limitations. Phases 22–24 remain planned (Phase 22 is strictly NOT STARTED). See [issue register](PROJECT-AUDIT-ISSUES.md).
 
 | Phase | Name | Current status |
 |---:|---|---|
@@ -26,8 +26,8 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 18 | SSRF, XXE & Server-Side Parsers | Implemented; live callback confirmation depends on provider availability |
 | 19 | Infrastructure & Configuration Exposure | Implemented; read-only and size bounded |
 | 20 | Race Conditions & Distributed Workflows | Implemented with low-volume bounds |
-| 21 | Authentication & Authorization Correlation | **Partially implemented; acceptance blocked** |
-| 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Planned; required to identify and safely validate higher-impact chains |
+| 21 | Authentication & Authorization Correlation | Implemented; Accepted with Documented Limitations (Windows service isolation unsupported) |
+| 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Planned (NOT STARTED); required to identify and safely validate higher-impact chains |
 | 23 | Autonomous Research Planning & Coverage Intelligence | Planned; human-directed recommendations required |
 | 24 | Final Integration & Production Readiness | Planned |
 

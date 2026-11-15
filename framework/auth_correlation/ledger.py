@@ -739,6 +739,65 @@ def issue_execution_capability(
     if verification_method not in ALLOWED_CONTROLLED_VERIFICATION_METHODS:
         raise ExecutionProvenanceError(f"Verification method '{verification_method}' is not recognized or authorized")
 
+    # 4. Prerequisite verification: Isolated Dispatcher Signed Execution Receipt (Ed25519)
+    receipt = getattr(dispatch_result, "receipt", None) or kwargs.get("receipt")
+    if receipt is None:
+        raise ExecutionProvenanceError(
+            "Execution capability issuance requires an authentic ExecutionReceipt signed by the isolated dispatcher"
+        )
+
+    from framework.auth_correlation.ipc.receipt import (
+        verify_execution_receipt,
+        load_dispatcher_verification_key,
+    )
+
+    disp_pub = kwargs.get("dispatcher_verification_key")
+    if disp_pub is None:
+        try:
+            disp_pub = load_dispatcher_verification_key(path=kwargs.get("dispatcher_public_key_path"))
+        except Exception as e:
+            raise ExecutionProvenanceError(f"Cannot verify execution receipt: {e}")
+
+    valid, reason = verify_execution_receipt(
+        receipt,
+        verification_key=disp_pub,
+        expected_action_id=action_id,
+        expected_program_id=program_id,
+    )
+    if not valid:
+        raise ExecutionProvenanceError(f"Execution receipt verification failed: {reason}")
+
+    # Cross-check receipt fields with dispatch result
+    if receipt.get("approval_id") != approval_id:
+        raise ExecutionProvenanceError("Receipt approval_id mismatch with dispatch result")
+    if receipt.get("dispatch_op_id") != dispatch_op_id:
+        raise ExecutionProvenanceError("Receipt dispatch_op_id mismatch with dispatch result")
+    if receipt.get("target_endpoint") != target_endpoint:
+        raise ExecutionProvenanceError("Receipt target_endpoint mismatch with dispatch result")
+    if receipt.get("http_method") != http_method:
+        raise ExecutionProvenanceError("Receipt http_method mismatch with dispatch result")
+    if receipt.get("action_type") != action_type:
+        raise ExecutionProvenanceError("Receipt action_type mismatch with dispatch result")
+    if receipt.get("principal_id") not in (principal_id, test_account):
+        raise ExecutionProvenanceError("Receipt principal_id mismatch with dispatch result")
+    if receipt.get("session_ref") != session_ref:
+        raise ExecutionProvenanceError("Receipt session_ref mismatch with dispatch result")
+    if receipt.get("consumption_token") != consumption_token:
+        raise ExecutionProvenanceError("Receipt consumption_token mismatch with dispatch result")
+
+    rcpt_mut = receipt.get("mutation_evidence") or {}
+    rcpt_ver = receipt.get("verification_evidence") or {}
+    if rcpt_mut.get("evidence_id") != mutation_evidence_ref:
+        raise ExecutionProvenanceError("Receipt mutation evidence_id mismatch with dispatch result")
+    if rcpt_mut.get("request_sha256") != mutation_request_digest or rcpt_mut.get("response_sha256") != mutation_response_digest:
+        raise ExecutionProvenanceError("Receipt mutation digests mismatch with dispatch result")
+    if rcpt_ver.get("evidence_id") != verification_evidence_ref:
+        raise ExecutionProvenanceError("Receipt verification evidence_id mismatch with dispatch result")
+    if rcpt_ver.get("request_sha256") != verification_request_digest or rcpt_ver.get("response_sha256") != verification_response_digest:
+        raise ExecutionProvenanceError("Receipt verification digests mismatch with dispatch result")
+    if rcpt_ver.get("invalidation_result") != "REVOKED":
+        raise ExecutionProvenanceError("Receipt reports non-revoked verification outcome")
+
     key = capability_key or get_or_create_capability_key(key_dir=key_dir)
 
     payload: Dict[str, Any] = {

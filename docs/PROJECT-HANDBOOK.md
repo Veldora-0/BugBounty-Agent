@@ -47,7 +47,7 @@ Phases 1–20 have corresponding engines, skills or integrations, and tests. The
 - [Future improvements](FUTURE-IMPROVEMENTS.md): proposed work after and alongside the current roadmap.
 - [Tooling recommendations](TOOLING-RECOMMENDATIONS.md): optional Kali-oriented tools and safe integration gates.
 - [Security](security.md), [scope](scope.md), [workflow](workflow.md), [architecture](architecture.md), [skills](skills.md), [runtime](runtime.md), and [installation](installation.md): operational references.
-- Historical Phase 21 design/acceptance documents may contain superseded verdicts. The current verdict is the explicit status in the [definitive report](PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md) and the issue register.
+- Historical Phase 21 design/acceptance documents may contain superseded verdicts. The current verdict is the explicit status in the [issue register](PROJECT-AUDIT-ISSUES.md) and [roadmap](ROADMAP-24-PHASES.md): Phase 21 is implemented and accepted with documented platform limitations (Linux systemd production service verified; Windows service isolation unsupported). Phase 22 is strictly NOT STARTED.
 
 ## Contribution and release expectations
 

@@ -346,6 +346,60 @@ class IsolatedExecutionDispatcher:
 
         return consumption_token
 
+    def _get_nonces_path(self) -> str:
+        return os.path.join(self.state_dir, "consumed_nonces.json")
+
+    def _get_nonces_lock_path(self) -> str:
+        return os.path.join(self.state_dir, "consumed_nonces.lock")
+
+    def _is_nonce_consumed(self, nonce: str) -> bool:
+        nonces_path = self._get_nonces_path()
+        if not os.path.exists(nonces_path):
+            return False
+        try:
+            with open(nonces_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return nonce in data.get("nonces", [])
+        except Exception:
+            return False
+
+    def _atomically_consume_nonce(self, nonce: str) -> None:
+        nonces_path = self._get_nonces_path()
+        lock_path = self._get_nonces_lock_path()
+        with self._consumed_lock, CrossProcessFileLock(lock_path):
+            data: Dict[str, Any] = {"version": 1, "nonces": []}
+            if os.path.exists(nonces_path):
+                try:
+                    with open(nonces_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if not isinstance(data, dict) or "nonces" not in data:
+                        data = {"version": 1, "nonces": []}
+                except Exception:
+                    data = {"version": 1, "nonces": []}
+            if nonce in data.get("nonces", []):
+                raise ValueError("Nonce has already been consumed")
+            data["nonces"].append(nonce)
+            if len(data["nonces"]) > 10000:
+                data["nonces"] = data["nonces"][-10000:]
+            tmp_path = f"{nonces_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
+            flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            fd = os.open(tmp_path, flags, 0o600)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                if os.name == "nt":
+                    _enforce_windows_file_dacl(tmp_path)
+                os.replace(tmp_path, nonces_path)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                raise
+
     def _persist_evidence(
         self,
         prefix: str,
@@ -564,6 +618,19 @@ class IsolatedExecutionDispatcher:
                 dossier = payload["action_dossier"]
                 sess_ctx = payload["session_context"]
 
+                # 0. Request Nonce Replay Check
+                if self._is_nonce_consumed(nonce):
+                    return {
+                        "version": PROTOCOL_VERSION,
+                        "request_id": req_id,
+                        "response_nonce": resp_nonce,
+                        "timestamp": now_iso,
+                        "status": "REJECTED",
+                        "error_code": "NONCE_REPLAY_DETECTED",
+                        "error_message": "Request nonce has already been consumed (replay rejected)",
+                        "receipt": None,
+                    }
+
                 # 1. Canonical dossier verification (Digest integrity)
                 canonical_copy = {k: dossier[k] for k in CANONICAL_ACTION_FIELDS if k in dossier}
                 canonical_str = json.dumps(canonical_copy, sort_keys=True)
@@ -630,6 +697,34 @@ class IsolatedExecutionDispatcher:
                         "error_message": "Operator authorization signature verification failed",
                         "receipt": None,
                     }
+
+                # 2b. Approval Expiration and Future-Dating Check
+                created_at = dossier.get("created_at")
+                ttl = float(dossier.get("ttl", 300.0))
+                now_ts = time.time()
+                if created_at is not None:
+                    if created_at > now_ts + 60.0:
+                        return {
+                            "version": PROTOCOL_VERSION,
+                            "request_id": req_id,
+                            "response_nonce": resp_nonce,
+                            "timestamp": now_iso,
+                            "status": "REJECTED",
+                            "error_code": "APPROVAL_FUTURE_DATED",
+                            "error_message": "Operator approval is future-dated",
+                            "receipt": None,
+                        }
+                    if created_at + ttl < now_ts - 5.0:
+                        return {
+                            "version": PROTOCOL_VERSION,
+                            "request_id": req_id,
+                            "response_nonce": resp_nonce,
+                            "timestamp": now_iso,
+                            "status": "REJECTED",
+                            "error_code": "APPROVAL_EXPIRED",
+                            "error_message": "Operator approval has expired",
+                            "receipt": None,
+                        }
 
                 # 3. Destination and Scope verification
                 target_endpoint = dossier.get("target_endpoint", "")
@@ -754,6 +849,9 @@ class IsolatedExecutionDispatcher:
                 }
                 receipt_dict["signature"] = sign_execution_receipt(receipt_dict, self.signing_key)
                 receipt_dict["receipt_signature"] = receipt_dict["signature"]
+
+                # Record consumed nonce to prevent replay across sessions and reboots
+                self._atomically_consume_nonce(nonce)
 
                 return {
                     "version": PROTOCOL_VERSION,
