@@ -54,6 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     * Decoupled validation state invariant ensuring all candidate paths remain strictly in `ChainState.HYPOTHESIS` (ADV-22-06).
   * Enforced zero-secret guarantee across all graph structures and correlation results.
   * Added 10 unit and adversarial acceptance tests in `tests/test_phase22_correlator.py` with 100% pass rate.
+* **Sub-Milestone 22.2.4 — Milestone 22.2 Integration Hardening & Verification (`tests/test_phase22_correlator_hardening.py`)**:
+  * Dense multigraph resilience: verified deterministic ordering, stable path hashes, and cycle termination across dense multigraphs with parallel competing edges.
+  * Idempotency & repeated correlation: verified zero duplicate node/edge accumulation and stable path fingerprints upon re-correlation.
+  * Multi-hop tenant isolation: verified that mixed-tenant paths allow supported tenant flaws (`SUPPORTED_TENANT_ISOLATION_FLAWS`) but fail closed on unsupported cross-tenant hops.
+  * Fail-closed scope boundary enforcement: verified that nodes with non-`IN_SCOPE` statuses (`OUT_OF_SCOPE`, `EXCLUDED`, `BLOCKED`, `None`) are rejected with `SCOPE_VIOLATION`.
+  * Hardened principal alignment: enforced that `TOKEN_ACQUISITION` alone cannot transition across principals without explicit target principal binding evidence.
+  * State persistence resilience: verified `AttackPathStateManager` atomic temporary writes, corrupted file recovery backup (`.corrupt.<timestamp>`), and clean reinitialization.
+  * Added `get_edge()` and `has_edge()` to `AttackGraph` for direct edge lookup.
+  * Zero-secret barrier: added `"authorization"` to sensitive dictionary keys, asserting rejection before disk persistence and guaranteeing rejection messages never echo secrets.
+  * 10 integration and adversarial tests covering criteria AC-22.2.4-01 through AC-22.2.4-10 with 100% pass rate.
 
 ### Phase 21 — Authentication & Authorization Correlation Engine (Implemented; Accepted with Documented Limitations)
 

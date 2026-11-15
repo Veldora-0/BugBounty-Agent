@@ -2,7 +2,7 @@
 
 This is the canonical status index. Detailed plans, implementation paths, safety boundaries and completion criteria live in [the per-phase guides](phases/) and [project handbook](PROJECT-HANDBOOK.md). Status describes the code and documentation currently present; historic test success does not establish live-target effectiveness.
 
-**Current work:** Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining (Milestone 22.1 completed & hardened; Milestone 22.2 sub-milestones 22.2.1, 22.2.2, 22.2.3 completed; 22.2.4 pending; Milestones 22.3 and 22.4 pending). Phase 21 execution provenance remediation complete with documented platform limitations. Phases 23–24 remain planned. See [issue register](PROJECT-AUDIT-ISSUES.md).
+**Current work:** Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining (Milestone 22.1 completed & hardened; Milestone 22.2 fully completed & hardened across sub-milestones 22.2.1–22.2.4; Milestones 22.3 and 22.4 pending). Phase 21 execution provenance remediation complete with documented platform limitations. Phases 23–24 remain planned. See [issue register](PROJECT-AUDIT-ISSUES.md).
 
 | Phase | Name | Current status |
 |---:|---|---|
@@ -27,7 +27,7 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 19 | Infrastructure & Configuration Exposure | Implemented; read-only and size bounded |
 | 20 | Race Conditions & Distributed Workflows | Implemented with low-volume bounds |
 | 21 | Authentication & Authorization Correlation | Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; live Linux systemd mutation unverified) |
-| 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | In Progress (Milestone 22.1 completed & hardened; Milestone 22.2 sub-milestones 22.2.1, 22.2.2, 22.2.3 completed; 22.2.4 pending; Milestones 22.3 and 22.4 pending) |
+| 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | In Progress (Milestone 22.1 completed & hardened; Milestone 22.2 fully completed & hardened; Milestones 22.3 and 22.4 pending) |
 | 23 | Autonomous Research Planning & Coverage Intelligence | Planned; human-directed recommendations required |
 | 24 | Final Integration & Production Readiness | Planned |
 

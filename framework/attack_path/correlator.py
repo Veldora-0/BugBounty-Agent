@@ -147,6 +147,17 @@ class AttackPathCorrelator:
                 )
             nodes.append(node)
 
+        # 0. Scope Enforcement
+        evaluated_rules.append("SCOPE_ENFORCEMENT")
+        for idx, node in enumerate(nodes):
+            if node.scope_status != "IN_SCOPE":
+                return FeasibilityResult(
+                    is_feasible=False,
+                    rejection_reason=f"SCOPE_VIOLATION: Node '{node.node_id}' has scope status '{node.scope_status}'",
+                    pruned_step_index=idx,
+                    evaluated_rules=evaluated_rules,
+                )
+
         # 1. Rule 5: Capability Freshness & Stale Pruning (ADV-22-05)
         evaluated_rules.append("FRESHNESS_CHECK")
         for idx, node in enumerate(nodes):
@@ -248,12 +259,17 @@ class AttackPathCorrelator:
             src_tenant = src.attributes.get("tenant_id")
             dst_tenant = dst.attributes.get("tenant_id")
 
-            if src_tenant and dst_tenant and src_tenant != dst_tenant:
+            if src_tenant and dst_tenant and str(src_tenant) != str(dst_tenant):
                 # Check whether source finding or preceding node is a supported tenant-isolation flaw
                 source_vuln = (
                     src.attributes.get("vulnerability_type", "").lower()
                     or src.attributes.get("category", "").lower()
                 )
+                if not source_vuln and src.attributes.get("source_finding_id"):
+                    src_fnd = graph.get_node(src.attributes.get("source_finding_id"))
+                    if src_fnd:
+                        source_vuln = src_fnd.attributes.get("vulnerability_type", "").lower()
+
                 if source_vuln not in SUPPORTED_TENANT_ISOLATION_FLAWS:
                     return FeasibilityResult(
                         is_feasible=False,
@@ -268,27 +284,53 @@ class AttackPathCorrelator:
         # 5. Rule 4: Principal & Session Context Consistency (ADV-22-04)
         evaluated_rules.append("PRINCIPAL_SESSION_ALIGNMENT")
         current_principal = nodes[0].attributes.get("principal_id")
-        has_hijack_capability = False
 
         for idx, node in enumerate(nodes):
-            if node.node_type == NodeType.CAPABILITY:
-                cap_type = node.attributes.get("capability_type")
-                if cap_type in ("SESSION_HIJACK", "TOKEN_ACQUISITION"):
-                    has_hijack_capability = True
-
             node_principal = node.attributes.get("principal_id")
-            if current_principal and node_principal and current_principal != node_principal:
-                if not has_hijack_capability:
+            if current_principal and node_principal and str(current_principal) != str(node_principal):
+                # To transition from current_principal to node_principal, the path must have
+                # encountered an intermediate capability that specifically binds to node_principal.
+                transition_legitimized = False
+                for prev_node in nodes[:idx]:
+                    if prev_node.node_type == NodeType.CAPABILITY:
+                        cap_type = prev_node.attributes.get("capability_type")
+                        target_p = (
+                            prev_node.attributes.get("target_principal")
+                            or prev_node.attributes.get("target_principal_id")
+                        )
+                        desc = prev_node.attributes.get("descriptor")
+                        if isinstance(desc, dict):
+                            target_p = (
+                                target_p
+                                or desc.get("authenticated_principal")
+                                or desc.get("target_principal")
+                                or desc.get("principal_id")
+                            )
+
+                        if cap_type == "SESSION_HIJACK":
+                            # Session hijack legitimizes transition if target matches or if it targets that session
+                            if target_p is None or str(target_p).lower() == str(node_principal).lower():
+                                transition_legitimized = True
+                                break
+                        elif cap_type == "TOKEN_ACQUISITION":
+                            # Token acquisition alone does NOT legitimize cross-principal transition
+                            # unless it explicitly proves identity binding to the target principal!
+                            if target_p is not None and str(target_p).lower() == str(node_principal).lower():
+                                transition_legitimized = True
+                                break
+
+                if not transition_legitimized:
                     return FeasibilityResult(
                         is_feasible=False,
                         rejection_reason=(
                             f"PRINCIPAL_CONTEXT_MISMATCH: Node '{node.node_id}' belongs to principal "
-                            f"'{node_principal}' but session is bound to '{current_principal}' without hijack capability"
+                            f"'{node_principal}' but active principal context is '{current_principal}'. "
+                            "Cross-principal transition requires verified identity or session evidence."
                         ),
                         pruned_step_index=idx,
                         evaluated_rules=evaluated_rules,
                     )
-                # Once hijacked, the active principal transitions
+                # Legitimized transition: update active principal
                 current_principal = node_principal
 
         # 6. Rule 6: Decoupled State & Non-Inflation Invariant (ADV-22-06)

@@ -103,6 +103,7 @@ _SENSITIVE_KEY_NAMES: Set[str] = {
     "password", "passwd", "pwd", "client_secret", "secret_key",
     "api_key", "apikey", "access_token", "auth_token", "bearer_token",
     "private_key", "session_id", "session_token", "cookie",
+    "authorization",
 }
 
 _SAFE_REDACTED_SUBSTRINGS: Tuple[str, ...] = (
@@ -502,6 +503,14 @@ class AttackGraph:
 
     def has_node(self, node_id: str) -> bool:
         return node_id in self._nodes
+
+    def get_edge(self, edge_id: str) -> Optional[AttackGraphEdge]:
+        """Returns the edge corresponding to edge_id, or None if absent."""
+        return self._edges.get(edge_id)
+
+    def has_edge(self, edge_id: str) -> bool:
+        """Returns True if edge_id exists in the graph."""
+        return edge_id in self._edges
 
     def add_edge(self, edge: AttackGraphEdge) -> AttackGraphEdge:
         """Inserts or updates a directed semantic edge."""

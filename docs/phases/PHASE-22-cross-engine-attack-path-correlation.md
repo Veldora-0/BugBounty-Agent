@@ -1,6 +1,6 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** In Progress (Milestone 22.1 completed & hardened; Milestone 22.2 sub-milestones 22.2.1, 22.2.2, 22.2.3 completed; 22.2.4 pending; Milestones 22.3 and 22.4 pending)
+**Status:** In Progress (Milestone 22.1 completed & hardened; Milestone 22.2 fully completed & hardened; Milestones 22.3 and 22.4 pending)
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
 **Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
@@ -9,11 +9,11 @@
 
 Phase 22 is organized into four sequential top-level milestones:
 1. **Milestone 22.1**: Attack Graph Model, State Management & Finding Normalization (Completed & Hardened).
-2. **Milestone 22.2**: Cross-Engine Path Correlation & Feasibility Rules (In Progress).
+2. **Milestone 22.2**: Cross-Engine Path Correlation & Feasibility Rules (Completed & Hardened).
    - **22.2.1**: Architecture & Acceptance Criteria — Candidate Relationship Discovery & Bounded Traversal (Completed).
    - **22.2.2**: Core Implementation — Candidate Relationship Discovery & Bounded Traversal (Completed).
    - **22.2.3**: Attack Path Correlator & Feasibility Evaluation Engine (Completed).
-   - **22.2.4**: Milestone 22.2 Integration Hardening, State Persistence Validation & Verification (Pending).
+   - **22.2.4**: Milestone 22.2 Integration Hardening, Edge-Case Auditing & State Persistence Validation (Completed & Hardened).
 3. **Milestone 22.3**: Safe Validation Planning & Approval Gates (`framework/attack_path/validator.py`) (Pending / Not Started).
 4. **Milestone 22.4**: CLI, Reporting & Dual-Environment Acceptance (`scripts/bb-chain`, `framework/attack_path/reporter.py`, full verification) (Pending / Not Started).
 
@@ -76,8 +76,17 @@ Milestone 22.2 implements cross-engine path correlation, bounded traversal, and 
 - **Milestone 22.2.3 Acceptance Test Suite (`tests/test_phase22_correlator.py`)**:
   - 10 comprehensive tests covering criteria AC-22.3-01 through AC-22.3-10 with 100% pass rate.
 
-### Sub-Milestone 22.2.4 — Milestone 22.2 Integration Hardening & Verification (Pending)
-- Reserved for comprehensive integration hardening, edge-case stress testing, and state persistence audit across dense multigraphs prior to initiating Milestone 22.3.
+### Sub-Milestone 22.2.4 — Milestone 22.2 Integration Hardening & Verification (Completed & Hardened)
+- **Integration Hardening & Edge-Case Audit**:
+  - Validated dense multigraph resilience (50+ nodes/edges, multigraph edges between identical pairs, competing paths of varying lengths, and cycle branches).
+  - Validated idempotency under repeated correlation runs: zero duplicate nodes/edges, stable path IDs and fingerprints, and zero count inflation.
+  - Hardened multi-tenant isolation across complex multi-hop paths: supported tenant-isolation flaws (`SUPPORTED_TENANT_ISOLATION_FLAWS`) permit boundary crossing, while unsupported flaws fail closed.
+  - Hardened scope enforcement: nodes with `scope_status != "IN_SCOPE"` (`OUT_OF_SCOPE`, `EXCLUDED`, `BLOCKED`, `None`) are immediately pruned or rejected with `SCOPE_VIOLATION`.
+  - Hardened principal consistency (ADV-22-04): `TOKEN_ACQUISITION` alone does not authorize cross-principal transition unless explicit target principal binding evidence is present.
+  - Hardened state persistence & corruption recovery in `AttackPathStateManager`: atomic replacement, corruption backup (`.corrupt.<timestamp>`), clean reinitialization, and strict zero-secret barrier before write.
+  - Zero-secret guarantee: added `"authorization"` to sensitive key sanitization; verified rejection messages never echo raw secrets.
+- **Milestone 22.2.4 Acceptance Test Suite (`tests/test_phase22_correlator_hardening.py`)**:
+  - 10 comprehensive tests covering criteria AC-22.2.4-01 through AC-22.2.4-10 with 100% pass rate.
 
 ---
 

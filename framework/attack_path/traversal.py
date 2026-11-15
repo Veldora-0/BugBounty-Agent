@@ -134,7 +134,7 @@ class BoundedTraversalEngine:
             # By default, entry nodes are findings that expose capabilities
             raw_entries = graph.get_nodes_by_type(NodeType.FINDING)
 
-        valid_entries = [n for n in raw_entries if n is not None and n.scope_status != "OUT_OF_SCOPE"]
+        valid_entries = [n for n in raw_entries if n is not None and n.scope_status == "IN_SCOPE"]
         sorted_entries = sorted(valid_entries, key=lambda n: n.node_id)
 
         target_set: Optional[Set[str]] = set(target_node_ids) if target_node_ids else None
@@ -196,8 +196,8 @@ class BoundedTraversalEngine:
                 if dst_id in branch_visited:
                     continue
 
-                # Check 3: Scope enforcement (out-of-scope nodes cannot be traversed)
-                if dst_node.scope_status == "OUT_OF_SCOPE":
+                # Check 3: Scope enforcement (only IN_SCOPE nodes may be traversed)
+                if dst_node.scope_status != "IN_SCOPE":
                     continue
 
                 # Check 4: Stale capability pruning
@@ -211,6 +211,10 @@ class BoundedTraversalEngine:
                 dst_tenant = dst_node.attributes.get("tenant_id")
                 if src_tenant and dst_tenant and str(src_tenant) != str(dst_tenant):
                     vtype = curr_node.attributes.get("vulnerability_type", "").lower()
+                    if not vtype and curr_node.attributes.get("source_finding_id"):
+                        src_fnd = graph.get_node(curr_node.attributes.get("source_finding_id"))
+                        if src_fnd:
+                            vtype = src_fnd.attributes.get("vulnerability_type", "").lower()
                     if vtype not in SUPPORTED_TENANT_ISOLATION_FLAWS:
                         continue
 

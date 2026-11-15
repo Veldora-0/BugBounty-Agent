@@ -173,25 +173,35 @@ class FindingNormalizer:
         edges.append(e_hosted)
 
         # 3. Finding Node
+        prov = finding.provenance if isinstance(finding.provenance, dict) else {}
+        tenant_id = prov.get("tenant_id")
+        principal_id = prov.get("principal_id")
+
         fnd_id = self.generate_finding_node_id(finding.finding_id)
+        fnd_attrs: Dict[str, Any] = {
+            "finding_id": finding.finding_id,
+            "vulnerability_type": finding.vulnerability_type,
+            "severity": finding.severity,
+            "confidence": finding.confidence,
+            "lifecycle_state": (
+                finding.lifecycle_state.value
+                if hasattr(finding.lifecycle_state, "value")
+                else str(finding.lifecycle_state)
+            ),
+            "parameter": clean_param,
+            "root_cause": sanitize_sensitive_data(finding.root_cause),
+            "prerequisites": sanitize_sensitive_data(finding.prerequisites),
+        }
+        if tenant_id:
+            fnd_attrs["tenant_id"] = tenant_id
+        if principal_id:
+            fnd_attrs["principal_id"] = principal_id
+
         finding_node = AttackGraphNode(
             node_id=fnd_id,
             node_type=NodeType.FINDING,
             label=finding.title,
-            attributes={
-                "finding_id": finding.finding_id,
-                "vulnerability_type": finding.vulnerability_type,
-                "severity": finding.severity,
-                "confidence": finding.confidence,
-                "lifecycle_state": (
-                    finding.lifecycle_state.value
-                    if hasattr(finding.lifecycle_state, "value")
-                    else str(finding.lifecycle_state)
-                ),
-                "parameter": clean_param,
-                "root_cause": sanitize_sensitive_data(finding.root_cause),
-                "prerequisites": sanitize_sensitive_data(finding.prerequisites),
-            },
+            attributes=fnd_attrs,
             scope_status="IN_SCOPE",
             created_at=finding.created_at or now_iso,
             updated_at=now_iso,
@@ -215,19 +225,26 @@ class FindingNormalizer:
         for cap in extracted_caps:
             capabilities.append(cap)
 
+            cap_attrs: Dict[str, Any] = {
+                "capability_type": cap.capability_type.value,
+                "source_finding_id": cap.source_finding_id,
+                "vulnerability_type": finding.vulnerability_type,
+                "evidence_ref": cap.evidence_ref,
+                "is_observed": cap.is_observed,
+                "provenance_status": cap.provenance_status,
+                "is_expired": cap.is_expired,
+                "descriptor": cap.yielded_descriptor,
+            }
+            if tenant_id:
+                cap_attrs["tenant_id"] = tenant_id
+            if principal_id:
+                cap_attrs["principal_id"] = principal_id
+
             cap_node = AttackGraphNode(
                 node_id=cap.capability_id,
                 node_type=NodeType.CAPABILITY,
                 label=f"{cap.capability_type.value}:{cap.target_asset}",
-                attributes={
-                    "capability_type": cap.capability_type.value,
-                    "source_finding_id": cap.source_finding_id,
-                    "evidence_ref": cap.evidence_ref,
-                    "is_observed": cap.is_observed,
-                    "provenance_status": cap.provenance_status,
-                    "is_expired": cap.is_expired,
-                    "descriptor": cap.yielded_descriptor,
-                },
+                attributes=cap_attrs,
                 scope_status="IN_SCOPE",
                 created_at=cap.created_at,
                 updated_at=now_iso,
