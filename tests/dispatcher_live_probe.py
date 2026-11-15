@@ -174,6 +174,7 @@ def run_live_service_probe(
     print("[*] Testing negative rejection of unapproved / malformed mutation...")
     bogus_aid = f"ACT-{'0' * 64}"
     bogus_dossier = {
+        "action_id": bogus_aid,
         "action_type": "LOGOUT",
         "created_at": time.time(),
         "method": "POST",
