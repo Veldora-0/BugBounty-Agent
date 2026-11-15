@@ -26,7 +26,7 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 18 | SSRF, XXE & Server-Side Parsers | Implemented; live callback confirmation depends on provider availability |
 | 19 | Infrastructure & Configuration Exposure | Implemented; read-only and size bounded |
 | 20 | Race Conditions & Distributed Workflows | Implemented with low-volume bounds |
-| 21 | Authentication & Authorization Correlation | Implemented; Accepted with Documented Limitations (Windows service isolation unsupported) |
+| 21 | Authentication & Authorization Correlation | Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; live Linux systemd mutation unverified) |
 | 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Planned (NOT STARTED); required to identify and safely validate higher-impact chains |
 | 23 | Autonomous Research Planning & Coverage Intelligence | Planned; human-directed recommendations required |
 | 24 | Final Integration & Production Readiness | Planned |

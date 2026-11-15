@@ -1,10 +1,10 @@
 # Phase 21 — Authentication & Authorization Correlation
 
-**Status:** Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; Linux systemd service verified)
+**Status:** Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; live Linux systemd mutation execution unverified due to key provisioning prerequisite)
 **Implementation:** framework/auth_correlation/, skills/authentication/, skills/authorization/, scripts/bb-auth-correlate
 
 ## Purpose and bounty value
-Correlate session lifecycle, authorization preflight, revocation, pre-MFA boundaries and tenant desynchronization. Linux isolated dispatcher IPC and invalid-approval rejection are verified; downstream execution-capability and controlled-attestation issuance remain fail-closed. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+Correlate session lifecycle, authorization preflight, revocation, pre-MFA boundaries and tenant desynchronization. Linux isolated dispatcher IPC, key loading, and invalid-approval rejection are verified; downstream execution-capability issuance independently validates dispatcher-signed Ed25519 execution receipts. Live authorized mutation through the installed Linux systemd daemon remains unverified due to key-provisioning prerequisites. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
 
 ## Workflow and expected outputs
 1. Load the program workspace and validate the target against its scope configuration before network access.
@@ -27,7 +27,11 @@ Expected outputs are phase-specific observations/hypotheses, state updates, and 
 - Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
 
 ## Remaining work and limitations
-Provenance gates have been resolved via independent Ed25519 execution receipt verification and dynamic capability assessment. Windows production service isolation remains a documented platform limitation (Named Pipes used for local development/testing; production isolation under dedicated service account active on Linux). See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) and [the 24-phase roadmap](../ROADMAP-24-PHASES.md). Phase 22 remains planned and strictly NOT STARTED. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+Provenance gates have been resolved via independent Ed25519 execution receipt verification and dynamic capability assessment. Outstanding limitations:
+1. Windows production service isolation remains a documented platform limitation (Named Pipes used for local development/testing; production service isolation under dedicated service account active on Linux).
+2. Live authorized mutation execution through the installed Linux systemd service was NOT RUN because provisioning operator test keys in `/var/lib/bugbounty/keys` requires root/sudo privileges unavailable to the unprivileged test account. Live socket connectivity, STATUS, Ed25519 public key loading, and negative rejection of unapproved mutations were verified against the live service; end-to-end execution was verified in standalone isolated process mode.
+
+See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) and [the 24-phase roadmap](../ROADMAP-24-PHASES.md). Phase 22 remains planned and strictly NOT STARTED. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
 
 ## Source references
 Relevant tests: test_phase21_*.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).

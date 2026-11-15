@@ -37,7 +37,7 @@ The architecture intentionally uses one `Bug-Bounty` agent and skills rather tha
 
 ## Current implementation status
 
-Phases 1–20 have corresponding engines, skills or integrations, and tests. Their precise limitations are recorded in the phase guides; historic acceptance and test runs do not guarantee live-target coverage. Phase 21 has substantial correlation logic and a Linux isolated dispatcher, but remains **partially implemented and not accepted**: capability issuance and controlled-workflow attestation issuance remain disabled. Phase 22–24 are planned. The roadmap records this status as of the current source tree; consult the issue register before treating any phase as production-ready.
+Phases 1–20 have corresponding engines, skills or integrations, and tests. Their precise limitations are recorded in the phase guides; historic acceptance and test runs do not guarantee live-target coverage. Phase 21 is implemented and accepted with documented limitations: execution-capability issuance has been restored with independent Ed25519 receipt verification, while Windows service isolation is unsupported and live authorized mutation execution through the installed Linux systemd service remains unverified due to key-provisioning prerequisites. Phases 22–24 remain planned (Phase 22 is strictly NOT STARTED). Consult the issue register and roadmap before treating any phase as production-ready.
 
 ## Documentation map
 
