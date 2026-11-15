@@ -721,6 +721,33 @@ class SystemDoctor:
         except Exception as e:
             return {"status": "ERROR", "healthy": False, "error": str(e)}
 
+    def check_attack_path_engine(self) -> Dict[str, Any]:
+        """Category 27: Attack-Path Correlation & Vulnerability Chaining Subsystem."""
+        try:
+            from framework.attack_path.model import AttackGraph, NodeType, EdgeType
+            from framework.attack_path.correlator import AttackPathCorrelator
+            from framework.attack_path.validator import SafeChainValidationPlanner, ValidationMethodRegistry
+            from framework.attack_path.reporter import AttackPathReporter
+
+            graph = AttackGraph()
+            registry = ValidationMethodRegistry()
+            planner = SafeChainValidationPlanner(registry=registry)
+            reporter = AttackPathReporter(graph=graph)
+
+            healthy = (
+                graph.node_count() == 0
+                and registry.is_method_allowed("PREREQUISITE_SATISFACTION_CHECK")
+                and not registry.is_method_allowed("NONEXISTENT_METHOD")
+                and reporter.get_summary_stats()["total_attack_paths"] == 0
+            )
+            return {
+                "status": "HEALTHY" if healthy else "ERROR",
+                "healthy": healthy,
+                "default_methods": len(registry._methods),
+            }
+        except Exception as e:
+            return {"status": "ERROR", "healthy": False, "error": str(e)}
+
     def run_full_diagnosis(self) -> Dict[str, Any]:
         """Runs complete diagnostics across all categories."""
         return {
@@ -749,6 +776,7 @@ class SystemDoctor:
             "infrastructure_engine": self.check_infrastructure_engine(),
             "concurrency_engine": self.check_concurrency_engine(),
             "auth_correlation_engine": self.check_auth_correlation_engine(),
+            "attack_path_engine": self.check_attack_path_engine(),
             "opencode_integration": self.check_opencode_integration(),
         }
 

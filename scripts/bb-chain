@@ -1,0 +1,696 @@
+#!/usr/bin/env python3
+"""
+bb-chain — BugBounty-Agent Cross-Engine Attack-Path Correlation & Validation CLI.
+
+Phase 22: Command-Line Interface for attack-path hypothesis inspection, correlation,
+safe validation planning, human operator approval, anti-TOCTOU dispatch authorization,
+evidence verification, and reporting.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+from typing import Any, Dict, List, Optional
+
+# Ensure repository root is on sys.path
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from framework.attack_path.correlator import AttackPathCorrelator
+from framework.attack_path.model import (
+    AttackGraph,
+    AttackPath,
+    ChainState,
+    RelationshipState,
+    assert_no_raw_secrets,
+)
+from framework.attack_path.normalizer import FindingNormalizer
+from framework.attack_path.reporter import AttackPathReporter
+from framework.attack_path.state import AttackPathStateManager
+from framework.attack_path.validator import (
+    ApprovalSecurityError,
+    ChainValidationPlan,
+    DispatchSecurityError,
+    EvidenceVerificationError,
+    InvalidStateTransitionError,
+    MethodSecurityError,
+    SafeChainValidationPlanner,
+    ValidationAuditEvent,
+    ValidationPlanStatus,
+)
+from framework.common.config import get_workspace_root
+from framework.findings.schema import Finding
+from framework.scope.engine import ScopeEngine
+
+
+# Regex patterns for input validation
+PATH_ID_PATTERN = re.compile(r"^PATH-[a-zA-Z0-9_\-]+$")
+PLAN_ID_PATTERN = re.compile(r"^PLAN-[a-zA-Z0-9_\-]+$")
+OPERATOR_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.\@]{2,64}$")
+
+
+def validate_identifier(val: str, pattern: re.Pattern, label: str) -> str:
+    """Validates user-supplied identifier against allowed format."""
+    clean = str(val).strip()
+    if not pattern.match(clean):
+        raise ValueError(f"Invalid {label} '{clean}'. Does not match expected pattern {pattern.pattern}")
+    return clean
+
+
+def resolve_program_directory(program_arg: Optional[str], workspace_arg: Optional[str]) -> str:
+    """Resolves canonical program directory containing state/ and findings/."""
+    if workspace_arg:
+        ws = os.path.abspath(workspace_arg)
+    else:
+        root = get_workspace_root()
+        prog = program_arg or "default-program"
+        ws = os.path.join(root, prog)
+
+    os.makedirs(ws, exist_ok=True)
+    os.makedirs(os.path.join(ws, "state"), exist_ok=True)
+    return ws
+
+
+def resolve_scope_engine(program_dir: str) -> Optional[ScopeEngine]:
+    """Resolves ScopeEngine from program scope.yaml or fallback."""
+    scope_file = os.path.join(program_dir, "scope.yaml")
+    if os.path.isfile(scope_file):
+        try:
+            return ScopeEngine.from_file(scope_file)
+        except Exception:
+            pass
+
+    try:
+        return ScopeEngine({
+            "program": {"name": os.path.basename(program_dir)},
+            "targets": {
+                "domains": ["api.example.com", "example.com", "*.example.com"],
+                "urls": ["https://api.example.com/*", "https://example.com/*"],
+                "cidrs": [],
+            },
+            "out_of_scope": {
+                "domains": [],
+                "urls": [],
+                "cidrs": [],
+            },
+        })
+    except Exception:
+        return None
+
+
+# ==============================================================================
+# Command Handlers
+# ==============================================================================
+
+def cmd_status(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Displays authoritative status statistics across graph, paths, and validation plans."""
+    reporter = AttackPathReporter(state_manager=state_mgr, program_name=args.program)
+    if args.json:
+        print(json.dumps(reporter.get_summary_stats(), indent=2, sort_keys=True))
+    else:
+        print(reporter.generate_terminal_summary())
+    return 0
+
+
+def cmd_list(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Lists discovered attack paths with optional filtering."""
+    reporter = AttackPathReporter(state_manager=state_mgr, program_name=args.program)
+    graph = state_mgr.load_graph()
+
+    # Reconstruct or load candidate paths
+    paths = reporter.paths
+    if not paths and os.path.isfile(state_mgr.graph_file):
+        # Derive paths from state or run quick traversal
+        correlator = AttackPathCorrelator(state_manager=state_mgr)
+        # Attempt to inspect paths from state if persisted
+        paths = getattr(correlator, "_last_candidate_paths", [])
+
+    if args.state:
+        target_state = args.state.upper().strip()
+        paths = [p for p in paths if p.state.value == target_state]
+
+    if args.limit and args.limit > 0:
+        paths = paths[:args.limit]
+
+    if args.json:
+        out = [p.to_dict() for p in paths]
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 0
+
+    print("=" * 78)
+    print("                    ATTACK-PATH HYPOTHESES & CHAINS                      ")
+    print("=" * 78)
+    if not paths:
+        print(" No attack paths found. Run 'bb-chain analyze' to discover paths.")
+        print("=" * 78)
+        return 0
+
+    print(f" {'Path ID':<22} | {'State':<18} | {'Feasibility':<16} | {'Hops':<5}")
+    print("-" * 78)
+    for p in paths:
+        print(f" {p.path_id:<22} | {p.state.value:<18} | {p.feasibility:<16} | {len(p.edge_ids):<5}")
+    print("=" * 78)
+    print(f" Total paths: {len(paths)}. Use 'bb-chain show <path_id>' for details.")
+    return 0
+
+
+def cmd_show(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Displays detailed graph and feasibility structure for a specific attack path."""
+    try:
+        path_id = validate_identifier(args.path_id, PATH_ID_PATTERN, "path_id")
+    except ValueError as e:
+        print(f"[!] Error: {e}", file=sys.stderr)
+        return 1
+
+    graph = state_mgr.load_graph()
+    reporter = AttackPathReporter(state_manager=state_mgr, graph=graph, program_name=args.program)
+
+    # Find path in reporter or state
+    target_path = None
+    for p in reporter.paths:
+        if p.path_id == path_id:
+            target_path = p
+            break
+
+    if not target_path:
+        print(f"[!] Error: Attack path '{path_id}' not found in state.", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(target_path.to_dict(), indent=2, sort_keys=True))
+        return 0
+
+    print("=" * 78)
+    print(f" ATTACK PATH DETAILS: {target_path.path_id}")
+    print("=" * 78)
+    print(f" State:             {target_path.state.value}")
+    print(f" Feasibility:       {target_path.feasibility}")
+    print(f" Compound Impact:   {target_path.compound_impact}")
+    print(f" Fingerprint:       {target_path.fingerprint}")
+    print(f" Hop Count:         {len(target_path.edge_ids)}")
+    print("-" * 78)
+    print(" TRAVERSAL SEQUENCE:")
+    for idx, nid in enumerate(target_path.node_ids, 1):
+        node = graph.get_node(nid)
+        label = node.label if node else "Unknown"
+        ntype = node.node_type.value if node else "UNKNOWN"
+        asset = node.attributes.get("asset", "N/A") if node else "N/A"
+        scope = node.scope_status if node else "UNKNOWN"
+        print(f"  {idx}. [{ntype}] {nid} - '{label}' (Asset: {asset}, Scope: {scope})")
+
+    print("-" * 78)
+    print(" CONSTITUENT RELATIONSHIPS:")
+    for eid in target_path.edge_ids:
+        edge = graph.get_edge(eid)
+        if edge:
+            prov_str = "Theoretical"
+            if edge.provenance:
+                prov_str = f"Validated ({edge.provenance.authenticity_class})"
+            print(f"  - Edge {eid}: [{edge.edge_type.value}] {edge.source_id} -> {edge.destination_id}")
+            print(f"    State: {edge.state.value} | Provenance: {prov_str}")
+    print("=" * 78)
+    return 0
+
+
+def cmd_analyze(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Executes cross-engine correlation and bounded traversal on current findings."""
+    print(f"[*] Running attack-path correlation for program '{args.program}'...")
+
+    # Load findings from program directory
+    findings_dir = os.path.join(state_mgr.program_dir, "findings")
+    findings: List[Finding] = []
+    if os.path.isdir(findings_dir):
+        for fname in os.listdir(findings_dir):
+            if fname.endswith(".json"):
+                fpath = os.path.join(findings_dir, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and "id" in data:
+                        findings.append(Finding.from_dict(data))
+                except Exception:
+                    continue
+
+    correlator = AttackPathCorrelator(
+        state_manager=state_mgr,
+        max_depth=args.max_depth or 5,
+        max_candidate_paths=args.max_paths or 100,
+    )
+
+    result = correlator.correlate_findings(findings)
+    state_mgr.save_graph(result.graph)
+
+    print(f"[+] Correlation finished: {result.graph.node_count()} nodes, {result.graph.edge_count()} edges.")
+    print(f"[+] Candidate paths discovered: {len(result.candidate_paths)}")
+    print(f"[+] Pruned infeasible paths: {len(result.pruned_paths)}")
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_plan(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Generates a safe validation plan from an eligible candidate attack path."""
+    try:
+        path_id = validate_identifier(args.path_id, PATH_ID_PATTERN, "path_id")
+    except ValueError as e:
+        print(f"[!] Error: {e}", file=sys.stderr)
+        return 1
+
+    graph = state_mgr.load_graph()
+    correlator = AttackPathCorrelator(state_manager=state_mgr)
+    # Check if path exists in memory or reconstruct
+    res = correlator.correlate_findings([])
+    target_path = None
+    for p in res.candidate_paths:
+        if p.path_id == path_id:
+            target_path = p
+            break
+
+    if not target_path:
+        # Fallback: check if path nodes exist in graph
+        print(f"[!] Error: Candidate attack path '{path_id}' not found.", file=sys.stderr)
+        return 1
+
+    planner = SafeChainValidationPlanner(state_manager=state_mgr)
+    method = args.method or "PREREQUISITE_SATISFACTION_CHECK"
+    ttl = float(args.ttl or 3600.0)
+
+    try:
+        plan = planner.create_validation_plan(
+            path=target_path,
+            graph=graph,
+            validation_method=method,
+            ttl_seconds=ttl,
+        )
+        # Persist plan
+        existing_plans = state_mgr.load_plans()
+        existing_plans[plan.plan_id] = plan
+        state_mgr.save_plans(existing_plans)
+
+        print("=" * 78)
+        print("               SAFE VALIDATION PLAN GENERATED (PLANNED)                  ")
+        print("=" * 78)
+        print(f" Plan ID:           {plan.plan_id}")
+        print(f" Path ID:           {plan.path_id}")
+        print(f" Target Asset:      {plan.target_asset}")
+        print(f" Target Endpoint:   {plan.target_endpoint} [{plan.target_method}]")
+        print(f" Validation Method: {plan.validation_method}")
+        print(f" Risk Level:        {plan.risk_level.value} (Destructive: False)")
+        print(f" Expiration:        {plan.expires_at}")
+        print(f" Plan Hash:         {plan.plan_hash[:16]}... (Deterministic SHA-256)")
+        print("-" * 78)
+        print(" Next step: Submit and approve using:")
+        print(f"   bb-chain approve {plan.plan_id} --operator <name>")
+        print("=" * 78)
+        return 0
+    except Exception as exc:
+        print(f"[!] Validation planning failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_plans(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Lists validation plans with status and approval details."""
+    plans = state_mgr.load_plans()
+
+    if args.status:
+        target_st = args.status.upper().strip()
+        plans = {pid: p for pid, p in plans.items() if p.status.value == target_st}
+
+    if args.json:
+        out = {pid: p.to_dict() for pid, p in plans.items()}
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 0
+
+    print("=" * 78)
+    print("                     VALIDATION PLANS INVENTORY                          ")
+    print("=" * 78)
+    if not plans:
+        print(" No validation plans found. Generate a plan using 'bb-chain plan <path_id>'.")
+        print("=" * 78)
+        return 0
+
+    print(f" {'Plan ID':<20} | {'Status':<18} | {'Method':<22} | {'Target':<12}")
+    print("-" * 78)
+    for p in plans.values():
+        print(f" {p.plan_id:<20} | {p.status.value:<18} | {p.validation_method[:22]:<22} | {p.target_asset[:12]:<12}")
+    print("=" * 78)
+    return 0
+
+
+def cmd_show_plan(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Displays full sanitized validation plan details."""
+    try:
+        plan_id = validate_identifier(args.plan_id, PLAN_ID_PATTERN, "plan_id")
+    except ValueError as e:
+        print(f"[!] Error: {e}", file=sys.stderr)
+        return 1
+
+    plans = state_mgr.load_plans()
+    plan = plans.get(plan_id)
+    if not plan:
+        print(f"[!] Error: Validation plan '{plan_id}' not found.", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+        return 0
+
+    print("=" * 78)
+    print(f" VALIDATION PLAN: {plan.plan_id}")
+    print("=" * 78)
+    print(f" Status:            {plan.status.value}")
+    print(f" Path ID:           {plan.path_id}")
+    print(f" Target Asset:      {plan.target_asset}")
+    print(f" Target Endpoint:   {plan.target_endpoint} [{plan.target_method}]")
+    print(f" Tenant / Principal:{plan.tenant_id or 'None'} / {plan.principal_id or 'None'}")
+    print(f" Validation Method: {plan.validation_method}")
+    print(f" Risk Level:        {plan.risk_level.value}")
+    print(f" Required Perms:    {', '.join(plan.required_permissions)}")
+    print(f" Scope Reference:   {plan.scope_reference}")
+    print(f" Plan Version:      v{plan.version}")
+    print(f" Plan Hash:         {plan.plan_hash}")
+    print(f" Created / Expires: {plan.created_at} / {plan.expires_at}")
+    print("-" * 78)
+    if plan.approval:
+        appr = plan.approval
+        print(f" APPROVAL DETAILS:")
+        print(f"   Approval ID:     {appr.approval_id}")
+        print(f"   Approved By:     {appr.approved_by} at {appr.approved_at}")
+        print(f"   Expires At:      {appr.expires_at}")
+        print(f"   Revoked:         {appr.revoked} ({appr.revocation_reason or 'N/A'})")
+    else:
+        print(" APPROVAL: None (Pending operator review)")
+    print("=" * 78)
+    return 0
+
+
+def cmd_approve(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Binds operator approval to exact plan ID, version, and hash."""
+    try:
+        plan_id = validate_identifier(args.plan_id, PLAN_ID_PATTERN, "plan_id")
+        operator = validate_identifier(args.operator, OPERATOR_ID_PATTERN, "operator")
+    except ValueError as e:
+        print(f"[!] Error: {e}", file=sys.stderr)
+        return 1
+
+    plans = state_mgr.load_plans()
+    plan = plans.get(plan_id)
+    if not plan:
+        print(f"[!] Error: Validation plan '{plan_id}' not found.", file=sys.stderr)
+        return 1
+
+    planner = SafeChainValidationPlanner(state_manager=state_mgr)
+    # If plan is in PLANNED state, transition to PENDING_APPROVAL first
+    if plan.status == ValidationPlanStatus.PLANNED:
+        planner.submit_for_approval(plan, actor_id=operator)
+
+    try:
+        ttl = float(args.ttl or 3600.0)
+        approval = planner.approve_plan(plan, approved_by=operator, ttl_seconds=ttl)
+        plans[plan.plan_id] = plan
+        state_mgr.save_plans(plans)
+
+        print("[+] SUCCESS: Plan approval bound and recorded.")
+        print(f"    Approval ID: {approval.approval_id}")
+        print(f"    Approved By: {approval.approved_by}")
+        print(f"    Expires At:  {approval.expires_at}")
+        print(f"    Plan Status: {plan.status.value}")
+        return 0
+    except Exception as exc:
+        print(f"[!] Approval rejected: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_reject(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Rejects a validation plan with a recorded operator reason."""
+    try:
+        plan_id = validate_identifier(args.plan_id, PLAN_ID_PATTERN, "plan_id")
+        operator = validate_identifier(args.operator, OPERATOR_ID_PATTERN, "operator")
+    except ValueError as e:
+        print(f"[!] Error: {e}", file=sys.stderr)
+        return 1
+
+    reason = str(args.reason or "Rejected by operator").strip()
+
+    plans = state_mgr.load_plans()
+    plan = plans.get(plan_id)
+    if not plan:
+        print(f"[!] Error: Validation plan '{plan_id}' not found.", file=sys.stderr)
+        return 1
+
+    planner = SafeChainValidationPlanner(state_manager=state_mgr)
+    try:
+        planner.reject_plan(plan, rejected_by=operator, reason=reason)
+        plans[plan.plan_id] = plan
+        state_mgr.save_plans(plans)
+
+        print(f"[+] SUCCESS: Validation plan '{plan_id}' rejected.")
+        print(f"    Status: {plan.status.value}")
+        return 0
+    except Exception as exc:
+        print(f"[!] Rejection failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_revoke(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Revokes an existing approval, moving plan to terminal REVOKED status."""
+    try:
+        plan_id = validate_identifier(args.plan_id, PLAN_ID_PATTERN, "plan_id")
+        operator = validate_identifier(args.operator, OPERATOR_ID_PATTERN, "operator")
+    except ValueError as e:
+        print(f"[!] Error: {e}", file=sys.stderr)
+        return 1
+
+    reason = str(args.reason or "Revoked by operator").strip()
+
+    plans = state_mgr.load_plans()
+    plan = plans.get(plan_id)
+    if not plan:
+        print(f"[!] Error: Validation plan '{plan_id}' not found.", file=sys.stderr)
+        return 1
+
+    planner = SafeChainValidationPlanner(state_manager=state_mgr)
+    try:
+        planner.revoke_approval(plan, revoked_by=operator, reason=reason)
+        plans[plan.plan_id] = plan
+        state_mgr.save_plans(plans)
+
+        print(f"[+] SUCCESS: Approval for plan '{plan_id}' revoked.")
+        print(f"    Status: {plan.status.value}")
+        return 0
+    except Exception as exc:
+        print(f"[!] Revocation failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_validate(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Executes authorized validation through the Phase 22.3 dispatch boundary."""
+    try:
+        plan_id = validate_identifier(args.plan_id, PLAN_ID_PATTERN, "plan_id")
+    except ValueError as e:
+        print(f"[!] Error: {e}", file=sys.stderr)
+        return 1
+
+    plans = state_mgr.load_plans()
+    plan = plans.get(plan_id)
+    if not plan:
+        print(f"[!] Error: Validation plan '{plan_id}' not found.", file=sys.stderr)
+        return 1
+
+    scope_eng = resolve_scope_engine(state_mgr.program_dir)
+    planner = SafeChainValidationPlanner(state_manager=state_mgr, scope_engine=scope_eng)
+
+    try:
+        print(f"[*] Authorizing dispatch for plan '{plan.plan_id}'...")
+        planner.authorize_dispatch(plan, current_scope_engine=scope_eng)
+
+        print(f"[*] Executing non-destructive validation probe...")
+        exec_res = planner.execute_dispatched_plan(plan)
+
+        print(f"[*] Verifying evidence and provenance...")
+        graph = state_mgr.load_graph()
+        ok, edge_ids = planner.verify_evidence_and_promote(plan, exec_res, graph)
+
+        # Persist updated graph and plans
+        state_mgr.save_graph(graph)
+        plans[plan.plan_id] = plan
+        state_mgr.save_plans(plans)
+
+        print("=" * 78)
+        print("                   VALIDATION WORKFLOW RESULT                            ")
+        print("=" * 78)
+        print(f" Plan ID:           {plan.plan_id}")
+        print(f" Plan Status:       {plan.status.value}")
+        print(f" Execution Status:  {exec_res.status.value}")
+        print(f" Evidence Ref:      {exec_res.evidence_ref}")
+        print(f" Promoted Edges:    {', '.join(edge_ids) if edge_ids else 'None'}")
+        print(f" Outcome:           {'VALIDATED' if ok else 'UNVALIDATED / PARTIAL'}")
+        print("=" * 78)
+        return 0 if ok else 1
+    except (DispatchSecurityError, EvidenceVerificationError, InvalidStateTransitionError) as sec_err:
+        print(f"[!] Security Gate Rejection: {sec_err}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"[!] Validation execution failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_report(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> int:
+    """Generates attack-path and vulnerability chaining reports in JSON, Markdown, or Terminal."""
+    reporter = AttackPathReporter(state_manager=state_mgr, program_name=args.program)
+    fmt = (args.format or "markdown").lower().strip()
+
+    if args.output:
+        try:
+            saved_path = reporter.save_report(args.output, report_format=fmt)
+            print(f"[+] Report saved successfully to '{saved_path}' ({fmt.upper()})")
+            return 0
+        except Exception as exc:
+            print(f"[!] Failed to save report: {exc}", file=sys.stderr)
+            return 1
+    else:
+        if fmt == "json":
+            print(reporter.generate_json())
+        elif fmt in ("md", "markdown"):
+            print(reporter.generate_markdown())
+        else:
+            print(reporter.generate_terminal_summary())
+        return 0
+
+
+# ==============================================================================
+# Main CLI Entry Point
+# ==============================================================================
+
+def build_parser() -> argparse.ArgumentParser:
+    """Constructs the command-line argument parser for Phase 22."""
+    parser = argparse.ArgumentParser(
+        prog="bb-chain",
+        description="Phase 22: Cross-Engine Attack-Path Correlation & Vulnerability Chaining.",
+    )
+    parser.add_argument("--program", default="default-program", help="Bug bounty program identifier")
+    parser.add_argument("--workspace", help="Target workspace root containing state and findings")
+    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON where applicable")
+
+    subparsers = parser.add_subparsers(dest="subcommand", help="Phase 22 attack-path subcommands")
+
+    # status
+    p_status = subparsers.add_parser("status", help="Display authoritative aggregate statistics")
+
+    # list
+    p_list = subparsers.add_parser("list", help="List discovered attack paths")
+    p_list.add_argument("--state", help="Filter by path state (HYPOTHESIS, PARTIALLY_VALIDATED, FULLY_VALIDATED)")
+    p_list.add_argument("--limit", type=int, help="Maximum number of paths to display")
+
+    # show
+    p_show = subparsers.add_parser("show", help="Display details of a specific attack path")
+    p_show.add_argument("path_id", help="Canonical path ID (PATH-<hex>)")
+
+    # analyze / correlate
+    p_analyze = subparsers.add_parser("analyze", aliases=["correlate"], help="Run attack-path correlation")
+    p_analyze.add_argument("--max-depth", type=int, default=5, help="Maximum traversal depth (default: 5)")
+    p_analyze.add_argument("--max-paths", type=int, default=100, help="Maximum candidate paths (default: 100)")
+
+    # plan
+    p_plan = subparsers.add_parser("plan", help="Generate a safe validation plan from an attack path")
+    p_plan.add_argument("path_id", help="Canonical path ID (PATH-<hex>)")
+    p_plan.add_argument("--method", default="PREREQUISITE_SATISFACTION_CHECK", help="Validation method")
+    p_plan.add_argument("--ttl", type=float, default=3600.0, help="Plan lifetime in seconds")
+
+    # plans
+    p_plans = subparsers.add_parser("plans", help="List all validation plans")
+    p_plans.add_argument("--status", help="Filter by plan status (PLANNED, PENDING_APPROVAL, APPROVED, etc.)")
+
+    # show-plan
+    p_show_plan = subparsers.add_parser("show-plan", help="Show full details of a validation plan")
+    p_show_plan.add_argument("plan_id", help="Canonical plan ID (PLAN-<hex>)")
+
+    # approve
+    p_approve = subparsers.add_parser("approve", help="Approve a validation plan (Operator Required)")
+    p_approve.add_argument("plan_id", help="Canonical plan ID (PLAN-<hex>)")
+    p_approve.add_argument("--operator", required=True, help="Operator identifier binding approval")
+    p_approve.add_argument("--ttl", type=float, default=3600.0, help="Approval validity in seconds")
+
+    # reject
+    p_reject = subparsers.add_parser("reject", help="Reject a validation plan")
+    p_reject.add_argument("plan_id", help="Canonical plan ID (PLAN-<hex>)")
+    p_reject.add_argument("--operator", required=True, help="Operator identifier")
+    p_reject.add_argument("--reason", default="Rejected by operator", help="Rejection rationale")
+
+    # revoke
+    p_revoke = subparsers.add_parser("revoke", help="Revoke an approved validation plan")
+    p_revoke.add_argument("plan_id", help="Canonical plan ID (PLAN-<hex>)")
+    p_revoke.add_argument("--operator", required=True, help="Operator identifier")
+    p_revoke.add_argument("--reason", default="Revoked by operator", help="Revocation rationale")
+
+    # validate
+    p_validate = subparsers.add_parser("validate", help="Authorize and execute controlled validation")
+    p_validate.add_argument("plan_id", help="Canonical plan ID (PLAN-<hex>)")
+
+    # report
+    p_report = subparsers.add_parser("report", help="Generate comprehensive attack-path reports")
+    p_report.add_argument("--format", choices=["json", "markdown", "terminal"], default="markdown", help="Report format")
+    p_report.add_argument("--output", help="Write report to destination file path")
+
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Entry point for bb-chain CLI."""
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+
+    # Allow optional 'attack-path' intermediate token (e.g. bb attack-path list)
+    if raw_args and raw_args[0] == "attack-path":
+        raw_args = raw_args[1:]
+
+    parser = build_parser()
+    if not raw_args:
+        parser.print_help()
+        return 0
+
+    args = parser.parse_args(raw_args)
+    if not args.subcommand:
+        parser.print_help()
+        return 0
+
+    prog_dir = resolve_program_directory(args.program, args.workspace)
+    state_mgr = AttackPathStateManager(prog_dir)
+
+    dispatch_table = {
+        "status": cmd_status,
+        "list": cmd_list,
+        "show": cmd_show,
+        "analyze": cmd_analyze,
+        "correlate": cmd_analyze,
+        "plan": cmd_plan,
+        "plans": cmd_plans,
+        "show-plan": cmd_show_plan,
+        "approve": cmd_approve,
+        "reject": cmd_reject,
+        "revoke": cmd_revoke,
+        "validate": cmd_validate,
+        "report": cmd_report,
+    }
+
+    handler = dispatch_table.get(args.subcommand)
+    if not handler:
+        parser.print_help()
+        return 1
+
+    try:
+        return handler(args, state_mgr)
+    except Exception as exc:
+        print(f"[!] Error executing command '{args.subcommand}': {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

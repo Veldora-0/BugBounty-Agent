@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""
+bb-attack-path — Alias to bb-chain for Phase 22 Attack-Path CLI.
+"""
+import sys
+import os
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+CHAIN_SCRIPT = os.path.join(SCRIPT_DIR, "bb-chain")
+
+if __name__ == "__main__":
+    from framework.attack_path import __file__ as _
+    # Execute bb-chain main
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("bb_chain", CHAIN_SCRIPT)
+    if spec and spec.loader:
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sys.exit(mod.main())
+    else:
+        import subprocess
+        sys.exit(subprocess.call([sys.executable, CHAIN_SCRIPT] + sys.argv[1:]))

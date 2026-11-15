@@ -93,6 +93,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **Milestone 22.3 Acceptance Test Suite (`tests/test_phase22_validator.py`)**:
   * 25 comprehensive unit and adversarial tests covering acceptance criteria AC-22.3-01 through AC-22.3-25 with 100% pass rate.
 
+#### Milestone 22.4 — CLI, Reporting & Dual-Environment Acceptance (`scripts/bb-chain`, `framework/attack_path/reporter.py`)
+* **Unified Command-Line Interface (`scripts/bb-chain`, `scripts/bb-attack-path`)**:
+  * Implemented `bb-chain` and alias `bb-attack-path` providing complete operator command hierarchy: `status`, `list`, `show`, `analyze` (or `correlate`), `plan`, `plans`, `show-plan`, `approve`, `reject`, `revoke`, `validate`, and `report`.
+  * Strict argument validation: enforced regex validation for `path_id` (`PATH-<hex>`), `plan_id` (`PLAN-<hex>`), and `operator` identifiers with non-zero exit codes.
+  * Security enforcement: strictly prevents `--force` or `--yes` authorization bypass flags; sensitive approval commands require explicit operator identifiers.
+  * System diagnostics integration: added Attack Path Engine check (`Category 27: Attack-Path Correlation & Vulnerability Chaining`) to `framework/tools/doctor.py` and `scripts/bb-doctor`.
+* **Multi-Format Reporting Engine (`framework/attack_path/reporter.py`)**:
+  * Implemented `AttackPathReporter` and canonical data model `AttackPathReportData` rendering deterministic reports across Markdown, JSON, and Terminal formats.
+  * Anti-Inflation Invariant: constituent finding severities and compound attack-path impacts are never inflated.
+  * Evidence Traceability: clearly distinguishes `OBSERVED`, `SIMULATED`, and `INFERRED` evidence with verifiable digest provenance.
+  * Zero-Secret Guarantee: strict validation via `assert_no_raw_secrets` before output or disk writing.
+* **Milestone 22.4 Acceptance Test Suite (`tests/test_phase22_cli_reporting.py`)**:
+  * 25 comprehensive unit, adversarial, concurrency, and integration tests validating criteria AC-22.4-01 through AC-22.4-25 with 100% pass rate.
+* **Phase 22 Final Completion & Acceptance**:
+  * 102 total Phase 22 tests passing across all 8 test files with 100% pass rate.
+  * Combined Phase 21 + 22 regression suite: 275 passed, 4 skipped on Windows; 19/19 framework engines HEALTHY on both Windows and Kali Linux.
+
 ### Phase 21 — Authentication & Authorization Correlation Engine (Implemented; Accepted with Documented Limitations)
 
 #### Phase 21 Final Provenance Boundary & Live Dispatcher Verification

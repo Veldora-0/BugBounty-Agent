@@ -1,6 +1,6 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** In Progress (Milestones 22.1, 22.2, and 22.3 completed & hardened; Milestone 22.4 pending)
+**Status:** Completed & Hardened (Milestones 22.1, 22.2, 22.3, and 22.4 fully verified across Windows 11 and Kali Linux)
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
 **Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
@@ -15,7 +15,7 @@ Phase 22 is organized into four sequential top-level milestones:
    - **22.2.3**: Attack Path Correlator & Feasibility Evaluation Engine (Completed).
    - **22.2.4**: Milestone 22.2 Integration Hardening, Edge-Case Auditing & State Persistence Validation (Completed & Hardened).
 3. **Milestone 22.3**: Safe Validation Planning & Approval Gates (`framework/attack_path/validator.py`) (Completed & Hardened).
-4. **Milestone 22.4**: CLI, Reporting & Dual-Environment Acceptance (`scripts/bb-chain`, `framework/attack_path/reporter.py`, full verification) (Pending / Not Started).
+4. **Milestone 22.4**: CLI, Reporting & Dual-Environment Acceptance (`scripts/bb-chain`, `framework/attack_path/reporter.py`, full verification) (Completed & Hardened).
 
 ---
 
@@ -133,9 +133,36 @@ Milestone 22.3 establishes the controlled validation planning, human approval, a
 
 ---
 
-## Milestone 22.4 — CLI, Reporting & Dual-Environment Acceptance (Pending / Not Started)
-- **Planned deliverables**: `scripts/bb-chain`, `framework/attack_path/reporter.py`, documentation updates.
-- CLI integration, Markdown reporting of chained attacks, and full Windows/Kali dual-environment verification.
+## Milestone 22.4 — CLI, Reporting & Dual-Environment Acceptance (Completed & Hardened)
+
+Milestone 22.4 delivers the final operational CLI commands, reporting engine, and cross-environment verification:
+- **CLI Subsystem (`scripts/bb-chain`, `scripts/bb-attack-path`)**:
+  - Implemented unified command-line tool exposing full Phase 22 capabilities without bypassing safety gates.
+  - Subcommands:
+    - `status`: Displays authoritative aggregate statistics (nodes, edges, candidate paths, hypotheses, validated chains, and validation plans).
+    - `list`: Lists discovered attack paths with optional `--state` filter (`HYPOTHESIS`, `PARTIALLY_VALIDATED`, `FULLY_VALIDATED`) and `--json`.
+    - `show <path_id>`: Displays full traversal sequence, constituent nodes, and directional edges with relationship states.
+    - `analyze` / `correlate`: Runs correlation engine on findings in workspace and persists attack graph state.
+    - `plan <path_id>`: Synthesizes a safe `ChainValidationPlan` in `PLANNED` status.
+    - `plans`: Lists all validation plans with optional `--status` filter.
+    - `show-plan <plan_id>`: Displays complete sanitized plan details, approval metadata, version, and plan hash.
+    - `approve <plan_id> --operator <name>`: Binds human operator approval to exact plan parameters.
+    - `reject <plan_id> --operator <name> --reason <text>`: Rejects a plan with recorded rationale.
+    - `revoke <plan_id> --operator <name> --reason <text>`: Revokes an approved plan, permanently blocking dispatch.
+    - `validate <plan_id>`: Executes authorized validation through the Phase 22.3 dispatch boundary, updating graph edges and chain state.
+    - `report`: Generates multi-format reports (`markdown`, `json`, `terminal`).
+  - Strict input sanitization: regex validation for `path_id`, `plan_id`, and `operator` identifiers; clear non-zero exit codes.
+  - Prohibits `--force` or `--yes` authorization bypass flags.
+- **Reporting Engine (`framework/attack_path/reporter.py`)**:
+  - `AttackPathReporter` and `AttackPathReportData` render deterministic, report-ready outputs in Markdown, JSON, and Terminal formats.
+  - Invariants strictly preserved:
+    - **Anti-Inflation Policy**: Individual finding severities and compound attack-path impacts are never inflated.
+    - **Provenance Transparency**: Clearly distinguishes between `OBSERVED`, `SIMULATED`, and `INFERRED` evidence.
+    - **Zero-Secret Compliance**: Validated with `assert_no_raw_secrets` before output or write.
+- **Milestone 22.4 Acceptance Test Suite (`tests/test_phase22_cli_reporting.py`)**:
+  - 25 comprehensive unit, adversarial, concurrency, and integration tests validating criteria AC-22.4-01 through AC-22.4-25 with 100% pass rate.
+- **Phase 22 Overall Acceptance Metrics**:
+  - **102 tests passed** across all 8 Phase 22 test files with 100% pass rate on both Windows 11 and Kali Linux.
 
 ---
 

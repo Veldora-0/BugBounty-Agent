@@ -41,6 +41,10 @@ from framework.attack_path.state import (
     AttackPathStateError,
     AttackPathStateManager,
 )
+from framework.attack_path.reporter import (
+    AttackPathReportData,
+    AttackPathReporter,
+)
 from framework.attack_path.traversal import (
     BoundedTraversalEngine,
     TraversalResult,
@@ -72,6 +76,8 @@ __all__ = [
     "AttackGraphNode",
     "AttackPath",
     "AttackPathCorrelator",
+    "AttackPathReportData",
+    "AttackPathReporter",
     "AttackPathStateError",
     "AttackPathStateManager",
     "BoundedTraversalEngine",

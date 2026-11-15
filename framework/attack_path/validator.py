@@ -1193,6 +1193,21 @@ class SafeChainValidationPlanner:
                     actor, "DENY", "BLOCKED", reason
                 )
                 raise DispatchSecurityError(f"Dispatch denied: {reason}")
+        elif scope_eng and hasattr(scope_eng, "check"):
+            decision = scope_eng.check(plan.target_asset)
+            status_val = getattr(decision, "status", None)
+            is_valid = (
+                status_val == "IN_SCOPE"
+                or str(status_val) in ("ScopeStatus.IN_SCOPE", "IN_SCOPE")
+                or getattr(status_val, "value", "") == "IN_SCOPE"
+            )
+            if not is_valid:
+                reason = f"Target asset '{plan.target_asset}' is not IN_SCOPE under current scope rules"
+                self._record_audit_event(
+                    ValidationAuditEventType.DISPATCH_DENIED, plan.plan_id, plan.version, plan.plan_hash,
+                    actor, "DENY", "BLOCKED", reason
+                )
+                raise DispatchSecurityError(f"Dispatch denied: {reason}")
         elif plan.scope_reference != "IN_SCOPE":
             reason = f"Target scope reference is '{plan.scope_reference}', requires 'IN_SCOPE'"
             self._record_audit_event(
