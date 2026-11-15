@@ -35,6 +35,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * **Secondary Index Consistency & Isolation**: Fixed `AttackGraph.add_node()` to cleanly update `_by_asset` and `_by_tenant` upon node updates, and added public query methods `get_nodes_by_asset()` and `get_nodes_by_tenant()` for tenant-isolated traversal.
   * **Referential Pruning**: Added `remove_edge()` and `remove_node()` to `AttackGraph` with complete index and incident edge cleanup.
 
+#### Milestone 22.2.1 — Architecture & Acceptance Criteria: Candidate Relationship Discovery & Bounded Traversal
+* **Candidate Relationship Engine Design (`CandidateRelationshipEngine`)**:
+  * Designed capability-to-precondition matching matrix (`KNOWLEDGE_EXPOSURE` $\to$ parameters, `SESSION_HIJACK` $\to$ authenticated roles, `SSRF_PIVOT` $\to$ internal endpoints, `OPEN_REDIRECT` $\to$ OAuth workflows).
+  * Enforced initial edge state semantics: edges are inferred strictly as `THEORETICAL` or `CONTEXTUALLY_ALIGNED`; discovery can never emit `LINK_VALIDATED` edges.
+* **Bounded Traversal Engine Design (`BoundedTraversalEngine`)**:
+  * Designed deterministic, lexicographically sorted Bounded Depth-First Search with branch-level cycle elimination.
+  * Formulated deterministic `path_id` (`PATH-<sha256>`) and semantic vulnerability transition fingerprints.
+  * Established non-bypassable computational bounds: `MAX_TRAVERSAL_DEPTH = 5`, `MAX_VISITED_NODES = 2000`, `MAX_EXAMINED_EDGES = 10000`, `MAX_CANDIDATE_PATHS = 100`, `MAX_PATHS_PER_ENTRY = 10`, `MAX_WALL_CLOCK_SECONDS = 5.0`.
+* **Tenant & Scope Isolation Rules**:
+  * Enforced intra-tenant correlation by default; cross-tenant links require explicit `CROSSES_BOUNDARY` flaws. Out-of-scope assets mark candidate paths as `ChainState.BLOCKED`.
+* **Decoupled 3-Tier State Machine Mapping & Non-Inflation Rules**:
+  * Formalized decoupling: individual finding validation does not validate relationships; path discovery produces strictly `ChainState.HYPOTHESIS`. Path existence never inflates component finding severities.
+* **Formal Acceptance Criteria (AC-22.2-01 through AC-22.2-10)**:
+  * Defined 10 formal test criteria for deterministic discovery, cycle termination, tenant isolation, scope enforcement, complexity budgets, and dual-platform parity. Implementation (Milestone 22.2.2) held pending review.
+
 ### Phase 21 — Authentication & Authorization Correlation Engine (Implemented; Accepted with Documented Limitations)
 
 #### Phase 21 Final Provenance Boundary & Live Dispatcher Verification

@@ -1,29 +1,50 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** In Progress (Milestone 22.1 implemented; Milestones 22.2–22.6 pending approval)
+**Status:** In Progress (Milestones 22.1 implemented & hardened; Milestone 22.2.1 architecture & acceptance criteria completed; Milestone 22.2.2 implementation on hold pending review)
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
 **Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
 
-## Milestone 22.1 Implementation Summary (Completed)
+## Milestone 22.1 Implementation Summary (Completed & Hardened)
 
 Milestone 22.1 delivers the foundational data models, state persistence, and finding normalization engine:
 - **Attack Graph Model (`framework/attack_path/model.py`)**:
   - Strongly typed graph node classes (`ASSET`, `ENDPOINT`, `PRINCIPAL`, `FINDING`, `CAPABILITY`) and directional edge classes (`EXPOSES`, `SATISFIES_PREREQUISITE`, `AUTHENTICATES_AS`, `CROSSES_BOUNDARY`, `HOSTED_ON`, `TARGETS`, `DEPENDS_ON`).
   - Decoupled 3-tier validation state architecture: finding lifecycle (`VALIDATED`), relationship state (`THEORETICAL`, `CONTEXTUALLY_ALIGNED`, `LINK_VALIDATED`, `LINK_REFUTED`), and chain state (`HYPOTHESIS`, `PARTIALLY_VALIDATED`, `FULLY_VALIDATED`, `BLOCKED`, `REFUTED`).
-  - Strict zero-secret sanitization (`assert_no_raw_secrets`) asserting zero raw credentials, JWT tokens, or private keys across graph nodes and edges.
-  - In-memory graph with capacity limits (`MAX_NODES = 5000`, `MAX_EDGES = 25000`), fast adjacency lookups, and secondary indices by node type, asset, and tenant context.
+  - Strict zero-secret sanitization (`assert_no_raw_secrets`) asserting zero raw credentials, JWT tokens, Bearer tokens, API key prefixes, AWS keys, or private keys across graph nodes and edges.
+  - In-memory graph with capacity limits (`MAX_NODES = 5000`, `MAX_EDGES = 25000`), fast adjacency lookups, secondary indices by node type, asset, and tenant context, tenant isolation query methods, and referential pruning (`remove_edge`, `remove_node`).
 - **Attack Path State Manager (`framework/attack_path/state.py`)**:
   - Decoupled state management writing `state/attack_graph.json` with POSIX `0700` and Windows DACL permissions.
-  - Atomic temporary-file persistence with transient Windows lock retries and automatic corruption recovery backup (`.corrupt.<timestamp>`).
+  - Atomic temporary-file persistence with transient Windows lock retries, mandatory pre-write zero-secret assertions, and automatic corruption recovery backup (`.corrupt.<timestamp>`).
 - **Finding Normalizer (`framework/attack_path/normalizer.py`)**:
   - Deterministic identifier generation for assets, endpoints, findings, capabilities, and edges.
-  - Extracts evidence-backed capabilities from validated findings and `EvidenceStore`. Distinguishes observed (`OBSERVED`/`SIMULATED`) from inferred (`INFERRED`) capabilities based on disk-backed byte integrity (SHA-256).
-  - Dynamic clock handling and freshness recalculation with a 30-second skew safety window.
+  - Extracts evidence-backed capabilities from validated findings and `EvidenceStore`. Distinguishes observed (`OBSERVED`/`SIMULATED`) from inferred (`INFERRED`) capabilities based on disk-backed byte integrity (SHA-256) and verified hash matching.
+  - Dynamic clock handling and freshness recalculation with a 30-second skew safety window and future-dated timestamp rejection.
   - Sanitization of finding parameters and descriptors via `sanitize_sensitive_data`.
 - **Unit and Adversarial Acceptance Tests**:
   - `tests/test_phase22_graph_model.py`: 8 comprehensive tests covering model structures, decoupled states, secret assertions, capacity caps, and atomic persistence.
   - `tests/test_phase22_normalizer.py`: 5 tests covering normalization, observed vs. inferred capabilities, clock skew, secret stripping, and batch ingestion.
+  - `tests/test_phase22_audit_hardening.py`: 9 focused adversarial tests covering disk tampering, claimed hash mismatch, caller metadata containment, credential pattern detection, clock boundary conditions, enum deserialization rejection, and index consistency.
+
+## Milestone 22.2.1 Architecture & Acceptance Criteria Summary (Completed)
+
+Milestone 22.2.1 establishes the formal architecture and acceptance criteria for candidate relationship discovery and bounded path traversal:
+- **Candidate Relationship Engine Interface (`CandidateRelationshipEngine`)**:
+  - Semantic capability-to-precondition matching rules (`KNOWLEDGE_EXPOSURE` $\to$ parameters, `SESSION_HIJACK` $\to$ authenticated roles, `SSRF_PIVOT` $\to$ internal endpoints, `OPEN_REDIRECT` $\to$ OAuth workflows).
+  - Emits edges strictly as `THEORETICAL` or `CONTEXTUALLY_ALIGNED`. Invariant: graph discovery can never emit `LINK_VALIDATED` edges.
+- **Bounded Traversal Engine Interface (`BoundedTraversalEngine`)**:
+  - Lexicographically deterministic Bounded Depth-First Search with branch-level cycle elimination.
+  - Deterministic `path_id` (`PATH-<sha256>`) and semantic vulnerability transition fingerprints.
+  - Strict computational limits: `MAX_TRAVERSAL_DEPTH = 5`, `MAX_VISITED_NODES = 2000`, `MAX_EXAMINED_EDGES = 10000`, `MAX_CANDIDATE_PATHS = 100`, `MAX_PATHS_PER_ENTRY = 10`, `MAX_WALL_CLOCK_SECONDS = 5.0`.
+- **Multi-Tenant & Scope Isolation Rules**:
+  - Enforces intra-tenant correlation by default. Cross-tenant links require explicit `CROSSES_BOUNDARY` vulnerabilities.
+  - Out-of-scope nodes immediately mark candidate paths as `ChainState.BLOCKED`.
+- **Anti-Inflation Invariant**:
+  - Candidate paths produced by discovery are strictly `ChainState.HYPOTHESIS`. Path existence never inflates component finding severities.
+- **Resilience Specifications**:
+  - Self-healing resilience against cycles, duplicate paths, dangling edges, and malformed node attributes.
+- **Formal Acceptance Criteria (AC-22.2-01 through AC-22.2-10)**:
+  - 10 verifiable criteria defined for deterministic traversal, cycle pruning, tenant isolation, scope enforcement, complexity budgets, and dual-platform parity.
 
 ## Purpose and bounty value
 
