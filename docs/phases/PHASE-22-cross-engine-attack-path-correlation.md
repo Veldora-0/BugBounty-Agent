@@ -1,9 +1,29 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** Planned; not implemented as an integrated engine
+**Status:** In Progress (Milestone 22.1 implemented; Milestones 22.2–22.6 pending approval)
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
-**Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, and outputs from Phases 1–21.
+**Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
+
+## Milestone 22.1 Implementation Summary (Completed)
+
+Milestone 22.1 delivers the foundational data models, state persistence, and finding normalization engine:
+- **Attack Graph Model (`framework/attack_path/model.py`)**:
+  - Strongly typed graph node classes (`ASSET`, `ENDPOINT`, `PRINCIPAL`, `FINDING`, `CAPABILITY`) and directional edge classes (`EXPOSES`, `SATISFIES_PREREQUISITE`, `AUTHENTICATES_AS`, `CROSSES_BOUNDARY`, `HOSTED_ON`, `TARGETS`, `DEPENDS_ON`).
+  - Decoupled 3-tier validation state architecture: finding lifecycle (`VALIDATED`), relationship state (`THEORETICAL`, `CONTEXTUALLY_ALIGNED`, `LINK_VALIDATED`, `LINK_REFUTED`), and chain state (`HYPOTHESIS`, `PARTIALLY_VALIDATED`, `FULLY_VALIDATED`, `BLOCKED`, `REFUTED`).
+  - Strict zero-secret sanitization (`assert_no_raw_secrets`) asserting zero raw credentials, JWT tokens, or private keys across graph nodes and edges.
+  - In-memory graph with capacity limits (`MAX_NODES = 5000`, `MAX_EDGES = 25000`), fast adjacency lookups, and secondary indices by node type, asset, and tenant context.
+- **Attack Path State Manager (`framework/attack_path/state.py`)**:
+  - Decoupled state management writing `state/attack_graph.json` with POSIX `0700` and Windows DACL permissions.
+  - Atomic temporary-file persistence with transient Windows lock retries and automatic corruption recovery backup (`.corrupt.<timestamp>`).
+- **Finding Normalizer (`framework/attack_path/normalizer.py`)**:
+  - Deterministic identifier generation for assets, endpoints, findings, capabilities, and edges.
+  - Extracts evidence-backed capabilities from validated findings and `EvidenceStore`. Distinguishes observed (`OBSERVED`/`SIMULATED`) from inferred (`INFERRED`) capabilities based on disk-backed byte integrity (SHA-256).
+  - Dynamic clock handling and freshness recalculation with a 30-second skew safety window.
+  - Sanitization of finding parameters and descriptors via `sanitize_sensitive_data`.
+- **Unit and Adversarial Acceptance Tests**:
+  - `tests/test_phase22_graph_model.py`: 8 comprehensive tests covering model structures, decoupled states, secret assertions, capacity caps, and atomic persistence.
+  - `tests/test_phase22_normalizer.py`: 5 tests covering normalization, observed vs. inferred capabilities, clock skew, secret stripping, and batch ingestion.
 
 ## Purpose and bounty value
 

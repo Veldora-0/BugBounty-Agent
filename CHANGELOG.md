@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 22 — Cross-Engine Attack-Path Correlation & Vulnerability Chaining (In Progress)
+
+#### Milestone 22.1 — Attack Graph Model, State Management & Finding Normalization
+* **Attack Graph Data Model (`framework/attack_path/model.py`)**:
+  * Implemented strongly typed node enums (`NodeType`: `ASSET`, `ENDPOINT`, `PRINCIPAL`, `FINDING`, `CAPABILITY`) and directional edge enums (`EdgeType`: `EXPOSES`, `SATISFIES_PREREQUISITE`, `AUTHENTICATES_AS`, `CROSSES_BOUNDARY`, `HOSTED_ON`, `TARGETS`, `DEPENDS_ON`).
+  * Enforced decoupled 3-tier validation state architecture: finding lifecycle (`VALIDATED`), relationship state (`THEORETICAL`, `CONTEXTUALLY_ALIGNED`, `LINK_VALIDATED`, `LINK_REFUTED`), and attack path state (`HYPOTHESIS`, `PARTIALLY_VALIDATED`, `FULLY_VALIDATED`, `BLOCKED`, `REFUTED`).
+  * Implemented `assert_no_raw_secrets` asserting zero raw credentials, JWTs, or private keys across graph nodes and edges.
+  * In-memory `AttackGraph` with capacity limits (`MAX_NODES = 5000`, `MAX_EDGES = 25000`), fast adjacency lookups, and secondary indices by node type, asset, and tenant context.
+* **Attack Path State Management (`framework/attack_path/state.py`)**:
+  * Decoupled `AttackPathStateManager` persisting `state/attack_graph.json` with POSIX `0700` / Windows DACL permissions.
+  * Atomic temporary-file write pattern with Windows file-lock retry loop (5 retries) and automatic corruption recovery backup (`.corrupt.<timestamp>`).
+* **Finding Normalization & Capability Extraction (`framework/attack_path/normalizer.py`)**:
+  * Deterministic node and edge ID generation.
+  * Evidence-backed capability extraction evaluating disk-backed `EvidenceStore` HTTP captures (SHA-256 byte digest and response digest checks) to distinguish observed capabilities (`OBSERVED`/`SIMULATED`) from unverified/inferred capabilities (`INFERRED`).
+  * Dynamic clock handling and freshness recalculation with a 30-second skew safety window.
+  * Sanitization of finding parameters and descriptors via `sanitize_sensitive_data`.
+* **Milestone 22.1 Test Suite (`tests/test_phase22_graph_model.py`, `tests/test_phase22_normalizer.py`)**:
+  * 13 unit and adversarial acceptance tests verifying graph models, decoupled state transitions, capacity limits, persistence and recovery, observed vs inferred capabilities, clock skew windows, and zero-secret guarantees. 100% pass rate.
+
 ### Phase 21 — Authentication & Authorization Correlation Engine (Implemented; Accepted with Documented Limitations)
 
 #### Phase 21 Final Provenance Boundary & Live Dispatcher Verification
