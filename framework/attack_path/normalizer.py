@@ -273,8 +273,9 @@ class FindingNormalizer:
         cap_type, sub_class = mapping
         cap_id = self.generate_capability_id(finding.finding_id, cap_type, sub_class)
 
-        # Identify primary evidence reference
+        # Identify primary evidence reference and claimed digest
         evidence_ref = ""
+        claimed_sha = ""
         evidence_sha = ""
         is_observed = False
         provenance_status = "INFERRED"
@@ -282,19 +283,35 @@ class FindingNormalizer:
         if finding.evidence and isinstance(finding.evidence, list):
             first_ev = finding.evidence[0]
             if isinstance(first_ev, dict):
-                evidence_ref = first_ev.get("evidence_id") or first_ev.get("ref", "")
+                evidence_ref = str(first_ev.get("evidence_id") or first_ev.get("ref", "")).strip()
+                claimed_sha = str(first_ev.get("sha256") or first_ev.get("digest", "")).strip()
+            elif isinstance(first_ev, str):
+                evidence_ref = first_ev.strip()
 
         # Verify evidence in EvidenceStore if available
         if self.evidence_store and evidence_ref:
             ev_meta = self.evidence_store.get_evidence(evidence_ref)
             if ev_meta:
+                evidence_ref = ev_meta.get("evidence_id", evidence_ref)
                 evidence_sha = ev_meta.get("sha256", "")
                 capture_source = ev_meta.get("metadata", {}).get("capture_source", "CALLER_SUPPLIED")
 
-                # If capture exists and has non-empty response, verify whether concrete value was observed
-                if ev_meta.get("response_sha256"):
+                # If caller claimed a specific digest, enforce strict match against stored byte digest
+                digest_mismatch = (
+                    bool(claimed_sha) and (claimed_sha.lower() != evidence_sha.lower())
+                )
+
+                if digest_mismatch:
+                    # Mismatched evidence fails closed to INFERRED
+                    is_observed = False
+                    provenance_status = "INFERRED"
+                elif ev_meta.get("response_sha256"):
                     is_observed = True
-                    provenance_status = "OBSERVED" if capture_source == "CONTROLLED_TRANSPORT_DISPATCH" else "SIMULATED"
+                    provenance_status = (
+                        "OBSERVED"
+                        if capture_source == "CONTROLLED_TRANSPORT_DISPATCH"
+                        else "SIMULATED"
+                    )
             else:
                 # Evidence referenced by finding does not exist on disk
                 is_observed = False

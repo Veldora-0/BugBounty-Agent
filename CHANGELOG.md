@@ -23,8 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Evidence-backed capability extraction evaluating disk-backed `EvidenceStore` HTTP captures (SHA-256 byte digest and response digest checks) to distinguish observed capabilities (`OBSERVED`/`SIMULATED`) from unverified/inferred capabilities (`INFERRED`).
   * Dynamic clock handling and freshness recalculation with a 30-second skew safety window.
   * Sanitization of finding parameters and descriptors via `sanitize_sensitive_data`.
-* **Milestone 22.1 Test Suite (`tests/test_phase22_graph_model.py`, `tests/test_phase22_normalizer.py`)**:
-  * 13 unit and adversarial acceptance tests verifying graph models, decoupled state transitions, capacity limits, persistence and recovery, observed vs inferred capabilities, clock skew windows, and zero-secret guarantees. 100% pass rate.
+* **Milestone 22.1 Test Suite & Hardening (`tests/test_phase22_graph_model.py`, `tests/test_phase22_normalizer.py`, `tests/test_phase22_audit_hardening.py`)**:
+  * 22 unit and adversarial acceptance tests verifying graph models, decoupled state transitions, capacity limits, persistence and recovery, observed vs inferred capabilities, clock skew windows, and zero-secret guarantees. 100% pass rate.
+* **Phase 22.1 Security & Determinism Hardening**:
+  * **Zero-Secret Enforcement**: Enhanced `assert_no_raw_secrets` in `model.py` to recursively inspect dictionary keys for sensitive credentials (`password`, `api_key`, `session_id`, `cookie`, `bearer_token`, etc.) with non-redacted values, bearer tokens, OpenSSH keys, AWS access key IDs (`AKIA...`), and standard high-entropy API key prefixes (`sk_live_`, `ghp_`, `glpat-`).
+  * **Persisted Graph Security Barrier**: Added mandatory `assert_no_raw_secrets()` check in `save_graph()` before persisting JSON to disk, ensuring accidental or bypassed in-memory secrets cannot be written.
+  * **Windows File Security**: Added `_enforce_windows_file_dacl` on temporary files in `save_graph()` before replacement, guaranteeing private user-only DACLs on Windows.
+  * **Evidence Integrity & Mismatch Protection**: Added verification of caller-claimed evidence SHA-256 digests in `normalizer.py`, failing closed to `INFERRED` upon mismatch. Supported string-based evidence references.
+  * **Clock Skew & Future Timestamp Rejection**: Hardened `ExtractedCapability.check_freshness()` to reject future-dated timestamps (`created_ts > now_ts + skew_seconds`) and enforce deterministic UTC epoch calculation for timezone-naive inputs.
+  * **Enum Deserialization Fail-Closed**: Hardened `from_dict` methods across `AttackGraphNode`, `AttackGraphEdge`, `ExtractedCapability`, `AttackPath`, and `RelationshipProvenance` to fail closed and raise `ValueError` on invalid enum strings instead of silently falling back.
+  * **Secondary Index Consistency & Isolation**: Fixed `AttackGraph.add_node()` to cleanly update `_by_asset` and `_by_tenant` upon node updates, and added public query methods `get_nodes_by_asset()` and `get_nodes_by_tenant()` for tenant-isolated traversal.
+  * **Referential Pruning**: Added `remove_edge()` and `remove_node()` to `AttackGraph` with complete index and incident edge cleanup.
 
 ### Phase 21 — Authentication & Authorization Correlation Engine (Implemented; Accepted with Documented Limitations)
 

@@ -92,14 +92,45 @@ class CausalityProofType(str, Enum):
 _SECRET_PATTERNS = [
     re.compile(r"\beyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)?\b"),  # JWT
     re.compile(r"-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY-----", re.IGNORECASE),       # PEM Private Key
+    re.compile(r"-----BEGIN OPENSSH PRIVATE KEY-----", re.IGNORECASE),                # OpenSSH Private Key
+    re.compile(r"(?i)\bbearer\s+[a-zA-Z0-9_\-\.]{10,}\b"),                           # Bearer token
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),                                             # AWS Access Key ID
+    re.compile(r"(?i)\b(?:sk_live_|sk_test_|ghp_|gho_|glpat-)[a-zA-Z0-9_\-]{8,}\b"),  # API key prefixes
     re.compile(r"(?i)(?:password|passwd|pwd|client_secret|secret_key)\s*[:=]\s*['\"][^\s'\"]{6,}['\"]"),
 ]
+
+_SENSITIVE_KEY_NAMES: Set[str] = {
+    "password", "passwd", "pwd", "client_secret", "secret_key",
+    "api_key", "apikey", "access_token", "auth_token", "bearer_token",
+    "private_key", "session_id", "session_token", "cookie",
+}
+
+_SAFE_REDACTED_SUBSTRINGS: Tuple[str, ...] = (
+    "[REDACTED",
+    "[FILTERED",
+    "DESCRIPTOR",
+    "OPAQUE_",
+    "NONE",
+    "UNKNOWN",
+)
 
 
 def assert_no_raw_secrets(data: Any, path: str = "node") -> None:
     """
     Strict assertion ensuring graph nodes, edges, and descriptors never contain raw credentials,
-    unredacted JWT signatures, or private keys. Raises ValueError fail-closed if detected.
+    unredacted JWT signatures, API tokens, cookies, or private keys. Raises ValueError fail-closed if detected.
+
+    Supported detection rules:
+    - JWT tokens matching RFC 7519 format (base64url header.payload.signature)
+    - PEM and OpenSSH private key headers
+    - Bearer authorization headers and values
+    - Common high-entropy API keys (Stripe, GitHub, GitLab, AWS Access Key IDs)
+    - Key-value credentials under sensitive dictionary keys (password, api_key, session_id, cookie, etc.)
+    - Direct credential assignments in prose or parameters
+
+    Limitations:
+    - High-entropy random strings without structural context or sensitive keys are not universally blocked
+      to avoid false-positive rejections of hashes (SHA-256) or deterministic IDs.
     """
     if isinstance(data, str):
         for pat in _SECRET_PATTERNS:
@@ -111,6 +142,16 @@ def assert_no_raw_secrets(data: Any, path: str = "node") -> None:
     elif isinstance(data, dict):
         for k, v in data.items():
             assert_no_raw_secrets(k, f"{path}.key({k})")
+            # If the dictionary key itself indicates a sensitive credential,
+            # verify that the value is either empty, redacted, or an opaque descriptor.
+            k_lower = str(k).strip().lower()
+            if k_lower in _SENSITIVE_KEY_NAMES and isinstance(v, str) and v.strip():
+                v_upper = v.upper()
+                if not any(safe in v_upper for safe in _SAFE_REDACTED_SUBSTRINGS):
+                    raise ValueError(
+                        f"Security violation at '{path}.{k}': Unredacted sensitive credential stored under '{k}'. "
+                        "Raw credentials must be scrubbed before graph insertion."
+                    )
             assert_no_raw_secrets(v, f"{path}.{k}")
     elif isinstance(data, (list, tuple, set)):
         for idx, item in enumerate(data):
@@ -157,10 +198,7 @@ class RelationshipProvenance:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> RelationshipProvenance:
         proof_str = data.get("causality_proof_type", CausalityProofType.UNVERIFIED_THEORETICAL.value)
-        try:
-            proof = CausalityProofType(proof_str)
-        except ValueError:
-            proof = CausalityProofType.UNVERIFIED_THEORETICAL
+        proof = CausalityProofType(proof_str)
         return cls(
             source_finding_id=data.get("source_finding_id", ""),
             target_finding_id=data.get("target_finding_id", ""),
@@ -206,7 +244,7 @@ class ExtractedCapability:
     def check_freshness(self, current_time: Optional[float] = None, skew_seconds: float = 30.0) -> bool:
         """
         Dynamically recalculates freshness using monotonic/epoch comparison with a skew window.
-        Returns True if fresh (valid); False if expired.
+        Returns True if fresh (valid); False if expired or invalid.
         """
         if self.ttl_seconds is None:
             self.is_expired = False
@@ -214,10 +252,17 @@ class ExtractedCapability:
 
         now_ts = current_time if current_time is not None else time.time()
         try:
-            # Parse created_at ISO timestamp
+            # Parse created_at ISO timestamp, ensuring deterministic UTC timestamp
             dt = datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
             created_ts = dt.timestamp()
         except Exception:
+            self.is_expired = True
+            return False
+
+        # Fail-closed if timestamp is in the future beyond allowable clock skew
+        if created_ts > (now_ts + skew_seconds):
             self.is_expired = True
             return False
 
@@ -251,11 +296,10 @@ class ExtractedCapability:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> ExtractedCapability:
-        cap_type_str = data.get("capability_type", CapabilityType.KNOWLEDGE_EXPOSURE.value)
-        try:
-            cap_type = CapabilityType(cap_type_str)
-        except ValueError:
-            cap_type = CapabilityType.KNOWLEDGE_EXPOSURE
+        cap_type_str = data.get("capability_type")
+        if not cap_type_str:
+            raise ValueError("ExtractedCapability missing required 'capability_type'")
+        cap_type = CapabilityType(cap_type_str)
 
         return cls(
             capability_id=data["capability_id"],
@@ -308,11 +352,10 @@ class AttackGraphNode:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> AttackGraphNode:
-        nt_str = data.get("node_type", NodeType.ASSET.value)
-        try:
-            nt = NodeType(nt_str)
-        except ValueError:
-            nt = NodeType.ASSET
+        nt_str = data.get("node_type")
+        if not nt_str:
+            raise ValueError("AttackGraphNode missing required 'node_type'")
+        nt = NodeType(nt_str)
         return cls(
             node_id=data["node_id"],
             node_type=nt,
@@ -355,17 +398,13 @@ class AttackGraphEdge:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> AttackGraphEdge:
-        et_str = data.get("edge_type", EdgeType.DEPENDS_ON.value)
-        try:
-            et = EdgeType(et_str)
-        except ValueError:
-            et = EdgeType.DEPENDS_ON
+        et_str = data.get("edge_type")
+        if not et_str:
+            raise ValueError("AttackGraphEdge missing required 'edge_type'")
+        et = EdgeType(et_str)
 
         st_str = data.get("state", RelationshipState.THEORETICAL.value)
-        try:
-            st = RelationshipState(st_str)
-        except ValueError:
-            st = RelationshipState.THEORETICAL
+        st = RelationshipState(st_str)
 
         prov = None
         if data.get("provenance") and isinstance(data["provenance"], dict):
@@ -415,6 +454,22 @@ class AttackGraph:
         """Inserts or merges an entity node in the graph."""
         if node.node_id in self._nodes:
             existing = self._nodes[node.node_id]
+            # Update asset secondary index if asset changed
+            old_asset = existing.attributes.get("asset")
+            new_asset = node.attributes.get("asset")
+            if old_asset and str(old_asset).lower() in self._by_asset:
+                self._by_asset[str(old_asset).lower()].discard(node.node_id)
+            if new_asset:
+                self._by_asset.setdefault(str(new_asset).lower(), set()).add(node.node_id)
+
+            # Update tenant secondary index if tenant_id changed
+            old_tenant = existing.attributes.get("tenant_id")
+            new_tenant = node.attributes.get("tenant_id")
+            if old_tenant and str(old_tenant) in self._by_tenant:
+                self._by_tenant[str(old_tenant)].discard(node.node_id)
+            if new_tenant:
+                self._by_tenant.setdefault(str(new_tenant), set()).add(node.node_id)
+
             existing.attributes.update(node.attributes)
             assert_no_raw_secrets(existing.attributes, f"add_node({node.node_id})")
             existing.updated_at = datetime.now(timezone.utc).isoformat()
@@ -488,7 +543,59 @@ class AttackGraph:
         return list(edges)
 
     def get_nodes_by_type(self, node_type: NodeType) -> List[AttackGraphNode]:
-        return [self._nodes[nid] for nid in self._by_type.get(node_type, set())]
+        return [self._nodes[nid] for nid in self._by_type.get(node_type, set()) if nid in self._nodes]
+
+    def get_nodes_by_asset(self, asset: str) -> List[AttackGraphNode]:
+        """Returns all nodes associated with the specified asset domain/host."""
+        clean = asset.strip().lower()
+        return [self._nodes[nid] for nid in self._by_asset.get(clean, set()) if nid in self._nodes]
+
+    def get_nodes_by_tenant(self, tenant_id: str) -> List[AttackGraphNode]:
+        """Returns all nodes bound to the specified tenant context for isolated analysis."""
+        clean = str(tenant_id).strip()
+        return [self._nodes[nid] for nid in self._by_tenant.get(clean, set()) if nid in self._nodes]
+
+    def remove_edge(self, edge_id: str) -> Optional[AttackGraphEdge]:
+        """Removes a directed edge from the graph and updates incident adjacency lists."""
+        edge = self._edges.pop(edge_id, None)
+        if not edge:
+            return None
+        if edge.source_id in self._out_edges:
+            self._out_edges[edge.source_id] = [
+                e for e in self._out_edges[edge.source_id] if e.edge_id != edge_id
+            ]
+        if edge.destination_id in self._in_edges:
+            self._in_edges[edge.destination_id] = [
+                e for e in self._in_edges[edge.destination_id] if e.edge_id != edge_id
+            ]
+        return edge
+
+    def remove_node(self, node_id: str) -> Optional[AttackGraphNode]:
+        """Removes an entity node and all its incident edges, maintaining index consistency."""
+        node = self._nodes.pop(node_id, None)
+        if not node:
+            return None
+
+        # Clean type index
+        if node.node_type in self._by_type:
+            self._by_type[node.node_type].discard(node_id)
+
+        # Clean asset index
+        asset = node.attributes.get("asset")
+        if asset and str(asset).lower() in self._by_asset:
+            self._by_asset[str(asset).lower()].discard(node_id)
+
+        # Clean tenant index
+        tenant = node.attributes.get("tenant_id")
+        if tenant and str(tenant) in self._by_tenant:
+            self._by_tenant[str(tenant)].discard(node_id)
+
+        # Remove all incident outgoing and incoming edges
+        incident = list(self._out_edges.pop(node_id, [])) + list(self._in_edges.pop(node_id, []))
+        for edge in incident:
+            self.remove_edge(edge.edge_id)
+
+        return node
 
     def get_all_nodes(self) -> List[AttackGraphNode]:
         return list(self._nodes.values())
@@ -570,10 +677,7 @@ class AttackPath:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> AttackPath:
         st_str = data.get("state", ChainState.HYPOTHESIS.value)
-        try:
-            st = ChainState(st_str)
-        except ValueError:
-            st = ChainState.HYPOTHESIS
+        st = ChainState(st_str)
         return cls(
             path_id=data["path_id"],
             node_ids=list(data.get("node_ids", [])),

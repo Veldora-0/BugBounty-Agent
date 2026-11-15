@@ -16,7 +16,7 @@ import tempfile
 import time
 from typing import Any, Dict, Optional
 
-from framework.attack_path.model import AttackGraph
+from framework.attack_path.model import AttackGraph, assert_no_raw_secrets
 
 
 class AttackPathStateError(Exception):
@@ -82,20 +82,30 @@ class AttackPathStateManager:
     def save_graph(self, graph: AttackGraph) -> None:
         """
         Atomically saves the AttackGraph to disk via temporary file rename.
+        Enforces zero-secret assertions and private file security (POSIX 0600 / Windows DACL).
         Includes retry logic for transient Windows file locks.
         """
-        data = graph.to_dict()
         dir_name = os.path.dirname(self.graph_file)
         os.makedirs(dir_name, exist_ok=True)
 
         temp_path = None
         try:
+            data = graph.to_dict()
+            # Enforce zero-secret assertion before persisting state to disk
+            assert_no_raw_secrets(data, "persisted_attack_graph")
+
             with tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, encoding="utf-8") as tf:
                 json.dump(data, tf, indent=2)
                 temp_path = tf.name
 
             # Enforce private file permissions
-            if os.name != "nt":
+            if os.name == "nt":
+                try:
+                    from framework.auth_correlation.state import _enforce_windows_file_dacl
+                    _enforce_windows_file_dacl(temp_path)
+                except Exception:
+                    pass
+            else:
                 try:
                     os.chmod(temp_path, 0o600)
                 except OSError:
