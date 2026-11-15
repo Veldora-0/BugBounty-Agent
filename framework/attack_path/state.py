@@ -33,6 +33,8 @@ class AttackPathStateManager:
         self.program_dir = os.path.abspath(program_dir)
         self.state_dir = os.path.join(self.program_dir, "state")
         self.graph_file = os.path.join(self.state_dir, "attack_graph.json")
+        self.plans_file = os.path.join(self.state_dir, "validation_plans.json")
+        self.audit_file = os.path.join(self.state_dir, "validation_audit.jsonl")
         self._ensure_secure_directories()
 
     def _ensure_secure_directories(self) -> None:
@@ -128,3 +130,137 @@ class AttackPathStateManager:
                 except OSError:
                     pass
             raise AttackPathStateError(f"Failed to persist attack graph: {exc}") from exc
+
+    def save_plans(self, plans: Dict[str, Any]) -> None:
+        """
+        Atomically saves validation plans to state/validation_plans.json.
+        Enforces zero-secret assertions and private file security.
+        """
+        dir_name = os.path.dirname(self.plans_file)
+        os.makedirs(dir_name, exist_ok=True)
+
+        temp_path = None
+        try:
+            data = {
+                pid: p.to_dict() if hasattr(p, "to_dict") else p
+                for pid, p in plans.items()
+            }
+            assert_no_raw_secrets(data, "persisted_validation_plans")
+
+            with tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, encoding="utf-8") as tf:
+                json.dump(data, tf, indent=2)
+                temp_path = tf.name
+
+            if os.name == "nt":
+                try:
+                    from framework.auth_correlation.state import _enforce_windows_file_dacl
+                    _enforce_windows_file_dacl(temp_path)
+                except Exception:
+                    pass
+            else:
+                try:
+                    os.chmod(temp_path, 0o600)
+                except OSError:
+                    pass
+
+            for attempt in range(5):
+                try:
+                    os.replace(temp_path, self.plans_file)
+                    temp_path = None
+                    break
+                except PermissionError:
+                    if attempt == 4 or os.name != "nt":
+                        raise
+                    time.sleep(0.05)
+        except Exception as exc:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise AttackPathStateError(f"Failed to persist validation plans: {exc}") from exc
+
+    def load_plans(self) -> Dict[str, Any]:
+        """
+        Loads validation plans from state/validation_plans.json.
+        Returns a mapping of plan_id -> ChainValidationPlan.
+        """
+        from framework.attack_path.validator import ChainValidationPlan
+
+        if not os.path.isfile(self.plans_file):
+            return {}
+
+        try:
+            with open(self.plans_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("Validation plans JSON root must be an object")
+
+            plans: Dict[str, ChainValidationPlan] = {}
+            for pid, p_dict in data.items():
+                if isinstance(p_dict, dict):
+                    plans[pid] = ChainValidationPlan.from_dict(p_dict)
+            return plans
+        except Exception as exc:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            corrupt_backup = f"{self.plans_file}.corrupt.{ts}"
+            try:
+                shutil.copy2(self.plans_file, corrupt_backup)
+            except OSError:
+                pass
+            return {}
+
+    def append_audit_event(self, event: Any) -> None:
+        """
+        Appends an immutable audit event to state/validation_audit.jsonl.
+        Enforces zero-secret assertions and private file security.
+        """
+        event_dict = event.to_dict() if hasattr(event, "to_dict") else dict(event)
+        assert_no_raw_secrets(event_dict, "persisted_audit_event")
+
+        dir_name = os.path.dirname(self.audit_file)
+        os.makedirs(dir_name, exist_ok=True)
+
+        try:
+            line = json.dumps(event_dict, separators=(",", ":")) + "\n"
+            with open(self.audit_file, "a", encoding="utf-8") as f:
+                f.write(line)
+
+            if os.name == "nt":
+                try:
+                    from framework.auth_correlation.state import _enforce_windows_file_dacl
+                    _enforce_windows_file_dacl(self.audit_file)
+                except Exception:
+                    pass
+            else:
+                try:
+                    os.chmod(self.audit_file, 0o600)
+                except OSError:
+                    pass
+        except Exception as exc:
+            raise AttackPathStateError(f"Failed to append audit event: {exc}") from exc
+
+    def load_audit_events(self) -> List[Any]:
+        """Loads all validation audit events from state/validation_audit.jsonl."""
+        from framework.attack_path.validator import ValidationAuditEvent
+
+        if not os.path.isfile(self.audit_file):
+            return []
+
+        events = []
+        try:
+            with open(self.audit_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        if isinstance(obj, dict):
+                            events.append(ValidationAuditEvent.from_dict(obj))
+                    except Exception:
+                        continue
+            return events
+        except Exception:
+            return []
+

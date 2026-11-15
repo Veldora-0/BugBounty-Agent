@@ -65,6 +65,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Zero-secret barrier: added `"authorization"` to sensitive dictionary keys, asserting rejection before disk persistence and guaranteeing rejection messages never echo secrets.
   * 10 integration and adversarial tests covering criteria AC-22.2.4-01 through AC-22.2.4-10 with 100% pass rate.
 
+#### Milestone 22.3 — Safe Validation Planning & Approval Gates (`framework/attack_path/validator.py`)
+* **Validation Plan Data Model & Planner (`SafeChainValidationPlanner`)**:
+  * Implemented `ChainValidationPlan` generating structured, reviewable, non-destructive validation plans from correlated attack paths.
+  * Deterministic plan hashing (`compute_plan_hash`): SHA-256 over all canonical security-critical fields guaranteeing tamper detection and approval invalidation upon plan mutation.
+  * Zero-secret enforcement: strictly no passwords, tokens, API keys, cookies, or raw authorization headers stored in plans, audit logs, or error strings.
+* **15-State Validation Lifecycle & Guarded State Transitions**:
+  * Implemented guarded lifecycle state machine (`ValidationPlanStatus`): `HYPOTHESIS`, `PLANNED`, `PENDING_APPROVAL`, `APPROVED`, `REJECTED`, `EXPIRED`, `REVOKED`, `DISPATCHED`, `PARTIALLY_COMPLETED`, `COMPLETED`, `FAILED`, `EVIDENCE_PENDING`, `EVIDENCE_VERIFIED`, `RELATIONSHIP_VALIDATED`, `CHAIN_VALIDATED`.
+  * Enforced state transition table via `validate_state_transition()`; invalid or backward transitions raise `InvalidStateTransitionError`.
+* **Cryptographic Human Approval & Revocation Controls**:
+  * `PlanApproval` records unique approval ID, operator signature, approved parameters, expiration timestamp, and revocation metadata.
+  * Instant revocation mechanism (`revoke_approval`) marking plan as `REVOKED` and preventing any future dispatch.
+  * Dynamic clock skew handling and TTL expiration verification (`is_expired`).
+* **Anti-TOCTOU Dispatch Authorization Boundary (`authorize_dispatch`)**:
+  * Re-evaluates 9 independent security gates immediately before execution: plan status, approval presence, revocation status, expiration freshness, plan integrity & version match, validation method allowlist, target asset and endpoint identity match, dynamic scope verification via `ScopeEngine.is_in_scope()`, and tenant/principal consistency.
+  * Fails closed with `DispatchSecurityError` and audit logging on any gate failure.
+* **Safe Validation Method Registry (`ValidationMethodRegistry`)**:
+  * Registered standard non-destructive built-in methods (`PREREQUISITE_SATISFACTION_CHECK`, `PASSIVE_RESOURCE_METADATA_VERIFY`, `NON_DESTRUCTIVE_REDIRECT_CHECK`, `CONTROLLED_AUTH_BOUNDARY_PROBE`, `HISTORICAL_ARTIFACT_REVALIDATE`, `EVIDENCE_PROVENANCE_REVERIFY`).
+  * Enforced prohibition of destructive operations or unapproved state modifications (`MethodSecurityError`).
+* **Evidence-Driven Promotion & Multi-Edge Chain Discipline (`verify_evidence_and_promote`)**:
+  * Rule 8: Rejected partial executions (`PARTIALLY_COMPLETED`) from promoting relationships.
+  * Rules 9 & 10: Independent verification of evidence reference, digest integrity (SHA-256), and provenance. Simulated evidence is never silently upgraded to observed.
+  * Rule 11: Multi-edge attack paths transition to `FULLY_VALIDATED` if and only if EVERY constituent edge in the path is `LINK_VALIDATED`. If partial edges are validated, the path transitions to `PARTIALLY_VALIDATED` and the plan to `RELATIONSHIP_VALIDATED`.
+  * Anti-inflation invariant: finding and path severity ratings are never inflated.
+* **Audit Logging & State Persistence (`AttackPathStateManager`)**:
+  * Implemented `ValidationAuditEvent` persistence to `state/validation_audit.jsonl` and plans to `state/validation_plans.json` with DACL / POSIX 0600 permissions.
+* **Milestone 22.3 Acceptance Test Suite (`tests/test_phase22_validator.py`)**:
+  * 25 comprehensive unit and adversarial tests covering acceptance criteria AC-22.3-01 through AC-22.3-25 with 100% pass rate.
+
 ### Phase 21 — Authentication & Authorization Correlation Engine (Implemented; Accepted with Documented Limitations)
 
 #### Phase 21 Final Provenance Boundary & Live Dispatcher Verification

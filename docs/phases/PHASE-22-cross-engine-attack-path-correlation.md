@@ -1,6 +1,6 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** In Progress (Milestone 22.1 completed & hardened; Milestone 22.2 fully completed & hardened; Milestones 22.3 and 22.4 pending)
+**Status:** In Progress (Milestones 22.1, 22.2, and 22.3 completed & hardened; Milestone 22.4 pending)
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
 **Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
@@ -14,7 +14,7 @@ Phase 22 is organized into four sequential top-level milestones:
    - **22.2.2**: Core Implementation — Candidate Relationship Discovery & Bounded Traversal (Completed).
    - **22.2.3**: Attack Path Correlator & Feasibility Evaluation Engine (Completed).
    - **22.2.4**: Milestone 22.2 Integration Hardening, Edge-Case Auditing & State Persistence Validation (Completed & Hardened).
-3. **Milestone 22.3**: Safe Validation Planning & Approval Gates (`framework/attack_path/validator.py`) (Pending / Not Started).
+3. **Milestone 22.3**: Safe Validation Planning & Approval Gates (`framework/attack_path/validator.py`) (Completed & Hardened).
 4. **Milestone 22.4**: CLI, Reporting & Dual-Environment Acceptance (`scripts/bb-chain`, `framework/attack_path/reporter.py`, full verification) (Pending / Not Started).
 
 ---
@@ -90,9 +90,46 @@ Milestone 22.2 implements cross-engine path correlation, bounded traversal, and 
 
 ---
 
-## Milestone 22.3 — Safe Validation Planning & Approval Gates (Pending / Not Started)
-- **Planned deliverable**: `framework/attack_path/validator.py` (`SafeChainValidationPlanner`).
-- Generates non-destructive `ChainValidationPlan` using existing Phase 6/8/21 engines; mandatory human confirmation before active dispatch; strict scope checks.
+## Milestone 22.3 — Safe Validation Planning & Approval Gates (Completed & Hardened)
+
+Milestone 22.3 establishes the controlled validation planning, human approval, anti-TOCTOU dispatch authorization, and evidence-driven graph promotion boundary:
+- **Validation Plan Architecture (`framework/attack_path/validator.py`)**:
+  - Implemented `SafeChainValidationPlanner`, generating non-destructive `ChainValidationPlan` instances from correlated attack paths (`AttackPath`).
+  - Strict separation of concern across discovery, planning, human approval, dispatch, execution, evidence verification, and chain promotion.
+  - Deterministic cryptographic binding: `compute_plan_hash()` generates a SHA-256 digest covering all canonical parameters (plan ID, path ID, source/target findings, edges, target asset/endpoint/method, tenant, principal, objective, validation method, permissions, risk, scope reference, and version). Any field mutation invalidates approval.
+- **Explicit Validation Lifecycle & State Machine**:
+  - Guarded state transitions across 15 states: `HYPOTHESIS`, `PLANNED`, `PENDING_APPROVAL`, `APPROVED`, `REJECTED`, `EXPIRED`, `REVOKED`, `DISPATCHED`, `PARTIALLY_COMPLETED`, `COMPLETED`, `FAILED`, `EVIDENCE_PENDING`, `EVIDENCE_VERIFIED`, `RELATIONSHIP_VALIDATED`, `CHAIN_VALIDATED`.
+  - Transitions strictly enforced via `validate_state_transition()`; illegal or backward jumps raise `InvalidStateTransitionError`.
+- **Human Approval & Revocation Controls**:
+  - `PlanApproval` records unique approval ID, operator identity, approved timestamps, expiration timestamp, and revocation metadata.
+  - Revocation (`revoke_approval`) immediately sets the `revoked` flag and moves the plan to terminal `REVOKED` status.
+  - Expiration (`is_expired`) dynamically recalculates freshness against clock timestamps with skew tolerance.
+- **Anti-TOCTOU Dispatch Authorization Gate (`authorize_dispatch`)**:
+  - Evaluates 9 mandatory security gates immediately before execution:
+    1. Plan status gate (`status == APPROVED`).
+    2. Approval metadata existence gate.
+    3. Revocation gate (`revoked is False`).
+    4. Expiration gate (`not is_expired()`).
+    5. Plan integrity & version gate (`compute_plan_hash() == approval.plan_hash` and version match).
+    6. Validation method allowlist & permission match.
+    7. Target asset and endpoint identity match.
+    8. Dynamic scope recheck via `ScopeEngine.is_in_scope()` (blocks stale snapshot bypass).
+    9. Tenant and principal consistency.
+  - Fails closed with `DispatchSecurityError` and records sanitized audit log on any failure.
+- **Safe Validation Method Registry (`ValidationMethodRegistry`)**:
+  - Registered standard read-only, non-destructive validation methods: `PREREQUISITE_SATISFACTION_CHECK`, `PASSIVE_RESOURCE_METADATA_VERIFY`, `NON_DESTRUCTIVE_REDIRECT_CHECK`, `CONTROLLED_AUTH_BOUNDARY_PROBE`, `HISTORICAL_ARTIFACT_REVALIDATE`, `EVIDENCE_PROVENANCE_REVERIFY`.
+  - Prohibits registering or executing destructive or unverified state-modifying actions.
+- **Evidence Verification & Chain Promotion (`verify_evidence_and_promote`)**:
+  - Rule 8: Partial executions (`PARTIALLY_COMPLETED`) are rejected from promoting relationships.
+  - Rules 9 & 10: Dispatch success alone does not prove relationships; requires independent verification of evidence reference, digest integrity, and provenance.
+  - Provenance status preserved: `SIMULATED` or `INFERRED` evidence is never silently upgraded to `OBSERVED`.
+  - Multi-edge chain discipline (Rule 11): An attack path transitions to `FULLY_VALIDATED` if and only if EVERY constituent edge in the path is `LINK_VALIDATED`. If partial edges are validated, the path transitions to `PARTIALLY_VALIDATED` and the plan to `RELATIONSHIP_VALIDATED`.
+  - Anti-inflation invariant: finding severities and path impact ratings are never inflated.
+- **Audit Logging & State Persistence (`AttackPathStateManager`)**:
+  - Records immutable `ValidationAuditEvent` entries to `state/validation_audit.jsonl`.
+  - Atomically persists validation plans to `state/validation_plans.json` with DACL / POSIX 0600 permissions and zero-secret assertions.
+- **Milestone 22.3 Acceptance Test Suite (`tests/test_phase22_validator.py`)**:
+  - 25 comprehensive tests validating criteria AC-22.3-01 through AC-22.3-25 with 100% pass rate.
 
 ---
 
