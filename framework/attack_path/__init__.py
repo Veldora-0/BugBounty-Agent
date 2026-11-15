@@ -8,6 +8,10 @@ and bounded correlation search.
 
 from __future__ import annotations
 
+from framework.attack_path.discovery import (
+    CandidateRelationshipEngine,
+    SUPPORTED_TENANT_ISOLATION_FLAWS,
+)
 from framework.attack_path.model import (
     AttackGraph,
     AttackGraphCapacityError,
@@ -32,6 +36,10 @@ from framework.attack_path.state import (
     AttackPathStateError,
     AttackPathStateManager,
 )
+from framework.attack_path.traversal import (
+    BoundedTraversalEngine,
+    TraversalResult,
+)
 
 __all__ = [
     "AttackGraph",
@@ -41,6 +49,8 @@ __all__ = [
     "AttackPath",
     "AttackPathStateError",
     "AttackPathStateManager",
+    "BoundedTraversalEngine",
+    "CandidateRelationshipEngine",
     "CapabilityExtractionError",
     "CapabilityType",
     "CausalityProofType",
@@ -51,5 +61,7 @@ __all__ = [
     "NodeType",
     "RelationshipProvenance",
     "RelationshipState",
+    "SUPPORTED_TENANT_ISOLATION_FLAWS",
+    "TraversalResult",
     "assert_no_raw_secrets",
 ]

@@ -1,6 +1,6 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** In Progress (Milestones 22.1 implemented & hardened; Milestone 22.2.1 architecture & acceptance criteria completed; Milestone 22.2.2 implementation on hold pending review)
+**Status:** In Progress (Milestones 22.1 implemented & hardened; Milestone 22.2 candidate discovery & bounded traversal implemented; Milestone 22.3 on hold pending review)
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
 **Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
@@ -26,25 +26,39 @@ Milestone 22.1 delivers the foundational data models, state persistence, and fin
   - `tests/test_phase22_normalizer.py`: 5 tests covering normalization, observed vs. inferred capabilities, clock skew, secret stripping, and batch ingestion.
   - `tests/test_phase22_audit_hardening.py`: 9 focused adversarial tests covering disk tampering, claimed hash mismatch, caller metadata containment, credential pattern detection, clock boundary conditions, enum deserialization rejection, and index consistency.
 
-## Milestone 22.2.1 Architecture & Acceptance Criteria Summary (Completed)
+## Milestone 22.2 Implementation Summary (Completed)
 
-Milestone 22.2.1 establishes the formal architecture and acceptance criteria for candidate relationship discovery and bounded path traversal:
-- **Candidate Relationship Engine Interface (`CandidateRelationshipEngine`)**:
-  - Semantic capability-to-precondition matching rules (`KNOWLEDGE_EXPOSURE` $\to$ parameters, `SESSION_HIJACK` $\to$ authenticated roles, `SSRF_PIVOT` $\to$ internal endpoints, `OPEN_REDIRECT` $\to$ OAuth workflows).
-  - Emits edges strictly as `THEORETICAL` or `CONTEXTUALLY_ALIGNED`. Invariant: graph discovery can never emit `LINK_VALIDATED` edges.
-- **Bounded Traversal Engine Interface (`BoundedTraversalEngine`)**:
-  - Lexicographically deterministic Bounded Depth-First Search with branch-level cycle elimination.
-  - Deterministic `path_id` (`PATH-<sha256>`) and semantic vulnerability transition fingerprints.
+Milestone 22.2 delivers the Candidate Relationship Discovery engine, Bounded Traversal engine, and comprehensive acceptance test suite:
+- **Candidate Relationship Engine (`framework/attack_path/discovery.py`)**:
+  - Implemented `CandidateRelationshipEngine` with semantic capability-to-precondition matching rules:
+    - `KNOWLEDGE_EXPOSURE` $\to$ parameters / schema matching via parameter alias sets (`user_id`, `tenant_id`, `email`, `role`, etc.).
+    - `SESSION_HIJACK` / `TOKEN_ACQUISITION` $\to$ authenticated roles / endpoints.
+    - `SSRF_PIVOT` $\to$ internal endpoints and cloud metadata targets (`169.254.169.254`).
+    - `OPEN_REDIRECT` $\to$ OAuth workflows, login callbacks, and external token delivery.
+    - `ARBITRARY_FILE_READ` $\to$ configuration, keys, and source code exposure.
+    - `PRIVILEGE_ESCALATION` $\to$ administrative and privileged endpoints.
+    - `WORKFLOW_BYPASS` $\to$ multi-step business logic transitions.
+  - Strict edge-state boundary: discovered edges are initialized strictly as `RelationshipState.THEORETICAL` or `RelationshipState.CONTEXTUALLY_ALIGNED`. Graph discovery can never emit `LINK_VALIDATED` edges.
+  - Supported cross-tenant flaw enforcement: cross-tenant links require explicit tenant-isolation vulnerability types (`SUPPORTED_TENANT_ISOLATION_FLAWS`: `{"bola", "idor", "tenant_isolation", "tenant_bypass", "multi_tenant_leak", "cross_tenant_access", "tenant_desync"}`).
+- **Bounded Traversal Engine (`framework/attack_path/traversal.py`)**:
+  - Implemented `BoundedTraversalEngine` executing deterministic, shortest-path-first BFS traversal with branch-level cycle elimination.
+  - Generates deterministic `path_id` (`PATH-<sha256>`) and semantic vulnerability transition fingerprints.
   - Strict computational limits: `MAX_TRAVERSAL_DEPTH = 5`, `MAX_VISITED_NODES = 2000`, `MAX_EXAMINED_EDGES = 10000`, `MAX_CANDIDATE_PATHS = 100`, `MAX_PATHS_PER_ENTRY = 10`, `MAX_WALL_CLOCK_SECONDS = 5.0`.
-- **Multi-Tenant & Scope Isolation Rules**:
-  - Enforces intra-tenant correlation by default. Cross-tenant links require explicit `CROSSES_BOUNDARY` vulnerabilities.
-  - Out-of-scope nodes immediately mark candidate paths as `ChainState.BLOCKED`.
-- **Anti-Inflation Invariant**:
-  - Candidate paths produced by discovery are strictly `ChainState.HYPOTHESIS`. Path existence never inflates component finding severities.
-- **Resilience Specifications**:
-  - Self-healing resilience against cycles, duplicate paths, dangling edges, and malformed node attributes.
-- **Formal Acceptance Criteria (AC-22.2-01 through AC-22.2-10)**:
-  - 10 verifiable criteria defined for deterministic traversal, cycle pruning, tenant isolation, scope enforcement, complexity budgets, and dual-platform parity.
+  - Path truncation metadata: `TraversalResult` records `paths`, `traversal_truncated`, `visited_nodes_count`, `examined_edges_count`, and `truncated_reason`.
+  - Multi-tenant and scope isolation: cross-tenant traversal requires supported flaw; out-of-scope assets mark candidate paths as `ChainState.BLOCKED` or prune them.
+  - Anti-inflation invariant: generated attack paths are strictly initialized with `ChainState.HYPOTHESIS`. Path existence never inflates component finding severities.
+- **Milestone 22.2 Acceptance Test Suite (`tests/test_phase22_traversal.py`)**:
+  - 10 rigorous acceptance tests validating criteria AC-22.2-01 through AC-22.2-10:
+    - AC-22.2-01: Deterministic 2+ step candidate path discovery.
+    - AC-22.2-02: Branch-level cycle detection and elimination.
+    - AC-22.2-03: Multi-tenant boundary enforcement and cross-tenant restriction.
+    - AC-22.2-04: Out-of-scope asset handling and blocking.
+    - AC-22.2-05: Non-inflation invariant (connectivity does not equal validation; state remains HYPOTHESIS).
+    - AC-22.2-06: Deterministic execution and canonical ordering (shortest-path-first BFS).
+    - AC-22.2-07: Resilience against malformed nodes and dangling edges.
+    - AC-22.2-08: Traversal budget and complexity limits enforcement (depth, nodes, edges, wall-clock).
+    - AC-22.2-09: Compound impact and zero-secret guarantee across generated candidate paths.
+    - AC-22.2-10: Dual-platform parity and integration consistency.
 
 ## Purpose and bounty value
 

@@ -35,20 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * **Secondary Index Consistency & Isolation**: Fixed `AttackGraph.add_node()` to cleanly update `_by_asset` and `_by_tenant` upon node updates, and added public query methods `get_nodes_by_asset()` and `get_nodes_by_tenant()` for tenant-isolated traversal.
   * **Referential Pruning**: Added `remove_edge()` and `remove_node()` to `AttackGraph` with complete index and incident edge cleanup.
 
-#### Milestone 22.2.1 — Architecture & Acceptance Criteria: Candidate Relationship Discovery & Bounded Traversal
-* **Candidate Relationship Engine Design (`CandidateRelationshipEngine`)**:
-  * Designed capability-to-precondition matching matrix (`KNOWLEDGE_EXPOSURE` $\to$ parameters, `SESSION_HIJACK` $\to$ authenticated roles, `SSRF_PIVOT` $\to$ internal endpoints, `OPEN_REDIRECT` $\to$ OAuth workflows).
-  * Enforced initial edge state semantics: edges are inferred strictly as `THEORETICAL` or `CONTEXTUALLY_ALIGNED`; discovery can never emit `LINK_VALIDATED` edges.
-* **Bounded Traversal Engine Design (`BoundedTraversalEngine`)**:
-  * Designed deterministic, lexicographically sorted Bounded Depth-First Search with branch-level cycle elimination.
+#### Milestone 22.2 — Candidate Relationship Discovery & Bounded Traversal
+* **Candidate Relationship Engine (`framework/attack_path/discovery.py`)**:
+  * Implemented `CandidateRelationshipEngine` with semantic capability-to-precondition matching rules (`KNOWLEDGE_EXPOSURE`, `SESSION_HIJACK`, `TOKEN_ACQUISITION`, `SSRF_PIVOT`, `OPEN_REDIRECT`, `ARBITRARY_FILE_READ`, `PRIVILEGE_ESCALATION`, `WORKFLOW_BYPASS`).
+  * Enforced edge-state invariant: discovered relationships are initialized strictly as `THEORETICAL` or `CONTEXTUALLY_ALIGNED` (never `LINK_VALIDATED`).
+  * Enforced cross-tenant restrictions: cross-tenant traversal requires explicit tenant-isolation vulnerability types (`SUPPORTED_TENANT_ISOLATION_FLAWS`: `{"bola", "idor", "tenant_isolation", "tenant_bypass", "multi_tenant_leak", "cross_tenant_access", "tenant_desync"}`).
+* **Bounded Traversal Engine (`framework/attack_path/traversal.py`)**:
+  * Implemented `BoundedTraversalEngine` executing deterministic, shortest-path-first BFS traversal with branch-level cycle elimination.
   * Formulated deterministic `path_id` (`PATH-<sha256>`) and semantic vulnerability transition fingerprints.
   * Established non-bypassable computational bounds: `MAX_TRAVERSAL_DEPTH = 5`, `MAX_VISITED_NODES = 2000`, `MAX_EXAMINED_EDGES = 10000`, `MAX_CANDIDATE_PATHS = 100`, `MAX_PATHS_PER_ENTRY = 10`, `MAX_WALL_CLOCK_SECONDS = 5.0`.
-* **Tenant & Scope Isolation Rules**:
-  * Enforced intra-tenant correlation by default; cross-tenant links require explicit `CROSSES_BOUNDARY` flaws. Out-of-scope assets mark candidate paths as `ChainState.BLOCKED`.
-* **Decoupled 3-Tier State Machine Mapping & Non-Inflation Rules**:
-  * Formalized decoupling: individual finding validation does not validate relationships; path discovery produces strictly `ChainState.HYPOTHESIS`. Path existence never inflates component finding severities.
-* **Formal Acceptance Criteria (AC-22.2-01 through AC-22.2-10)**:
-  * Defined 10 formal test criteria for deterministic discovery, cycle termination, tenant isolation, scope enforcement, complexity budgets, and dual-platform parity. Implementation (Milestone 22.2.2) held pending review.
+  * Preserved traversal truncation metadata in `TraversalResult` (`traversal_truncated`, `visited_nodes_count`, `examined_edges_count`, `truncated_reason`).
+  * Out-of-scope assets mark candidate paths as `ChainState.BLOCKED` or prune them.
+  * Anti-inflation invariant: generated attack paths are strictly initialized with `ChainState.HYPOTHESIS`. Path existence never inflates component finding severities.
+* **Milestone 22.2 Acceptance Test Suite (`tests/test_phase22_traversal.py`)**:
+  * 10 rigorous acceptance tests validating criteria AC-22.2-01 through AC-22.2-10 with 100% pass rate.
 
 ### Phase 21 — Authentication & Authorization Correlation Engine (Implemented; Accepted with Documented Limitations)
 
