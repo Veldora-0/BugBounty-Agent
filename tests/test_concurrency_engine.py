@@ -2708,6 +2708,18 @@ class TestObservationLifecycleAndIsolation(unittest.TestCase):
         self.lab.release_measurement_lock()
         self.assertFalse(self.lab.is_measurement_locked())
 
+    def test_measurement_lock_status_tracks_reentrant_acquisitions(self):
+        """Lock status remains accurate across nested RLock acquisitions."""
+        self.assertFalse(self.lab.is_measurement_locked())
+        self.assertTrue(self.lab.acquire_measurement_lock(timeout=1.0))
+        self.assertTrue(self.lab.acquire_measurement_lock(timeout=1.0))
+        self.assertTrue(self.lab.is_measurement_locked())
+
+        self.lab.release_measurement_lock()
+        self.assertTrue(self.lab.is_measurement_locked())
+        self.lab.release_measurement_lock()
+        self.assertFalse(self.lab.is_measurement_locked())
+
     def test_cleanup_discard_failure_without_primary_exception_propagates_and_releases_lock(self):
         """
         Requirement 2.2 & 2.4: A discard failure without a primary exception propagates,

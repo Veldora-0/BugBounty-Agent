@@ -240,6 +240,8 @@ class LocalConcurrencyLab:
         self._active_observations: Dict[str, Dict[str, Any]] = {}
         self._obs_lock = threading.Lock()
         self._measurement_lock = threading.RLock()
+        self._measurement_lock_state_guard = threading.Lock()
+        self._measurement_lock_depth = 0
 
     def acquire_measurement_lock(self, timeout: float = 15.0) -> bool:
         """
@@ -247,15 +249,22 @@ class LocalConcurrencyLab:
         Serializes observation measurement windows across independent test executions
         while preserving full concurrent request execution within each individual burst.
         """
-        return self._measurement_lock.acquire(timeout=timeout)
+        acquired = self._measurement_lock.acquire(timeout=timeout)
+        if acquired:
+            with self._measurement_lock_state_guard:
+                self._measurement_lock_depth += 1
+        return acquired
 
     def release_measurement_lock(self) -> None:
         """Releases the lab observation measurement lock."""
         self._measurement_lock.release()
+        with self._measurement_lock_state_guard:
+            self._measurement_lock_depth -= 1
 
     def is_measurement_locked(self) -> bool:
         """Returns True if the measurement lock is currently held by any thread."""
-        return self._measurement_lock.locked()
+        with self._measurement_lock_state_guard:
+            return self._measurement_lock_depth > 0
 
     def _read_server_state(self) -> Dict[str, Any]:
         """Reads in-memory state directly from the active LocalConcurrencyLabServer."""
