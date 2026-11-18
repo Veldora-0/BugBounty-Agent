@@ -10,6 +10,7 @@ Verifies:
 """
 
 import pytest
+from typing import Dict
 
 from framework.auth_correlation.model import (
     CorrelatedSessionContext,

@@ -373,13 +373,15 @@ class OpenCodeDeployer:
             ):
                 errors.append("OpenCode config 'permissions' must be an array of objects; refusing partial deployment.")
             config_meta = manifest.get("config")
-            current_hash = self._sha256_bytes(original_bytes) if original_bytes is not None else None
-            if os.path.lexists(self.config_backup_file) and config_meta is None:
+            backup_exists = os.path.lexists(self.config_backup_file)
+            if config_meta is None and backup_exists:
                 errors.append("Config backup path exists without deployment ownership; refusing to replace it.")
-            if config_meta and current_hash == config_meta.get("deployed_sha256") and config_meta.get("original_exists"):
+            elif config_meta and config_meta.get("original_exists"):
                 if (os.path.islink(self.config_backup_file) or not os.path.isfile(self.config_backup_file)
                         or self._sha256_file(self.config_backup_file) != config_meta.get("original_sha256")):
                     errors.append("The saved original OpenCode config is missing or changed; refusing to deploy over it.")
+            elif config_meta and backup_exists:
+                errors.append("An unexpected config backup exists for a deployment with no original config; preserving it.")
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             errors.append(f"Global OpenCode config cannot be safely updated: {exc}")
         return errors
@@ -636,16 +638,19 @@ class OpenCodeDeployer:
                 return {"status": "error", "message": "Config backup path is not a regular file; preserving it."}
             with open(self.config_backup_file, "rb") as stream:
                 previous_backup = stream.read()
-            if previous_config_meta is None:
-                return {"status": "error", "message": "Config backup path already exists without deployment ownership; preserving it."}
+        if previous_config_meta is None and previous_backup is not None:
+            return {"status": "error", "message": "Config backup path already exists without deployment ownership; preserving it."}
+        if previous_config_meta and previous_config_meta.get("original_exists"):
+            if (previous_backup is None
+                    or self._sha256_bytes(previous_backup) != previous_config_meta.get("original_sha256")):
+                return {"status": "error", "message": "Original config backup is missing or changed; preserving current config."}
+        elif previous_config_meta and previous_backup is not None:
+            return {"status": "error", "message": "Unexpected config backup exists without an original config; preserving it."}
 
         output_meta: Dict[str, Any]
         current_hash = self._sha256_bytes(original_bytes) if original_bytes is not None else None
         if (previous_config_meta and current_hash == previous_config_meta.get("deployed_sha256")):
             output_meta = dict(previous_config_meta)
-            if output_meta.get("original_exists"):
-                if previous_backup is None or hashlib.sha256(previous_backup).hexdigest() != output_meta.get("original_sha256"):
-                    return {"status": "error", "message": "Original config backup is missing or changed; preserving current config."}
         else:
             output_meta = {
                 "original_exists": original_bytes is not None,
@@ -803,21 +808,38 @@ class OpenCodeDeployer:
                             self._atomic_write(self.target_config_file, original, config_meta.get("original_mode") or 0o600)
                             config_restored = True
                     else:
-                        os.remove(self.target_config_file)
-                        config_restored = True
+                        if os.path.lexists(self.config_backup_file):
+                            preserved.append(f"{self.config_backup_file}: unexpected backup exists; preserving config")
+                        else:
+                            os.remove(self.target_config_file)
+                            config_restored = True
                     if config_restored:
                         manifest["config"] = None
                         if os.path.lexists(self.config_backup_file):
-                            os.remove(self.config_backup_file)
+                            try:
+                                os.remove(self.config_backup_file)
+                            except OSError as exc:
+                                preserved.append(f"{self.config_backup_file}: {exc}")
                 else:
                     preserved.append(f"{self.target_config_file}: changed by the user since deployment")
             except OSError as exc:
                 preserved.append(f"{self.target_config_file}: {exc}")
         elif config_meta and not os.path.lexists(self.target_config_file):
             # The user removed the config. Do not recreate it during uninstall.
-            manifest["config"] = None
             if os.path.lexists(self.config_backup_file):
-                os.remove(self.config_backup_file)
+                if (config_meta.get("original_exists")
+                        and not os.path.islink(self.config_backup_file)
+                        and os.path.isfile(self.config_backup_file)
+                        and self._sha256_file(self.config_backup_file) == config_meta.get("original_sha256")):
+                    try:
+                        os.remove(self.config_backup_file)
+                        manifest["config"] = None
+                    except OSError as exc:
+                        preserved.append(f"{self.config_backup_file}: {exc}")
+                else:
+                    preserved.append(f"{self.config_backup_file}: changed or unexpected backup; preserving it")
+            else:
+                manifest["config"] = None
 
         try:
             has_entries = bool(manifest["entries"])

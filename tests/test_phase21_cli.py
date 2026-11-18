@@ -40,7 +40,7 @@ def test_cli_lab_execution():
     res = subprocess.run([sys.executable, CLI_PATH, "--lab", "--json"], capture_output=True, text=True)
     assert res.returncode == 0
     data = json.loads(res.stdout)
-    assert data["status"] == "COMPLETED"
+    assert data["status"] == "COMPLETED", data
     assert data["findings_count"] >= 2
     assert data["principals_evaluated"] == 2
 

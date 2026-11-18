@@ -172,7 +172,13 @@ def test_deployer_preserves_old_lowercase_agent(temp_env):
     assert os.path.isfile(canonical_file)
     with open(canonical_file, "r", encoding="utf-8") as f:
         content = f.read()
-    assert "name: Bug-Bounty" in content
+    if os.name == "nt":
+        # Windows uses a case-insensitive filesystem: the legacy name collides
+        # with Bug-Bounty.md, so preflight must preserve it and refuse deployment.
+        assert res["agent"]["status"] == "error"
+        assert content == "# Legacy lowercase agent\n"
+    else:
+        assert "name: Bug-Bounty" in content
     with open(legacy_file, "r", encoding="utf-8") as f:
         assert f.read() == "# Legacy lowercase agent\n"
 
@@ -294,3 +300,35 @@ def test_uninstall_preserves_modified_deployment_and_user_config(temp_env):
     assert os.path.isfile(custom_agent)
     assert os.path.isfile(config_path)
     assert not os.path.exists(os.path.join(temp_env["config_dir"], "skills", "authorization"))
+
+
+def test_deploy_refuses_to_replace_a_changed_config_backup(temp_env):
+    deployer = OpenCodeDeployer(
+        repo_root=REPO_ROOT,
+        config_dir=temp_env["config_dir"],
+        bin_dir=temp_env["bin_dir"],
+    )
+    os.makedirs(temp_env["config_dir"], exist_ok=True)
+    config_path = os.path.join(temp_env["config_dir"], "opencode.jsonc")
+    with open(config_path, "w", encoding="utf-8") as stream:
+        stream.write('{"user_setting": true}\n')
+    assert deployer.deploy(mode="copy")["status"] == "SUCCESS"
+
+    backup_path = deployer.config_backup_file
+    with open(backup_path, "a", encoding="utf-8") as stream:
+        stream.write("user changed backup\n")
+    with open(config_path, "rb") as stream:
+        deployed_config = stream.read()
+    agent_path = os.path.join(temp_env["config_dir"], "agents", "Bug-Bounty.md")
+    with open(agent_path, "rb") as stream:
+        deployed_agent = stream.read()
+
+    result = deployer.deploy(mode="copy")
+    assert result["status"] == "WARNING"
+    assert any("original OpenCode config" in error for error in result["preflight_errors"])
+    with open(config_path, "rb") as stream:
+        assert stream.read() == deployed_config
+    with open(agent_path, "rb") as stream:
+        assert stream.read() == deployed_agent
+    with open(backup_path, "r", encoding="utf-8") as stream:
+        assert stream.read().endswith("user changed backup\n")
