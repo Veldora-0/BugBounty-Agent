@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Phase 22 — Cross-Engine Attack-Path Correlation & Vulnerability Chaining (In Progress)
+### Phase 22 — Cross-Engine Attack-Path Correlation & Vulnerability Chaining (Implemented; Kali Verified)
 
 #### Milestone 22.1 — Attack Graph Model, State Management & Finding Normalization
 * **Attack Graph Data Model (`framework/attack_path/model.py`)**:

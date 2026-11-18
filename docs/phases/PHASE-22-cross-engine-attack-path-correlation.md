@@ -1,6 +1,6 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** Completed & Hardened (Milestones 22.1, 22.2, 22.3, and 22.4 fully verified across Windows 11 and Kali Linux)
+**Status:** Implemented; Kali Linux acceptance verified (102 Phase 22 tests passed). Windows ACL subprocess verification remains unresolved in this environment.
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
 **Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
@@ -168,9 +168,9 @@ Milestone 22.4 delivers the final operational CLI commands, reporting engine, an
 
 ## Purpose and bounty value
 
-Real bounty impact can depend on a sequence of weaknesses. For example, an exposed low-privilege resource may reveal an identifier that makes a separate authorization flaw exploitable, or a weak access boundary may expose a sensitive workflow. Phase 22 will connect evidence across engines and tell the researcher when a confirmed issue creates a credible path to a more serious outcome.
+Real bounty impact can depend on a sequence of weaknesses. For example, an exposed low-privilege resource may reveal an identifier that makes a separate authorization flaw exploitable, or a weak access boundary may expose a sensitive workflow. Phase 22 connects evidence across engines and identifies credible paths from a confirmed issue to a greater demonstrated impact.
 
-This capability is **not implemented today**. Existing `framework/findings/` and `tests/test_capability_graph.py` provide foundations, but the repository does not yet contain an integrated, evidence-backed attack-path engine. Phase 22 makes vulnerability chaining a required feature of that planned engine.
+The integrated engine is implemented in `framework/attack_path/` and exposed through `scripts/bb-chain` and `scripts/bb-attack-path`. Candidate chains remain hypotheses until their impact-relevant links are verified; the engine does not raise component finding severity based on theoretical paths.
 
 ## Required researcher workflow
 
@@ -206,10 +206,12 @@ This capability is **not implemented today**. Existing `framework/findings/` and
 - Local fixture scenarios cover a harmless chain from initial access to a constrained impact, plus negative controls proving that correlation does not invent exploitability.
 - The feature is integrated into the single `Bug-Bounty` orchestrator and existing skills without adding subagents or automatic disclosure submission.
 
-## Remaining work
+## Acceptance status and verification limits
 
-Design and implement the graph schema, provenance-bearing edge model, bounded path search, human-readable chain explanation, approval-gated validation planner, and report integration. See [Future Improvements](../FUTURE-IMPROVEMENTS.md), the [issue register](../PROJECT-AUDIT-ISSUES.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+The implementation, CLI, reporting, and safety-gate acceptance criteria above are present. On Kali Linux, `python3 -m pytest tests/test_phase22_*.py -ra` passed all 102 tests, and both CLI entry points returned help successfully. The full Kali suite also passed 1,222 tests with one Windows-only test skipped.
+
+Windows Phase 22 verification is **not accepted**: the focused run had 102 passing tests and three failures when Windows `icacls` subprocesses could not start in the sandbox (`OSError: [WinError 6] The handle is invalid`). This is an environment limitation that still needs a supported Windows run; it does not negate the Linux-primary acceptance result. Passing fixture tests verifies implementation behavior, not vulnerability discovery effectiveness against live targets. Phase 22 follow-up improvements are tracked in [Future Improvements](../FUTURE-IMPROVEMENTS.md) and the [issue register](../PROJECT-AUDIT-ISSUES.md); future phases are in [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
 
 ## Source references
 
-Foundation tests: `tests/test_capability_graph.py`. They do not yet verify the integrated chain workflow. See [the project handbook](../PROJECT-HANDBOOK.md) for the full research process.
+Relevant acceptance tests: `tests/test_phase22_*.py`. See [the project handbook](../PROJECT-HANDBOOK.md) for the full research process.
