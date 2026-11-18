@@ -202,6 +202,20 @@ def test_state_dir_security_and_workspace_confinement(tmp_path):
     assert os.path.exists(prepared)
 
 
+def test_windows_workspace_confinement_handles_path_canonicalization(tmp_path):
+    """Windows canonical paths may differ from lexical paths returned by tempfile."""
+    if os.name != "nt":
+        pytest.skip("Windows path canonicalization regression")
+
+    workspace = tmp_path / "Workspace"
+    workspace.mkdir()
+    case_variant = str(workspace).swapcase()
+
+    prepared = _verify_and_prepare_state_dir(case_variant, str(workspace))
+
+    assert os.path.normcase(prepared) == os.path.normcase(str(workspace))
+
+
 def test_atomic_persistence_save_and_descriptor_load(tmp_path):
     """Verifies save_state() atomic replacement and descriptor-based load_state() checks."""
     workspace = tmp_path / "workspace"

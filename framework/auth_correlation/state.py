@@ -249,15 +249,22 @@ def _verify_and_prepare_state_dir(state_dir: str, workspace_root: Optional[str] 
     abs_dir = os.path.abspath(state_dir)
     
     if workspace_root:
-        abs_root = os.path.realpath(os.path.abspath(workspace_root))
+        workspace_abs = os.path.abspath(workspace_root)
+        abs_root = os.path.realpath(workspace_abs)
         try:
-            common = os.path.commonpath([abs_root, abs_dir])
-            if common != abs_root:
+            workspace_norm = os.path.normcase(workspace_abs)
+            lexical_common = os.path.commonpath([workspace_norm, os.path.normcase(abs_dir)])
+            resolved_dir = os.path.realpath(abs_dir)
+            resolved_root_norm = os.path.normcase(abs_root)
+            resolved_common = os.path.commonpath([resolved_root_norm, os.path.normcase(resolved_dir)])
+            if lexical_common != workspace_norm:
+                raise SerializationSecurityError("State directory escapes workspace boundary")
+            if resolved_common != resolved_root_norm:
                 raise SerializationSecurityError("State directory escapes workspace boundary")
         except ValueError:
             raise SerializationSecurityError("State directory is on a different drive or volume")
             
-        rel_path = os.path.relpath(abs_dir, abs_root)
+        rel_path = os.path.relpath(abs_dir, workspace_abs)
         current_ancestor = abs_root
         if rel_path != ".":
             for part in rel_path.split(os.sep):
