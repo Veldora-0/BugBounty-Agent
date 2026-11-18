@@ -11,9 +11,9 @@ BugBounty-Agent is an orchestrated security research system designed to operate 
 
 ## Project handbook and phase status
 
-This project is intended to find and document vulnerabilities on **explicitly authorized bug bounty targets**. Start with the [Project Handbook](docs/PROJECT-HANDBOOK.md) for a newcomer-oriented overview and operating workflow. The [24-Phase Roadmap](docs/ROADMAP-24-PHASES.md) links to one detailed guide per phase; unresolved risks and blockers are maintained in the [Project Audit Issues](docs/PROJECT-AUDIT-ISSUES.md), candidate work is listed in [Future Improvements](docs/FUTURE-IMPROVEMENTS.md), and optional Kali-oriented tools are discussed in [Tooling Recommendations](docs/TOOLING-RECOMMENDATIONS.md).
+This project is intended to find and document vulnerabilities on **explicitly authorized bug bounty targets**. Start with the [Project Handbook](docs/PROJECT-HANDBOOK.md) for a newcomer-oriented overview and operating workflow. The [24-Phase Roadmap](docs/ROADMAP-24-PHASES.md) links to one detailed guide per phase; unresolved risks and blockers are maintained in the [Project Audit Issues](docs/PROJECT-AUDIT-ISSUES.md), candidate work is listed in [Future Improvements](docs/FUTURE-IMPROVEMENTS.md), and optional Kali-oriented tools are discussed in [Tooling Recommendations](docs/TOOLING-RECOMMENDATIONS.md). Phase 24 adds the [support matrix](docs/supported-environments.md), [threat model](docs/THREAT-MODEL.md), and [release checklist](docs/release-checklist.md).
 
-**Current status:** Phase 22 implements cross-engine attack-path correlation and vulnerability chaining (Kali verified; Windows ACL subprocess verification remains unresolved). Phase 23 implements offline coverage-aware hypothesis planning and `/Arise` public-research metadata reconciliation; see its phase guide for verification evidence and limits. Phases 1–21 retain their documented platform and operational limitations; Phase 24 remains planned. No phase status implies live-target effectiveness or authorization. See the issue register before relying on any phase as production-ready.
+**Current status:** Phases 21–23 have implementation evidence with platform and live-service limits recorded in their guides. Phase 24 is in progress: global deployment is being made ownership-aware, config changes recoverable, and release support boundaries explicit. See the [Phase 24 guide](docs/phases/PHASE-24-final-integration-production-readiness.md) and [issue register](docs/PROJECT-AUDIT-ISSUES.md). No phase status implies live-target effectiveness or authorization.
 
 Run `scripts/bb-deploy` to install the single global `Bug-Bounty` agent, its 18 skills, CLI tools, and the `/Arise` command. OpenCode discovers project slash commands from `.opencode/commands/` and global commands from `~/.config/opencode/commands/` ([command documentation](https://opencode.ai/docs/commands)).
 
@@ -100,7 +100,7 @@ BugBounty-Agent/
 │   ├── bb-init                # Workspace and program initializer
 │   ├── bb-doctor              # Diagnostics utility across 26 system categories
 │   ├── bb-install             # Automated tool installer using declared registry tiers
-│   ├── bb-update              # Repository and global skill synchronization updater
+│   ├── bb-update              # Optional external security-tool version updater
 │   ├── bb-report              # Standalone disclosure report compiler
 │   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
 │   ├── bb-scope-check         # Scope verification utility
@@ -164,9 +164,9 @@ BugBounty-Agent/
 ## Installation & Setup
 
 ### 1. Requirements
-* Linux / Kali Linux or Windows / macOS
+* **Primary environment:** Kali Linux. Runtime and test evidence is Linux-first; see [supported environments](docs/supported-environments.md) for platform-specific limits.
 * Python 3.10+
-* OpenCode
+* OpenCode for global agent/skill deployment; framework CLIs can run independently
 
 ### 2. Quickstart
 ```bash
@@ -174,16 +174,18 @@ BugBounty-Agent/
 git clone https://github.com/Veldora-0/BugBounty-Agent.git
 cd BugBounty-Agent
 
-# Install dependencies (standard editable install via pyproject.toml)
-pip install -e .
-# Or for full development and testing:
-pip install -e ".[dev]"
-# Or minimal dependencies:
-pip install pyyaml pytest
+# Install the framework's required Python runtime dependencies
+python -m pip install -e .
+# For development and testing:
+python -m pip install -e ".[dev]"
+# Optional browser automation support:
+python -m pip install -e ".[browser]"
 
 # Run the test suite
 python -m pytest -v
 ```
+
+`bb-update` inspects or updates external tools from `config/tools.yaml`; it does not pull this Git repository or synchronize the global agent. Update the checkout with Git, then run `scripts/bb-deploy` to synchronize its agent, skills, command and CLI wrappers. See the [installation guide](docs/installation.md) before changing a global OpenCode configuration.
 
 ## Supported Security Tools Catalog
 

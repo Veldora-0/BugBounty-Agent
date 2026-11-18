@@ -1,73 +1,123 @@
 # Phase 24 — Final Integration and Production Readiness
 
-**Status:** Planned
-**Main areas:** `scripts/`, `framework/tools/`, `docs/`, `tests/`, packaging and release configuration
+**Status:** In progress; deployment hardening, operational documentation, and a cross-platform CI gate are implemented. Final acceptance is still open until the new Linux/Kali and Windows results are recorded and remaining platform/service gates are resolved or explicitly accepted.
+**Main areas:** `framework/tools/`, `scripts/`, `.github/workflows/`, `docs/`, `tests/`, packaging and release configuration.
 
-## What this phase is for
+## Purpose
 
-Phases 1–23 add individual research capabilities and controls. Phase 24 is the work of making those pieces dependable to install, configure, operate, update, recover and maintain. It answers practical questions a researcher or maintainer has before using the project: which operating systems and Python versions are supported, how to confirm dependencies are ready, where sensitive workspace data lives, how an upgrade affects local state, and how to return to a known working version.
+Phases 1–23 add capabilities for an authorized researcher: scope validation, asset and endpoint inventory, hypothesis-driven testing, finding validation, evidence handling, reporting, attack-path analysis, and coverage planning. Phase 24 makes the whole repository safer to install, update, diagnose, roll back, remove, and maintain.
 
-“Production ready” does not mean that every tool detects every vulnerability. It means that supported behavior is documented, operational failures are understandable, security boundaries are reviewed, and acceptance evidence is repeatable for the supported environments.
+Production readiness here is an operational standard, not a promise that the agent finds every vulnerability. A ready release must say which environments have evidence, identify unsupported behavior, preserve the researcher's data, fail closed when configuration is unsafe, and provide repeatable test results tied to a commit. No repository test proves the agent's effectiveness against a bounty target.
 
-## What the planned work covers
+The primary environment is Kali Linux. Windows is useful for development and CLI checks but does not provide the Linux dispatcher service boundary. macOS and other Linux distributions are not assumed supported without test evidence. See [Supported Environments](../supported-environments.md).
+
+## How Phase 24 fits the research workflow
+
+1. Install the Python package into an isolated environment and check required packages with `bb-doctor`.
+2. Deploy the canonical global agent, 18 skills, `/Arise` command, and CLI wrappers. The deployer checks destination ownership before it replaces anything.
+3. Initialize a local program workspace. Scope, credentials, evidence, findings, and reports remain local and are not part of the framework repository.
+4. Run diagnostics and inspect authorization and scope before any target-facing command.
+5. Upgrade the Git checkout and redeploy. If a problem appears, return to a known commit and redeploy; do not delete program state to recover the framework.
+6. Review the release checklist and environment-specific evidence before relying on a new version.
+
+Phase 24 does not add vulnerability probes. It improves the operating envelope around the capabilities already described in Phases 1–23.
+
+## Work areas and implementation
 
 ### 1. Supported environment and installation
 
-Choose and document supported Linux distributions, Windows versions, Python versions, shells, optional browser runtimes, and any required service manager. Test a clean installation on each supported platform. The installer should clearly separate required dependencies from optional tools such as browser automation or manually managed OSINT workbenches.
+The project declares Python 3.10 or later, but that declaration is not proof that every operating-system/version combination works. Documentation now separates the declared minimum from tested combinations. Kali Linux is primary; Windows production dispatcher isolation is unsupported; macOS is unverified.
 
-The install and deploy flow must explain which files are copied or linked, how global OpenCode agent/skill files are updated, and how to inspect the result. It should detect missing dependencies and incompatible versions before a researcher begins a run.
+The installation guide identifies PyYAML and `cryptography` as required runtime packages. Playwright belongs to an optional package extra, and its browser binary is a separate runtime requirement. Go, Git, Docker, `jq`, and external security tools are optional host tools rather than required Python dependencies.
 
-### 2. Configuration and local data lifecycle
+The new GitHub Actions workflow runs the repository test suite on Ubuntu with Python 3.10 and 3.14 and on Windows with Python 3.14. These are configured verification jobs, not evidence until they have completed successfully for the commit under review. Kali Linux remains a separate required local acceptance environment because GitHub's Ubuntu runner is not Kali.
 
-Document how a program workspace is initialized, where its canonical scope file is stored, which settings are per-user versus per-program, and where credentials, state, findings, evidence, and reports are written. Provide safe backup and recovery instructions. Secret values and target evidence must stay outside Git by default.
+### 2. Safe global deployment and configuration lifecycle
 
-The project should validate configuration before network activity. Missing or malformed scope, unavailable trust services, expired approvals, or exhausted budgets must produce a useful error and stop the operation.
+The global deployer writes the single `Bug-Bounty` agent, skills, `/Arise` command, and CLI wrappers into the OpenCode config and user bin directories. Earlier behavior removed any same-named skill or executable without checking ownership. The hardened deployer now:
 
-### 3. Update, rollback and removal
+- Creates a private deployment manifest in the OpenCode config directory. It records each installed destination, source, deployment mode, asset kind, and SHA-256 content fingerprint.
+- Performs a preflight before the normal full deployment. Unmanaged collisions, modified copies, malformed manifest data, invalid JSONC, and invalid permission-rule shapes stop the run before it replaces managed files.
+- Stages each asset beside its destination and atomically replaces only an unchanged asset recorded in the manifest. Symlink mode remains the default; copy mode is tracked by content hash.
+- Does not remove the lowercase `bug-bounty.md` file. It may be user-owned, so duplicate detection reports it while deployment leaves it untouched.
+- Parses JSONC comments and trailing commas without treating comment markers inside strings as comments. It retains user config keys and permission rules instead of deleting `agent` or `agents` entries.
+- Saves the exact predeployment `opencode.jsonc` bytes in a private backup before its first edit. The deployer writes the configured file atomically and stops rather than replacing an invalid config.
+- On uninstall, removes only unchanged assets attributable to the manifest. It restores the original config only while the deployed config is unchanged; edited, unmanaged, or ambiguous files are preserved and listed in the result.
+- Includes CLI wrapper failures in the overall deployment result. Uninstall reports an error or partial removal rather than claiming success when files were preserved.
 
-Define an upgrade path that preserves local program state and explains schema compatibility. Provide a tested rollback to a previous release and a clean uninstall that removes only project-owned installed files. Verify that rollback and uninstall do not delete researcher evidence or user-created configuration.
+The ownership manifest is operational state, not a security boundary against a local administrator who deliberately edits it. If a deployment predates the manifest, old copies are ambiguous and are preserved until a person reviews them. The deployer does not remove the repository, Python environment, external tools, program workspaces, evidence, or credentials.
 
-### 4. Diagnostics and supported operation
+### 3. Program workspace and data lifecycle
 
-Make `bb-doctor` report required and optional capabilities accurately. A configured API key should mean only that a value exists unless an actual provider connectivity check was explicitly requested; it must not imply that an engine integrates or invokes that provider. Diagnostics should identify the missing component, the affected feature, and the next safe repair step without printing secrets.
+Each program's scope, state, evidence, and reports live outside the repository under the configured workspace root. A normal Git update or global redeploy does not migrate or delete those directories. The [installation guide](../installation.md) explains the distinction and the no-data-loss behavior of global uninstall.
 
-Document normal commands, expected output, cancellation, logs, permission errors, service health, key rotation, and recovery from interrupted work. Optional tools should be presented as integrated only when an engine really invokes them.
+This phase does not yet provide a general encrypted workspace backup utility or automatic schema migration system. Researchers must back up local workspaces according to their own storage policy. Any future migration must be versioned, validated before writing, recoverable from interruption, and tested on copies of representative state.
 
-### 5. Security and release evidence
+Scope validation remains the prerequisite for target-facing operations. A missing or malformed scope must continue to fail closed; a Phase 24 release review checks this behavior but does not replace the scope engine's phase-specific tests.
 
-Maintain a threat model covering scope errors, unsafe redirects and DNS, untrusted tool output, credentials, evidence integrity, local permissions, dependency supply chain, and accidental disclosure. Review dependencies and externally downloaded installers. Each release should include version-consistent metadata, a changelog, supported-platform test results, security review notes, and a list of known limitations.
+### 4. Update and rollback procedure
 
-## How this fits the research workflow
+`bb-update` updates external tools registered in `config/tools.yaml`; it does not update the Git repository. A framework update uses Git, followed by `bb-deploy`. This prevents the word “update” from hiding whether the researcher is changing framework code or a separately installed scanner.
 
-Phase 24 does not add a new vulnerability test. It makes the existing workflow more predictable:
+The documented rollback uses a known-good commit in a detached checkout and then reruns `bb-deploy`; it does not require creating a branch. This changes framework files only. It does not roll back program workspace data, tool versions, operating-system packages, or target state. A clean working tree and reviewed commit are required before starting.
 
-1. Install and check the supported runtime.
-2. Create a local program workspace and confirm its scope file.
-3. Run offline diagnostics before any target-facing operation.
-4. Use bounded, scope-checked research capabilities and preserve local, redacted evidence.
-5. Upgrade or recover without losing program state, and review release evidence before relying on new behavior.
+Automated release installation, database migrations, and a one-command rollback are not implemented. Until those exist, the tested behavior is limited to code checkout, deployment synchronization, config backup/restore, and preservation checks.
+
+### 5. Diagnostics and normal operation
+
+`bb-doctor` now distinguishes required Python runtime packages from optional host tools. Its optional-tool section reports availability only; it does not claim that an engine invokes an installed executable. Browser readiness and OpenCode deployment remain separate diagnostic categories. Provider configuration means that a value is present, not that the service accepted it or is wired into a research engine.
+
+Before running a target-facing workflow, use `bb-doctor`, inspect the active program scope and exclusions, verify the relevant engine's capability, and review its budget. On operational errors, preserve the output without sharing secrets, cookies, target-private data, or raw evidence.
+
+### 6. Security review and release evidence
+
+The versioned [Threat Model](../THREAT-MODEL.md) identifies protected data, trust boundaries, likely failure modes, expected controls, and gaps that remain. The [Release Checklist](../release-checklist.md) defines a stop gate for versioning, dependency review, Linux/Kali and Windows test evidence, deployment lifecycle tests, dispatcher verification, and release notes.
+
+The workflow grants only `contents: read` and pins its GitHub-maintained actions to full commit identifiers. This reduces mutable action-reference risk; it does not replace dependency review or a complete software supply-chain audit. No dependency vulnerability scanner or signed release artifact is established by this phase yet.
 
 ## Safety requirements
 
-- Installation and upgrade must not silently broaden target scope or enable unbounded scanning.
-- Diagnostics must not expose credentials, raw cookies, private target data, or evidence content.
-- Backup, rollback, and uninstall must protect user-owned workspaces and evidence.
-- A tool's presence in the registry must not be represented as runtime integration unless code actually invokes it.
-- Release checks must distinguish unit fixtures from live service or target verification.
+- Never broaden target scope, issue an unbounded scan, or infer authorization from a finding or public report.
+- Diagnostics and release logs must not print credentials, cookies, private evidence, or sensitive target data.
+- Install, update, rollback, and uninstall must preserve unmanaged files and user modifications.
+- A configured API key or installed binary must not be represented as a live integrated capability without an invocation path and tests.
+- A hypothetical attack chain must remain a hypothesis until each link has safe, in-scope supporting evidence.
+- No automated report submission, destructive testing, denial of service, or credential attack is introduced by this phase.
 
-## Acceptance criteria
+## Acceptance status
 
-- Supported operating systems and runtime versions are explicit and tested from a clean checkout.
-- Install, deploy, upgrade, rollback, and uninstall are exercised on each supported platform, including checks that user data is preserved.
-- Scope setup and configuration validation fail closed with clear errors.
-- Diagnostics accurately distinguish installed tools, available providers, and capabilities actually wired into engines.
-- A versioned threat model, dependency review, release checklist, and commit-linked acceptance record exist.
-- Full test and static-check evidence reports commands, environment, commit, pass/skip/fail counts, and untested live boundaries.
+| Acceptance area | Required evidence | Current state |
+|---|---|---|
+| Environment support | Clean install and full test evidence for every claimed environment | Support boundary documented. Kali rerun and newly configured CI results must be attached to the final Phase 24 commit; macOS remains unsupported/unverified. |
+| Deployment lifecycle | Install, idempotent update, collision refusal, modified-file preservation, config restore, uninstall | Implementation and regression tests added. Kali test execution is pending for this checkpoint. A release-by-release copy-mode upgrade/rollback run is still required. |
+| Workspace safety | Program state, evidence, credentials and reports survive code update/removal | Repository/workspace separation documented. No destructive workspace operation is included in deployment. A separate workspace backup/migration utility is future work. |
+| Diagnostics | Required packages separated from optional tools and real integrations | Doctor implementation and regression test added; current Kali verification pending. |
+| Threat and release review | Versioned threat model, release gate, commit-linked evidence | Threat model, checklist and CI workflow added. Dependency scanning, signed artifacts and successful CI results remain open. |
+| Scope and live boundaries | Scope tests and documented separation of fixture/service evidence from live targets | Existing phase-specific tests and limits remain authoritative. No bounty target was contacted for Phase 24. |
 
-## Current status and limits
+## Verification record
 
-This phase is planned. The repository already has installers, deployment scripts, `bb-doctor`, platform-specific permissions, and tests, but those pieces do not yet form a complete supported-platform upgrade/recovery/release process. Known cross-platform and external-tool integration issues are listed in the [project audit register](../PROJECT-AUDIT-ISSUES.md). Proposed follow-on work is in [Future Improvements](../FUTURE-IMPROVEMENTS.md).
+Verification is not complete until this section is updated with the final code commit and the executed results. Record each command, environment, duration, counts, skips, and any remaining limitation. Do not copy historical counts as current evidence.
+
+| Environment | Commit | Command | Result |
+|---|---|---|---|
+| Kali Linux | Pending | `python3 -m pytest tests/ -ra` | Pending for Phase 24 implementation |
+| GitHub Ubuntu, Python 3.10 | Pending | Workflow `Tests` | Configured; run result not yet recorded |
+| GitHub Ubuntu, Python 3.14 | Pending | Workflow `Tests` | Configured; run result not yet recorded |
+| GitHub Windows, Python 3.14 | Pending | Workflow `Tests` | Configured; run result not yet recorded |
+
+No live bounty target was contacted. Unit and local integration tests demonstrate code behavior on fixtures only; they do not establish detection rate, bounty eligibility, or authorization.
+
+## Remaining work before Phase 24 acceptance
+
+1. Run the focused deployment/doctor regression suite and then the full test suite on Kali from the repository root.
+2. Push the workflow and code on `main`, wait for all Linux and Windows jobs, and record their exact results and commit.
+3. Exercise deploy, repeated update, and uninstall against an isolated real OpenCode config directory while preserving a copy of the user's existing config.
+4. Verify rollback from a known commit in copy and symlink modes without touching program workspaces.
+5. Decide whether Windows service isolation and macOS support are out of scope or require implementation. Keep them explicitly unsupported until evidence exists.
+6. Review dependency provenance and decide whether a lockfile, automated dependency advisory scan, and signed release artifacts are required for the first production-tagged release.
+7. Resolve or explicitly accept the Phase 21, Phase 22, and Windows acceptance limits listed in the [audit register](../PROJECT-AUDIT-ISSUES.md).
 
 ## Starting points
 
-Review [installation](../installation.md), [runtime](../runtime.md), [security policy](../security.md), [tool recommendations](../TOOLING-RECOMMENDATIONS.md), `tests/test_deploy.py`, `tests/test_installer.py`, and `tests/test_e2e_local_workflow.py`. These are inputs to the phase, not evidence that every Phase 24 acceptance criterion is complete.
+Read the [installation guide](../installation.md), [supported environments](../supported-environments.md), [runtime guide](../runtime.md), [security policy](../security.md), [threat model](../THREAT-MODEL.md), [release checklist](../release-checklist.md), `framework/tools/deployer.py`, `framework/tools/doctor.py`, `tests/test_deploy.py`, and `tests/test_doctor.py`. The docs explain the intended operation; the test and acceptance records establish what has actually passed.

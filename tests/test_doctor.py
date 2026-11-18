@@ -36,6 +36,14 @@ def test_doctor_scope_engine_check():
     assert scope_diag["status"] == "HEALTHY"
 
 
+def test_doctor_separates_required_packages_from_optional_host_tools():
+    dependencies = SystemDoctor().check_dependencies()
+    assert set(dependencies["required_python_packages"]) == {"PyYAML", "cryptography"}
+    assert all(item["required"] is True for item in dependencies["required_python_packages"].values())
+    assert dependencies["optional_host_tools"]["go"]["required"] is False
+    assert isinstance(dependencies["core_ready"], bool)
+
+
 def test_doctor_opencode_integration_check():
     doctor = SystemDoctor()
     opencode_diag = doctor.check_opencode_integration()

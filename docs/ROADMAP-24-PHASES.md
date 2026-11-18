@@ -2,7 +2,7 @@
 
 This is the canonical status index. Detailed plans, implementation paths, safety boundaries and completion criteria live in [the per-phase guides](phases/) and [project handbook](PROJECT-HANDBOOK.md). Status describes the code and documentation currently present; historic test success does not establish live-target effectiveness.
 
-**Current work:** Phase 23 — Autonomous Research Planning & Coverage Intelligence (implemented; Linux verification status is recorded in its phase guide). Phase 22 is implemented and Kali-verified with Windows ACL subprocess verification unresolved. Phase 21 has documented platform limitations; Phase 24 remains planned. See [issue register](PROJECT-AUDIT-ISSUES.md).
+**Current work:** Phase 24 — Final Integration & Production Readiness is in progress. Deployment ownership checks, config recovery, accurate dependency diagnostics, environment guidance, release checklist, threat model, and a Linux/Windows CI matrix are being implemented and verified. Phase 22 retains unresolved Windows ACL subprocess verification, and Phase 21 retains service acceptance limits. See the [Phase 24 guide](phases/PHASE-24-final-integration-production-readiness.md) and [issue register](PROJECT-AUDIT-ISSUES.md).
 
 | Phase | Name | Current status |
 |---:|---|---|
@@ -29,7 +29,7 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 21 | Authentication & Authorization Correlation | Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; live Linux systemd mutation unverified) |
 | 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Implemented; all four milestones verified on Kali Linux (102 tests pass); Windows ACL subprocess verification unresolved |
 | 23 | Autonomous Research Planning & Coverage Intelligence | Implemented; Linux acceptance verified; public-source discovery requires an available read-only research capability; Windows verification pending |
-| 24 | Final Integration & Production Readiness | Planned |
+| 24 | Final Integration & Production Readiness | In progress; deployment hardening and release documentation implemented, current cross-platform test evidence and rollback acceptance pending |
 
 ## Roadmap-wide completion requirements
 

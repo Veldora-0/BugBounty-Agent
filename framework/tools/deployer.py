@@ -8,12 +8,13 @@ and the /Arise command from the BugBounty-Agent repository into global OpenCode
 
 from __future__ import annotations
 
-import glob
+import hashlib
 import json
 import os
+import re
 import shutil
 import stat
-import sys
+import tempfile
 from typing import Any, Dict, List, Optional
 
 
@@ -56,31 +57,332 @@ class OpenCodeDeployer:
         self.target_skills = os.path.join(self.config_dir, "skills")
         self.target_commands = os.path.join(self.config_dir, "commands")
         self.target_config_file = os.path.join(self.config_dir, "opencode.jsonc")
+        self.manifest_file = os.path.join(self.config_dir, ".bugbounty-agent-deployment.json")
+        self.config_backup_file = os.path.join(self.config_dir, ".bugbounty-agent-opencode.jsonc.backup")
 
-    def _link_or_copy(self, src: str, dst: str, prefer_symlink: bool = True) -> str:
-        """Creates a symlink or falls back to copying if symlinks fail."""
-        # Clean existing dst
-        if os.path.islink(dst) or os.path.isfile(dst):
-            os.remove(dst)
-        elif os.path.isdir(dst):
-            shutil.rmtree(dst)
+    @staticmethod
+    def _strip_jsonc(text: str) -> str:
+        """Remove JSONC comments and trailing commas without changing string contents."""
+        output: List[str] = []
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if char == '"':
+                start = index
+                index += 1
+                while index < len(text):
+                    if text[index] == "\\":
+                        index += 2
+                        continue
+                    if text[index] == '"':
+                        index += 1
+                        break
+                    index += 1
+                output.append(text[start:index])
+                continue
+            if char == "/" and index + 1 < len(text) and text[index + 1] == "/":
+                index += 2
+                while index < len(text) and text[index] not in "\r\n":
+                    index += 1
+                continue
+            if char == "/" and index + 1 < len(text) and text[index + 1] == "*":
+                end = text.find("*/", index + 2)
+                if end < 0:
+                    raise ValueError("Unterminated JSONC block comment")
+                output.extend("\n" for c in text[index:end + 2] if c in "\r\n")
+                index = end + 2
+                continue
+            if char == ",":
+                lookahead = index + 1
+                while lookahead < len(text) and text[lookahead].isspace():
+                    lookahead += 1
+                if lookahead < len(text) and text[lookahead] in "}]":
+                    index += 1
+                    continue
+            output.append(char)
+            index += 1
+        uncommented = "".join(output)
+        # Comments are removed before trailing commas, so a comment may occur between
+        # a comma and its closing bracket. This second pass still respects strings.
+        normalized: List[str] = []
+        index = 0
+        while index < len(uncommented):
+            if uncommented[index] == '"':
+                start = index
+                index += 1
+                while index < len(uncommented):
+                    if uncommented[index] == "\\":
+                        index += 2
+                        continue
+                    if uncommented[index] == '"':
+                        index += 1
+                        break
+                    index += 1
+                normalized.append(uncommented[start:index])
+                continue
+            if uncommented[index] == ",":
+                lookahead = index + 1
+                while lookahead < len(uncommented) and uncommented[lookahead].isspace():
+                    lookahead += 1
+                if lookahead < len(uncommented) and uncommented[lookahead] in "}]":
+                    index += 1
+                    continue
+            normalized.append(uncommented[index])
+            index += 1
+        return "".join(normalized)
+
+    @staticmethod
+    def _digest_path(path: str) -> str:
+        """Return a stable SHA-256 digest for a regular file or copied directory tree."""
+        digest = hashlib.sha256()
+        if os.path.islink(path):
+            digest.update(b"L\0" + os.readlink(path).encode("utf-8", "surrogateescape"))
+            return digest.hexdigest()
+        if os.path.isfile(path):
+            digest.update(b"F\0")
+            with open(path, "rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            return digest.hexdigest()
+        if not os.path.isdir(path):
+            raise OSError(f"Cannot fingerprint missing deployment path: {path}")
+
+        for root, dirnames, filenames in os.walk(path, topdown=True, followlinks=False):
+            dirnames.sort()
+            filenames.sort()
+            for name in list(dirnames):
+                full_path = os.path.join(root, name)
+                relative = os.path.relpath(full_path, path).replace(os.sep, "/")
+                if os.path.islink(full_path):
+                    digest.update(b"L\0" + relative.encode("utf-8", "surrogateescape") + b"\0")
+                    digest.update(os.readlink(full_path).encode("utf-8", "surrogateescape"))
+                    dirnames.remove(name)
+                else:
+                    digest.update(b"D\0" + relative.encode("utf-8", "surrogateescape") + b"\0")
+            for name in filenames:
+                full_path = os.path.join(root, name)
+                relative = os.path.relpath(full_path, path).replace(os.sep, "/")
+                if os.path.islink(full_path):
+                    digest.update(b"L\0" + relative.encode("utf-8", "surrogateescape") + b"\0")
+                    digest.update(os.readlink(full_path).encode("utf-8", "surrogateescape"))
+                else:
+                    digest.update(b"F\0" + relative.encode("utf-8", "surrogateescape") + b"\0")
+                    with open(full_path, "rb") as stream:
+                        for block in iter(lambda: stream.read(1024 * 1024), b""):
+                            digest.update(block)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _sha256_bytes(data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    @staticmethod
+    def _sha256_file(path: str) -> str:
+        with open(path, "rb") as stream:
+            return hashlib.sha256(stream.read()).hexdigest()
+
+    def _load_manifest(self) -> Dict[str, Any]:
+        """Load deployment ownership metadata; refuse malformed metadata rather than guessing."""
+        if not os.path.lexists(self.manifest_file):
+            return {"schema_version": 1, "entries": {}, "config": None}
+        if os.path.islink(self.manifest_file) or not os.path.isfile(self.manifest_file):
+            raise ValueError(f"Deployment manifest is not a regular file: {self.manifest_file}")
+        with open(self.manifest_file, "r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        if (not isinstance(manifest, dict) or manifest.get("schema_version") != 1
+                or not isinstance(manifest.get("entries"), dict)
+                or (manifest.get("config") is not None and not isinstance(manifest.get("config"), dict))):
+            raise ValueError("Unsupported or malformed BugBounty-Agent deployment manifest")
+        for destination, entry in manifest["entries"].items():
+            if (not isinstance(destination, str) or not os.path.isabs(destination)
+                    or not isinstance(entry, dict)
+                    or entry.get("mode") not in {"symlink", "copy"}
+                    or entry.get("kind") not in {"file", "directory"}
+                    or not isinstance(entry.get("source"), str)
+                    or not isinstance(entry.get("sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
+                raise ValueError("Malformed entry in BugBounty-Agent deployment manifest")
+        config_entry = manifest.get("config")
+        if config_entry is not None:
+            valid_hash = lambda value: isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+            if (not isinstance(config_entry.get("original_exists"), bool)
+                    or not valid_hash(config_entry.get("deployed_sha256"))
+                    or (config_entry["original_exists"] and not valid_hash(config_entry.get("original_sha256")))
+                    or (not config_entry["original_exists"] and config_entry.get("original_sha256") is not None)
+                    or (config_entry.get("original_mode") is not None
+                        and (not isinstance(config_entry.get("original_mode"), int)
+                             or not 0 <= config_entry["original_mode"] <= 0o777))):
+                raise ValueError("Malformed OpenCode config ownership metadata")
+        return manifest
+
+    def _save_manifest(self, manifest: Dict[str, Any]) -> None:
+        os.makedirs(self.config_dir, mode=0o700, exist_ok=True)
+        if os.path.lexists(self.manifest_file) and (os.path.islink(self.manifest_file) or not os.path.isfile(self.manifest_file)):
+            raise ValueError(f"Deployment manifest path is not a regular file: {self.manifest_file}")
+        fd, temporary = tempfile.mkstemp(prefix=".bb-deploy-manifest-", dir=self.config_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(manifest, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self.manifest_file)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+
+    def _expected_assets(self) -> Dict[str, str]:
+        """Map destinations to repository sources used by deploy and safe uninstall."""
+        assets: Dict[str, str] = {}
+        agent = os.path.join(self.agents_src, "Bug-Bounty.md")
+        if os.path.isfile(agent):
+            assets[os.path.join(self.target_agents, "Bug-Bounty.md")] = agent
+        if os.path.isdir(self.skills_src):
+            for name in sorted(os.listdir(self.skills_src)):
+                source = os.path.join(self.skills_src, name)
+                if os.path.isdir(source):
+                    assets[os.path.join(self.target_skills, name)] = source
+        if os.path.isdir(self.scripts_src):
+            for name in sorted(os.listdir(self.scripts_src)):
+                source = os.path.join(self.scripts_src, name)
+                if not name.endswith(".cmd") and os.path.isfile(source):
+                    assets[os.path.join(self.bin_dir, name)] = source
+        command = os.path.join(self.commands_src, "Arise.md")
+        if os.path.isfile(command):
+            assets[os.path.join(self.target_commands, "Arise.md")] = command
+        return assets
+
+    @staticmethod
+    def _remove_path(path: str) -> None:
+        if os.path.islink(path) or os.path.isfile(path):
+            os.remove(path)
+        elif os.path.isdir(path):
+            shutil.rmtree(path)
+
+    def _entry_matches(self, destination: str, source: str, entry: Optional[Dict[str, Any]]) -> bool:
+        """Check that a destination is still exactly the asset this deployer installed."""
+        if not os.path.lexists(destination):
+            return False
+        if os.path.islink(destination):
+            target = os.path.abspath(os.path.join(os.path.dirname(destination), os.readlink(destination)))
+            return (entry is not None and entry.get("mode") == "symlink"
+                    and entry.get("source") == source
+                    and os.path.normcase(target) == os.path.normcase(os.path.abspath(source)))
+        if entry is None or entry.get("mode") != "copy" or entry.get("source") != source:
+            return False
+        try:
+            expected_kind = "directory" if os.path.isdir(source) else "file"
+            actual_kind = "directory" if os.path.isdir(destination) else "file"
+            return (entry.get("kind") == expected_kind == actual_kind
+                    and self._digest_path(destination) == entry.get("sha256"))
+        except OSError:
+            return False
+
+    def _install_asset(self, src: str, dst: str, prefer_symlink: bool = True,
+                       executable: bool = False) -> str:
+        """Install one asset atomically, replacing only a verified prior deployment."""
+        manifest = self._load_manifest()
+        old_entry = manifest["entries"].get(dst)
+        if os.path.lexists(dst) and not self._entry_matches(dst, src, old_entry):
+            raise FileExistsError(f"Refusing to overwrite an unmanaged or modified file: {dst}")
+
+        if os.path.islink(dst) and self._entry_matches(dst, src, old_entry) and prefer_symlink:
+            manifest["entries"][dst] = {
+                "source": src, "kind": "directory" if os.path.isdir(src) else "file",
+                "mode": "symlink", "sha256": self._digest_path(src),
+            }
+            self._save_manifest(manifest)
+            return "symlinked"
 
         parent = os.path.dirname(dst)
         os.makedirs(parent, exist_ok=True)
+        temporary_dir = tempfile.mkdtemp(prefix=".bb-deploy-", dir=parent)
+        staged = os.path.join(temporary_dir, "payload")
+        backup = os.path.join(temporary_dir, "previous")
+        moved_old = False
+        installed = False
+        try:
+            mode = "copied"
+            if prefer_symlink:
+                try:
+                    os.symlink(src, staged, target_is_directory=os.path.isdir(src))
+                    mode = "symlink"
+                except (OSError, NotImplementedError):
+                    pass
+            if mode == "copied":
+                if os.path.isdir(src):
+                    shutil.copytree(src, staged, symlinks=True)
+                else:
+                    shutil.copy2(src, staged, follow_symlinks=False)
+                    if executable:
+                        os.chmod(staged, os.stat(staged).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-        if prefer_symlink:
+            if os.path.lexists(dst):
+                os.replace(dst, backup)
+                moved_old = True
+            os.replace(staged, dst)
+            installed = True
+
+            manifest["entries"][dst] = {
+                "source": src,
+                "kind": "directory" if os.path.isdir(src) else "file",
+                "mode": mode,
+                "sha256": self._digest_path(dst) if mode == "copied" else self._digest_path(src),
+            }
             try:
-                is_dir = os.path.isdir(src)
-                os.symlink(src, dst, target_is_directory=is_dir)
-                return "symlinked"
-            except (OSError, NotImplementedError):
-                pass  # Fall back to copy
+                self._save_manifest(manifest)
+            except Exception:
+                self._remove_path(dst)
+                installed = False
+                if moved_old:
+                    os.replace(backup, dst)
+                    moved_old = False
+                raise
 
-        if os.path.isdir(src):
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
-        return "copied"
+            if moved_old:
+                self._remove_path(backup)
+                moved_old = False
+            return "symlinked" if mode == "symlink" else "copied"
+        except Exception:
+            if installed and os.path.lexists(dst):
+                self._remove_path(dst)
+            if moved_old and os.path.lexists(backup):
+                os.replace(backup, dst)
+            raise
+        finally:
+            if os.path.isdir(temporary_dir):
+                shutil.rmtree(temporary_dir, ignore_errors=True)
+
+    def _preflight(self) -> List[str]:
+        """Find collisions before deploy mutates any managed destination."""
+        errors: List[str] = []
+        try:
+            manifest = self._load_manifest()
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return [str(exc)]
+        for destination, source in self._expected_assets().items():
+            entry = manifest["entries"].get(destination)
+            if os.path.lexists(destination) and not self._entry_matches(destination, source, entry):
+                errors.append(f"Refusing to overwrite unmanaged or modified file: {destination}")
+        try:
+            config, original_bytes = self._read_global_config()
+            permissions = config.get("permissions")
+            if permissions is not None and (
+                not isinstance(permissions, list) or any(not isinstance(rule, dict) for rule in permissions)
+            ):
+                errors.append("OpenCode config 'permissions' must be an array of objects; refusing partial deployment.")
+            config_meta = manifest.get("config")
+            current_hash = self._sha256_bytes(original_bytes) if original_bytes is not None else None
+            if os.path.lexists(self.config_backup_file) and config_meta is None:
+                errors.append("Config backup path exists without deployment ownership; refusing to replace it.")
+            if config_meta and current_hash == config_meta.get("deployed_sha256") and config_meta.get("original_exists"):
+                if (os.path.islink(self.config_backup_file) or not os.path.isfile(self.config_backup_file)
+                        or self._sha256_file(self.config_backup_file) != config_meta.get("original_sha256")):
+                    errors.append("The saved original OpenCode config is missing or changed; refusing to deploy over it.")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            errors.append(f"Global OpenCode config cannot be safely updated: {exc}")
+        return errors
 
     def deploy_agent(self, prefer_symlink: bool = True) -> Dict[str, Any]:
         """Deploys the canonical Bug-Bounty agent to global OpenCode agents directory."""
@@ -88,21 +390,12 @@ class OpenCodeDeployer:
         if not os.path.isfile(agent_file):
             return {"status": "error", "message": f"Canonical agent not found: {agent_file}"}
 
-        os.makedirs(self.target_agents, exist_ok=True)
-
-        # Remove legacy lowercase deployment if present
-        for fname in os.listdir(self.target_agents):
-            if fname == "bug-bounty.md":
-                legacy_file = os.path.join(self.target_agents, fname)
-                try:
-                    if os.path.islink(legacy_file) or os.path.isfile(legacy_file):
-                        os.remove(legacy_file)
-                except OSError:
-                    pass
-
         dst = os.path.join(self.target_agents, "Bug-Bounty.md")
-        mode = self._link_or_copy(agent_file, dst, prefer_symlink=prefer_symlink)
-        return {"status": "ok", "agent": "Bug-Bounty", "mode": mode, "destination": dst}
+        try:
+            mode = self._install_asset(agent_file, dst, prefer_symlink=prefer_symlink)
+            return {"status": "ok", "agent": "Bug-Bounty", "mode": mode, "destination": dst}
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {"status": "error", "message": str(exc), "destination": dst}
 
     def deploy_skills(self, prefer_symlink: bool = True) -> Dict[str, Any]:
         """Deploys all 18 skills to global OpenCode skills directory."""
@@ -117,8 +410,10 @@ class OpenCodeDeployer:
             if not os.path.isdir(src_skill):
                 continue
             dst_skill = os.path.join(self.target_skills, skill_name)
-            mode = self._link_or_copy(src_skill, dst_skill, prefer_symlink=prefer_symlink)
-            results[skill_name] = mode
+            try:
+                results[skill_name] = self._install_asset(src_skill, dst_skill, prefer_symlink=prefer_symlink)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                return {"status": "error", "message": str(exc), "details": results}
 
         return {"status": "ok", "skills_deployed": len(results), "details": results}
 
@@ -138,16 +433,12 @@ class OpenCodeDeployer:
                 continue
 
             dst_script = os.path.join(self.bin_dir, script)
-            mode = self._link_or_copy(src_script, dst_script, prefer_symlink=prefer_symlink)
-
-            # Ensure executable permissions on non-symlink copies
             try:
-                st = os.stat(dst_script)
-                os.chmod(dst_script, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-            except Exception:
-                pass
-
-            results[script] = mode
+                results[script] = self._install_asset(
+                    src_script, dst_script, prefer_symlink=prefer_symlink, executable=True
+                )
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                return {"status": "error", "message": str(exc), "details": results}
 
         return {"status": "ok", "scripts_linked": len(results), "details": results}
 
@@ -157,10 +448,11 @@ class OpenCodeDeployer:
         if not os.path.isfile(command_file):
             return {"status": "error", "message": f"/Arise command not found: {command_file}"}
         dst = os.path.join(self.target_commands, "Arise.md")
-        if os.path.lexists(dst) and not self._owns_arise_command(dst):
-            return {"status": "error", "message": f"Refusing to overwrite an existing user command: {dst}"}
-        mode = self._link_or_copy(command_file, dst, prefer_symlink=prefer_symlink)
-        return {"status": "ok", "command": "Arise", "mode": mode, "destination": dst}
+        try:
+            mode = self._install_asset(command_file, dst, prefer_symlink=prefer_symlink)
+            return {"status": "ok", "command": "Arise", "mode": mode, "destination": dst}
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {"status": "error", "message": str(exc), "destination": dst}
 
     def _owns_arise_command(self, path: str) -> bool:
         """Returns true only for a symlink to, or unchanged copy of, this repository command."""
@@ -175,27 +467,52 @@ class OpenCodeDeployer:
         except OSError:
             return False
 
+    def _read_global_config(self) -> tuple[Dict[str, Any], Optional[bytes]]:
+        """Read valid JSONC config, returning its parsed value and exact original bytes."""
+        if not os.path.lexists(self.target_config_file):
+            return {}, None
+        if os.path.islink(self.target_config_file) or not os.path.isfile(self.target_config_file):
+            raise ValueError(f"OpenCode config must be a regular file: {self.target_config_file}")
+        with open(self.target_config_file, "rb") as stream:
+            raw = stream.read()
+        try:
+            parsed = json.loads(self._strip_jsonc(raw.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError(f"Invalid JSONC in {self.target_config_file}: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("OpenCode config root must be a JSON object")
+        return parsed, raw
+
+    @staticmethod
+    def _atomic_write(path: str, content: bytes, mode: int = 0o600) -> None:
+        parent = os.path.dirname(path)
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".bb-deploy-write-", dir=parent)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, mode)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+
     def configure_global_opencode(self) -> Dict[str, Any]:
         """Ensures global opencode.jsonc sets Bug-Bounty as default agent and enforces permissions."""
         os.makedirs(self.config_dir, exist_ok=True)
 
-        existing_cfg: Dict[str, Any] = {}
-        if os.path.isfile(self.target_config_file):
-            try:
-                with open(self.target_config_file, "r", encoding="utf-8") as f:
-                    lines = [l for l in f if not l.strip().startswith("//")]
-                    existing_cfg = json.loads("\n".join(lines))
-            except Exception:
-                existing_cfg = {}
+        try:
+            manifest = self._load_manifest()
+            existing_cfg, original_bytes = self._read_global_config()
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {"status": "error", "message": str(exc), "config_file": self.target_config_file}
 
         # Set Bug-Bounty as global default and subagent depth to 1
         existing_cfg["$schema"] = "https://opencode.ai/config.json"
         existing_cfg["default_agent"] = "Bug-Bounty"
         existing_cfg["subagent_depth"] = 1
-
-        # Remove any inline duplicate agent definitions
-        existing_cfg.pop("agent", None)
-        existing_cfg.pop("agents", None)
 
         # Baseline security permissions to ensure safety globally
         baseline_permissions = [
@@ -291,9 +608,13 @@ class OpenCodeDeployer:
             }
         ]
 
-        if "permissions" not in existing_cfg or not isinstance(existing_cfg["permissions"], list):
+        if "permissions" not in existing_cfg:
             existing_cfg["permissions"] = baseline_permissions
+        elif not isinstance(existing_cfg["permissions"], list):
+            return {"status": "error", "message": "OpenCode config 'permissions' must be an array; preserving the existing config."}
         else:
+            if any(not isinstance(rule, dict) for rule in existing_cfg["permissions"]):
+                return {"status": "error", "message": "OpenCode config contains a non-object permission rule; preserving the existing config."}
             # Preserve user rules, ensuring subagent deny rule is present
             has_subagent_deny = any(
                 p.get("action") == "subagent" and p.get("effect") == "deny"
@@ -307,8 +628,61 @@ class OpenCodeDeployer:
                     "description": "Single-agent architecture: separate subagent spawning is disabled in favor of modular skills"
                 })
 
-        with open(self.target_config_file, "w", encoding="utf-8") as f:
-            json.dump(existing_cfg, f, indent=2)
+        output = (json.dumps(existing_cfg, indent=2) + "\n").encode("utf-8")
+        previous_config_meta = manifest.get("config")
+        previous_backup = None
+        if os.path.lexists(self.config_backup_file):
+            if os.path.islink(self.config_backup_file) or not os.path.isfile(self.config_backup_file):
+                return {"status": "error", "message": "Config backup path is not a regular file; preserving it."}
+            with open(self.config_backup_file, "rb") as stream:
+                previous_backup = stream.read()
+            if previous_config_meta is None:
+                return {"status": "error", "message": "Config backup path already exists without deployment ownership; preserving it."}
+
+        output_meta: Dict[str, Any]
+        current_hash = self._sha256_bytes(original_bytes) if original_bytes is not None else None
+        if (previous_config_meta and current_hash == previous_config_meta.get("deployed_sha256")):
+            output_meta = dict(previous_config_meta)
+            if output_meta.get("original_exists"):
+                if previous_backup is None or hashlib.sha256(previous_backup).hexdigest() != output_meta.get("original_sha256"):
+                    return {"status": "error", "message": "Original config backup is missing or changed; preserving current config."}
+        else:
+            output_meta = {
+                "original_exists": original_bytes is not None,
+                "original_sha256": current_hash,
+                "original_mode": stat.S_IMODE(os.stat(self.target_config_file).st_mode) if original_bytes is not None else None,
+            }
+            if original_bytes is not None:
+                try:
+                    self._atomic_write(self.config_backup_file, original_bytes, 0o600)
+                except OSError as exc:
+                    return {"status": "error", "message": f"Could not back up existing config: {exc}"}
+            elif os.path.lexists(self.config_backup_file):
+                os.remove(self.config_backup_file)
+
+        original_mode = 0o600
+        if original_bytes is not None:
+            original_mode = stat.S_IMODE(os.stat(self.target_config_file).st_mode)
+        try:
+            self._atomic_write(self.target_config_file, output, original_mode)
+            output_meta["deployed_sha256"] = hashlib.sha256(output).hexdigest()
+            manifest["config"] = output_meta
+            self._save_manifest(manifest)
+        except Exception as exc:
+            try:
+                if original_bytes is None:
+                    if os.path.lexists(self.target_config_file):
+                        os.remove(self.target_config_file)
+                else:
+                    self._atomic_write(self.target_config_file, original_bytes, original_mode)
+                if previous_backup is None:
+                    if os.path.lexists(self.config_backup_file):
+                        os.remove(self.config_backup_file)
+                else:
+                    self._atomic_write(self.config_backup_file, previous_backup, 0o600)
+            except OSError:
+                pass
+            return {"status": "error", "message": f"Could not atomically configure OpenCode: {exc}"}
 
         return {"status": "ok", "config_file": self.target_config_file, "default_agent": "Bug-Bounty"}
 
@@ -351,6 +725,17 @@ class OpenCodeDeployer:
         """
         prefer_symlink = mode != "copy"
 
+        preflight_errors = self._preflight()
+        if preflight_errors:
+            message = "; ".join(preflight_errors)
+            failed = {"status": "error", "message": message}
+            return {
+                "status": "WARNING", "preflight_errors": preflight_errors,
+                "agent": failed, "skills": failed, "scripts": failed,
+                "commands": failed, "config": failed,
+                "duplicate_prevention": self.check_duplicate_prevention(),
+            }
+
         agent_res = self.deploy_agent(prefer_symlink=prefer_symlink)
         skills_res = self.deploy_skills(prefer_symlink=prefer_symlink)
         scripts_res = self.deploy_scripts(prefer_symlink=prefer_symlink)
@@ -361,6 +746,7 @@ class OpenCodeDeployer:
         success = (
             agent_res.get("status") == "ok"
             and skills_res.get("status") == "ok"
+            and scripts_res.get("status") == "ok"
             and commands_res.get("status") == "ok"
             and config_res.get("status") == "ok"
             and not dup_check["duplicate_risk"]
@@ -377,69 +763,116 @@ class OpenCodeDeployer:
         }
 
     def uninstall(self) -> Dict[str, Any]:
-        """Removes global Bug-Bounty agent, skills, /Arise command, and binary links."""
-        agent_dst = os.path.join(self.target_agents, "Bug-Bounty.md")
-        legacy_dst = os.path.join(self.target_agents, "bug-bounty.md")
-        for target in [agent_dst, legacy_dst]:
-            if os.path.islink(target) or os.path.isfile(target):
+        """Remove only unchanged assets recorded as this repository's deployment."""
+        try:
+            manifest = self._load_manifest()
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {"status": "error", "message": str(exc), "removed": [], "preserved": []}
+
+        removed: List[str] = []
+        preserved: List[str] = []
+        assets = self._expected_assets()
+        for destination, source in assets.items():
+            entry = manifest["entries"].get(destination)
+            if not os.path.lexists(destination):
+                manifest["entries"].pop(destination, None)
+                continue
+            if self._entry_matches(destination, source, entry):
                 try:
-                    os.remove(target)
-                except OSError:
-                    pass
+                    self._remove_path(destination)
+                    manifest["entries"].pop(destination, None)
+                    removed.append(destination)
+                except OSError as exc:
+                    preserved.append(f"{destination}: {exc}")
+            else:
+                preserved.append(f"{destination}: modified or not recorded as managed")
 
-        skills_removed = 0
-        if os.path.isdir(self.skills_src) and os.path.isdir(self.target_skills):
-            for skill_name in os.listdir(self.skills_src):
-                dst = os.path.join(self.target_skills, skill_name)
-                if os.path.islink(dst) or os.path.isfile(dst):
-                    os.remove(dst)
-                    skills_removed += 1
-                elif os.path.isdir(dst):
-                    shutil.rmtree(dst)
-                    skills_removed += 1
+        config_meta = manifest.get("config")
+        config_restored = False
+        if config_meta and os.path.lexists(self.target_config_file):
+            try:
+                current_hash = self._sha256_file(self.target_config_file)
+                if current_hash == config_meta.get("deployed_sha256"):
+                    if config_meta.get("original_exists"):
+                        if (os.path.islink(self.config_backup_file) or not os.path.isfile(self.config_backup_file)
+                                or self._sha256_file(self.config_backup_file) != config_meta.get("original_sha256")):
+                            preserved.append(f"{self.target_config_file}: original config backup missing or changed")
+                        else:
+                            with open(self.config_backup_file, "rb") as stream:
+                                original = stream.read()
+                            self._atomic_write(self.target_config_file, original, config_meta.get("original_mode") or 0o600)
+                            config_restored = True
+                    else:
+                        os.remove(self.target_config_file)
+                        config_restored = True
+                    if config_restored:
+                        manifest["config"] = None
+                        if os.path.lexists(self.config_backup_file):
+                            os.remove(self.config_backup_file)
+                else:
+                    preserved.append(f"{self.target_config_file}: changed by the user since deployment")
+            except OSError as exc:
+                preserved.append(f"{self.target_config_file}: {exc}")
+        elif config_meta and not os.path.lexists(self.target_config_file):
+            # The user removed the config. Do not recreate it during uninstall.
+            manifest["config"] = None
+            if os.path.lexists(self.config_backup_file):
+                os.remove(self.config_backup_file)
 
-        scripts_removed = 0
-        if os.path.isdir(self.scripts_src) and os.path.isdir(self.bin_dir):
-            for script in os.listdir(self.scripts_src):
-                if script.endswith(".cmd"):
-                    continue
-                dst = os.path.join(self.bin_dir, script)
-                if os.path.islink(dst) or os.path.isfile(dst):
-                    os.remove(dst)
-                    scripts_removed += 1
+        try:
+            has_entries = bool(manifest["entries"])
+            if has_entries or manifest.get("config") is not None:
+                self._save_manifest(manifest)
+            elif os.path.lexists(self.manifest_file):
+                os.remove(self.manifest_file)
+        except OSError as exc:
+            preserved.append(f"Deployment manifest: {exc}")
 
+        agent_dst = os.path.join(self.target_agents, "Bug-Bounty.md")
         command_dst = os.path.join(self.target_commands, "Arise.md")
-        if self._owns_arise_command(command_dst):
-            os.remove(command_dst)
-
+        skills_removed = sum(1 for path in removed if os.path.dirname(path) == self.target_skills)
+        scripts_removed = sum(1 for path in removed if os.path.dirname(path) == self.bin_dir)
         return {
-            "status": "ok",
-            "agent_removed": not os.path.exists(agent_dst),
+            "status": "ok" if not preserved else "partial",
+            "agent_removed": not os.path.lexists(agent_dst),
             "skills_removed": skills_removed,
             "scripts_removed": scripts_removed,
-            "arise_command_removed": not os.path.exists(command_dst),
+            "arise_command_removed": not os.path.lexists(command_dst),
+            "config_restored": config_restored,
+            "removed": removed,
+            "preserved": preserved,
         }
 
     def check_status(self) -> Dict[str, Any]:
         """Audits current global deployment status."""
+        agent_src = os.path.join(self.agents_src, "Bug-Bounty.md")
         agent_dst = os.path.join(self.target_agents, "Bug-Bounty.md")
-        agent_deployed = os.path.exists(agent_dst)
+        agent_deployed = False
+        if os.path.isfile(agent_src) and os.path.isfile(agent_dst):
+            try:
+                with open(agent_src, "rb") as source, open(agent_dst, "rb") as deployed:
+                    agent_deployed = source.read() == deployed.read()
+            except OSError:
+                agent_deployed = False
+        elif os.path.islink(agent_dst):
+            agent_deployed = os.path.normcase(os.path.abspath(os.path.join(os.path.dirname(agent_dst), os.readlink(agent_dst)))) == os.path.normcase(os.path.abspath(agent_src))
         agent_is_symlink = os.path.islink(agent_dst)
         arise_command_dst = os.path.join(self.target_commands, "Arise.md")
         arise_command_deployed = self._owns_arise_command(arise_command_dst)
 
-        deployed_skills = []
-        if os.path.isdir(self.target_skills):
-            deployed_skills = [
-                d for d in os.listdir(self.target_skills)
-                if os.path.exists(os.path.join(self.target_skills, d, "SKILL.md"))
-            ]
+        required_skills = [
+            d for d in os.listdir(self.skills_src) if os.path.isdir(os.path.join(self.skills_src, d))
+        ] if os.path.isdir(self.skills_src) else []
+        deployed_skills = [
+            d for d in required_skills
+            if os.path.isfile(os.path.join(self.target_skills, d, "SKILL.md"))
+        ]
 
         default_agent = None
         if os.path.isfile(self.target_config_file):
             try:
                 with open(self.target_config_file, "r", encoding="utf-8") as f:
-                    cfg = json.loads("\n".join([l for l in f if not l.strip().startswith("//")]))
+                    cfg = json.loads(self._strip_jsonc(f.read()))
                     default_agent = cfg.get("default_agent")
             except Exception:
                 pass
@@ -448,7 +881,7 @@ class OpenCodeDeployer:
 
         is_valid = (
             agent_deployed
-            and len(deployed_skills) >= 18
+            and len(deployed_skills) == len(required_skills)
             and default_agent == "Bug-Bounty"
             and arise_command_deployed
             and not dup["duplicate_risk"]

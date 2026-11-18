@@ -15,6 +15,7 @@ import os
 import platform
 import shutil
 import sys
+from importlib import metadata, util
 from typing import Any, Dict, List, Optional
 
 from framework.common.config import get_workspace_root
@@ -44,17 +45,39 @@ class SystemDoctor:
         }
 
     def check_dependencies(self) -> Dict[str, Any]:
-        """Category 2: System toolchains and runtimes."""
-        deps = ["go", "python3", "pipx", "git", "cargo", "docker", "jq"]
-        results = {}
-        for d in deps:
-            path = shutil.which(d)
-            results[d] = {
+        """Category 2: distinguish required Python packages from optional host tools."""
+        required_packages = {"PyYAML": "yaml", "cryptography": "cryptography"}
+        package_results: Dict[str, Dict[str, Any]] = {}
+        for distribution, module in required_packages.items():
+            try:
+                version = metadata.version(distribution)
+                installed = True
+            except metadata.PackageNotFoundError:
+                installed = util.find_spec(module) is not None
+                version = "unknown" if installed else None
+            package_results[distribution] = {
+                "installed": installed,
+                "version": version,
+                "required": True,
+                "status": "OK" if installed else "MISSING",
+                "feature": "core Python runtime",
+            }
+
+        optional_tools = ["go", "python3", "pipx", "git", "cargo", "docker", "jq", "opencode"]
+        tool_results: Dict[str, Dict[str, Any]] = {}
+        for name in optional_tools:
+            path = shutil.which(name)
+            tool_results[name] = {
                 "installed": path is not None,
                 "path": path,
-                "status": "OK" if path else "MISSING",
+                "required": False,
+                "status": "AVAILABLE" if path else "OPTIONAL_MISSING",
             }
-        return results
+        return {
+            "required_python_packages": package_results,
+            "optional_host_tools": tool_results,
+            "core_ready": all(item["installed"] for item in package_results.values()),
+        }
 
     def check_tools(self) -> Dict[str, Any]:
         """Category 3: Security tool suite."""

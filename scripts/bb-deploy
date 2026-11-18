@@ -72,18 +72,34 @@ def main():
     if args.uninstall:
         print("[*] Uninstalling global Bug-Bounty agent and skills...")
         res = deployer.uninstall()
-        print(f"[+] Agent removed:  {res['agent_removed']}")
-        print(f"[+] Skills removed: {res['skills_removed']}")
-        print(f"[+] Scripts unlinked: {res['scripts_removed']}")
-        print(f"[+] /Arise command removed: {res['arise_command_removed']}")
-        print("[+] Uninstallation complete.")
-        sys.exit(0)
+        if res.get("status") == "error":
+            print(f"[!] Uninstallation stopped safely: {res.get('message')}")
+            sys.exit(1)
+        print(f"[+] Agent removed:  {res.get('agent_removed')}")
+        print(f"[+] Skills removed: {res.get('skills_removed')}")
+        print(f"[+] Scripts unlinked: {res.get('scripts_removed')}")
+        print(f"[+] /Arise command removed: {res.get('arise_command_removed')}")
+        print(f"[+] OpenCode config restored: {res.get('config_restored')}")
+        for item in res.get("preserved", []):
+            print(f"[!] Preserved: {item}")
+        if res.get("status") == "ok":
+            print("[+] Uninstallation complete.")
+            sys.exit(0)
+        print("[!] Uninstallation was partial; the listed modified or unmanaged files were preserved.")
+        sys.exit(1)
 
     mode = "copy" if args.copy else "symlink"
     print(f"[*] Deploying Bug-Bounty agent, 18 skills, /Arise command, and CLIs to global OpenCode ({deployer.config_dir})...")
     print(f"[*] Deployment mode: {mode}")
 
     res = deployer.deploy(mode=mode)
+
+    for error in res.get("preflight_errors", []):
+        print(f"[!] Preflight: {error}")
+    for component in ("agent", "skills", "scripts", "commands", "config"):
+        detail = res.get(component, {})
+        if detail.get("status") == "error" and detail.get("message"):
+            print(f"[!] {component.capitalize()}: {detail['message']}")
 
     print(f"\n[+] Agent:     {res['agent'].get('agent')} -> {res['agent'].get('mode')} to {res['agent'].get('destination')}")
     print(f"[+] Skills:    {res['skills'].get('skills_deployed')} skills deployed ({mode})")

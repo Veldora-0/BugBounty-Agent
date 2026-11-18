@@ -54,11 +54,17 @@ def main():
 
     # 2. Dependencies
     dep_info = diag.get("dependencies", {})
-    print(f"\n[+] DEPENDENCIES:")
-    for dep, ddata in dep_info.items():
-        status = "[OK]     " if ddata.get("installed") else "[MISSING]"
-        path_str = f"({ddata.get('path')})" if ddata.get('path') else ""
-        print(f"    {status} {dep:<12} {path_str}")
+    print(f"\n[+] REQUIRED PYTHON PACKAGES:")
+    for name, package in dep_info.get("required_python_packages", {}).items():
+        status = "[OK]     " if package.get("installed") else "[MISSING]"
+        version = f"(version {package.get('version')})" if package.get("version") else ""
+        print(f"    {status} {name:<16} {version}")
+    print(f"\n[+] OPTIONAL HOST TOOLS (availability only; not proof of engine integration):")
+    for name, tool in dep_info.get("optional_host_tools", {}).items():
+        status = "[AVAILABLE]" if tool.get("installed") else "[OPTIONAL] "
+        path_str = f"({tool.get('path')})" if tool.get('path') else ""
+        print(f"    {status} {name:<12} {path_str}")
+    print(f"    Core Python runtime: [{'READY' if dep_info.get('core_ready') else 'MISSING REQUIRED PACKAGE'}]")
 
     # 3. Security Tools
     tools_section = diag.get("tools", {})
