@@ -32,12 +32,15 @@ Core offline coverage planning and `/Arise` metadata reconciliation are implemen
 - Add local fixture cases for recommendation quality, category boundaries, stale inventory and source removal/version changes.
 - Preserve the Phase 23 rule that public research remains separate from target evidence and recommendations never authorize active testing.
 
-### Phase 24 — Integration and production readiness
+### Phase 24 follow-on — Release assurance and workspace operations
 
-- Define supported Python and operating system versions; verify clean install, deploy, update, rollback and uninstall workflows.
-- Add repeatable CI for Windows and Linux, dependency/runtime diagnostics, and explicit optional browser/OOB service checks.
-- Document configuration lifecycle, backup/recovery, workspace permissions, key rotation, upgrade compatibility and incident response.
-- Produce versioned threat model, security review, release checklist and phase acceptance evidence tied to exact commits.
+The Phase 24 beta gates for environment evidence, deploy/update/rollback/uninstall, diagnostics, threat modeling and release documentation are implemented. The following work is optional follow-on hardening before a stable production release:
+
+- Add automated dependency advisory review and decide whether a reproducible dependency lockfile is appropriate for the supported packaging model.
+- Generate a software bill of materials and sign/tag release artifacts with a documented key custody and verification process.
+- Add a versioned, encrypted workspace backup and restore tool, then test interrupted restore and compatibility migrations against copies of real-shaped state.
+- Document key rotation and incident-response exercises for the Linux dispatcher and evidence signing keys.
+- Decide whether Windows production service isolation or macOS support is worth implementing; keep both unsupported until their platform-specific trust boundaries pass acceptance.
 
 ### Phases 1–2 — Wire asset discovery and recon capabilities into the CLI
 

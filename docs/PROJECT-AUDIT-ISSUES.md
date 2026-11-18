@@ -4,14 +4,6 @@ This register lists only material unresolved project problems. When an issue is 
 
 ## Open issues
 
-### AUD-03 — Current Windows acceptance evidence is unavailable
-
-- **Severity:** Medium confidence/maintenance risk.
-- **Evidence:** The full Kali suite passed at `c1a791f` after the audit fixes. This workspace could not start the Windows Python launcher, so no current Windows full-suite result was obtained; one DACL test is skipped on Kali and Windows ACL subprocess verification for Phase 22 still requires a supported Windows run.
-- **Impact:** Historical test numbers can be mistaken for current full regression or live-target coverage.
-- **Remediation:** Phase guides now distinguish repository implementation from live effectiveness and call out limits. Add a repeatable Windows/Linux CI matrix and dated acceptance manifests as part of Phase 24.
-- **Acceptance gate:** Each maintained acceptance record identifies commit, exact commands, environment/dependencies, pass/skip/fail counts and untested live boundaries.
-
 ### AUD-04 — Live OOB integrations for SSRF/XXE are unavailable (Phases 9 and 18)
 
 - **Severity:** Medium; affects confirmation of blind SSRF/XXE only.
@@ -65,3 +57,12 @@ This register records repository review and current audit-run evidence, not a li
 - **Focused regressions:** 72 passed in 3.33 seconds across content discovery, Phase 22 CLI scope/reporting, Stage C remediations and the earlier CLI working-directory failure.
 - **Windows:** No test result is claimed. The Python launcher could not start in this Windows workspace; Phase 22 Windows ACL subprocess verification remains open.
 - **Live-target testing:** None. No bounty target was contacted. Test results validate local code and fixtures only.
+
+## Phase 24 verification at `9361df3` (2026-11-19)
+
+- **Kali Linux x86-64, Python 3.14.10:** `python3 -m pytest tests/ -ra --durations=10` — **1,272 passed, 2 skipped** in 147.36 seconds. The two skips are the Windows path-canonicalization and Windows DACL tests.
+- **Hosted Windows Server 2025, Python 3.14:** The full test suite passed in GitHub Actions; it exercises native Windows DACL and path behavior that Kali skips. Hosted Ubuntu Python 3.10 and 3.14 full-suite jobs also passed. See [workflow run 44381364848](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44381364848).
+- **Deployment and rollback:** Isolated copy and symlink deploy, repeated deploy, status, uninstall, byte-for-byte config restoration, and detached-checkout rollback/forward redeploy passed on Kali. Temporary config/bin paths were used; no program workspace was modified.
+- **Diagnostics:** 18 focused doctor/tool-registry tests passed in 17.97 seconds. `test_doctor_full_diagnosis` took 8.64 seconds in the full suite after bounded parallel tool checks were implemented; it previously took 275.75 seconds.
+- **Issue status:** AUD-03 is removed because cross-platform full-suite CI evidence is now available. AUD-04, AUD-06, AUD-07, and AUD-08 remain open and continue to limit feature coverage or live-service acceptance.
+- **Live-target testing:** None. No bounty target was contacted. These results are fixture, deployment, and hosted-OS evidence only; they are not proof of live vulnerability discovery effectiveness.

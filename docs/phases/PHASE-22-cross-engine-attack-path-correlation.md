@@ -1,6 +1,6 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** Implemented; Kali Linux acceptance verified (102 Phase 22 tests passed). Windows ACL subprocess verification remains unresolved in this environment.
+**Status:** Implemented; focused Kali acceptance and the full hosted Windows test suite are verified. Attack-path confidence remains bounded by evidence and scope; live-target effectiveness is not implied.
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
 **Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
@@ -161,7 +161,7 @@ Milestone 22.4 delivers the final operational CLI commands, reporting engine, an
     - **Zero-Secret Compliance**: Validated with `assert_no_raw_secrets` before output or write.
 - **Milestone 22.4 Acceptance Test Suite (`tests/test_phase22_cli_reporting.py`)**:
   - 25 comprehensive unit, adversarial, concurrency, and integration tests validating criteria AC-22.4-01 through AC-22.4-25 with 100% pass rate.
-  - **Phase 22 focused Linux evidence**: 102 tests passed across the Phase 22 suite on Kali Linux. Windows ACL subprocess verification has not passed in the available environment and is still an open limitation.
+  - **Phase 22 focused Linux evidence**: 102 tests passed across the Phase 22 suite on Kali Linux. The full hosted Windows Server 2025 / Python 3.14 suite also passed on commit `9361df3` in [GitHub Actions run 44381364848](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44381364848), including the native Windows DACL test path.
 
 ---
 
@@ -207,9 +207,9 @@ The integrated engine is implemented in `framework/attack_path/` and exposed thr
 
 ## Acceptance status and verification limits
 
-The implementation, CLI, reporting, and safety-gate acceptance criteria above are present. The recorded focused Kali run, `python3 -m pytest tests/test_phase22_*.py -ra`, passed 102 tests before the current scope-resolution regression cases were added; both CLI entry points returned help successfully. On 2026-11-18, the full suite at `c1a791f` passed 1,264 tests and skipped one Windows-only DACL test. This verifies the local implementation and fixtures on Kali, not vulnerability discovery effectiveness against live targets.
+The implementation, CLI, reporting, and safety-gate acceptance criteria above are present. The recorded focused Kali run, `python3 -m pytest tests/test_phase22_*.py -ra`, passed 102 tests before the current scope-resolution regression cases were added; both CLI entry points returned help successfully. The full Kali and hosted Windows results for the current repository are recorded in the [Phase 24 verification table](PHASE-24-final-integration-production-readiness.md#verification-record). These results verify local implementation and fixtures, not vulnerability discovery effectiveness against live targets.
 
-Windows Phase 22 verification is **not accepted**: the recorded focused run had three failures when Windows `icacls` subprocesses could not start in the sandbox (`OSError: [WinError 6] The handle is invalid`). This needs a supported Windows run; it does not negate the Linux-primary acceptance result. The CLI now loads the canonical scope path and refuses dispatch when scope is missing or invalid; tests cover both. Follow-up work is tracked in [Future Improvements](../FUTURE-IMPROVEMENTS.md) and the [issue register](../PROJECT-AUDIT-ISSUES.md).
+An earlier Windows sandbox run could not start `icacls` subprocesses (`OSError: [WinError 6] The handle is invalid`). The hosted Windows full-suite run now passes the native Windows test path, so that sandbox limitation is no longer the current acceptance status. Windows production dispatcher isolation is still unsupported under Phase 21. The CLI loads the canonical scope path and refuses dispatch when scope is missing or invalid; tests cover both. Remaining system limits are tracked in [Future Improvements](../FUTURE-IMPROVEMENTS.md) and the [issue register](../PROJECT-AUDIT-ISSUES.md).
 
 ## Source references
 

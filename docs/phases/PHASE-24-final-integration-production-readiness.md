@@ -1,6 +1,6 @@
 # Phase 24 — Final Integration and Production Readiness
 
-**Status:** In progress; deployment hardening, operational documentation, and a cross-platform CI gate are implemented. Final acceptance is still open until the new Linux/Kali and Windows results are recorded and remaining platform/service gates are resolved or explicitly accepted.
+**Status:** Implemented and acceptance-verified for the documented beta support boundary. The project remains beta; this phase does not close the capability and live-service limits listed in the audit register or authorize a production release.
 **Main areas:** `framework/tools/`, `scripts/`, `.github/workflows/`, `docs/`, `tests/`, packaging and release configuration.
 
 ## Purpose
@@ -65,7 +65,7 @@ Automated release installation, database migrations, and a one-command rollback 
 
 ### 5. Diagnostics and normal operation
 
-`bb-doctor` now distinguishes required Python runtime packages from optional host tools. Its optional-tool section reports availability only; it does not claim that an engine invokes an installed executable. Browser readiness and OpenCode deployment remain separate diagnostic categories. Provider configuration means that a value is present, not that the service accepted it or is wired into a research engine.
+`bb-doctor` now distinguishes required Python runtime packages from optional host tools. Its optional-tool section reports availability only; it does not claim that an engine invokes an installed executable. Version checks for optional tools run concurrently with a cap of eight workers, avoiding a possible five-second timeout per tool accumulating serially. Browser readiness and OpenCode deployment remain separate diagnostic categories. Provider configuration means that a value is present, not that the service accepted it or is wired into a research engine.
 
 Before running a target-facing workflow, use `bb-doctor`, inspect the active program scope and exclusions, verify the relevant engine's capability, and review its budget. On operational errors, preserve the output without sharing secrets, cookies, target-private data, or raw evidence.
 
@@ -88,35 +88,37 @@ The workflow grants only `contents: read` and pins its GitHub-maintained actions
 
 | Acceptance area | Required evidence | Current state |
 |---|---|---|
-| Environment support | Clean install and full test evidence for every claimed environment | Support boundary documented. Kali rerun and newly configured CI results must be attached to the final Phase 24 commit; macOS remains unsupported/unverified. |
-| Deployment lifecycle | Install, idempotent update, collision refusal, modified-file preservation, config restore, uninstall | Implementation and regression tests added. Kali test execution is pending for this checkpoint. A release-by-release copy-mode upgrade/rollback run is still required. |
-| Workspace safety | Program state, evidence, credentials and reports survive code update/removal | Repository/workspace separation documented. No destructive workspace operation is included in deployment. A separate workspace backup/migration utility is future work. |
-| Diagnostics | Required packages separated from optional tools and real integrations | Doctor implementation and regression test added; current Kali verification pending. |
-| Threat and release review | Versioned threat model, release gate, commit-linked evidence | Threat model, checklist and CI workflow added. Dependency scanning, signed artifacts and successful CI results remain open. |
-| Scope and live boundaries | Scope tests and documented separation of fixture/service evidence from live targets | Existing phase-specific tests and limits remain authoritative. No bounty target was contacted for Phase 24. |
+| Environment support | Full-suite evidence for every claimed environment; unsupported hosts clearly named | Kali Linux full suite passed. Hosted Ubuntu Python 3.10/3.14 and Windows Server 2025 Python 3.14 jobs all passed on commit `9361df3`; macOS remains unverified and Windows production dispatcher isolation is unsupported. |
+| Deployment lifecycle | Install, idempotent update, collision refusal, modified-file preservation, config restore, uninstall, rollback | Isolated Kali runs passed for copy and symlink modes, status, repeat deployment, uninstall, and byte-for-byte restoration of a pre-existing synthetic config. Detached-checkout rollback and forward redeploy passed in both modes without creating a branch or touching user state. Unit tests cover collision and modified-file preservation. |
+| Workspace safety | Framework update and removal must preserve program data | Deployment was exercised with isolated temporary config/bin directories, and the implementation does not target program workspace paths. Workspace backup and migration remain separate future work. |
+| Diagnostics | Required packages separated from optional tools and integrations; bounded runtime | Doctor and registry focused suite passed. Optional version checks now use a bounded worker pool; `bb-doctor` full diagnosis completed in under nine seconds in the latest full Kali suite. |
+| Threat and release review | Versioned threat model, release gate, commit-linked evidence | Threat model, release checklist, and pinned-action CI workflow are present. Dependency advisory scanning, SBOM generation, and signed release artifacts are not implemented; stable release tagging remains subject to the checklist. |
+| Scope and live boundaries | Scope tests and honest separation of fixture/service evidence from live targets | Phase-specific tests and limits remain authoritative. No bounty target was contacted for Phase 24; repository tests do not establish detection effectiveness or bounty eligibility. |
 
 ## Verification record
 
-Verification is not complete until this section is updated with the final code commit and the executed results. Record each command, environment, duration, counts, skips, and any remaining limitation. Do not copy historical counts as current evidence.
+All implementation evidence below is tied to code commit `9361df3d773c69a36859ad5f1e562a0df21a887b`. The following documentation checkpoint does not change the tested code. Platform jobs ran the repository's full test suite; the linked workflow provides the job records.
 
 | Environment | Commit | Command | Result |
 |---|---|---|---|
-| Kali Linux | Pending | `python3 -m pytest tests/ -ra` | Pending for Phase 24 implementation |
-| GitHub Ubuntu, Python 3.10 | Pending | Workflow `Tests` | Configured; run result not yet recorded |
-| GitHub Ubuntu, Python 3.14 | Pending | Workflow `Tests` | Configured; run result not yet recorded |
-| GitHub Windows, Python 3.14 | Pending | Workflow `Tests` | Configured; run result not yet recorded |
+| Kali Linux x86-64, Linux `7.2.15+kali-amd64`, Python 3.14.10 | `9361df3` | `python3 -m pytest tests/ -ra --durations=10` | **1,272 passed, 2 skipped** in 147.36 seconds. Skips: Windows path-canonicalization and Windows DACL tests. |
+| Kali Linux focused diagnostics | `9361df3` | `python3 -m pytest tests/test_doctor.py tests/test_tool_registry.py -ra --durations=5` | **18 passed** in 17.97 seconds; full doctor test took 11.78 seconds in this focused run. |
+| GitHub Ubuntu, Python 3.10 | `9361df3` | Workflow `Tests`, `python -m pytest tests/ -ra` | Job passed. |
+| GitHub Ubuntu, Python 3.14 | `9361df3` | Workflow `Tests`, `python -m pytest tests/ -ra` | Job passed. |
+| GitHub Windows Server 2025, Python 3.14 | `9361df3` | Workflow `Tests`, `python -m pytest tests/ -ra` | Job passed, including native Windows path and DACL test coverage. |
+
+The three hosted jobs are recorded in [GitHub Actions run 44381364848](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44381364848). On Kali, the diagnostic-only optimization reduced `test_doctor_full_diagnosis` from 275.75 seconds on the prior sequential implementation to 8.64 seconds on the final code commit.
+
+**Deployment lifecycle evidence on Kali, commit `9361df3`:** Using temporary `OPENCODE_CONFIG_DIR` and `BUGBOUNTY_BIN_DIR` paths, copy and symlink modes each passed deploy, status, repeated deploy, and uninstall. The test began with a synthetic user JSONC config and verified uninstall restored its bytes exactly. Separate detached-checkout rollback exercises deployed commit `9361df3`, rolled back to `8434860`, redeployed `9361df3`, checked status at each step, uninstalled, and verified config restoration in both copy and symlink modes. The Kali checkout returned to `main`; no branch was created and the temporary directories were removed.
 
 No live bounty target was contacted. Unit and local integration tests demonstrate code behavior on fixtures only; they do not establish detection rate, bounty eligibility, or authorization.
 
-## Remaining work before Phase 24 acceptance
+## Boundaries that remain after Phase 24 acceptance
 
-1. Run the focused deployment/doctor regression suite and then the full test suite on Kali from the repository root.
-2. Push the workflow and code on `main`, wait for all Linux and Windows jobs, and record their exact results and commit.
-3. Exercise deploy, repeated update, and uninstall against an isolated real OpenCode config directory while preserving a copy of the user's existing config.
-4. Verify rollback from a known commit in copy and symlink modes without touching program workspaces.
-5. Decide whether Windows service isolation and macOS support are out of scope or require implementation. Keep them explicitly unsupported until evidence exists.
-6. Review dependency provenance and decide whether a lockfile, automated dependency advisory scan, and signed release artifacts are required for the first production-tagged release.
-7. Resolve or explicitly accept the Phase 21, Phase 22, and Windows acceptance limits listed in the [audit register](../PROJECT-AUDIT-ISSUES.md).
+1. Keep the project beta until open issues `AUD-04`, `AUD-06`, `AUD-07`, and `AUD-08` are resolved or deliberately accepted with the relevant capability limits visible to users. These cover live OOB callback confirmation, asset discovery wiring, external reconnaissance tool execution, and live dispatcher mutation evidence.
+2. Treat macOS as unverified and Windows as development/CI only. The Linux systemd dispatcher is the only production service boundary currently implemented.
+3. Before a stable tagged release, review dependency provenance and decide on a lockfile, automated advisory scanning, an SBOM, and signed release artifacts. The release checklist remains a stop gate.
+4. Run the release checklist again for each release candidate; these results describe commit `9361df3`, not future source changes.
 
 ## Starting points
 

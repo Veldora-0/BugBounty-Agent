@@ -2,7 +2,7 @@
 
 This is the canonical status index. Detailed plans, implementation paths, safety boundaries and completion criteria live in [the per-phase guides](phases/) and [project handbook](PROJECT-HANDBOOK.md). Status describes the code and documentation currently present; historic test success does not establish live-target effectiveness.
 
-**Current work:** Phase 24 — Final Integration & Production Readiness is in progress. Deployment ownership checks, config recovery, accurate dependency diagnostics, environment guidance, release checklist, threat model, and a Linux/Windows CI matrix are being implemented and verified. Phase 22 retains unresolved Windows ACL subprocess verification, and Phase 21 retains service acceptance limits. See the [Phase 24 guide](phases/PHASE-24-final-integration-production-readiness.md) and [issue register](PROJECT-AUDIT-ISSUES.md).
+**Current status:** Phase 24 implementation and its documented beta acceptance gates are complete. Kali Linux full-suite, hosted Ubuntu Python 3.10/3.14, hosted Windows Python 3.14, isolated deployment/rollback, and diagnostic performance checks are recorded in the [Phase 24 guide](phases/PHASE-24-final-integration-production-readiness.md). The repository remains beta with the capability and live-service limits listed in the [issue register](PROJECT-AUDIT-ISSUES.md); this status does not claim production-ready live bounty coverage.
 
 | Phase | Name | Current status |
 |---:|---|---|
@@ -27,9 +27,9 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 19 | Infrastructure & Configuration Exposure | Implemented; read-only and size bounded |
 | 20 | Race Conditions & Distributed Workflows | Implemented with low-volume bounds |
 | 21 | Authentication & Authorization Correlation | Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; live Linux systemd mutation unverified) |
-| 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Implemented; all four milestones verified on Kali Linux (102 tests pass); Windows ACL subprocess verification unresolved |
-| 23 | Autonomous Research Planning & Coverage Intelligence | Implemented; Linux acceptance verified; public-source discovery requires an available read-only research capability; Windows verification pending |
-| 24 | Final Integration & Production Readiness | In progress; deployment hardening and release documentation implemented, current cross-platform test evidence and rollback acceptance pending |
+| 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Implemented; Kali focused suite passed; full hosted Windows suite passed; attack-path and live-target limits remain documented |
+| 23 | Autonomous Research Planning & Coverage Intelligence | Implemented; Linux and hosted Windows full-suite acceptance passed; public-source discovery requires an available read-only research capability |
+| 24 | Final Integration & Production Readiness | Implemented and verified for the documented beta support boundary; project-wide capability and live-service issues remain open |
 
 ## Roadmap-wide completion requirements
 

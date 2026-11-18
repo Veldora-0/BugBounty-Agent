@@ -10,16 +10,16 @@ This page separates the Python package's declared compatibility from environment
 
 | Environment | Support position | What is verified | Important limits |
 |---|---|---|---|
-| Kali Linux x86-64 | Primary research environment | The latest previously recorded full-suite run used Kali Linux and Python 3.14.10. A new Phase 24 run will be recorded against its exact commit before acceptance. | The installed Linux dispatcher has separate live-service acceptance evidence and limits in Phase 21. Optional OSINT tools and OOB services are not implied by the core install. |
+| Kali Linux x86-64 | Primary research environment | On commit `9361df3`, Linux `7.2.15+kali-amd64`, Python 3.14.10: full suite **1,272 passed, 2 skipped** in 147.36 seconds. | The skips were Windows-specific path/DACL checks. The installed Linux dispatcher has separate live-service acceptance evidence and limits in Phase 21. Optional OSINT tools and OOB services are not implied by the core install. |
 | Other Linux distributions | Best effort | The project uses Python and POSIX facilities in several paths, but distribution-specific service setup is not generally tested. | Package names, service managers, permissions and browser dependencies can differ. Use Kali instructions only where they apply. |
-| Windows 10/11 | Development and CLI use only; current acceptance pending | Historical Windows test runs exist. The current Windows launcher was unavailable during the November 2026 audit, and Phase 22 ACL subprocess verification remains unresolved. | Linux systemd dispatcher isolation is not available on Windows. Do not treat Windows as a production-equivalent deployment. |
+| Hosted Windows Server 2025 CI; Windows desktop development | Development and CLI use only; full-suite CI verified | On commit `9361df3`, the `windows-latest / Python 3.14` job passed in [GitHub Actions run 44381364848](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44381364848). Native Windows CI runs the DACL checks that are skipped on Kali. | This CI result is not evidence for every Windows 10/11 desktop configuration. Linux systemd dispatcher isolation is not available on Windows; Windows production dispatcher isolation remains unsupported. |
 | macOS | Unverified | No current full-suite result is recorded. | Do not infer support from Python portability alone. |
 
 ## Python and optional runtimes
 
 `pyproject.toml` declares Python **3.10 or newer**. The core runtime dependencies are PyYAML and `cryptography`. Playwright is an optional extra (`.[browser]`); installing it does not install every browser binary. Install a browser only when using the browser capability and follow the current Playwright instructions for that environment.
 
-The release workflow is configured to test Linux on Python 3.10 and 3.14, and Windows on Python 3.14. Those jobs are acceptance evidence only after they have actually run successfully for the commit being evaluated. This matrix does not verify macOS, browser binaries, a production Windows dispatcher, live OOB services, third-party tool integrations, or live-target vulnerability detection.
+The release workflow tests Linux on Python 3.10 and 3.14, and Windows on Python 3.14. All three full-suite jobs passed for commit `9361df3` in [run 44381364848](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44381364848). This matrix does not verify macOS, browser binaries on every host, a production Windows dispatcher, live OOB services, third-party tool integrations, or live-target vulnerability detection.
 
 ## Linux-first setup
 

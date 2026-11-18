@@ -1,6 +1,6 @@
 # Phase 23 — Autonomous Research Planning & Coverage Intelligence
 
-**Status:** Implemented; Kali Linux acceptance verified. Windows acceptance was not run in this workspace. Recommendations are advisory and never authorize target activity.
+**Status:** Implemented; Kali Linux and hosted Windows full-suite acceptance verified. Recommendations are advisory and never authorize target activity.
 **Implementation:** `.opencode/commands/Arise.md`, `framework/research_planning/`, `scripts/bb-plan`, `scripts/bb-arise`, and the existing `knowledge-research` skill.
 
 ## Purpose and bounty value
@@ -68,7 +68,7 @@ Expected outputs are phase-specific observations/hypotheses, state updates, and 
 - Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
 
 ## Remaining work and limitations
-The repository CLI deliberately does not scrape public sites; discovery depends on the orchestrator's available read-only search capability. If that capability is unavailable, it cannot find new reports automatically. The score is a transparent prioritization heuristic, not an exploitability probability. Coverage is limited by the completeness and freshness of local program state; the engine does not infer missing endpoint details or run tests. Windows verification must be reported separately from Linux acceptance because this workspace has no working Windows Python launcher; no Windows Phase 23 test result is claimed. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+The repository CLI deliberately does not scrape public sites; discovery depends on the orchestrator's available read-only search capability. If that capability is unavailable, it cannot find new reports automatically. The score is a transparent prioritization heuristic, not an exploitability probability. Coverage is limited by the completeness and freshness of local program state; the engine does not infer missing endpoint details or run tests. A full hosted Windows Server 2025 / Python 3.14 suite passed for commit `9361df3`; this verifies the Windows test environment and fixtures, not every Windows desktop setup. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
 
 ## Verification record
 
@@ -80,7 +80,7 @@ Verified on Kali Linux at commit `0a2d7a8` on 2026-11-18:
 - The local `voting-limit` concurrency fixture passed **10 consecutive** isolated runs after its simulation-only race window was widened to 500 ms to reduce scheduler-sensitive false negatives under suite load.
 - `bb-plan --help` and `bb-arise --help` both returned successfully on Kali.
 
-These checks verify local fixtures and command/deployment behavior; they do not establish live-target vulnerability discovery effectiveness. No Windows test result is claimed.
+The full Kali and hosted Windows suite results are recorded in the [Phase 24 verification record](PHASE-24-final-integration-production-readiness.md#verification-record). These checks verify local fixtures and command/deployment behavior; they do not establish live-target vulnerability discovery effectiveness.
 
 ## Source references
 Phase 23 acceptance tests: `tests/test_phase23_research_planning.py` and `tests/test_deploy.py`. See [the project handbook](../PROJECT-HANDBOOK.md) and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
