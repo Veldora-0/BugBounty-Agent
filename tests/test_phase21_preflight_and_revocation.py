@@ -17,7 +17,7 @@ import os
 import secrets
 import time
 import pytest
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from framework.auth_correlation.cvss import CVSS31Calculator
 from framework.auth_correlation.ledger import (
