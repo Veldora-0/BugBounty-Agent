@@ -3,8 +3,8 @@
 ## Purpose
 VirusTotal inspects URLs, domains, IPs, and file samples, aggregating intelligence from 70+ antivirus engines and scanning tools alongside passive DNS datasets.
 
-## Why BugBounty-Agent Uses It
-BugBounty-Agent queries VirusTotal via `subfinder` to gather historical passive DNS resolutions, sibling subdomains, and identified web certificates.
+## Integration status
+VirusTotal is listed as a possible Subfinder provider. BugBounty-Agent does not invoke Subfinder from its normal asset or reconnaissance CLI and does not pass this credential to it. `bb-doctor` can report only whether a key is present.
 
 ## Account Required
 **YES**
@@ -31,7 +31,7 @@ VT_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 ## Configuration
-BugBounty-Agent injects `VT_API_KEY` into subfinder's execution environment.
+The provider manager reads `secrets.env` for key-presence diagnostics; it does not inject the value into another process. Configure Subfinder through its current native provider setup before a separate manual run.
 
 ## Verification
 Test your API key using curl:
@@ -42,13 +42,10 @@ curl --request GET \
 ```
 
 ## Rate Limits / Quotas
-* Public API: 4 requests per minute, 500 requests per day.
-* Commercial/Premium API: Custom high-frequency thresholds.
+Check the current VirusTotal documentation and plan limits before using the API; public and commercial entitlements can differ.
 
 ## Privacy / Terms Considerations
 All submissions and queries to VirusTotal may be shared with its security research partners.
 
 ## Failure Behavior
-If the daily quota (500 req/day) is reached:
-* VirusTotal returns HTTP `429 QuotaExceededError`.
-* BugBounty-Agent skips VirusTotal queries and relies on other passive DNS providers.
+If the quota is reached, the manually used provider may reject or throttle requests. BugBounty-Agent does not issue VirusTotal queries or select a fallback.

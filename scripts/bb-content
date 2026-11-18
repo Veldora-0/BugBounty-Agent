@@ -1,81 +1,214 @@
 #!/usr/bin/env python3
 """
-bb-content — Controlled content discovery and path enumeration wrapper.
+bb-content — Bounded, scope-checked content discovery using pinned HTTP transport.
 
-Wraps ffuf or native wordlist probing.
-Enforces scope validation and configured rate limits.
+The command sends sequential GET requests through the shared safe transport.
+It does not delegate target traffic to an external scanner.
 """
 
+from __future__ import annotations
+
 import argparse
+import json
 import os
-import shutil
-import subprocess
+import re
 import sys
+import time
+from urllib.parse import quote, urlsplit
 
 REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from framework.common.config import get_program_dir, resolve_program_scope_file
+from framework.common.transport import safe_fetch_url
 from framework.scope.engine import ScopeEngine, ScopeStatus
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Controlled content discovery with scope enforcement.")
-    parser.add_argument("url", help="Target base URL with FUZZ keyword (e.g. https://api.example.com/FUZZ)")
+MAX_REQUESTS = 1000
+MAX_RATE = 10
+MAX_RUNTIME_SECONDS = 300
+REQUEST_TIMEOUT_SECONDS = 5
+MAX_RESPONSE_BYTES = 64 * 1024
+MATCHED_STATUSES = {200, 204, 301, 302, 307, 401, 403}
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Bounded content discovery with scope and destination checks.")
+    parser.add_argument("url", help="In-scope HTTP(S) URL containing exactly one FUZZ marker in its path or query")
     parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
-    parser.add_argument("--wordlist", "-w", required=True, help="Path to wordlist file")
-    parser.add_argument("--rate", "-r", type=int, default=5, help="Requests per second rate limit (default 5)")
+    parser.add_argument("--wordlist", "-w", required=True, help="Path to a small, reviewed wordlist")
+    parser.add_argument("--rate", "-r", type=int, default=2, help="Maximum request rate (1-10 requests per second; default 2)")
+    parser.add_argument("--max-requests", type=int, default=100, help="Maximum wordlist entries (1-1000; default 100)")
+    parser.add_argument("--max-runtime", type=int, default=120, help="Maximum run time in seconds (1-300; default 120)")
+    return parser
+
+
+def _validate_target_template(template: str) -> str:
+    if template.count("FUZZ") != 1:
+        raise ValueError("URL must contain exactly one FUZZ marker.")
+    parsed_original = urlsplit(template)
+    if "FUZZ" in parsed_original.netloc:
+        raise ValueError("FUZZ may appear only in the URL path or query, not the host.")
+    parsed = urlsplit(template.replace("FUZZ", "scope-check"))
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Target must be a valid HTTP or HTTPS URL.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Credentials in the target URL are not allowed.")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("Target URL has an invalid port.") from exc
+    return template.replace("FUZZ", "scope-check")
+
+
+def _read_wordlist(path: str, limit: int) -> list[str]:
+    entries: list[str] = []
+    with open(path, "r", encoding="utf-8", errors="replace") as source:
+        for line in source:
+            value = line.strip()
+            if not value:
+                continue
+            entries.append(value)
+            if len(entries) >= limit:
+                break
+    return entries
+
+
+def _safe_output_name(host: str, port: int | None) -> str:
+    host_label = re.sub(r"[^A-Za-z0-9_.-]", "_", host).strip("._") or "target"
+    port_label = f"_{port}" if port is not None else ""
+    return f"content_{host_label}{port_label}.json"
+
+
+def main() -> int:
+    parser = _parser()
     args = parser.parse_args()
+
+    if args.rate < 1 or args.rate > MAX_RATE:
+        parser.error(f"--rate must be between 1 and {MAX_RATE} requests per second.")
+    if args.max_requests < 1 or args.max_requests > MAX_REQUESTS:
+        parser.error(f"--max-requests must be between 1 and {MAX_REQUESTS}.")
+    if args.max_runtime < 1 or args.max_runtime > MAX_RUNTIME_SECONDS:
+        parser.error(f"--max-runtime must be between 1 and {MAX_RUNTIME_SECONDS} seconds.")
+
+    try:
+        scope_check_url = _validate_target_template(args.url)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     prog_dir = get_program_dir(args.program)
     scope_file = resolve_program_scope_file(prog_dir)
     if not scope_file:
-        print(f"[!] Error: Scope file not found for program '{args.program}'", file=sys.stderr)
-        sys.exit(2)
+        print(f"[!] Error: Scope file not found for program '{args.program}'.", file=sys.stderr)
+        return 2
 
-    engine = ScopeEngine.from_file(scope_file)
+    try:
+        scope_engine = ScopeEngine.from_file(scope_file)
+    except Exception:
+        print("[!] Error: Program scope file is invalid; refusing content discovery.", file=sys.stderr)
+        return 2
 
-    # 1. SCOPE VERIFICATION
-    # Check base URL without FUZZ
-    base_check_url = args.url.replace("FUZZ", "").rstrip("/")
-    decision = engine.check(base_check_url)
-    if decision.status != ScopeStatus.IN_SCOPE:
-        print(f"[!] REFUSING SCAN: Target URL '{base_check_url}' is OUT OF SCOPE: {decision.reason}", file=sys.stderr)
-        sys.exit(1)
+    template_decision = scope_engine.check(scope_check_url)
+    if template_decision.status != ScopeStatus.IN_SCOPE:
+        print(f"[!] Refusing content discovery: URL template is not in scope ({template_decision.reason}).", file=sys.stderr)
+        return 1
 
     if not os.path.isfile(args.wordlist):
         print(f"[!] Error: Wordlist file '{args.wordlist}' not found.", file=sys.stderr)
-        sys.exit(1)
-
-    if not shutil.which("ffuf"):
-        print("[!] ffuf is not installed. Install via: sudo apt install ffuf", file=sys.stderr)
-        sys.exit(1)
-
-    output_file = os.path.join(prog_dir, "scans", f"ffuf_{os.path.basename(base_check_url)}.json")
-
-    cmd = [
-        "ffuf",
-        "-u", args.url,
-        "-w", args.wordlist,
-        "-rate", str(args.rate),
-        "-mc", "200,204,301,302,307,401,403",
-        "-o", output_file,
-        "-of", "json",
-        "-s",
-    ]
-
-    print(f"[*] Starting controlled content fuzzing against: {args.url}")
-    print(f"[*] Rate limit: {args.rate} req/sec | Output: {output_file}")
+        return 1
 
     try:
-        subprocess.run(cmd, check=True)
-        print(f"[+] Content discovery completed. Results in {output_file}")
+        entries = _read_wordlist(args.wordlist, args.max_requests)
+    except OSError:
+        print("[!] Error: Could not read the supplied wordlist.", file=sys.stderr)
+        return 1
+    if not entries:
+        print("[!] Error: Wordlist has no non-empty entries to test.", file=sys.stderr)
+        return 1
+
+    parsed = urlsplit(scope_check_url)
+    scans_dir = os.path.join(prog_dir, "scans")
+    os.makedirs(scans_dir, exist_ok=True)
+    output_file = os.path.join(scans_dir, _safe_output_name(parsed.hostname or "target", parsed.port))
+    deadline = time.monotonic() + args.max_runtime
+    interval = 1.0 / args.rate
+    last_dispatch: float | None = None
+    results: list[dict[str, object]] = []
+    skipped_out_of_scope = 0
+    attempted = 0
+
+    print(f"[*] Starting sequential, scope-checked content discovery for {parsed.hostname}.")
+    print(f"[*] Entry limit: {len(entries)} | Rate limit: {args.rate}/s | Runtime limit: {args.max_runtime}s")
+
+    try:
+        for entry in entries:
+            if time.monotonic() >= deadline:
+                print("[!] Runtime budget reached; saving partial results.", file=sys.stderr)
+                break
+
+            expanded_value = quote(entry, safe="/-._~")
+            target_url = args.url.replace("FUZZ", expanded_value, 1)
+            decision = scope_engine.check(target_url)
+            if decision.status != ScopeStatus.IN_SCOPE:
+                skipped_out_of_scope += 1
+                continue
+
+            if last_dispatch is not None:
+                delay = interval - (time.monotonic() - last_dispatch)
+                if delay > 0:
+                    time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+            if time.monotonic() >= deadline:
+                print("[!] Runtime budget reached; saving partial results.", file=sys.stderr)
+                break
+
+            attempted += 1
+            last_dispatch = time.monotonic()
+            response = safe_fetch_url(
+                target_url,
+                method="GET",
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                max_bytes=MAX_RESPONSE_BYTES,
+                scope_engine=scope_engine,
+                max_redirects=3,
+            )
+            if not response:
+                continue
+
+            status = int(response.get("status_code", 0))
+            if status not in MATCHED_STATUSES:
+                continue
+            headers = response.get("headers", {})
+            if not isinstance(headers, dict):
+                headers = {}
+            body = response.get("raw_bytes", b"")
+            # Save only minimal path/status metadata. Do not persist response bodies,
+            # query strings, credentials, or arbitrary target content.
+            results.append({
+                "path": urlsplit(target_url).path,
+                "status_code": status,
+                "content_length_sampled": len(body) if isinstance(body, (bytes, bytearray)) else 0,
+                "content_type": str(headers.get("Content-Type", ""))[:120],
+            })
     except KeyboardInterrupt:
-        print("\n[!] Aborted by user.")
-    except Exception as e:
-        print(f"[!] ffuf execution failed: {e}", file=sys.stderr)
+        print("\n[!] Aborted by user; saving partial results.", file=sys.stderr)
+
+    payload = {
+        "program": args.program,
+        "host": parsed.hostname,
+        "attempted": attempted,
+        "skipped_out_of_scope": skipped_out_of_scope,
+        "truncated_response_bytes": MAX_RESPONSE_BYTES,
+        "results": results,
+    }
+    with open(output_file, "w", encoding="utf-8") as out:
+        json.dump(payload, out, indent=2, sort_keys=True)
+        out.write("\n")
+
+    print(f"[+] Requests attempted: {attempted}; matching responses: {len(results)}; out-of-scope entries skipped: {skipped_out_of_scope}.")
+    print(f"[+] Minimal results saved to {output_file}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

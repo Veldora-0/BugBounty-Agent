@@ -45,7 +45,7 @@ from framework.attack_path.validator import (
     ValidationAuditEvent,
     ValidationPlanStatus,
 )
-from framework.common.config import get_workspace_root
+from framework.common.config import get_workspace_root, resolve_program_scope_file
 from framework.findings.schema import Finding
 from framework.scope.engine import ScopeEngine
 
@@ -79,28 +79,12 @@ def resolve_program_directory(program_arg: Optional[str], workspace_arg: Optiona
 
 
 def resolve_scope_engine(program_dir: str) -> Optional[ScopeEngine]:
-    """Resolves ScopeEngine from program scope.yaml or fallback."""
-    scope_file = os.path.join(program_dir, "scope.yaml")
-    if os.path.isfile(scope_file):
-        try:
-            return ScopeEngine.from_file(scope_file)
-        except Exception:
-            pass
-
+    """Loads the program's canonical scope file; missing or invalid scope fails closed."""
+    scope_file = resolve_program_scope_file(program_dir)
+    if not scope_file:
+        return None
     try:
-        return ScopeEngine({
-            "program": {"name": os.path.basename(program_dir)},
-            "targets": {
-                "domains": ["api.example.com", "example.com", "*.example.com"],
-                "urls": ["https://api.example.com/*", "https://example.com/*"],
-                "cidrs": [],
-            },
-            "out_of_scope": {
-                "domains": [],
-                "urls": [],
-                "cidrs": [],
-            },
-        })
+        return ScopeEngine.from_file(scope_file)
     except Exception:
         return None
 
@@ -506,6 +490,9 @@ def cmd_validate(args: argparse.Namespace, state_mgr: AttackPathStateManager) ->
         return 1
 
     scope_eng = resolve_scope_engine(state_mgr.program_dir)
+    if scope_eng is None:
+        print("[!] Refusing chain validation: a valid program scope file is required.", file=sys.stderr)
+        return 1
     planner = SafeChainValidationPlanner(state_manager=state_mgr, scope_engine=scope_eng)
 
     try:

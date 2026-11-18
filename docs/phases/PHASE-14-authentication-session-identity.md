@@ -1,33 +1,47 @@
-# Phase 14 — Authentication, Session & Identity
+# Phase 14 — Authentication, Session, and Identity
 
-**Status:** Implemented; 14.1/14.2 hardening milestones
-**Implementation:** framework/authentication/, skills/authentication/, scripts/bb-auth
+**Status:** Implemented for bounded authentication-flow modeling and validation; operator-managed identities and explicit approval are required for sensitive changes.
+**Implementation:** **framework/authentication/**, **scripts/bb-auth**, and the **authentication skill**
+**State file:** **state/authentication.json**.
 
-## Purpose and bounty value
-Map authentication and session behavior including logout, rotation, MFA transitions, reset flows and JWT structure. No brute force or password spraying. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## What this phase studies
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+Authentication answers “who are you?” Authorization answers “what are you allowed to do?” Phase 14 focuses on the first question and on the lifecycle of the identity proof: login, logout, session creation and rotation, password reset, multi-factor authentication (MFA), and token handling.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+A defect may occur when logging out fails to invalidate a session, a reset link can be reused, or an account crosses an MFA boundary incorrectly. A token’s structure alone is not a vulnerability. The researcher must show a specific security property that failed using only accounts created or supplied for the assessment.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## How the phase works
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The engine models authentication surfaces and flows, creates hypotheses, and can validate selected behavior with a baseline and a controlled comparison. The policy requires current scope, prohibits password spraying and brute force, blocks cloud metadata and local infrastructure, and caps each hypothesis by request count, timeout, and response size. Password changes, reset submissions, MFA enrollment or disablement, revocation, and similar state mutations require human approval. A deterministic local lab is available.
 
-## Remaining work and limitations
-Complete remaining integration through the Phase 21 trust boundary; support only explicit test identities. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+Identity profiles and session records are references to researcher-controlled test identities. Never put reusable passwords, cookies, or bearer tokens in Git, examples, or ordinary command arguments. The state store masks sensitive evidence, but the actual credentials still need private storage and careful handling.
 
-## Source references
-Relevant tests: test_authentication_engine.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to use it
+
+~~~bash
+# List hypotheses without sending requests.
+bb-auth --program <program-name> --hypotheses --passive-only --tree
+
+# Inspect one authentication flow from local state.
+bb-auth --program <program-name> --flow session --passive-only --json
+
+# Exercise the local authentication lab.
+bb-auth --program <program-name> --lab --json
+
+# Active validation is separate and requires valid scope; sensitive changes also need explicit approval.
+bb-auth --program <program-name> --asset app.example.org --validate --flow logout --json
+~~~
+
+Before active validation, inspect the resulting dossier and confirm that the selected identity is a disposable program-approved account. The command example does not imply that the target permits the test.
+
+## Evaluating results
+
+Compare what the application should do with what happens to the same controlled session. For example, after logout, make one safe request using the test account’s own session and see whether it is still accepted. Keep the account, action, timestamps, and sanitized response tied together. A status-code change alone may not establish whether the old session remains valid.
+
+A report should state the preconditions, identity role, state transition, observed result, and impact. Do not claim account takeover from token parsing or a guessed reset weakness; show only the minimum safe evidence needed.
+
+## Safety and limitations
+
+Do not brute-force, spray, bypass CAPTCHAs, attack third-party identity providers, or test accounts that do not belong to the researcher or program. State-mutation approval is not a substitute for a rollback plan. Multi-device, federated-provider, and application-specific session behaviors may not be fully represented.
+
+Tests: **tests/test_authentication_engine.py** and Phase 14 hardening tests in **tests/test_phase21_***. See [Phase 21](PHASE-21-authentication-authorization-correlation.md), [security policy](../security.md), and [roadmap](../ROADMAP-24-PHASES.md).

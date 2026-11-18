@@ -1,6 +1,6 @@
 # BugBounty-Agent — Phase 1–20 Stable Technical Baseline
 
-> **HISTORICAL BASELINE — PARTIALLY SUPERSEDED:** The Phase 1–20 implementation matrix is a useful historical inventory, but its snapshot counts and Phase 21 reconciliation are not current acceptance evidence. Phase 21 is partially implemented and not accepted. Use the [current roadmap](ROADMAP-24-PHASES.md) and [issue register](PROJECT-AUDIT-ISSUES.md).
+> **HISTORICAL BASELINE — PARTIALLY SUPERSEDED:** This baseline records an older implementation snapshot. Its test counts and blanket phase verdicts are not current acceptance evidence; later review found Phase 1 discovery and Phase 2 external-tool integration gaps, among other documented limits. Phase 21 has since gained independent receipt verification and has separate platform/live-service limitations. Use the [current roadmap](ROADMAP-24-PHASES.md), [per-phase guides](phases/), and [issue register](PROJECT-AUDIT-ISSUES.md) for current status.
 ## Authoritative Architecture, Security, Quality, and Verification Assessment
 
 ---

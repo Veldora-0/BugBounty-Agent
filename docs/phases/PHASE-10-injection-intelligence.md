@@ -1,33 +1,47 @@
 # Phase 10 — Injection Intelligence
 
-**Status:** Implemented with documented limits
-**Implementation:** framework/injection/, skills/injection/, scripts/bb-inject
+**Status:** Implemented for bounded candidate testing; timing checks are opt-in and results require human confirmation.
+**Implementation:** **framework/injection/**, **scripts/bb-inject**, and the **injection skill**
+**State file:** **state/injection.json** in the local program workspace.
 
-## Purpose and bounty value
-Use bounded arithmetic, timing and context markers to assess SQL/NoSQL, SSTI and command-injection hypotheses without extracting data. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## What injection means
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+Injection happens when an application treats user-controlled input as part of a command or query instead of as ordinary data. Examples include database queries (SQL or NoSQL), template rendering (SSTI), and operating-system commands. The same input can be safe in one context and dangerous in another, so the phase starts from a particular endpoint and parameter rather than spraying every field.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+Phase 10 uses small, non-destructive comparisons to look for a signal that input is being interpreted. A harmless arithmetic marker might produce a different response if a template evaluates it. A timing differential can be a clue when a response is consistently delayed under a carefully controlled condition. Neither signal alone proves exploitable impact: network jitter, caching, rate limiting, or application logic can produce similar effects.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## How the phase works
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The engine reads candidate parameters from local API and web state, assigns a priority, and constructs cases for SQL, NoSQL, template, and command-injection hypotheses. Each case is checked against the configured scope, and active requests are bounded by test count, request count, timeout, and response-byte ceiling. A case fingerprint allows the engine to skip previous attempts. Timing analysis is disabled unless explicitly selected. Active execution requires the operator’s approval flag; passive-only and dry-run modes are available for planning.
 
-## Remaining work and limitations
-Improve noise handling and separate observed behavior from confirmed exploitable impact. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+The engine stores results in **injection.json**. Review the baseline and test response together, including status, body differences, and timing data. The system should not extract database contents, read files, run shell commands, or perform destructive actions to prove an issue.
 
-## Source references
-Relevant tests: test_injection_engine.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to use it
+
+~~~bash
+# Rank candidate parameters without sending probes.
+bb-inject --program <program-name> --passive-only --tree
+
+# Prepare a safe plan for one endpoint and one parameter.
+bb-inject --program <program-name> --endpoint https://app.example.org/search --param q --dry-run --json
+
+# Review the human dossier before a narrow active test.
+bb-inject --program <program-name> --endpoint https://app.example.org/search --param q --dossier --json
+
+# Execute only when program rules permit it and the exact test has been reviewed.
+bb-inject --program <program-name> --endpoint https://app.example.org/search --param q --approve --max-tests 1 --max-requests 2 --json
+~~~
+
+Timing tests and lab mode have separate options; use them only in the intended controlled context. Check **bb-inject --help** before choosing a validator or enabling timing comparisons.
+
+## What counts as evidence
+
+A candidate becomes convincing when the control and test requests differ in a way that is repeatable and explained by the suspected interpreter, while ordinary network variation and application behavior have been ruled out. A reflected input is not automatically SQL injection; a delay is not automatically command execution; a template marker being echoed as text is not template evaluation.
+
+State the exact endpoint, parameter, baseline, harmless test, observed difference, and remaining uncertainty. If the only evidence is a static guess or a one-time delay, report it as a hypothesis and do not claim a confirmed vulnerability.
+
+## Safety and limitations
+
+Do not retrieve records, invoke operating-system commands, create persistent server-side data, or probe an endpoint outside current authorization. The limits are ceilings, not a recommendation to use every allowed request. The validator set is finite and cannot cover every database, encoding, framework, or application-specific parser. Static candidate ranking can miss relevant inputs or prioritize harmless ones.
+
+Tests in **tests/test_injection_engine.py** validate bounded logic with fixtures; they do not prove exploitability on a live service. See the [validation guide](PHASE-06-security-validation-foundation.md), [scope guide](../scope.md), and [roadmap](../ROADMAP-24-PHASES.md).

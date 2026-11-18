@@ -1,33 +1,47 @@
-# Phase 9 — SSRF Intelligence
+# Phase 9 — Server-Side Request Forgery Intelligence
 
-**Status:** Implemented; live OOB constrained
-**Implementation:** framework/ssrf/, skills/oob/, scripts/bb-ssrf
+**Status:** Candidate analysis and safety controls are implemented; live out-of-band callback confirmation is unavailable unless a supported provider is added.
+**Implementation:** **framework/ssrf/**, **scripts/bb-ssrf**, and the **oob** skill
+**State file:** **state/ssrf.json** in the local program workspace.
 
-## Purpose and bounty value
-Identify SSRF candidates, constrain destination resolution and correlate callbacks when a live provider is operational. Simulations cannot create live-confirmed findings. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## What SSRF means
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+Server-Side Request Forgery (SSRF) is a weakness where an application can be induced to make a network request chosen by a user. The impact depends on what the server can reach and what the response reveals. A parameter named **url** or **callback** is only a clue; it does not prove that the server fetches that value.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+Some SSRF behavior is blind: the application does not show the response, so a researcher looks for a safe callback to a controlled out-of-band service. The callback must be uniquely attributable to the test. Phase 9 can model candidates and plan canary checks, but its configured Interactsh and Collaborator integrations currently report unavailable because live polling has not been implemented. Mock callbacks are simulations and cannot support a live-confirmed finding.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## How the phase works
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The engine gathers URL-like parameters from existing application and API state, ranks candidate inputs, checks scope and destination safety, and creates bounded test cases. Active tests require explicit approval and have ceilings for the number of cases, requests, response bytes, and callback wait time. The engine blocks local and cloud metadata destinations and prevents a candidate redirect or resolved address from silently crossing a safety boundary.
 
-## Remaining work and limitations
-Complete and independently verify safe live OOB provider polling; maintain blocked-address protections. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+Use the deterministic local lab to understand expected behavior without contacting a bounty target. For a live test, the program must permit the exact behavior and the operator must have a functioning, controlled callback provider. Until provider polling is independently verified, the correct result for blind confirmation is unavailable or unconfirmed, not vulnerable.
 
-## Source references
-Relevant tests: test_ssrf_engine.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to run it
+
+~~~bash
+# Build a candidate list from existing local state.
+bb-ssrf --program <program-name> --passive-only --tree
+
+# Review a proposed canary test without dispatching it.
+bb-ssrf --program <program-name> --endpoint https://app.example.org/fetch --param url --dry-run --json
+
+# Exercise deterministic behavior against the local fixture lab.
+bb-ssrf --program <program-name> --lab --json
+
+# A live canary needs explicit case approval and an operational provider.
+bb-ssrf --program <program-name> --endpoint https://app.example.org/fetch --param url --approve-id <case-id> --max-tests 1 --max-requests 1 --json
+~~~
+
+Do not point a test at internal infrastructure, metadata endpoints, unrelated domains, or a provider you do not control. Read the current CLI help before use.
+
+## How to evaluate a result
+
+A response that changes after a marker is submitted can be an interesting observation, but it does not by itself prove a server-side fetch. A callback observation needs a unique correlation token, a verified provider source, a timestamp, and evidence that ties the callback to the tested request. A local mock can prove the test code’s logic only.
+
+If callback confirmation is unavailable, document the hypothesis and missing evidence. Do not state that a blind SSRF has been confirmed or infer access to internal services. A safe proof should demonstrate the smallest permitted impact without retrieving internal data.
+
+## Safety and limitations
+
+Keep callback identifiers unique to one approved test. Stop on any unexpected interaction or impact. This phase is not an internal-network scanner and does not authorize testing cloud metadata or third-party systems.
+
+The unresolved provider limitation is tracked in the [project audit issues](../PROJECT-AUDIT-ISSUES.md). Tests in **tests/test_ssrf_engine.py** and **tests/test_providers.py** cover logic and provider failure states, not live callback delivery. See [Phase 18](PHASE-18-ssrf-xxe-server-side-parsers.md), the **OOB skill**, and [roadmap](../ROADMAP-24-PHASES.md).

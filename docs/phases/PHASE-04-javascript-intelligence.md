@@ -1,33 +1,50 @@
 # Phase 4 — JavaScript Intelligence
 
-**Status:** Implemented; read-only analysis
-**Implementation:** framework/javascript/, skills/javascript/, scripts/bb-js
+**Status:** Implemented for bounded static analysis; framework-aware extraction and broader source-map recovery remain limited.
+**Implementation:** **framework/javascript/**, **scripts/bb-js**, and the **javascript skill**
+**State file:** **state/javascript.json** in the local program workspace.
 
-## Purpose and bounty value
-Analyze authorized JavaScript assets, routes, source maps, secrets and DOM source-to-sink patterns. Redact sensitive strings and cap input bytes. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## Why this phase exists
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+Modern web applications often place route names, API paths, feature flags, and client-side logic in JavaScript files. A researcher can use those files to learn where an application sends requests and which values it expects. Phase 4 collects a bounded set of JavaScript resources and searches their text for these useful clues without running the target’s code.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+The phase is an analysis assistant. A string that looks like an endpoint or key is only a clue. Some strings are examples, stale code, public configuration, or unused text. Do not call every discovered string a secret or every route a security issue. Confirm that a route belongs to a current in-scope application before testing it.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## Inputs and processing
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The engine reads JavaScript resource observations from Phase 3, or accepts a single resource URL or host filter. Active acquisition requires an in-scope URL and a configured scope engine. The default policy caps the number of files, requests, total bytes, and per-file size. The downloaded script text is hashed for deduplication and analyzed by static patterns for endpoints, routes, parameter references, interesting strings, dependencies, and source-map references.
 
-## Remaining work and limitations
-Add framework-aware route extraction and stronger confidence calibration for suspected client-side issues. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+The analyzer stores structured results rather than executing script code. Source-map reference extraction should be read as discovery of a reference unless the specific implementation and result say the source map itself was acquired and parsed. **--passive-only** reviews scripts already present in local state and avoids active HTTP acquisition. **--resume** skips previously processed resources or hashes where state supports it.
 
-## Source references
-Relevant tests: test_javascript_engine.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to run it
+
+~~~bash
+# Review the JavaScript findings already present in state.
+bb-js --program <program-name> --passive-only --tree
+
+# Analyze JavaScript resources previously found for one authorized host.
+bb-js --program <program-name> --asset app.example.org --tree
+
+# Analyze one known in-scope script URL.
+bb-js --program <program-name> --resource https://app.example.org/static/app.js --json
+
+# Reduce transfer sizes and request volume for a cautious run.
+bb-js --program <program-name> --max-files 10 --max-requests 20 --max-bytes-per-file 262144
+
+# Preview results without persisting them.
+bb-js --program <program-name> --dry-run --json
+~~~
+
+Use the program’s real scope and follow its rules for downloads. The URL shown above is illustrative.
+
+## What the output means
+
+The state file contains resources and extracted observations. A route is a candidate path, not proof that it is live. A parameter reference shows that text in a script uses a value, not that the server accepts it or enforces a security boundary. Interesting strings are masked to reduce accidental exposure; inspect them carefully and never copy credentials or tokens into reports or Git.
+
+A productive next step is to compare discovered routes with Phase 5 API observations and Phase 3 pages, then write a hypothesis tied to a specific, authorized endpoint. If you find a candidate credential, first determine safely whether it is a public identifier or a privileged secret without using it to access data or services.
+
+## Safety and limitations
+
+The phase does not execute downloaded code and has acquisition budgets. Those controls do not make an out-of-scope file permissible to download. Large bundles may be truncated or skipped; minified or dynamically generated code can defeat simple patterns. Framework-specific routing, semantic reachability, source-map content recovery, and confidence calibration are not complete. Results need human triage and should never be presented as verified impact by themselves.
+
+Tests in **tests/test_javascript_engine.py** exercise local script fixtures and analysis limits, not comprehensive coverage of modern front-end frameworks. See the **JavaScript skill**, **workflow guide**, and **roadmap**.

@@ -6,10 +6,10 @@ This document captures candidate improvements for completing the roadmap and mak
 
 ### Phase 21 — Trusted authentication/authorization correlation
 
-- Resolve the disabled execution capability and controlled-attestation gates through a reviewed OS trust boundary.
-- Support and verify successful approved dispatch, evidence binding, single-use approval, revocation checks and ledger persistence; test denial and replay paths.
-- Define supported OS service isolation and safe key provisioning/rotation, including a clear Windows support decision.
-- Never issue a finding based on caller-writable evidence or an untrusted in-process claim.
+- Define the supported Windows service-isolation design, or explicitly scope production dispatcher support to Linux until an equivalent boundary is implemented.
+- Verify a successful, operator-approved mutation through the installed Linux systemd service using controlled test keys provisioned through a documented privileged setup; retain the existing fail-closed negative tests.
+- Document safe key provisioning, rotation, backup, revocation and service recovery.
+- Keep independent signed-receipt verification, replay protection, and the rule against caller-writable evidence as release gates.
 
 ### Phase 22 — Cross-engine attack-path correlation
 
@@ -19,6 +19,7 @@ This document captures candidate improvements for completing the roadmap and mak
 - Rank chains by demonstrated impact and prerequisites without summing severity mechanically. Keep component severities separate from the chain's evidenced impact.
 - Explain every proposed path, show missing evidence, inherit scope restrictions, and require human approval before any active follow-up.
 - Provide graph export and reproducible path reports without exposing secrets.
+- Complete a supported Windows run for ACL-protected state and add a regression proving the CLI loads the canonical program scope path and refuses validation when scope is absent or invalid.
 
 ### Phase 23 — Research planning and coverage intelligence
 
@@ -37,6 +38,12 @@ Core offline coverage planning and `/Arise` metadata reconciliation are implemen
 - Add repeatable CI for Windows and Linux, dependency/runtime diagnostics, and explicit optional browser/OOB service checks.
 - Document configuration lifecycle, backup/recovery, workspace permissions, key rotation, upgrade compatibility and incident response.
 - Produce versioned threat model, security review, release checklist and phase acceptance evidence tied to exact commits.
+
+### Phases 1–2 — Wire asset discovery and recon capabilities into the CLI
+
+- Connect the asset engine to a deliberately selected, optional passive subdomain provider so normal CLI behavior matches its documented discovery workflow; preserve an offline mode and clear provenance for each source.
+- Implement or remove the currently hook-only ASN and TLS SAN extraction claims, with local fixtures and strict scope checks.
+- Decide which external reconnaissance tools the project intends to execute. If enabled, add explicit per-tool configuration, binary verification, argument construction, timeout/output limits, and tests. Until then, describe them only as separately installable/manual tools and do not imply `bb-recon` invokes them.
 
 ## Cross-cutting improvements
 

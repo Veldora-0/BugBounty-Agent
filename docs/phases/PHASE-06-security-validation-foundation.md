@@ -1,33 +1,51 @@
 # Phase 6 — Security Validation Foundation
 
-**Status:** Implemented; safe validation foundation
-**Implementation:** framework/validation/, framework/findings/, skills/validation/, skills/evidence/
+**Status:** Implemented as shared validation, finding-lifecycle, and evidence-handling foundations; quality still depends on phase-specific validators and human review.
+**Implementation:** **framework/validation/**, **framework/findings/**, **framework/common/evidence.py**, **scripts/bb-validate**, **scripts/bb-evidence**, **scripts/bb-report**, and validation/evidence/reporting skills
+**State:** Validation and finding records are kept in local program state; evidence files are stored in the private program workspace.
 
-## Purpose and bounty value
-Create non-destructive validation cases, compare baselines, manage finding lifecycle and capture hashed/redacted evidence. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## Why this phase exists
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+A scanner warning or a suspicious response is not yet a bounty finding. It may be a false positive, a harmless reflection, expected behavior, or a problem that cannot be reproduced. Phase 6 provides shared pieces for turning an idea into a repeatable test, preserving enough safe evidence to review it, tracking the finding’s status, and preparing a report that a human can submit.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+Validation means testing whether the evidence supports the stated security claim. Evidence management means recording what happened in a way that another person can check later while removing secrets and unnecessary personal data. Neither step authorizes additional testing. Only use the target and test accounts allowed by the program.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## How the phase works
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+A validator builds candidate test cases from a target, endpoint, parameter, and category. It can compare a response with a baseline, apply request, time, and byte limits, and label a result according to that validator. Passive-only mode evaluates existing state without sending requests. Dry-run mode constructs a plan without dispatching probes or persisting new test results. Resume mode avoids repeating cases already recorded.
 
-## Remaining work and limitations
-Make acceptance evidence uniform across all engines and expose a concise human-review checklist. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+The evidence command accepts request and response files plus a note describing what they demonstrate. Evidence handling sanitizes sensitive values and stores local metadata including a digest so changes can be detected. A hash does not encrypt a file: raw captures and credentials still require private file permissions and must stay outside Git. Finding records then move through a lifecycle such as candidate, validated, reported, or closed. The report command renders a draft from reviewed finding and evidence records; it does not submit it.
 
-## Source references
-Relevant tests: test_validation_engine.py, test_validation_engine_transport.py, test_finding_lifecycle_readiness.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to use it
+
+~~~bash
+# Inspect known candidates without issuing network requests.
+bb-validate --program <program-name> --passive-only --json
+
+# Plan a narrowly scoped check for an already reviewed endpoint.
+bb-validate --program <program-name> --asset app.example.org --endpoint https://app.example.org/item --dry-run --tree
+
+# Use smaller test and request ceilings for a first review.
+bb-validate --program <program-name> --max-tests 5 --max-requests 10 --json
+
+# Preserve a sanitized capture in the local evidence store.
+bb-evidence --program <program-name> --request-file ./request.txt --response-file ./response.txt --note "Baseline and control comparison"
+
+# List report readiness, then render a draft for a specific finding.
+bb-report --program <program-name> --list
+bb-report --program <program-name> --finding-id <finding-id>
+~~~
+
+Keep captures outside the repository, inspect sanitized output, and check each CLI’s help before using options in a particular release.
+
+## How to judge a result
+
+A positive validator result should have a clear reproduction, a baseline or control where appropriate, and evidence that supports the stated impact. A result marked inconclusive is not a confirmed bug. A digest proves that the saved bytes have not changed since the digest was calculated; it does not prove that the capture is truthful or that the test was authorized.
+
+Before preparing a disclosure, remove secrets, verify the affected asset is still in scope, explain who can perform the action and what boundary failed, and make sure the evidence demonstrates the reported impact. Then have a person review the report and submit it through the program’s approved channel.
+
+## Safety and limitations
+
+The shared foundation does not make every engine equally mature. A validator can only test the scenarios it knows, and fixture tests are not a substitute for independent reproduction on an authorized target. Raw evidence can contain credentials, personal data, or tokens; keep it local, restrict access, and avoid attaching more than the report needs.
+
+Relevant tests include **tests/test_validation_engine.py**, **tests/test_validation_engine_transport.py**, **tests/test_finding_lifecycle_readiness.py**, and the evidence/reporting coverage. See the [workflow guide](../workflow.md), [security policy](../security.md), and [roadmap](../ROADMAP-24-PHASES.md).

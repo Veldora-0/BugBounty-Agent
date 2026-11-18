@@ -3,8 +3,8 @@
 ## Purpose
 Chaos is a ProjectDiscovery service that continuously indexes public DNS data, certificates, and subdomains across the internet, providing near-instant reconnaissance retrieval without active scanning.
 
-## Why BugBounty-Agent Uses It
-BugBounty-Agent queries Chaos during passive reconnaissance to immediately retrieve thousands of indexed subdomains for in-scope bug bounty programs before running slower permutation or DNS brute-forcing scripts.
+## Integration status
+The Chaos client is in the optional tool catalog. The regular `bb-assets` and `bb-recon` workflows do not invoke it. Installing the binary or adding a PDCP key does not make Chaos part of those engines.
 
 ## Account Required
 **YES** (Requires a free or paid ProjectDiscovery Cloud Platform account).
@@ -53,6 +53,4 @@ A successful query outputs an integer count of indexed subdomains.
 Chaos only tracks public domain names and public bug bounty scopes registered on platforms like HackerOne and Bugcrowd.
 
 ## Failure Behavior
-If `PDCP_API_KEY` is missing or invalid:
-* `bb-doctor` reports `[NOT SET] ProjectDiscovery Cloud Platform (PDCP)`.
-* BugBounty-Agent skips Chaos and automatically falls back to `subfinder` and `assetfinder` using local passive collectors.
+`bb-doctor` can report whether a PDCP key is present. It does not test the key with ProjectDiscovery, export it to Chaos, run Chaos, or select an automatic fallback. Run the standalone client manually only for an authorized program and observe its current provider terms.

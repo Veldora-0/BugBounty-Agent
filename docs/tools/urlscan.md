@@ -3,8 +3,8 @@
 ## Purpose
 urlscan.io is a scanner for websites that analyzes web pages, resources requested, DOM contents, IP contacts, and TLS certificates.
 
-## Why BugBounty-Agent Uses It
-BugBounty-Agent queries urlscan.io historical scan archives via `subfinder` and passive search tools to locate previously scanned subdomains, API endpoints, and historical DOM structures.
+## Integration status
+urlscan.io is listed as a possible Subfinder provider. BugBounty-Agent does not invoke Subfinder from its normal asset or reconnaissance CLI and does not pass this credential to it. `bb-doctor` can report whether the key is present.
 
 ## Account Required
 **YES** (Free account unlocks automated API search).
@@ -32,7 +32,7 @@ URLSCAN_API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
 ## Configuration
-BugBounty-Agent loads `URLSCAN_API_KEY` for tools requesting urlscan.io datasets.
+The provider manager reads `secrets.env` for key-presence diagnostics only. Configure a separate manually invoked tool with its native provider instructions; no urlscan query is made by BugBounty-Agent.
 
 ## Verification
 Test authentication via curl:
@@ -41,10 +41,10 @@ curl -s -H "API-Key: ${URLSCAN_API_KEY}" "https://urlscan.io/api/v1/search/?q=do
 ```
 
 ## Rate Limits / Quotas
-* Community/Free Tier: 5,000 search queries per day, 60 queries per minute.
+Check current urlscan.io plan limits and API terms before querying.
 
 ## Privacy / Terms Considerations
 Note that urlscan.io scans submitted as "Public" are visible to the world. BugBounty-Agent only queries the Search API for historical scans and does not initiate public scans of private targets.
 
 ## Failure Behavior
-If credentials are not configured or invalid, urlscan.io queries are omitted and subfinder proceeds with remaining providers.
+If credentials are absent or invalid, the standalone client/provider determines its behavior. BugBounty-Agent does not issue the query or perform provider fallback.

@@ -3,8 +3,8 @@
 ## Purpose
 Notify is a command-line tool that streams script and tool outputs to communication platforms including Discord, Slack, Telegram, Pushover, and custom webhooks.
 
-## Why BugBounty-Agent Uses It
-BugBounty-Agent can optionally send milestone notifications (e.g. reconnaissance complete, high-priority finding validated) to a private researcher channel.
+## Integration status
+Notify is an optional standalone utility. BugBounty-Agent does not send milestone notifications or invoke Notify automatically. If a researcher chooses to use it manually, send only non-sensitive status text.
 
 ## Account Required
 **YES** (Requires an account on the destination platform: Discord, Slack, Telegram, etc.).
@@ -44,7 +44,7 @@ bb-install notify
 
 ## Configuration
 Add webhook URLs to `~/.config/bugbounty-agent/secrets.env`.
-Notify uses `~/.config/notify/provider-config.yaml` natively; BugBounty-Agent automatically bridges environment variables to this file when invoked.
+Notify uses its own native provider configuration. BugBounty-Agent's `secrets.env` reader only checks whether configured variable names have values; it does not translate those values into Notify's provider file or invoke the binary.
 
 ## Verification
 Send a harmless test notification:
@@ -60,4 +60,4 @@ echo "BugBounty-Agent Notification Test" | notify -silent
 **CRITICAL SECURITY INVARIANT**: BugBounty-Agent notifications **NEVER** contain sensitive credentials, raw session cookies, customer personal data (PII), or exploit payloads. Only milestone status alerts are sent.
 
 ## Failure Behavior
-If webhooks are missing or return errors, notification operations are silently skipped without impacting ongoing security research.
+The behavior for missing or rejected webhooks is defined by the standalone Notify client. BugBounty-Agent has no automatic notification operation to skip.

@@ -21,6 +21,16 @@ Keep listeners bound to loopback unless there is a deliberate, secured need for 
 
 Before adding more binaries, review existing entries: `subfinder`, `amass`, `dnsx`, `httpx`, `katana`, `gau`, `waybackurls`, `ffuf`, `arjun`, `nuclei`, `dalfox`, `sqlmap`, `interactsh-client`, `testssl.sh`, and others are already declared. Do not run active scanners merely because they are installed. In particular, templates, wordlists, concurrency, rate, and request methods need per-program review and scope gating.
 
+### Optional OSINT and graph workbenches
+
+These requested tools are now in `config/tools.yaml` as **optional, manual-only entries**. They are not dependencies and are not invoked by the framework engines.
+
+- **Sherlock** checks researcher-supplied usernames against public social-network profile URLs. It can help with an organization-owned or program-provided test alias, but it is not a vulnerability scanner. Restrict requests to authorized identities, respect site terms, expect false positives, and do not search unrelated people. See [Sherlock setup and safe use](tools/sherlock.md).
+- **Mr.Holmes** is a broad public-source OSINT application covering domains, usernames, and phone numbers. Its queries can expose sensitive personal or indexed material. Use it only when that collection is necessary and permitted, review its source and installer first, and do not run an unreviewed installer as root. See [Mr.Holmes setup and safe use](tools/mr-holmes.md).
+- **Maltego Graph** is a separate graphical link-analysis workbench, not an automated command-line scanner. Review each transform’s network destinations, terms, licensing, and data handling. Keep its graphs limited to relevant, permitted entities. See [Maltego setup and safe use](tools/maltego.md).
+
+The **Google Hacking Database (GHDB)** is an Exploit-DB reference of search queries, not an executable tool or a list of target vulnerabilities. The single `Bug-Bounty` agent may consult it as public methodology context when `/Arise` or `knowledge-research` is relevant, then formulate a narrow hypothesis for an authorized asset. It must not run broad dorks, fetch sensitive search results, or treat an indexed result as target evidence. [Official GHDB index](https://www.exploit-db.com/google-hacking-database/).
+
 ## Integration gate before adding any tool to `config/tools.yaml`
 
 1. Confirm upstream, license, supported Kali/Linux install method, release integrity and maintenance health.

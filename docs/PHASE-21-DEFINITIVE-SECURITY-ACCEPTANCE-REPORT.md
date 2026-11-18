@@ -1,6 +1,8 @@
 # BugBounty-Agent — Phase 21 Definitive Security Acceptance Report
 ## Authentication & Authorization Correlation Engine
 
+> **HISTORICAL REPORT — SUPERSEDED:** This report describes an earlier repository state. Its production-ready and zero-bypass verdict is not the current acceptance decision. Use the current [Phase 21 guide](phases/PHASE-21-authentication-authorization-correlation.md), [roadmap](ROADMAP-24-PHASES.md), and [issue register](PROJECT-AUDIT-ISSUES.md), which document the verified Linux boundaries and remaining live-system/Windows limitations.
+
 ---
 
 ## 1. Executive Verdict

@@ -1,26 +1,13 @@
 # Project Audit Issues and Known Problems
 
-This is the single consolidated register for material unresolved project problems found during the repository and code audit. Small issues fixed during the audit are recorded below. The audited source is commit `2787f6a` on `main`.
+This register lists only material unresolved project problems. When an issue is fixed and verified, remove it here; its implementation and tests remain traceable in Git history and the test suite. The current audit began from `f8466bd` on `main`; its Kali baseline run is recorded at the end. Findings about implementation are based on repository inspection and tests, not on live bounty targets.
 
 ## Open issues
-
-### AUD-01 — Phase 21 trusted execution path remediation & acceptance (RESOLVED)
-
-- **Status:** Resolved with documented platform limitations (Code trust-boundary resolved; Windows service isolation unsupported; live Linux systemd mutation execution unverified due to key-provisioning prerequisite).
-- **Severity:** Was Critical for Mode B completion; now resolved in code and unit/adversarial verification.
-- **Resolution Summary:**
-  * **Independent Capability Verification:** `issue_execution_capability()` in `framework/auth_correlation/ledger.py` independently verifies the Ed25519 execution receipt against the pinned dispatcher public key (`dispatcher.pub`). Validates receipt signature, receipt ID, action ID, dispatch operation ID, target endpoint, HTTP method, action type, principal ID, session reference, consumption token, evidence IDs, and SHA-256 digests. Fabricated or unreceipted dispatch results fail closed.
-  * **Dynamic Provenance Boundary Assessment:** `framework/auth_correlation/provenance_boundary.py` replaced static hardcoded `"UNAVAILABLE"` with dynamic `assess_provenance_boundary()` assessing daemon reachability (IPC PING), public key availability and validity (pinned 32-byte Ed25519 key), receipt and evidence verification operational status, and OS privilege isolation support. Windows reports `AVAILABLE_WITH_LIMITATIONS` with explicit platform limitation documentation; Linux reports `AVAILABLE` when daemon, key, and verification subsystems succeed.
-  * **Replay & Lifetime Guards:** `framework/auth_correlation/ipc/service.py` enforces persistent nonce replay rejection across sessions and reboots, rejection of expired approvals (`created_at + ttl < now`), and rejection of future-dated approvals (`created_at > now + 60s`).
-  * **Adversarial Regression Suite:** Added `tests/test_phase21_provenance_architecture.py` containing 11 adversarial tests covering forged receipts, tampered fields, missing receipts, altered receipts, nonce/action replays, expired/future approvals, reboot persistence, rogue endpoints, unauthorized evidence writes, failed verification probes, and dynamic provenance boundary reporting.
-  * **Separation of Code Remediation vs. Live Production Integration:**
-    - *Code Remediation (Verified):* The cryptographic trust boundary, Ed25519 receipt verification, dynamic boundary assessment, and replay protection are 100% verified across both Windows and Linux regression and adversarial suites.
-    - *Live Systemd Integration (Partially Verified / Documented Limitation):* Probed the live running systemd service on Kali Linux (`bugbounty-dispatcher.service` under `_bbdispatcher:bbgroup`): verified PING, STATUS, public key validity, and negative rejection of unapproved mutations (`DOSSIER_DIGEST_MISMATCH`). Live authorized mutation execution through the service was explicitly **NOT RUN** because provisioning operator test keys in `/var/lib/bugbounty/keys` requires root/sudo privileges unavailable to the unprivileged test account. Standalone isolated process execution test independently verified full end-to-end execution, Ed25519 receipt generation, cryptographic verification, and replay rejection.
 
 ### AUD-03 — Verification evidence differs in age and scope across phases
 
 - **Severity:** Medium confidence/maintenance risk.
-- **Evidence:** Phase 1–20 matrix and roadmap cite historical commit-specific counts; Phase 21 has recent Windows/Kali results, while some platform runtime tests skip for unavailable browsers or OS-only capabilities. Existing phase counts are not all re-run against current `main` during this documentation audit.
+- **Evidence:** The full suite was rerun on Kali at `f8466bd` during this audit, but the working-tree fixes still require post-change verification. Windows acceptance was not obtained in this environment, and some platform-specific tests skip for unavailable browsers or OS-only capabilities.
 - **Impact:** Historical test numbers can be mistaken for current full regression or live-target coverage.
 - **Remediation:** Phase guides now distinguish repository implementation from live effectiveness and call out limits. Add a repeatable CI matrix and dated acceptance manifests as part of Phase 24.
 - **Acceptance gate:** Each maintained acceptance record identifies commit, exact commands, environment/dependencies, pass/skip/fail counts and untested live boundaries.
@@ -33,33 +20,41 @@ This is the single consolidated register for material unresolved project problem
 - **Remediation:** Implement supported provider polling and credential configuration with safe correlation identifiers, timeout/rate limits, scope checks and auditable callback provenance, or keep status unavailable.
 - **Acceptance gate:** An isolated owned test endpoint verifies attributable live callback receipt; mock providers remain labeled simulation and cannot create confirmed findings.
 
-### AUD-05 — Package version metadata is inconsistent
+### AUD-06 — Phase 1 CLI does not perform the advertised broad asset enrichment
 
-- **Severity:** Low; release and support tooling may report conflicting versions.
-- **Evidence:** `pyproject.toml` declares `1.1.0`, `framework/__init__.py` declares `1.0.0`, while `CHANGELOG.md` contains releases through `1.14.2` and further unreleased changes.
-- **Impact:** Installers, diagnostics and bug reports may identify different versions for the same source tree.
-- **Recommended resolution:** Decide the next release version, then update package metadata, runtime `__version__`, changelog and any release badges/tags together. No version was guessed during this audit.
-- **Acceptance gate:** A single version source or automated consistency check ensures installed package, runtime and release notes agree.
+- **Severity:** Medium; asset coverage and confidence can be overstated if the phase guide is read without this limitation.
+- **Evidence:** `AssetIntelligenceEngine._discover_child_subdomains()` returns no candidates when its discovery hook is unset, and the normal `scripts/bb-assets` CLI does not configure that hook. The default ASN result is `UNKNOWN`; TLS SAN extraction is also exposed through a hook rather than a provider wired into the normal CLI. The current CLI can model supplied roots/seeds and perform its implemented DNS enrichment, but it does not independently discover arbitrary-depth subdomains as the older roadmap wording implied.
+- **Impact:** Researchers may have an incomplete asset inventory and miss hosts that a passive or active discovery provider would have found. `--depth` does not itself provide a discovery source.
+- **Remediation:** Wire a reviewed passive provider into the CLI with source attribution, limits, failure reporting and offline fixtures, or keep these features explicitly described as manual/hook-only. Add a CLI-level test proving provider-backed children are persisted and scope-labelled correctly.
+- **Acceptance gate:** On owned local fixtures and a controlled provider mock, a CLI run discovers nested children, records provenance, respects limits/exclusions, and remains usable offline without claiming undiscovered coverage.
 
-## Small issues fixed in this audit
+### AUD-07 — Phase 2 tool catalog is not an execution integration
 
-- Replaced the stale “temporary” roadmap's incorrect Phase 21 accepted/Phase 22-next status with the current canonical 24-phase status index.
-- Added an onboarding handbook, 24 phase-specific guides, a consolidated issue register and future-improvements roadmap; pointed the canonical roadmap to these documents.
-- Removed generated `.pytest_cache/` and `bugbounty_agent.egg-info/` artifacts from the working tree; they are reproducible and ignored. Kept `.planning/`, `state/`, and `evidence/` because they contain planning history or runtime/user data rather than disposable build output.
-- Increased the artificial race window in `LocalConcurrencyLab` after a full Windows run reproduced a scheduling-sensitive false negative in the Phase 20 voting-limit fixture. This changes only the local simulation timing; production target request timing is unaffected. The adjusted test passed 20 consecutive isolated runs, followed by the full Windows suite.
-- Disabled ambient `HTTP_PROXY`/`HTTPS_PROXY` inheritance in scope-checked pinned transports used by Phases 2/3/4/5/6/10. Python's default `urllib` opener can otherwise route through an environment proxy and let that proxy resolve the destination independently of the locally vetted/pinned address. Added a regression test for the shared transport. This was a small, cross-cutting fix and is not an open issue.
-- Bandit static scan findings were manually triaged: standard XML parsing occurs only after a bounded Expat security-inspection pass; tar extraction has path/symlink/special-file validation plus Python's data filter where available; installer URLs are constrained to fixed GitHub endpoints and archives require a pinned SHA-256; dispatcher socket mode `0660` is intentional for the dedicated service group. The proxy finding was actionable and has been fixed.
-- Fixed a real installer error-path defect: malicious TAR symlink rejection interpolated an undefined variable, raising `NameError` instead of the documented `InstallerSecurityError`. Added an adversarial archive regression test.
-- Marked contradictory historical Phase 21 acceptance reports as superseded at the top of each document and replaced the stale roadmap path with a pointer to the canonical status. The old acceptance text is retained as historical record, not current status.
+- **Severity:** Medium; the current built-in reconnaissance is narrower than the tool catalog can suggest.
+- **Evidence:** `config/tools.yaml` and the capability graph describe tools such as Subfinder, httpx, and Nmap, but `scripts/bb-recon` does not launch those external binaries. The engine performs its own bounded Python DNS/TLS/HTTP probes and a short default port list.
+- **Impact:** Installing a listed binary or configuring an API key does not cause Phase 2 to use that capability. Recon coverage remains limited to the built-in probes and supplied/previously known assets.
+- **Remediation:** Decide which external tools should be integrated, then implement explicit invocation contracts with binary validation, offline scope preflight, constrained arguments, output/time/request bounds, and local-fixture tests. Until then, label entries as manual/available tools and avoid implying engine integration.
+- **Acceptance gate:** Tests demonstrate the CLI's exact execution behavior, including disabled/manual mode, out-of-scope rejection, timeout, malformed output and tool failure.
+
+### AUD-08 — Phase 21 production acceptance remains platform-limited
+
+- **Severity:** Medium; affects deployment support and confidence in the installed dispatcher path.
+- **Evidence:** Linux systemd dispatcher identity, socket permissions, key isolation, live status/ping and invalid-approval rejection have been checked on Kali. A successful operator-approved mutation through that installed service has not been run because provisioning the required operator test key needs privileged setup. Windows production service isolation is not implemented; Windows tests cover state permissions and local development paths, not a dedicated isolated dispatcher service.
+- **Impact:** The installed Linux service's successful authorized dispatch path lacks direct live-service acceptance evidence, and the Windows deployment boundary differs from Linux.
+- **Remediation:** Document and execute a controlled, reversible Linux integration test using a dedicated test program/action and provisioned test keys. Decide whether Windows production isolation will be implemented or formally unsupported; keep the UI/CLI status explicit.
+- **Acceptance gate:** A supported-platform matrix includes successful and rejected dispatch through the actual service boundary, proves receipt/evidence binding and replay rejection, and records platform-specific unsupported behavior without overstating parity.
 
 ## Audit boundaries
 
 This register records repository review and current audit-run evidence, not a live-target security assessment. No bounty target was contacted. Review current program rules and scope before use.
 
-## Verification performed for audited commit `2787f6a`
+## Historical verification (previous audit snapshot)
 
-- **Kali Linux, Python 3.14.8:** `python3 -m pytest tests/ -ra` — **1,109 passed, 1 skipped**. The sole skip is the Windows-only DACL test.
-- **Windows, Python 3.14.7:** Full suite before the final TAR error-message fix — **1,103 passed, 6 skipped**. Six skips: two real-browser tests because Chromium/Firefox were unavailable and four POSIX-only permission/socket tests. The final TAR symlink and ambient-proxy regressions both passed in a focused run.
-- **Phase 20 fixture stability:** The previously failing voting-limit test passed 20 consecutive Windows repetitions after the local timing adjustment.
-- **Static security scan:** Bandit scanned 51,075 lines. Findings were reviewed; proxy inheritance was fixed, while archive extraction, XML parser and permission flags were assessed against the code's explicit guards and documented service group design.
-- **Documentation:** `git diff --check` passed; relative Markdown links were checked before the final tooling guide was added.
+- Older audit records cite historical commits and platform counts. Those numbers are not a claim about current `main`; use the commit-specific sections below and phase guides for newer evidence.
+
+## Current audit baseline at `f8466bd` (before working-tree fixes)
+
+- **Kali Linux, Python 3.14.10:** `python3 -m pytest tests/ -ra` — **1,245 passed, 1 skipped** in 576.12 seconds. The skipped test is the Windows-only DACL test (`tests/test_phase21_state.py:370`). This was run before the current working-tree changes; it is not final verification of those changes.
+- **Windows:** No full-suite result was obtained for this audit. The prior Phase 22 Windows ACL subprocess issue remains unresolved; do not treat Kali results as Windows evidence.
+- **Live-target testing:** None. No bounty target was contacted. Unit and integration results are not proof of live vulnerability-discovery effectiveness.
+- **Post-fix verification:** Pending. Run focused regressions for asset DNS, bounded content discovery, Phase 22 scope resolution and optional tool registry, then rerun the relevant broader suites on Kali before claiming these changes verified.

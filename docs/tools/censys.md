@@ -3,8 +3,8 @@
 ## Purpose
 Censys scans the IPv4 and IPv6 address spaces and monitors certificate logs, providing comprehensive internet-wide asset intelligence and attack surface maps.
 
-## Why BugBounty-Agent Uses It
-BugBounty-Agent uses Censys via `uncover` and `subfinder` to discover virtual hosts sharing certificates, exposed non-standard ports, and cloud service deployments.
+## Integration status
+Censys credentials are listed for the optional Uncover/Subfinder ecosystem, but BugBounty-Agent does not run those clients from `bb-recon` and does not pass credentials to them. The provider manager can report whether expected key fields are present.
 
 ## Account Required
 **YES**
@@ -35,7 +35,7 @@ CENSYS_ORGANIZATION_ID=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 ## Configuration
-BugBounty-Agent loads these variables automatically into the environment when tools like `uncover` or `subfinder` execute.
+Values in BugBounty-Agent's `secrets.env` are used for presence diagnostics only. They are not loaded into a child process. Configure a separate manually invoked client using its native documented mechanism.
 
 ## Verification
 Test authentication using curl:
@@ -45,13 +45,10 @@ curl -u "${CENSYS_API_TOKEN}:${CENSYS_ORGANIZATION_ID}" -s "https://search.censy
 Returns your account email and remaining query quota.
 
 ## Rate Limits / Quotas
-* Community/Free Tier: 250 search queries per month.
-* Academic/Paid Tiers: Higher volume limits.
+Limits depend on the current Censys plan and API version. Check the vendor dashboard and current documentation.
 
 ## Privacy / Terms Considerations
 Queries to Censys are logged by Censys. Adhere to Censys Terms of Service regarding commercial vs security research usage.
 
 ## Failure Behavior
-If credentials are not set or expired:
-* Censys returns `401 Unauthorized` or `403 Forbidden`.
-* BugBounty-Agent flags Censys as unavailable and continues with other search engines.
+If credentials are missing or expired, the separate client/provider may reject its request. BugBounty-Agent does not make a Censys request or automatically switch data sources.

@@ -6,8 +6,8 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 
 | Phase | Name | Current status |
 |---:|---|---|
-| 1 | Asset Intelligence | Implemented; historic verification, operational limits apply |
-| 2 | Reconnaissance | Implemented with operational limits |
+| 1 | Asset Intelligence | Partial: CLI lacks a wired subdomain provider; ASN and TLS SAN enrichment have hook-only paths |
+| 2 | Reconnaissance | Partial: bounded built-in probes work; external tools in the catalog are not invoked by `bb-recon` |
 | 3 | Web Application Intelligence | Implemented; read-only mapping |
 | 4 | JavaScript Intelligence | Implemented; read-only analysis |
 | 5 | API Intelligence | Implemented with documented limits |

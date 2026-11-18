@@ -3,8 +3,8 @@
 ## Purpose
 SecurityTrails provides extensive historical and real-time DNS datasets, passive DNS records, WHOIS history, and comprehensive subdomain listings.
 
-## Why BugBounty-Agent Uses It
-BugBounty-Agent queries SecurityTrails via `subfinder` to discover subdomains that may not appear in recent certificate logs or active zone transfers, including historical development and staging hosts.
+## Integration status
+SecurityTrails is listed as a possible Subfinder provider, but BugBounty-Agent does not invoke Subfinder from its normal asset or reconnaissance CLI and does not pass this credential to Subfinder. `bb-doctor` can only report whether a key is present.
 
 ## Account Required
 **YES**
@@ -31,7 +31,7 @@ SECURITYTRAILS_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 ## Configuration
-BugBounty-Agent detects `SECURITYTRAILS_API_KEY` and passes it to `subfinder` via environment mapping.
+BugBounty-Agent reads `secrets.env` for key-presence diagnostics; it does not export the value to another process. For a separate manual Subfinder run, configure the key using Subfinder's current native provider configuration instructions.
 
 ## Verification
 Test using curl:
@@ -46,13 +46,10 @@ Expected response:
 ```
 
 ## Rate Limits / Quotas
-* Free Tier: 50 queries per month.
-* Over-quota requests return HTTP `429 Too Many Requests`.
+Check current account documentation for quotas and API response behavior; provider terms and plans can change.
 
 ## Privacy / Terms Considerations
 Queries disclose the root domain being evaluated to SecurityTrails.
 
 ## Failure Behavior
-If quota is exceeded or the key is absent:
-* Subfinder logs an informational error and queries remaining passive sources.
-* Reconnaissance continues without interruption.
+If quota is exceeded or the key is absent, the manually invoked client/provider determines its behavior. BugBounty-Agent does not run this provider or make an automatic fallback.

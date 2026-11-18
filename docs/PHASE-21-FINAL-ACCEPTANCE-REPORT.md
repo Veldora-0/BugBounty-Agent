@@ -1,6 +1,6 @@
 # BugBounty-Agent — Phase 21 Final Acceptance Report
 
-> **HISTORICAL REPORT — SUPERSEDED:** The acceptance verdict and test claims in this report are not the current project status. The current definitive report records Phase 21 as not accepted because trusted execution capability and controlled-attestation issuance remain disabled. See [the current report](PHASE-21-DEFINITIVE-SECURITY-ACCEPTANCE-REPORT.md) and [issue register](PROJECT-AUDIT-ISSUES.md).
+> **HISTORICAL REPORT — SUPERSEDED:** The verdict and test claims in this report describe an earlier repository state. Execution-capability issuance has since been restored with independent receipt verification. See the current [Phase 21 guide](phases/PHASE-21-authentication-authorization-correlation.md), [roadmap](ROADMAP-24-PHASES.md), and [issue register](PROJECT-AUDIT-ISSUES.md) for current evidence and limitations.
 ## Authentication & Authorization Correlation Engine (Final Trust-Boundary Remediation, Execution Capability Provenance & Definitive Acceptance)
 
 ---

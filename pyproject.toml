@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bugbounty-agent"
-version = "1.1.0"
+version = "1.14.2"
 description = "Autonomous, hypothesis-driven bug bounty research orchestrator and security toolchain."
 readme = "README.md"
 requires-python = ">=3.10"

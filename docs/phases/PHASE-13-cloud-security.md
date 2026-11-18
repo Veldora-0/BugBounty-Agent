@@ -1,33 +1,47 @@
 # Phase 13 — Cloud Security
 
-**Status:** Implemented; read-only boundaries
-**Implementation:** framework/cloud_security/, skills/cloud-security/, scripts/bb-cloud
+**Status:** Implemented for read-only cloud exposure hypotheses and bounded checks; provider coverage and attribution are limited.
+**Implementation:** **framework/cloud_security/**, **scripts/bb-cloud**, and the **cloud-security skill**
+**State file:** **state/cloud.json**.
 
-## Purpose and bounty value
-Assess cloud storage exposure, public permissions and dangling references without writing, deleting, or replaying secrets. Block metadata destinations. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## Why this phase exists
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+A program may use cloud storage, content delivery, or managed services as part of its application. Misconfigured storage can expose files; a forgotten cloud hostname may point to an abandoned service; and a public resource may reveal information the program intended to keep private. Phase 13 looks for these exposure patterns using public observations and bounded read-only checks.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+The phase is not a cloud account scanner. It must not log in to infrastructure, enumerate private tenant data, probe cloud metadata, claim an unowned service, upload or delete objects, or test unrelated providers.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## How the phase works
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The engine reads assets and technology observations already collected for the program, applies provider fingerprints and creates exposure hypotheses. A passive run only models candidates. A dry run previews which checks would be considered. Active validation is an explicit mode; the cloud policy permits only GET, HEAD, and OPTIONS and caps requests and response size. It blocks metadata targets and destructive operations.
 
-## Remaining work and limitations
-Improve provider coverage and evidence provenance while retaining read-only checks. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+A public bucket or provider-looking hostname is not automatically a vulnerability. The researcher must determine whether the resource belongs to the in-scope program, whether the exposed content is intentionally public, and whether the evidence shows meaningful unauthorized access. State and reviewed findings are saved in **cloud.json**.
 
-## Source references
-Relevant tests: test_cloud_security_engine.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to run it
+
+~~~bash
+# List cloud exposure hypotheses from existing state.
+bb-cloud --program <program-name> --hypotheses --passive-only --tree
+
+# Preview the bounded checks for a specific program asset.
+bb-cloud --program <program-name> --asset assets.example.org --dry-run --json
+
+# Use the deterministic local cloud lab.
+bb-cloud --program <program-name> --lab --json
+
+# Active validation is explicit and must be allowed by the program.
+bb-cloud --program <program-name> --asset assets.example.org --validate --json
+~~~
+
+The active example is not a recommendation to probe any particular bucket. Confirm the exact asset and test boundaries first.
+
+## Understanding results
+
+A fingerprint is a clue about the provider or resource type. A hypothesis says what exposure might exist. A validated result should show only the minimum harmless fact needed to establish access, such as a public listing or a synthetic object that the program intentionally created for testing. Do not download personal records or secret files to demonstrate severity.
+
+Report whether the finding is observed or confirmed, what resource was checked, what permission was present, and how scope ownership was established. If the resource is managed by a third party, do not test it directly unless the program explicitly includes it.
+
+## Safety and limitations
+
+The engine enforces read-only methods, request limits, and metadata restrictions, but public-provider behavior changes over time. Its provider fingerprints do not cover every cloud service or every tenant configuration. A local lab test verifies code paths, not a real cloud provider’s authorization boundary.
+
+Tests: **tests/test_cloud_security_engine.py**. See the [security policy](../security.md), **cloud-security skill**, and [roadmap](../ROADMAP-24-PHASES.md).

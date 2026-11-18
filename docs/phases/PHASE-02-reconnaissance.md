@@ -1,33 +1,62 @@
 # Phase 2 — Reconnaissance
 
-**Status:** Implemented with documented operational limitations
-**Implementation:** framework/recon/, skills/reconnaissance/, scripts/bb-recon
+**Status:** Implemented as a bounded built-in probing engine; external tool execution and broad discovery remain incomplete.
+**Implementation:** **framework/recon/**, **framework/assets/**, **framework/common/transport.py**, **scripts/bb-recon**, and the **reconnaissance skill**
+**State file:** **state/recon.json** in the local program workspace.
 
-## Purpose and bounty value
-Enrich in-scope assets with DNS, HTTP, TLS, technology and service observations. Use passive discovery first and bounded active probes only after scope approval. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## Why this phase exists
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+Once you have a list of authorized hosts, reconnaissance records what those hosts expose at a basic level. It can tell you whether a web service responds, what its TLS certificate says, what a response’s headers reveal, and which technologies might be present. This gives later testing phases a map of the application instead of asking them to guess.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+Reconnaissance results are observations, not proof of a vulnerability. A server header that appears to identify a framework may be missing or misleading. A port that accepts a connection does not show that the service is in scope for a particular test. Each observation needs a source, timestamp, and confidence that a researcher can review.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## Inputs and prerequisites
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+Phase 2 normally reads the in-scope domain and host records produced by Phase 1. It also accepts a specific asset or domain. Provide a valid program scope file before any live probing. If the program’s rules change, update the file before running again. The engine skips candidates that fail the scope check and bounds the number of hosts and requests.
 
-## Remaining work and limitations
-Improve source health reporting, retry/backoff controls and provenance-aware asset merging. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+The current engine uses its own modest Python-based probes for DNS, TLS, HTTP, and a small default port list. Although the repository has a tool registry and capability catalog, this runtime does not currently execute tools such as **subfinder**, **httpx**, or **nmap** as part of **bb-recon**. It should therefore be understood as a limited local enrichment engine, not a replacement for a curated reconnaissance workflow. New hostname discovery also depends on Phase 1 inputs or names found in TLS SAN data; it does not perform general wordlist enumeration.
+
+## How the phase works
+
+The engine loads the existing asset graph, filters to in-scope hosts, and applies selected capabilities. The default set includes DNS, TLS, HTTP, ports, and technology fingerprints; endpoint discovery is separately selected. The default ceilings are 500 hosts and 2,000 active HTTP/TCP requests, with a separate endpoint ceiling in the engine. It records observations in structured state and writes the file atomically so an interrupted write is less likely to leave corrupt JSON.
+
+DNS probing collects a limited set of record information through the available resolver path. TLS probing observes certificate data and can add in-scope certificate names to the asset graph. HTTP probing makes a small GET request to common web ports and records status, title, selected headers, and response metadata. Port probing checks only a short default list rather than sweeping every TCP port. Technology identification uses simple response-header signatures and any explicitly supplied tool output; a signature match can be wrong or incomplete.
+
+Use **--resume** to skip hosts marked as already probed. This saves repeated requests, but it also means old observations may need an intentional refresh when the target changes. Use **--dry-run** to evaluate without persisting updated state, and **--passive-only** to disable live probes.
+
+## How to run it
+
+~~~bash
+# Review existing state without making active network connections.
+bb-recon --program <program-name> --passive-only --tree
+
+# Probe the program's known in-scope hosts using conservative defaults.
+bb-recon --program <program-name> --tree
+
+# Run only selected capabilities on one known host.
+bb-recon --program <program-name> --asset api.example.org --capabilities "dns,tls,http"
+
+# Resume an earlier run while respecting request and host ceilings.
+bb-recon --program <program-name> --resume --max-hosts 100 --max-requests 300
+
+# Preview the structured state without saving new observations.
+bb-recon --program <program-name> --dry-run --json
+~~~
+
+These commands are examples, not authorization. Use only hosts included in the program’s current scope and keep request limits appropriate to its rules.
+
+## Reading and using results
+
+Open the local **state/recon.json** or use the tree/JSON output. Check the host, observation type, timestamp, provenance, and confidence. A missing result can mean that the service did not respond, the capability was not selected, the host was out of scope, the budget was exhausted, the runtime could not complete the request, or the observation is not implemented. It does not automatically mean the target has no such service.
+
+Feed reviewed services into Phase 3 web mapping, Phase 4 JavaScript analysis, and Phase 5 API mapping. Keep inferred technologies labeled as hypotheses until independently confirmed.
+
+## Safety and limitations
+
+The request and host budgets do not replace program rate limits. Use passive-only mode if scope is not yet verified. The engine is intentionally read-only and uses bounded requests; do not turn an endpoint inventory into broad fuzzing. The tool registry’s presence should not be confused with a tool being installed or invoked by this phase.
+
+The mismatch between the tool catalog and actual runtime integration is recorded in the **project audit issues**. Tests use hooks and local fixtures, so they check engine behavior but do not prove broad coverage or live-target effectiveness.
 
 ## Source references
-Relevant tests: test_recon_engine.py, test_recursive_subdomains.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+
+Tests: **tests/test_recon_engine.py**, **tests/test_recursive_subdomains.py**, and shared transport regressions in **tests/test_scope_fail_closed_validation.py**. See the **reconnaissance skill**, **runtime guide**, and **roadmap**.

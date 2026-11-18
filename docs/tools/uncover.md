@@ -3,8 +3,8 @@
 ## Purpose
 Uncover is a search engine API wrapper that queries internet-wide scanning engines (Shodan, Censys, FOFA, ZoomEye, Hunter, Netlas, CriminalIP, PublicWWW, etc.) to discover exposed network services, hosts, and certificates.
 
-## Why BugBounty-Agent Uses It
-BugBounty-Agent utilizes Uncover to identify exposed cloud infrastructure, dangling IPs, internal staging portals, and specific software banners without performing direct high-speed network port scans.
+## Integration status
+Uncover is a standalone catalog tool. The normal BugBounty-Agent reconnaissance commands do not invoke it or pass provider keys to it. A researcher can install and run it manually, subject to explicit authorization, provider terms, and the actual scope of each query.
 
 ## Account Required
 **YES** (Requires individual accounts with each respective search engine provider you wish to query).
@@ -13,7 +13,7 @@ BugBounty-Agent utilizes Uncover to identify exposed cloud infrastructure, dangl
 **YES** (At least one provider credential must be configured).
 
 ## Required Environment Variables
-Configure one or more of the following in `~/.config/bugbounty-agent/secrets.env`:
+These are examples of provider variables recognized for diagnostics. Storing a value in BugBounty-Agent's `secrets.env` does not configure Uncover or export the value to its process:
 
 ```bash
 # Shodan
@@ -58,8 +58,7 @@ bb-install uncover
 ```
 
 ## Configuration
-Store credentials in `~/.config/bugbounty-agent/secrets.env`.
-Uncover gracefully activates whichever search engines have configured credentials and skips unconfigured ones.
+For a separate Uncover run, configure credentials using its current native instructions or set the required variables in the process environment. BugBounty-Agent's `secrets.env` reader only checks for the presence of named values.
 
 ## Verification
 Test query with a harmless domain search:
@@ -68,15 +67,10 @@ uncover -q "ssl:example.com" -e shodan,censys -limit 5
 ```
 
 ## Rate Limits / Quotas
-* Shodan: Query credits deducted per search (1 credit per 100 results).
-* Censys: Monthly allowance based on free or paid research tier.
-* Consult each provider's dashboard to monitor API consumption.
+Each provider applies its own current rate limits and terms. Check its account dashboard before use.
 
 ## Privacy / Terms Considerations
 Search engine queries are subject to the acceptable use policies of each commercial provider. Do not run mass automated queries exceeding your tier limits.
 
 ## Failure Behavior
-If a specific engine's key is missing or quota is exhausted:
-* Uncover displays an authentication/quota warning for that provider.
-* Uncover continues querying other configured engines.
-* Results from remaining engines are aggregated normally.
+Missing credentials or exhausted quota are handled by Uncover and each provider according to their current behavior. BugBounty-Agent makes no query and does not implement provider fallback.

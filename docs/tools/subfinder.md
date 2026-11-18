@@ -3,8 +3,8 @@
 ## Purpose
 Subfinder is a fast passive subdomain enumeration tool that queries over 40+ public datasets and intelligence providers to discover valid subdomains without sending direct traffic to the target.
 
-## Why BugBounty-Agent Uses It
-BugBounty-Agent relies on Subfinder during initial asset discovery to map root domain attack surfaces passively. It provides high-confidence candidate hostnames before any active HTTP probing or DNS resolution takes place.
+## Integration status
+Subfinder is listed in the optional tool catalog, but the normal `bb-assets` and `bb-recon` commands do not invoke it. Installing it does not add provider-backed discovery to those engines. The project has no end-to-end Subfinder CLI integration at this time; see [AUD-06 and AUD-07](../PROJECT-AUDIT-ISSUES.md).
 
 ## Account Required
 **NO** (Basic discovery functions out of the box using free, unauthenticated sources such as crt.sh, HackerTarget, and Wayback Machine). Optional accounts unlock additional commercial datasets (SecurityTrails, Censys, Shodan, BinaryEdge, Chaos).
@@ -41,14 +41,14 @@ GITHUB_TOKEN="your_github_token_here"
 
 ## Setup
 Subfinder manages API keys locally in `~/.config/subfinder/provider-config.yaml`.
-You can configure Subfinder directly via:
+Configure Subfinder directly according to its current upstream documentation:
 ```bash
 subfinder -pc ~/.config/subfinder/provider-config.yaml
 ```
-Alternatively, BugBounty-Agent automatically detects environment variables set in `~/.config/bugbounty-agent/secrets.env` and maps them.
+BugBounty-Agent's provider manager can read `secrets.env` to report whether a key is present in `bb-doctor`. It does not export or map those values into Subfinder's process or native configuration. For a manual Subfinder run, configure the provider through Subfinder itself and invoke it separately.
 
 ## Configuration
-Add your credentials to `~/.config/bugbounty-agent/secrets.env`:
+If you want `bb-doctor` to report that credentials are present, you may store their names and values in `~/.config/bugbounty-agent/secrets.env`:
 ```text
 PDCP_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 SECURITYTRAILS_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -59,20 +59,17 @@ chmod 600 ~/.config/bugbounty-agent/secrets.env
 ```
 
 ## Verification
-Verify configured providers without making excessive queries:
+Verify Subfinder manually only against an authorized root domain, with a small query budget and provider terms in mind:
 ```bash
 subfinder -d example.com -silent -v
 ```
 Review output to confirm which commercial sources were activated.
 
 ## Rate Limits / Quotas
-* Free, non-authenticated sources are rate-limited per IP (typically 1-5 req/s).
-* Commercial providers apply individual quota tiers (e.g. SecurityTrails free tier allows 50 queries/month).
+Provider coverage, request limits, quotas and free tiers change. Check the current Subfinder and provider documentation before querying.
 
 ## Privacy / Terms Considerations
 Queries to third-party providers reveal the domain name being investigated. Ensure the program policy permits passive intelligence queries against authorized root domains.
 
 ## Failure Behavior
-If credentials are missing or invalid:
-* Subfinder outputs a warning for that specific provider and continues querying all other free, unauthenticated providers.
-* BugBounty-Agent continues reconnaissance in degraded mode without halting the workflow.
+If credentials are missing or invalid, Subfinder's own current behavior applies. BugBounty-Agent does not run Subfinder or provide a fallback through `bb-recon`.

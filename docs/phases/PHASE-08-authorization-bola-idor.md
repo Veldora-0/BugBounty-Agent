@@ -1,33 +1,47 @@
-# Phase 8 — Authorization / BOLA / IDOR
+# Phase 8 — Authorization, BOLA, and IDOR
 
-**Status:** Implemented with documented limits
-**Implementation:** framework/authz/, skills/authorization/, scripts/bb-authz
+**Status:** Implemented for candidate modeling and bounded differential checks; reliable active testing requires operator-managed test identities and explicit approval.
+**Implementation:** **framework/authz/**, **scripts/bb-authz**, and the **authorization skill**
+**State file:** **state/authorization.json** in the local program workspace.
 
-## Purpose and bounty value
-Compare access by operator-provided principals to identify horizontal or vertical authorization failures. Never brute-force identities or retain raw credentials. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## What authorization testing asks
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+Authorization is the rule that decides which signed-in person may perform an action or see a resource. A Broken Object Level Authorization issue (BOLA), often called an Insecure Direct Object Reference (IDOR), occurs when changing an object identifier lets a user access an object they should not be allowed to access. A function-level issue occurs when a user can invoke an action reserved for a more privileged role.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+A useful test compares the same request under two researcher-controlled accounts with different ownership or privilege. For example, account A requests its own profile, then account B tries the same read-only profile request using the recorded identifier. If the second account receives account A’s private data, that is evidence of a possible access-control failure. Do not use random identifiers, real customer accounts, or requests that change or delete data.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## Inputs and workflow
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The engine reads endpoint and resource candidates from API, web application, JavaScript, and authorization state. It associates test principals with those resources, creates candidate cases, and can compare expected and observed access. The **--principal** option selects an already configured test identity; it is not a credential-import option. Configure test identities through the project’s approved local workflow and keep their secrets out of the repository and command history.
 
-## Remaining work and limitations
-Improve dynamic session health checks by integrating only trusted Phase 21 outputs. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+Run in passive-only mode to inventory candidate resources without requests. Dry-run mode shows planned cases. Active tests need the configured scope plus explicit approval flags and must remain within the program’s permitted request and test budgets. Candidate and result records are stored in **authorization.json**.
 
-## Source references
-Relevant tests: test_authz_engine.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to use it
+
+~~~bash
+# Discover and display candidate resources without sending requests.
+bb-authz --program <program-name> --passive-only --tree
+
+# Plan checks for one known endpoint and one configured test principal.
+bb-authz --program <program-name> --endpoint https://app.example.org/api/profile --principal <test-principal> --dry-run --json
+
+# Review the exact test dossier before any active work.
+bb-authz --program <program-name> --dossier --json
+
+# Approve one reviewed case and keep the run small.
+bb-authz --program <program-name> --endpoint https://app.example.org/api/profile --principal <test-principal> --approve-id <case-id> --max-tests 1 --max-requests 2 --json
+~~~
+
+Review the installed CLI help before use. Prefer approval for one case over a broad approval option whenever the program and workflow support it.
+
+## Evidence and interpretation
+
+A strong authorization finding records which test principal owned the object, which principal made the comparison request, the exact resource relationship, what each account could see, and a sanitized response comparison. A status-code difference alone may not prove a data exposure. Some applications intentionally return a generic response, and cached or stale content can mislead.
+
+Report the narrowest demonstrated boundary failure. Do not retrieve unrelated records to estimate scale. If the safe test cannot prove ownership or impact, keep it as a hypothesis and explain what evidence is missing. The report should not include account passwords, access tokens, or unnecessary personal data.
+
+## Safety and limitations
+
+Use only program-approved accounts and low-impact reads. Never enumerate other users or change ownership, roles, or financial state. Tests using local fixture principals validate the comparison logic; they do not prove that an application’s authorization model is correctly understood. Dynamic session-health and richer operator identity integration remain areas for improvement.
+
+See **tests/test_authz_engine.py**, the [Phase 21 identity-correlation guide](PHASE-21-authentication-authorization-correlation.md), [security policy](../security.md), and [roadmap](../ROADMAP-24-PHASES.md).

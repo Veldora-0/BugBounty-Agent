@@ -1,33 +1,45 @@
 # Phase 17 — Advanced API Security
 
-**Status:** Implemented with documented limits
-**Implementation:** framework/api/, skills/api-security/, scripts/bb-api
+**Status:** Implemented as safety and depth controls extending the Phase 5 API inventory; it does not perform general API fuzzing.
+**Implementation:** **framework/api/**, **scripts/bb-api**, and the **api-security skill**
+**State file:** **state/api.json**, shared with Phase 5.
 
-## Purpose and bounty value
-Extend API schema analysis with GraphQL depth and reference controls, safe method discovery, response-byte accounting and loopback fixture gating. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## Why this phase exists
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+Phase 5 builds a map of an API’s routes, parameters, and schema. Phase 17 hardens how the engine explores that map. API specifications and GraphQL schemas can be large or recursive; an endpoint can redirect to another host; a familiar hostname can resolve to a private network address; and methods such as PUT or DELETE can change data. These are safety and scope concerns as much as they are API-security questions.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+The goal is to learn enough about an authorized API to plan a test without making the inventory tool behave like an uncontrolled fuzzer.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## What the phase adds
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The API policy sets ceilings for endpoints, parameters, schema depth, requests, bytes, response size, and redirects. Redirects are checked again for scope, protocol downgrade, and resolved destination safety. Active requests use a vetted destination address so a proxy or a DNS change cannot silently redirect a request into prohibited address space. Local test fixtures require explicit fixture-port registration.
 
-## Remaining work and limitations
-Increase schema edge-case coverage and improve low-impact authenticated API mapping. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+The default active methods are GET, HEAD, and OPTIONS. GraphQL introspection is disabled by default and needs an explicit option. Even when enabled, introspection is bounded by schema and traversal limits. Parsing a schema is not the same as proving that its operations are exploitable.
 
-## Source references
-Relevant tests: test_api_engine.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to use it
+
+~~~bash
+# Correlate local state without making HTTP requests.
+bb-api --program <program-name> --passive-only --tree
+
+# Preview a bounded schema plan.
+bb-api --program <program-name> --domain api.example.org --dry-run --json
+
+# Enable GraphQL introspection only when program rules allow it.
+bb-api --program <program-name> --endpoint https://api.example.org/graphql --allow-graphql-introspection --max-requests 10 --json
+
+# Inspect the supported CLI options before an active run.
+bb-api --help
+~~~
+
+The target name is an example. Configure current scope and review the exact operation before enabling live introspection.
+
+## Using the results
+
+A schema can show which operations and fields exist, expected parameter shapes, and possibly authentication metadata. It cannot confirm that the implementation matches the schema, that a field is accessible to a given user, or that sensitive information is exposed. Compare the API map with observed requests from the application and with test identities before proposing authorization checks.
+
+## Safety and limits
+
+Do not invoke state-changing methods merely because a schema lists them. Keep introspection low-volume and only use it when allowed. API discovery does not perform business-logic or authorization validation; those phases need separate hypotheses, test identities, and approval. Unusual schema extensions and authenticated API surfaces may not be fully represented.
+
+Tests: **tests/test_api_engine.py** and the Phase 17 boundary tests within the API suite. They verify local behavior and destination controls, not every production API. See [Phase 5](PHASE-05-api-intelligence.md), [Phase 8](PHASE-08-authorization-bola-idor.md), and [roadmap](../ROADMAP-24-PHASES.md).

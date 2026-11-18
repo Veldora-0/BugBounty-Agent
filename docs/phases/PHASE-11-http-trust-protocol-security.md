@@ -1,33 +1,47 @@
-# Phase 11 — HTTP Trust & Protocol Security
+# Phase 11 — HTTP Trust and Protocol Security
 
-**Status:** Implemented; protocol analysis
-**Implementation:** framework/http_trust/, skills/web-security/, scripts/bb-http
+**Status:** Implemented for candidate discovery and bounded header-behavior comparisons; results need contextual validation.
+**Implementation:** **framework/http_trust/**, **scripts/bb-http**, and the **web-security skill**
+**State file:** **state/http-trust.json**.
 
-## Purpose and bounty value
-Assess CORS, cookies, headers, Host/forwarded trust, cache and parameter handling using controlled requests. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## Why this phase exists
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+Web servers often receive more than a URL. They also receive headers that identify the requested host, original scheme, proxy destination, or page origin. Applications sometimes trust those values when creating redirects, deciding which site is allowed to read a response, building password-reset links, or selecting cache entries. If the application trusts a value from the wrong source, an attacker may influence a security-sensitive decision.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+Phase 11 asks whether a specific header or parameter affects observable behavior. It covers Host and forwarded headers, scheme and redirect handling, CORS, HTTP parameter pollution, and cache-related behavior. A reflected header is only an observation. To establish a security problem, show which decision it changes and who can benefit.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## How the phase works
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The engine reads endpoints from local web, API, and reconnaissance state and generates candidate header variations. The prioritizer explains why a case might matter. Passive-only mode ranks candidates without requests. Dry-run displays a plan; the local lab provides deterministic expected behavior. Live checks require an in-scope URL and explicit invocation of the approved testing mode. Test, request, timeout, and response-byte ceilings bound work.
 
-## Remaining work and limitations
-Add protocol regression fixtures and explicit evidence templates for browser-relevant impact. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+It records the original and changed request/response characteristics in **http-trust.json**. Compare a normal request with one controlled change at a time. Do not send cache-poisoning content to a shared cache or cause another person’s browser to consume a manipulated response.
 
-## Source references
-Relevant tests: test_http_trust_engine.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to run it
+
+~~~bash
+# Review candidates without sending requests.
+bb-http --program <program-name> --passive-only --tree
+
+# Preview tests for one authorized endpoint.
+bb-http --program <program-name> --endpoint https://app.example.org/ --dry-run --json
+
+# Exercise the local protocol lab.
+bb-http --program <program-name> --lab --json
+
+# An active test requires current scope and explicit approval.
+bb-http --program <program-name> --endpoint https://app.example.org/ --category cors --approve --max-tests 1 --max-requests 2 --json
+~~~
+
+A placeholder domain is shown. Check the current program rules and CLI help before active use.
+
+## Interpreting evidence
+
+For a CORS hypothesis, record the request origin, response headers, whether credentials are involved, and what a browser from that origin could actually read. For a redirect or Host hypothesis, record where the application used the supplied value and whether an external user could influence it. For cache behavior, show a controlled cache key difference and a harmless response; do not try to poison a shared user-facing cache.
+
+A header being accepted or echoed does not by itself demonstrate exploitability. Report the specific trust decision and the demonstrated consequence, or leave the issue as an observation.
+
+## Safety and limitations
+
+Do not send secrets or state-changing content in header probes. Keep checks low-volume, do not test shared caches without explicit permission, and stop if a test could affect other users. The engine’s pattern set cannot model every reverse-proxy deployment or browser policy.
+
+Tests in **tests/test_http_trust_engine.py** exercise local cases and comparison logic. They do not establish a live application’s full proxy or cache architecture. See the [security policy](../security.md), **web-security skill**, and [roadmap](../ROADMAP-24-PHASES.md).

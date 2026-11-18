@@ -161,8 +161,7 @@ Milestone 22.4 delivers the final operational CLI commands, reporting engine, an
     - **Zero-Secret Compliance**: Validated with `assert_no_raw_secrets` before output or write.
 - **Milestone 22.4 Acceptance Test Suite (`tests/test_phase22_cli_reporting.py`)**:
   - 25 comprehensive unit, adversarial, concurrency, and integration tests validating criteria AC-22.4-01 through AC-22.4-25 with 100% pass rate.
-- **Phase 22 Overall Acceptance Metrics**:
-  - **102 tests passed** across all 8 Phase 22 test files with 100% pass rate on both Windows 11 and Kali Linux.
+  - **Phase 22 focused Linux evidence**: 102 tests passed across the Phase 22 suite on Kali Linux. Windows ACL subprocess verification has not passed in the available environment and is still an open limitation.
 
 ---
 
@@ -208,9 +207,9 @@ The integrated engine is implemented in `framework/attack_path/` and exposed thr
 
 ## Acceptance status and verification limits
 
-The implementation, CLI, reporting, and safety-gate acceptance criteria above are present. On Kali Linux, `python3 -m pytest tests/test_phase22_*.py -ra` passed all 102 tests, and both CLI entry points returned help successfully. The full Kali suite also passed 1,222 tests with one Windows-only test skipped.
+The implementation, CLI, reporting, and safety-gate acceptance criteria above are present. The recorded focused Kali run, `python3 -m pytest tests/test_phase22_*.py -ra`, passed 102 tests, and both CLI entry points returned help successfully. On 2026-11-18, the full suite at starting commit `f8466bd` passed 1,245 tests and skipped one Windows-only DACL test. This full-suite count is for that commit before the current audit fixes; it is not a result for later changes.
 
-Windows Phase 22 verification is **not accepted**: the focused run had 102 passing tests and three failures when Windows `icacls` subprocesses could not start in the sandbox (`OSError: [WinError 6] The handle is invalid`). This is an environment limitation that still needs a supported Windows run; it does not negate the Linux-primary acceptance result. Passing fixture tests verifies implementation behavior, not vulnerability discovery effectiveness against live targets. Phase 22 follow-up improvements are tracked in [Future Improvements](../FUTURE-IMPROVEMENTS.md) and the [issue register](../PROJECT-AUDIT-ISSUES.md); future phases are in [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+Windows Phase 22 verification is **not accepted**: the recorded focused run had three failures when Windows `icacls` subprocesses could not start in the sandbox (`OSError: [WinError 6] The handle is invalid`). This needs a supported Windows run; it does not negate the Linux-primary acceptance result. There is also a scope-resolution correction in the current audit: the CLI must load the canonical `scope/scope.yaml` and refuse dispatch when scope is missing or invalid. Regression tests are being added for that fail-closed behavior. Passing fixture tests verifies implementation behavior, not vulnerability discovery effectiveness against live targets. Follow-up work is tracked in [Future Improvements](../FUTURE-IMPROVEMENTS.md) and the [issue register](../PROJECT-AUDIT-ISSUES.md).
 
 ## Source references
 

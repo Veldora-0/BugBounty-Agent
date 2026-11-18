@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from framework.common.tools import KNOWN_TOOLS, ToolDetector
+from framework.tools.installer import InstallerSecurityError, ToolInstaller
 from framework.tools.registry import ToolDef, ToolRegistry, VALID_TIERS
 
 
@@ -51,6 +52,20 @@ def test_capability_indexing():
     fuzz_tools = registry.find_by_capability("content-fuzzing")
     fuzz_names = [t.name for t in fuzz_tools]
     assert "ffuf" in fuzz_names
+
+
+def test_requested_osint_workbenches_are_manual_only():
+    registry = ToolRegistry()
+    installer = ToolInstaller(registry=registry)
+
+    for name in ("sherlock", "mr-holmes", "maltego"):
+        tool = registry.get_tool(name)
+        assert tool is not None
+        assert tool.tier == "OPTIONAL"
+        assert not tool.is_auto_installable()
+        assert "public-osint" in tool.capabilities or name == "maltego"
+        with pytest.raises(InstallerSecurityError, match="requires manual installation"):
+            installer.plan_install(name)
 
 
 def test_legacy_detector_public_api_and_known_tools_contract():

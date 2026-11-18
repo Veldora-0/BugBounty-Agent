@@ -1013,6 +1013,85 @@ tools:
       min_version: "1.0.0"
     security_notes: "Never send secrets, tokens, or private customer data over notification webhooks."
 
+  # --------------------------------------------------------------------------
+  # PUBLIC OSINT & LINK ANALYSIS (OPTIONAL, MANUAL)
+  # --------------------------------------------------------------------------
+  - name: sherlock
+    category: osint-research
+    binary: sherlock
+    tier: OPTIONAL
+    description: "Checks a researcher-supplied username against public social-network profile URLs; results require manual verification."
+    capabilities:
+      - public-osint
+      - username-osint
+      - account-presence-research
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: pipx
+      pip_package: sherlock-project
+      auto_install: false
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: false
+      env_vars: []
+      docs_path: docs/tools/sherlock.md
+    official_url: "https://github.com/sherlock-project/sherlock"
+    documentation_url: "https://github.com/sherlock-project/sherlock"
+    verify: {}
+    security_notes: "Manual-only; make public requests only for program-provided or otherwise authorized usernames, respect site terms and rate limits, and verify false positives. Not invoked by BugBounty-Agent engines."
+
+  - name: mr-holmes
+    category: osint-research
+    binary: MrHolmes.py
+    tier: OPTIONAL
+    description: "Third-party OSINT desktop/script suite for public domain, username, and phone-number research."
+    capabilities:
+      - public-osint
+      - username-osint
+      - domain-osint
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: manual
+      auto_install: false
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: []
+      docs_path: docs/tools/mr-holmes.md
+    official_url: "https://github.com/Lucksi/Mr.Holmes"
+    documentation_url: "https://github.com/Lucksi/Mr.Holmes#readme"
+    verify: {}
+    security_notes: "Manual-only; review source and installer before use, isolate dependencies, never run an unreviewed installer as root, and avoid searches for unrelated people or sensitive personal data. Not invoked by BugBounty-Agent engines."
+
+  - name: maltego
+    category: osint-link-analysis
+    binary: maltego
+    tier: OPTIONAL
+    description: "Proprietary graphical link-analysis application for visualizing relationships among researcher-curated entities and data sources."
+    capabilities:
+      - graph-analysis
+      - public-osint
+      - relationship-visualization
+    fallback: null
+    platforms: [linux, darwin, windows]
+    install:
+      preferred: manual
+      auto_install: false
+    dependencies: []
+    api_key:
+      required: false
+      optional_providers: true
+      env_vars: []
+      docs_path: docs/tools/maltego.md
+    official_url: "https://www.maltego.com/"
+    documentation_url: "https://docs.maltego.com/"
+    verify: {}
+    security_notes: "Manual-only graphical application; review current licensing, plan limits, data-provider terms, and network destinations. Do not import private target data or use transforms against out-of-scope entities. Not invoked by BugBounty-Agent engines."
+
   # ----------------------------------------------------------------------------
   # BROWSER AUTOMATION & ADVANCED PROXIES
   # ----------------------------------------------------------------------------

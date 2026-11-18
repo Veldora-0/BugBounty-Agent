@@ -1,33 +1,45 @@
-# Phase 18 — SSRF, XXE & Server-Side Parsers
+# Phase 18 — SSRF, XXE, and Server-Side Parsers
 
-**Status:** Implemented; external callback confirmation unavailable unless provider is operational
-**Implementation:** framework/xxe/, framework/ssrf/, framework/common/xml_safe.py, skills/oob/
+**Status:** XML safety checks and bounded XXE/SSRF candidate validators are implemented; live out-of-band callback confirmation is unavailable without a working provider.
+**Implementation:** **framework/xxe/**, **framework/ssrf/**, **framework/common/xml_safe.py**, **framework/validation/validator.py**, **scripts/bb-validate**, and the **injection** and **oob** skills
+**State:** XXE validation uses the local security-validation state; SSRF records use **state/ssrf.json**.
 
-## Purpose and bounty value
-Harden XML parsing and assess parser behavior with bounded synthetic inputs. Block local-file and metadata targets; treat mock OOB as simulated only. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## Why this phase exists
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+Servers often parse structured data such as XML, JSON, archives, or documents. A parser can become a security boundary if it follows references, expands entities, or fetches a resource named by user input. XXE means XML External Entity processing lets a request cause access to external resources. SSRF means the server itself makes an unintended network request. A parser error or internal XML entity expansion is not automatically proof of external access.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+Phase 18 has two separate aims: make the project’s own XML parsing safer, and provide controlled validators for an authorized application that accepts XML or URL-like inputs.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## How the phase works
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The safe XML helper performs bounded, security-aware parsing and rejects unsafe constructions before ordinary parsing. The XXE validator uses a synthetic internal entity marker; if the application returns that marker, it records an informational observation that internal DTD processing occurred. It does not read local files or claim external entity resolution. Use **bb-validate --validator xxe** for a bounded plan or validation, subject to scope and the validator’s approval requirements.
 
-## Remaining work and limitations
-Implement operational provider polling with authenticated configuration and independently auditable callback correlation. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+The SSRF engine reads candidate parameters from existing application and API state and creates bounded canary cases. It blocks internal and metadata address ranges. The provider interface can model supported OOB providers, but live Interactsh or Collaborator polling is not implemented. Therefore a simulated callback is only a test of local code. It cannot confirm a real blind SSRF.
 
-## Source references
-Relevant tests: test_phase18_xxe_engine.py, test_phase18_xml_security.py, test_phase18_ssrf_transport.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to use it
+
+~~~bash
+# Review XML-capable endpoints from existing state without requests.
+bb-validate --program <program-name> --category xxe --passive-only --json
+
+# Plan a harmless synthetic XML marker for one in-scope endpoint.
+bb-validate --program <program-name> --endpoint https://app.example.org/import --validator xxe --dry-run --json
+
+# Review SSRF candidates without sending a canary.
+bb-ssrf --program <program-name> --passive-only --tree
+
+# Exercise the SSRF engine against its local lab.
+bb-ssrf --program <program-name> --lab --json
+~~~
+
+A live blind test requires explicit program permission, an approved case, and a controlled callback service whose end-to-end polling has been verified. Until then, do not report callback-based confirmation.
+
+## What evidence means
+
+For XML, distinguish parser errors, internal-entity expansion, and external resource resolution. The current synthetic check can at most show internal entity expansion. For SSRF, require a unique callback identifier and evidence binding the callback to the exact request. Never infer internal network access from a marker alone.
+
+## Safety and limitations
+
+Never use file URLs, real sensitive files, cloud metadata addresses, or third-party callback infrastructure without permission. Do not download or retain sensitive response content. Provider polling is an open limitation tracked in the [issue register](../PROJECT-AUDIT-ISSUES.md); tests cover local validators and failure behavior, not live external callbacks.
+
+Tests: **tests/test_phase18_xml_security.py**, **tests/test_phase18_xxe_engine.py**, **tests/test_phase18_ssrf_transport.py**, and **tests/test_phase18_ssrf_mutation.py**. See [Phase 9](PHASE-09-ssrf-intelligence.md), [validation guide](PHASE-06-security-validation-foundation.md), and [roadmap](../ROADMAP-24-PHASES.md).

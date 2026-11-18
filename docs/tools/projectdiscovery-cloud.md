@@ -3,8 +3,8 @@
 ## Purpose
 The ProjectDiscovery Cloud Platform (PDCP) provides centralized cloud scanning, authenticated Chaos asset datasets, Nuclei template syncing, and cloud-hosted Interactsh capabilities.
 
-## Why BugBounty-Agent Uses It
-A single `PDCP_API_KEY` provides enhanced capability across multiple tools:
+## Integration status
+The tool catalog records `PDCP_API_KEY` as a provider credential for separately invoked ProjectDiscovery tools:
 * **Chaos**: Unlocks access to the complete internet-wide subdomain database.
 * **Subfinder**: Prioritized high-speed ProjectDiscovery passive reconnaissance sources.
 * **Nuclei**: Syncs official and community template libraries seamlessly.
@@ -41,7 +41,7 @@ chmod 600 ~/.config/bugbounty-agent/secrets.env
 ```
 
 ## Configuration
-BugBounty-Agent injects `PDCP_API_KEY` into Subfinder, Chaos, Nuclei, and URLFinder when executed.
+BugBounty-Agent's provider manager can report whether `PDCP_API_KEY` is present. It does not inject the value into Subfinder, Chaos, Nuclei, or URLFinder, and `bb-assets`/`bb-recon` do not invoke those clients. Configure each standalone tool using its current native instructions before a manual, authorized use.
 
 ## Verification
 Verify your key with the Chaos client:
@@ -54,14 +54,10 @@ nuclei -auth
 ```
 
 ## Rate Limits / Quotas
-* Free Community Tier: Access to public bug bounty programs and standard template libraries.
-* Enterprise Tier: Continuous asset monitoring and private workspace scanning.
+Features, access, and quotas depend on current ProjectDiscovery plans and terms. Check the current vendor documentation.
 
 ## Privacy / Terms Considerations
 All interactions with PDCP are governed by the ProjectDiscovery Privacy Policy and Terms of Service.
 
 ## Failure Behavior
-If `PDCP_API_KEY` is not configured:
-* `subfinder`, `nuclei`, and `interactsh` fall back to their default unauthenticated operation.
-* `chaos` reports that the provider requires an API key and skips queries.
-* The researcher is notified of degraded optional provider status.
+If a key is missing or invalid, the standalone client determines its behavior. BugBounty-Agent does not start those clients, attempt authentication, or select an automatic fallback.

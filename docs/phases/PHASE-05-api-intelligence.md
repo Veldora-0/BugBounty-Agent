@@ -1,33 +1,50 @@
 # Phase 5 — API Intelligence
 
-**Status:** Implemented with documented limits
-**Implementation:** framework/api/, skills/api-security/, scripts/bb-api
+**Status:** Implemented for offline correlation and bounded, scope-checked API mapping; schema coverage and authenticated inventory are limited.
+**Implementation:** **framework/api/**, **scripts/bb-api**, and the **api-security skill**
+**State file:** **state/api.json** in the local program workspace.
 
-## Purpose and bounty value
-Parse OpenAPI/Swagger and GraphQL descriptions; map endpoints and parameters. Active probing is opt-in, scope checked, bounded, and uses transport budgets. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## Why this phase exists
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+An API is an application interface that accepts structured requests and returns structured responses, often as JSON. It may be used by a web page, a mobile application, or another service. APIs commonly have many routes and parameters that are difficult to see by browsing ordinary pages. Phase 5 combines information already collected from reconnaissance, web pages, and JavaScript with API description files such as OpenAPI or Swagger.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+The phase creates an inventory that helps you ask a narrow security question. For example, a route with an account identifier may deserve an authorization review using two program-approved test accounts. The existence of the route or parameter is not itself proof that access control is missing.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## Inputs and processing
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The engine can correlate Phase 2 HTTP observations, Phase 3 endpoints and forms, and Phase 4 JavaScript routes. It can parse a local API specification without contacting a target. With scope configured, it can also make bounded requests to retrieve common specification paths or inspect an API endpoint. The defaults cap the endpoint count, request count, total bytes, and bytes per specification. Redirects are checked again for scope and destination safety.
 
-## Remaining work and limitations
-Broaden schema compatibility and improve authenticated API inventory using operator-supplied test credentials. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+The parser understands common OpenAPI 2.0 and 3.x structures and GraphQL surface metadata. GraphQL schema introspection is disabled unless the operator explicitly enables it. The active HTTP method policy is intentionally conservative and defaults to GET, HEAD, and OPTIONS; it is not a general request fuzzer. State is written to **api.json** and includes applications, routes, parameters, schemas, authentication observations, and relationships.
 
-## Source references
-Relevant tests: test_api_engine.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to run it
+
+~~~bash
+# Correlate current local web, JavaScript, and reconnaissance state.
+bb-api --program <program-name> --passive-only --tree
+
+# Review a local OpenAPI or Swagger file without making a target request.
+bb-api --program <program-name> --spec ./openapi.json --dry-run --json
+
+# Retrieve an in-scope specification URL under the configured request limits.
+bb-api --program <program-name> --spec https://api.example.org/openapi.json --tree
+
+# Limit API surface acquisition for a small review.
+bb-api --program <program-name> --max-endpoints 50 --max-requests 30 --json
+
+# Enable GraphQL introspection only when the program rules allow it.
+bb-api --program <program-name> --allow-graphql-introspection --graphql --json
+~~~
+
+All target URLs in these examples are placeholders. Confirm program permission before requesting a specification or enabling introspection.
+
+## What the inventory tells you
+
+A route says the software or a source file described that path. A method says what the specification or observation reported; it does not guarantee the server implements it. A parameter classification is a prioritization hint based on its name and position, not a vulnerability detector. An authentication observation describes the scheme seen in the data and may be incomplete.
+
+Review candidate endpoints against the live application manually and create a specific hypothesis before any security test. Good next steps include checking whether an endpoint appears in the browser map, whether the route is current, what principal should access it, and what the program permits you to request.
+
+## Safety and limitations
+
+Do not send write or delete methods merely because a specification lists them. Avoid introspection when the program forbids it. Do not treat public specifications as permission to test their host if scope does not include it. Large or unusual schema formats can be skipped or partially parsed, and authenticated API discovery is not yet a complete workflow.
+
+Tests in **tests/test_api_engine.py** cover parsers, correlation, budgets, redirects, and local fixtures. They do not prove complete coverage of a production API. See the **api-security skill**, [scope guide](../scope.md), and [roadmap](../ROADMAP-24-PHASES.md).

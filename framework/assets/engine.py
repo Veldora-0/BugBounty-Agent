@@ -136,6 +136,11 @@ class AssetIntelligenceEngine:
 
         # Safe fallback without external third-party library dependency
         results: Dict[str, List[str]] = {"A": [], "AAAA": [], "CNAME": []}
+        # Keep passive-only mode genuinely network-silent. Test hooks above remain
+        # available for deterministic offline fixtures.
+        if self.passive_only:
+            return results
+
         # SEC-01: Disallow live network socket resolution without an active scope engine
         # and enforce that the exact requested hostname is authorized in-scope.
         if not self.scope_engine:

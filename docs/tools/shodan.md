@@ -3,8 +3,8 @@
 ## Purpose
 Shodan is a search engine for Internet-connected devices, servers, webcams, industrial control systems, and open network ports.
 
-## Why BugBounty-Agent Uses It
-BugBounty-Agent uses Shodan via `uncover` and `subfinder` to discover internet-facing IP addresses, open ports, historical SSL/TLS certificates, and service banners associated with in-scope domains and CIDRs.
+## Integration status
+Shodan is a data provider for separate tools such as Uncover or Subfinder when those tools are manually configured. BugBounty-Agent records the key name for `bb-doctor` diagnostics, but neither `bb-recon` nor its other engines currently invoke those tools or pass this key to them.
 
 ## Account Required
 **YES**
@@ -32,7 +32,7 @@ SHODAN_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 ## Configuration
-BugBounty-Agent passes `SHODAN_API_KEY` to `uncover` and `subfinder` automatically when invoked during reconnaissance phases.
+Saving a key in BugBounty-Agent's `secrets.env` only lets `bb-doctor` report whether it is present. It is not exported to a separate tool. Configure the tool's native provider file or its process environment yourself before a manual run.
 
 ## Verification
 Test your Shodan API key via curl or uncover:
@@ -45,13 +45,10 @@ Expected response:
 ```
 
 ## Rate Limits / Quotas
-* Free accounts: Limited query credits (typically 100 query credits per month).
-* 1 credit is consumed per search page (100 results).
+Plan limits and query costs can change; check Shodan's current account dashboard and terms before use.
 
 ## Privacy / Terms Considerations
 Do not share or commit Shodan keys. Respect query rate limits (maximum 1 request per second for standard developer plans).
 
 ## Failure Behavior
-If the key is invalid or credits are depleted:
-* API queries return `401 Unauthorized` or `402 Payment Required`.
-* BugBounty-Agent logs an informational warning and falls back to other configured search engines (Censys, FOFA) or passive DNS sources.
+If the key is invalid or a quota is exhausted, the separate tool/provider reports its own error. BugBounty-Agent does not perform an automatic provider fallback.

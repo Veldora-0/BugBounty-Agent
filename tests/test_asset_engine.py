@@ -381,3 +381,18 @@ def test_engine_passive_only_skips_active_and_tls():
     assert len(wc_called) == 0
     assert not graph.has_asset("san.example.com")
 
+
+def test_passive_only_does_not_make_live_dns_calls(monkeypatch):
+    """Passive asset review must not resolve names over the network."""
+    scope_engine = ScopeEngine({"targets": {"domains": ["example.com"]}})
+    engine = AssetIntelligenceEngine(scope_engine=scope_engine, passive_only=True)
+    calls = []
+
+    def unexpected_dns_call(hostname):
+        calls.append(hostname)
+        return (hostname, [], ["198.51.100.7"])
+
+    monkeypatch.setattr("framework.assets.engine.socket.gethostbyname_ex", unexpected_dns_call)
+    assert engine.resolve_dns("example.com") == {"A": [], "AAAA": [], "CNAME": []}
+    assert calls == []
+

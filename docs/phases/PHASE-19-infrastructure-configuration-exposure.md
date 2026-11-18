@@ -1,33 +1,45 @@
-# Phase 19 — Infrastructure & Configuration Exposure
+# Phase 19 — Infrastructure and Configuration Exposure
 
-**Status:** Implemented; read-only and size bounded
-**Implementation:** framework/infrastructure/, skills/reconnaissance/, scripts/bb-infra
+**Status:** Implemented for read-only, bounded exposure discovery and hypotheses; path coverage and context-specific baselines remain incomplete.
+**Implementation:** **framework/infrastructure/**, **scripts/bb-infra**, and the **reconnaissance** skill
+**State file:** **state/infrastructure.json**.
 
-## Purpose and bounty value
-Find exposed configuration, backups, source maps, diagnostics and listings using safe read-only methods, response caps and soft-404 comparison. The goal is to produce actionable, reproducible evidence for a vulnerability on an explicitly authorized program, not to maximize scan volume. A researcher must confirm program authorization and scope before any network activity.
+## What this phase looks for
 
-## Workflow and expected outputs
-1. Load the program workspace and validate the target against its scope configuration before network access.
-2. Reuse existing asset, endpoint, identity and finding records; formulate a specific hypothesis with a reason to test it.
-3. Apply the phase capability with its documented request, time, response-size and safety limits. Stop when evidence is sufficient or a boundary is uncertain.
-4. Store redacted evidence and provenance locally, validate the result, deduplicate by root cause, and prepare a human-reviewed report. Do not submit automatically.
+Applications sometimes publish diagnostic pages, source maps, directory listings, backup files, deployment manifests, or version-control metadata by mistake. Phase 19 organizes these possibilities into exposure categories and checks a bounded set of paths. It is intended to identify a safe clue that a researcher can review, not to download a repository or collect secrets.
 
-Expected outputs are phase-specific observations/hypotheses, state updates, and where confirmed, a finding with reproducible steps and minimal supporting evidence. Runtime targets, credentials, captures and reports belong in the local workspace and must not be committed.
+A path that returns HTTP 200 is not enough. Many servers return the same “not found” page for every path, known as a soft 404. The engine compares candidate responses with ordinary baselines and limits how many bytes it reads.
 
-## Safety and scope gates
-- Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
-- Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
-- Do not access unrelated user data, cause service disruption, brute-force credentials, or perform financial/state-changing actions outside an explicitly safe approved workflow.
-- Preserve redaction, local-only evidence storage, and honest separation of simulated, observed, and confirmed results.
+## How it works
 
-## Acceptance criteria
-- Unit and integration coverage exercises normal, boundary, failure, and out-of-scope behavior on supported platforms.
-- The engine fails closed on missing scope, invalid configuration, exceeded budgets, unsafe destinations, or unavailable trust dependencies.
-- Results link to reproducible evidence and state their confidence, limitations, and whether they came from simulation or a live authorized test.
-- Documentation, CLI/skill integration, and current verification evidence agree. A passing mock suite alone does not establish live-target effectiveness.
+The engine consumes in-scope assets and observations from earlier phases, derives candidate locations, and records a hypothesis for each plausible exposure. Passive-only mode uses local state and does not probe. Dry-run previews checks. Active verification requires both a valid scope and explicit operator approval. The default checks are read-oriented and response-size bounded; the engine must not write, upload, delete, execute, or extract files.
 
-## Remaining work and limitations
-Refine program-specific path sets and make false-positive baselines easier to review. See [the consolidated project issue register](../PROJECT-AUDIT-ISSUES.md) for known blockers and [future improvements](../FUTURE-IMPROVEMENTS.md) for later work. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
+Results and test fingerprints are persisted in **infrastructure.json**. Review the response type and a sanitized snippet, compare it with the baseline, and confirm that the endpoint belongs to the program. Never download secrets, customer information, or complete backup archives to prove a finding.
 
-## Source references
-Relevant tests: test_infrastructure_engine.py. See [the project handbook](../PROJECT-HANDBOOK.md), and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+## How to use it
+
+~~~bash
+# Review existing candidate paths without requests.
+bb-infra --program <program-name> --passive-only --tree
+
+# Preview exposure checks.
+bb-infra --program <program-name> --dry-run --json
+
+# Exercise local expected behavior in the infrastructure lab.
+bb-infra --program <program-name> --lab --json
+
+# Live verification requires current scope and explicit approval.
+bb-infra --program <program-name> --approve --json
+~~~
+
+Use active mode only after reviewing the exact candidate set and program rules.
+
+## Understanding a finding
+
+A good report shows the exact in-scope URL, why the returned response differs from a normal missing-path response, and the smallest safe information needed to demonstrate exposure. A source-map URL is not necessarily sensitive. A backup-looking filename is not enough if its contents are inaccessible. Do not include copied secrets or complete configuration files in the report.
+
+## Safety and limitations
+
+Path lists cannot cover every framework or deployment. Authentication, CDN behavior, custom error pages, and time-dependent responses can create false positives or false negatives. A lab result is not evidence about a live target.
+
+Tests: **tests/test_infrastructure_engine.py**. See the [scope guide](../scope.md), [Phase 4 JavaScript guide](PHASE-04-javascript-intelligence.md), and [roadmap](../ROADMAP-24-PHASES.md).
