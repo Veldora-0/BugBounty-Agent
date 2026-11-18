@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Added deterministic budgeted recommendation ranking with explanations, stale/duplicate coverage checks, public-research references, explicit recommendation-only status, and pause/resume controls. Planning never dispatches target requests.
 * Added `bb-plan` and `bb-arise` Linux/Windows entry points. `/Arise` keeps bounded attributed public metadata, requires explicit public-disclosure status, rejects non-HTTPS/unapproved hosts, rechecks saved entries, records minimal pruning reasons, and retains entries when sources are unavailable or tests inconclusive.
 * Added the `.opencode/commands/Arise.md` slash command and global deployment/status/uninstall support. Integrated it into the existing `knowledge-research` skill. Updated the primary agent, handbook, roadmap, README, and Phase 23 guide. No additional skill or subagent was added.
+* Verified on Kali: 28 focused Phase 23/deployment tests passed; full suite passed 1,245 with one Windows-only DACL test skipped. The local voting-limit fixture's race window was widened to 500 ms and passed 10 consecutive isolated runs, reducing a scheduler-sensitive test failure without changing target request behavior.
 
 ### Phase 22 — Cross-Engine Attack-Path Correlation & Vulnerability Chaining (Implemented; Kali Verified)
 

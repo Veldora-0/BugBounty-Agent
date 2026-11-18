@@ -1,6 +1,6 @@
 # Phase 23 — Autonomous Research Planning & Coverage Intelligence
 
-**Status:** Implemented; Linux acceptance verified (see verification limits below). Recommendations are advisory and never authorize target activity.
+**Status:** Implemented; Kali Linux acceptance verified. Windows acceptance was not run in this workspace. Recommendations are advisory and never authorize target activity.
 **Implementation:** `.opencode/commands/Arise.md`, `framework/research_planning/`, `scripts/bb-plan`, `scripts/bb-arise`, and the existing `knowledge-research` skill.
 
 ## Purpose and bounty value
@@ -70,5 +70,16 @@ Expected outputs are phase-specific observations/hypotheses, state updates, and 
 ## Remaining work and limitations
 The repository CLI deliberately does not scrape public sites; discovery depends on the orchestrator's available read-only search capability. If that capability is unavailable, it cannot find new reports automatically. The score is a transparent prioritization heuristic, not an exploitability probability. Coverage is limited by the completeness and freshness of local program state; the engine does not infer missing endpoint details or run tests. Windows verification must be reported separately from Linux acceptance because this workspace has no working Windows Python launcher; no Windows Phase 23 test result is claimed. Phase acceptance reflects repository evidence and does not imply authorization to test any target.
 
+## Verification record
+
+Verified on Kali Linux at commit `0a2d7a8` on 2026-11-18:
+
+- `python3 -m pytest tests/test_phase23_research_planning.py tests/test_deploy.py -q`: **28 passed**.
+- `python3 -m pytest tests/ -ra`: **1,245 passed, 1 skipped**. The skipped test is the Windows-only DACL check.
+- The local `voting-limit` concurrency fixture passed **10 consecutive** isolated runs after its simulation-only race window was widened to 500 ms to reduce scheduler-sensitive false negatives under suite load.
+- `bb-plan --help` and `bb-arise --help` both returned successfully on Kali.
+
+These checks verify local fixtures and command/deployment behavior; they do not establish live-target vulnerability discovery effectiveness. No Windows test result is claimed.
+
 ## Source references
-Phase 23 acceptance tests: `tests/test_phase23_research_planning.py`. Linux CLI and full-suite evidence will be recorded after verification. See [the project handbook](../PROJECT-HANDBOOK.md) and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
+Phase 23 acceptance tests: `tests/test_phase23_research_planning.py` and `tests/test_deploy.py`. See [the project handbook](../PROJECT-HANDBOOK.md) and [the 24-phase roadmap](../ROADMAP-24-PHASES.md).
