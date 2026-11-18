@@ -29,6 +29,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from framework import __version__
 from framework.assets.engine import AssetIntelligenceEngine
 from framework.assets.model import Asset, AssetType, CDNAttribution
 from framework.common.evidence import sanitize_sensitive_data
@@ -989,7 +990,7 @@ def test_pkg01_pyproject_toml():
 
     assert "[project]" in content
     assert 'name = "bugbounty-agent"' in content
-    assert 'version = "1.1.0"' in content
+    assert f'version = "{__version__}"' in content
     assert "pyyaml>=6.0.1" in content
     assert "playwright>=1.40.0" in content
     assert "pytest>=8.0.0" in content
@@ -999,7 +1000,7 @@ def test_pkg01_pyproject_toml():
         with open(pyproject_path, "rb") as f:
             data = tomllib.load(f)
         assert data["project"]["name"] == "bugbounty-agent"
-        assert data["project"]["version"] == "1.1.0"
+        assert data["project"]["version"] == __version__
         assert "pyyaml>=6.0.1" in data["project"]["dependencies"]
     except ImportError:
         pass
