@@ -327,7 +327,7 @@ class OpenCodeDeployer:
             manifest["entries"][dst] = {
                 "source": src,
                 "kind": "directory" if os.path.isdir(src) else "file",
-                "mode": mode,
+                "mode": "copy" if mode == "copied" else "symlink",
                 "sha256": self._digest_path(dst) if mode == "copied" else self._digest_path(src),
             }
             try:
