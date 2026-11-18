@@ -73,6 +73,21 @@ _loader.exec_module(bb_chain)
 @pytest.fixture
 def temp_workspace():
     tmp = tempfile.mkdtemp(prefix="bb_test_p22_4_")
+    scope_dir = os.path.join(tmp, "scope")
+    os.makedirs(scope_dir, exist_ok=True)
+    with open(os.path.join(scope_dir, "scope.yaml"), "w", encoding="utf-8") as scope_file:
+        scope_file.write(
+            "program:\n"
+            "  name: phase22-fixture\n"
+            "targets:\n"
+            "  domains: [example.com, '*.example.com']\n"
+            "  urls: []\n"
+            "  cidrs: []\n"
+            "out_of_scope:\n"
+            "  domains: []\n"
+            "  urls: []\n"
+            "  cidrs: []\n"
+        )
     yield tmp
     shutil.rmtree(tmp, ignore_errors=True)
 
