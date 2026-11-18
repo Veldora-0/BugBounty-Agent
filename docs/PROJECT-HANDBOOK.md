@@ -30,14 +30,15 @@ The architecture intentionally uses one `Bug-Bounty` agent and skills rather tha
 | Intake | Identify the program and confirm current authorization and scope. Configure exclusions and test accounts. | Validated local scope and program workspace |
 | Inventory | Prefer passive asset sources; enrich approved assets with bounded recon. | Deduplicated asset and endpoint inventory |
 | Surface mapping | Parse web, JavaScript and API surfaces; record authentication and technology observations. | Endpoints, parameters and observations |
+| Research intelligence | Use `/Arise` to review relevant public disclosure methodology against the program's current in-scope assets and coverage; prune irrelevant local links on each invocation. | Attributed public references and researcher-reviewed hypotheses (Phase 23, implemented; public search capability required for new source discovery) |
 | Hypothesis | State the suspected control failure, affected asset, preconditions and a safe proof. | Testable, prioritized hypothesis |
 | Validation | Run only the minimum approved, non-destructive checks; stop on uncertainty or impact. | Evidence-backed finding or ruled-out hypothesis |
-| Chain analysis | Starting from a validated bug, look for other in-scope weaknesses that could combine into a higher-impact path; keep inferred links separate from proven steps. | Explainable attack-path hypothesis and safe follow-up plan (Phase 22, planned) |
+| Chain analysis | Starting from a validated bug, look for other in-scope weaknesses that could combine into a higher-impact path; keep inferred links separate from proven steps. | Explainable attack-path hypothesis and safe follow-up plan (Phase 22, implemented; Kali verified) |
 | Quality and reporting | Challenge confidence, deduplicate root causes, redact and prepare a human-reviewed disclosure report. | Local report and evidence bundle |
 
 ## Current implementation status
 
-Phases 1–20 have corresponding engines, skills or integrations, and tests. Their precise limitations are recorded in the phase guides; historic acceptance and test runs do not guarantee live-target coverage. Phase 21 is implemented and accepted with documented limitations: execution-capability issuance has been restored with independent Ed25519 receipt verification, while Windows service isolation is unsupported and live authorized mutation execution through the installed Linux systemd service remains unverified due to key-provisioning prerequisites. Phases 22–24 remain planned (Phase 22 is strictly NOT STARTED). Consult the issue register and roadmap before treating any phase as production-ready.
+Phases 1–20 have corresponding engines, skills or integrations, and tests. Their precise limitations are recorded in the phase guides; historic acceptance and test runs do not guarantee live-target coverage. Phase 21 is implemented and accepted with documented limitations: execution-capability issuance has been restored with independent Ed25519 receipt verification, while Windows service isolation is unsupported and live authorized mutation execution through the installed Linux systemd service remains unverified due to key-provisioning prerequisites. Phase 22 is implemented with Kali verification; Windows ACL subprocess verification remains unresolved. Phase 23 implements offline coverage-driven recommendations and `/Arise` metadata reconciliation; public-source discovery depends on an available read-only research capability. Phase 24 remains planned. Consult the issue register and roadmap before treating any phase as production-ready.
 
 ## Documentation map
 
@@ -47,7 +48,7 @@ Phases 1–20 have corresponding engines, skills or integrations, and tests. The
 - [Future improvements](FUTURE-IMPROVEMENTS.md): proposed work after and alongside the current roadmap.
 - [Tooling recommendations](TOOLING-RECOMMENDATIONS.md): optional Kali-oriented tools and safe integration gates.
 - [Security](security.md), [scope](scope.md), [workflow](workflow.md), [architecture](architecture.md), [skills](skills.md), [runtime](runtime.md), and [installation](installation.md): operational references.
-- Historical Phase 21 design/acceptance documents may contain superseded verdicts. The current verdict is the explicit status in the [issue register](PROJECT-AUDIT-ISSUES.md) and [roadmap](ROADMAP-24-PHASES.md): Phase 21 is implemented and accepted with documented platform limitations (Linux systemd production service verified; Windows service isolation unsupported). Phase 22 is strictly NOT STARTED.
+- Historical Phase 21 design/acceptance documents may contain superseded verdicts. The current verdicts are the explicit statuses in the [issue register](PROJECT-AUDIT-ISSUES.md) and [roadmap](ROADMAP-24-PHASES.md); Phase 22's Windows ACL subprocess verification remains unresolved.
 
 ## Contribution and release expectations
 

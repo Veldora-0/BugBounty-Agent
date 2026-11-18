@@ -33,3 +33,16 @@ Knowledge ingestion and reference retrieval is strictly confined to verified, pu
 
 ## 3. Extensible Modular Design
 This skill serves as the foundational interface for future retrieval-augmented generation (RAG) and local vector knowledge indexing in subsequent development phases.
+
+## 4. `/Arise` — Phase 23 public research and coverage planning
+When the researcher invokes `/Arise`:
+
+1. Load the selected program workspace and validate its current scope configuration offline. If scope is missing or invalid, do not associate research with target assets and do not recommend testing.
+2. Build the local coverage snapshot with `bb-plan --program <name> --coverage-only --json`. Use only in-scope assets/endpoints, local technology observations, test fingerprints, and validated findings.
+3. Search only public, disclosed reports and public security research using an available read-only web search/research capability. Recheck every saved source URL for continued public availability, attribution, and metadata before marking its source checked. On HackerOne, select **Disclosed** reports; Hacktivity can also contain activity whose report details are not public. Respect source access terms and rate limits. If no research/search capability is available, say sources were not checked; do not claim a search occurred.
+4. Retain only source metadata and concise attributed methodology notes. Never copy full report text, private/non-disclosed content, credentials, or target data. Keep public-source claims separate from target evidence.
+5. Produce a JSON array of records with `source_url`, `disclosure_status: "PUBLICLY_DISCLOSED"`, `title`, `author` or `source_attribution`, `published_at`, `technologies`, `vulnerability_families`, and `technique_summary` (at most 600 characters). Save it only in the selected program's local workspace, then run `bb-arise --program <name> --discoveries <local-json> --checked-source <verified-host> --unchecked-source <failed-host> --json`, repeating those flags for each source. The local tool rejects reports without explicit public disclosure status, attribution, non-HTTPS or unapproved domains, redacts common secrets, re-evaluates saved entries, and records pruning reasons without retaining deleted report content. Entries are never described as source-checked unless their host was explicitly listed as checked.
+6. Run `bb-plan --program <name> --budget <request-budget> --json` to get ranked hypotheses. Explain relevance, confidence, safety, estimated cost, prior coverage, skipped tests, source references, and uncertainty. An empty result is valid; never lower the relevance bar to force recommendations.
+7. Recommendations and public reports are not target evidence or permission. Any active follow-up remains a separate action and must pass the existing scope, operator-approval, dispatch, and request-budget gates. Never submit reports automatically.
+
+The local Phase 23 commands perform no target network requests. They consume researcher-reviewed public metadata and local program state; live public-source discovery is performed only through the available public research capability, and source failures are reported explicitly.

@@ -98,7 +98,7 @@ BugBounty-Agent deploys globally into your OpenCode environment:
 
 * `agents/Bug-Bounty.md`: Canonical `Bug-Bounty` orchestrator agent definition.
 * `skills/`: 18 modular methodology skills.
-* `scripts/bb-deploy`: Automated synchronization utility that links `~/.config/opencode/` and `~/.local/bin/`.
+* `scripts/bb-deploy`: Automated synchronization utility that deploys the global `Bug-Bounty` agent, 18 skills, `/Arise` command to `~/.config/opencode/`, and CLI tools to `~/.local/bin/`. It refuses to overwrite an unrelated existing global `/Arise` command.
 
 Deploy globally on Kali/Linux:
 

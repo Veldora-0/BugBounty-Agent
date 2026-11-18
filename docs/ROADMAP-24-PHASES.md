@@ -2,7 +2,7 @@
 
 This is the canonical status index. Detailed plans, implementation paths, safety boundaries and completion criteria live in [the per-phase guides](phases/) and [project handbook](PROJECT-HANDBOOK.md). Status describes the code and documentation currently present; historic test success does not establish live-target effectiveness.
 
-**Current work:** Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining (implemented; Kali acceptance verified, Windows ACL subprocess verification unresolved). Phase 21 execution provenance remediation complete with documented platform limitations. Phases 23–24 remain planned. See [issue register](PROJECT-AUDIT-ISSUES.md).
+**Current work:** Phase 23 — Autonomous Research Planning & Coverage Intelligence (implemented; Linux verification status is recorded in its phase guide). Phase 22 is implemented and Kali-verified with Windows ACL subprocess verification unresolved. Phase 21 has documented platform limitations; Phase 24 remains planned. See [issue register](PROJECT-AUDIT-ISSUES.md).
 
 | Phase | Name | Current status |
 |---:|---|---|
@@ -28,7 +28,7 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 20 | Race Conditions & Distributed Workflows | Implemented with low-volume bounds |
 | 21 | Authentication & Authorization Correlation | Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; live Linux systemd mutation unverified) |
 | 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Implemented; all four milestones verified on Kali Linux (102 tests pass); Windows ACL subprocess verification unresolved |
-| 23 | Autonomous Research Planning & Coverage Intelligence | Planned; human-directed recommendations required |
+| 23 | Autonomous Research Planning & Coverage Intelligence | Implemented; Linux acceptance verified; public-source discovery requires an available read-only research capability; Windows verification pending |
 | 24 | Final Integration & Production Readiness | Planned |
 
 ## Roadmap-wide completion requirements

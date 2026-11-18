@@ -44,6 +44,8 @@ def test_deployer_copy_mode(temp_env):
     assert res["skills"]["skills_deployed"] == 18
     assert res["scripts"]["status"] == "ok"
     assert res["scripts"]["scripts_linked"] >= 13
+    assert res["commands"]["status"] == "ok"
+    assert res["commands"]["command"] == "Arise"
 
     # Verify agent file exists in destination with exact canonical name Bug-Bounty.md
     agent_path = os.path.join(temp_env["config_dir"], "agents", "Bug-Bounty.md")
@@ -72,6 +74,7 @@ def test_deployer_copy_mode(temp_env):
     assert cfg["subagent_depth"] == 1
     assert "agent" not in cfg
     assert "agents" not in cfg
+    assert os.path.isfile(os.path.join(temp_env["config_dir"], "commands", "Arise.md"))
 
     # Verify scripts in bin dir
     bin_files = os.listdir(temp_env["bin_dir"])
@@ -84,6 +87,7 @@ def test_deployer_copy_mode(temp_env):
     assert st["is_valid"] is True
     assert st["agent_deployed"] is True
     assert st["skills_count"] == 18
+    assert st["arise_command_deployed"] is True
     assert st["default_agent"] == "Bug-Bounty"
 
 
@@ -114,6 +118,12 @@ def test_deployer_uninstall(temp_env):
         bin_dir=temp_env["bin_dir"],
     )
 
+    custom_commands = os.path.join(temp_env["config_dir"], "commands")
+    os.makedirs(custom_commands, exist_ok=True)
+    custom_command = os.path.join(custom_commands, "keep.md")
+    with open(custom_command, "w", encoding="utf-8") as stream:
+        stream.write("# User command\n")
+
     deployer.deploy(mode="copy")
     assert deployer.check_status()["is_valid"] is True
 
@@ -121,6 +131,8 @@ def test_deployer_uninstall(temp_env):
     assert un_res["agent_removed"] is True
     assert un_res["skills_removed"] == 18
     assert un_res["scripts_removed"] >= 13
+    assert un_res["arise_command_removed"] is True
+    assert os.path.isfile(custom_command)
 
     st = deployer.check_status()
     assert st["is_valid"] is False
@@ -159,3 +171,20 @@ def test_deployer_removes_old_lowercase_agent(temp_env):
     with open(canonical_file, "r", encoding="utf-8") as f:
         content = f.read()
     assert "name: Bug-Bounty" in content
+
+
+def test_deployer_does_not_overwrite_user_arise_command(temp_env):
+    commands_dir = os.path.join(temp_env["config_dir"], "commands")
+    os.makedirs(commands_dir, exist_ok=True)
+    custom = os.path.join(commands_dir, "Arise.md")
+    with open(custom, "w", encoding="utf-8") as stream:
+        stream.write("# Existing personal command\n")
+
+    deployer = OpenCodeDeployer(repo_root=REPO_ROOT,
+                                config_dir=temp_env["config_dir"],
+                                bin_dir=temp_env["bin_dir"])
+    result = deployer.deploy_commands(prefer_symlink=False)
+    assert result["status"] == "error"
+    assert "Refusing to overwrite" in result["message"]
+    with open(custom, "r", encoding="utf-8") as stream:
+        assert stream.read() == "# Existing personal command\n"

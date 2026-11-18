@@ -13,7 +13,9 @@ BugBounty-Agent is an orchestrated security research system designed to operate 
 
 This project is intended to find and document vulnerabilities on **explicitly authorized bug bounty targets**. Start with the [Project Handbook](docs/PROJECT-HANDBOOK.md) for a newcomer-oriented overview and operating workflow. The [24-Phase Roadmap](docs/ROADMAP-24-PHASES.md) links to one detailed guide per phase; unresolved risks and blockers are maintained in the [Project Audit Issues](docs/PROJECT-AUDIT-ISSUES.md), candidate work is listed in [Future Improvements](docs/FUTURE-IMPROVEMENTS.md), and optional Kali-oriented tools are discussed in [Tooling Recommendations](docs/TOOLING-RECOMMENDATIONS.md).
 
-**Current status:** Phases 1–20 have implementations with phase-specific limitations. Phase 21 is partially implemented and not accepted: the Linux isolated dispatcher and invalid-approval rejection are verified, but trusted execution capability and controlled-attestation issuance remain disabled. Phase 22 is planned to chain a validated bug with other in-scope weaknesses to identify and safely prove greater impact; Phases 23–24 are also planned. See the issue register before relying on any phase as production-ready.
+**Current status:** Phase 22 implements cross-engine attack-path correlation and vulnerability chaining (Kali verified; Windows ACL subprocess verification remains unresolved). Phase 23 implements offline coverage-aware hypothesis planning and `/Arise` public-research metadata reconciliation; see its phase guide for verification evidence and limits. Phases 1–21 retain their documented platform and operational limitations; Phase 24 remains planned. No phase status implies live-target effectiveness or authorization. See the issue register before relying on any phase as production-ready.
+
+Run `scripts/bb-deploy` to install the single global `Bug-Bounty` agent, its 18 skills, CLI tools, and the `/Arise` command. OpenCode discovers project slash commands from `.opencode/commands/` and global commands from `~/.config/opencode/commands/` ([command documentation](https://opencode.ai/docs/commands)).
 
 ---
 

@@ -64,7 +64,7 @@ flowchart TD
 
 * **Any Directory Availability**: OpenCode can be launched from anywhere (`cd ~ && opencode`, `cd /tmp && opencode`, `cd ~/Desktop/BugBounty-Agent && opencode`). `Bug-Bounty` is always available as the global primary default agent.
 * **Source of Truth**: The Git repository remains the canonical version-controlled source of truth.
-* **Sync & Deployment Command**: Running `./scripts/bb-deploy` (or `bb-sync`) synchronizes `agents/` and `skills/` to `~/.config/opencode/` via symlinks or copies.
+* **Sync & Deployment Command**: Running `./scripts/bb-deploy` (or `bb-sync`) synchronizes `agents/`, `skills/`, the repository-owned `.opencode/commands/Arise.md` command, and CLI scripts to their OpenCode/user-bin locations via symlinks or copies.
 * **Duplicate Prevention**: No `.opencode/agents/` directory exists in the repository root, ensuring OpenCode discovers exactly one custom agent without duplicates.
 
 ---
@@ -115,9 +115,10 @@ flowchart TD
 
 5. **Validation, Deduplication & Reporting**:
    * `validation` challenges candidate findings against the 6-gate checklist.
-   * After a finding is validated, `Bug-Bounty` considers whether other **in-scope** weaknesses can be safely chained with it to demonstrate greater impact. Each proposed edge must cite evidence; inferred paths remain hypotheses. Follow-up requests require human approval, and theoretical chains must not inflate severity. The integrated graph and chain validation engine is planned for Phase 22.
+   * After a finding is validated, `Bug-Bounty` considers whether other **in-scope** weaknesses can be safely chained with it to demonstrate greater impact. Each proposed edge must cite evidence; inferred paths remain hypotheses. Follow-up requests require human approval, and theoretical chains must not inflate severity. The integrated graph and chain validation engine is implemented in Phase 22.
    * `deduplication` merges root-cause duplicates and flags existing coverage.
    * `reporting` renders standard 17-section Markdown disclosure reports in `reports/` for human review.
+   * Phase 23 `bb-plan` uses the current scoped inventory and prior test state to rank advisory hypotheses. `/Arise` may use public, disclosed research to add attributed methodology references. Planning never performs target requests; active follow-up remains approval-gated.
 
 ---
 

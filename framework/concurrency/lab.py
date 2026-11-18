@@ -104,7 +104,9 @@ class ConcurrencyLabHandler(BaseHTTPRequestHandler):
         # Scenario 3: Voting Limit Overrun (Vulnerable LIMIT_OVERRUN)
         if path == "/scenario/voting-limit":
             current_votes = server.voting_count
-            time.sleep(0.15)  # Gap between quota check and vote registration
+            # Keep the local race window wide enough for all barrier-released
+            # workers to reach the fixture even when the full suite is loaded.
+            time.sleep(0.5)  # Local fixture only; never changes target request timing.
             if current_votes < 1:
                 server.voting_count += 1
                 self._send_json(200, {

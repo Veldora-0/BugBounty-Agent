@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 23 — Research Planning & Coverage Intelligence
+* Added `framework/research_planning/` to build current-scope-filtered views of local assets, endpoints, technologies, tests, and validated findings without changing those source records.
+* Added deterministic budgeted recommendation ranking with explanations, stale/duplicate coverage checks, public-research references, explicit recommendation-only status, and pause/resume controls. Planning never dispatches target requests.
+* Added `bb-plan` and `bb-arise` Linux/Windows entry points. `/Arise` keeps bounded attributed public metadata, requires explicit public-disclosure status, rejects non-HTTPS/unapproved hosts, rechecks saved entries, records minimal pruning reasons, and retains entries when sources are unavailable or tests inconclusive.
+* Added the `.opencode/commands/Arise.md` slash command and global deployment/status/uninstall support. Integrated it into the existing `knowledge-research` skill. Updated the primary agent, handbook, roadmap, README, and Phase 23 guide. No additional skill or subagent was added.
+
 ### Phase 22 — Cross-Engine Attack-Path Correlation & Vulnerability Chaining (Implemented; Kali Verified)
 
 #### Milestone 22.1 — Attack Graph Model, State Management & Finding Normalization

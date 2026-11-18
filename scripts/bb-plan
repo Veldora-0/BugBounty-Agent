@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""bb-plan — offline, scope-aware coverage and hypothesis planning (Phase 23)."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import tempfile
+
+ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from framework.common.config import get_program_dir, resolve_program_scope_file
+from framework.research_planning import AriseResearchManager, CoverageIndex, ResearchPlanner
+from framework.scope.engine import ScopeEngine
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build offline coverage and prioritized research plans; never sends target requests.")
+    parser.add_argument("--program", required=True, help="Program name in the local workspace")
+    parser.add_argument("--workspace-root", help="Override the BugBounty-Workspace root")
+    parser.add_argument("--scope", help="Explicit scope file; missing/invalid scope fails closed")
+    parser.add_argument("--budget", type=int, default=20, help="Maximum estimated request budget (default: 20)")
+    parser.add_argument("--limit", type=int, default=50, help="Maximum recommendations (default: 50)")
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    parser.add_argument("--coverage-only", action="store_true", help="Show current scoped coverage without recommendations")
+    parser.add_argument("--pause", action="store_true", help="Persist pause state; does not run or cancel target activity")
+    parser.add_argument("--resume", action="store_true", help="Clear the planning pause state")
+    args = parser.parse_args()
+    try:
+        if args.pause and args.resume:
+            raise ValueError("--pause and --resume cannot be combined")
+        program_dir = get_program_dir(args.program, args.workspace_root)
+        scope_path = resolve_program_scope_file(program_dir, args.scope)
+        if not scope_path:
+            raise ValueError("No valid scope file found; initialize the program and configure scope before planning")
+        scope = ScopeEngine.from_file(scope_path)
+        index = CoverageIndex(program_dir, scope)
+        state_dir = os.path.join(program_dir, "state")
+        os.makedirs(state_dir, exist_ok=True)
+        control_file = os.path.join(state_dir, "research_planning.json")
+        if os.path.islink(control_file):
+            raise ValueError("research_planning.json must not be a symbolic link")
+        control = _read_control(control_file)
+        if not args.coverage_only:
+            _secure_state_dir(state_dir)
+        if args.pause:
+            control["paused"] = True
+            _write_control(control_file, control)
+        elif args.resume:
+            control["paused"] = False
+            _write_control(control_file, control)
+        if args.coverage_only:
+            result = index.to_dict()
+        elif control.get("paused"):
+            result = {"paused": True, "recommendations": [], "execution_performed": False,
+                      "message": "Planning is paused. Resume explicitly to generate recommendations."}
+        else:
+            arise_path = os.path.join(state_dir, "arise_reports.json")
+            reports = CoverageIndex._read(arise_path, [])
+            if not isinstance(reports, list):
+                raise ValueError("arise_reports.json is malformed")
+            reports = AriseResearchManager(program_dir, index).refresh()["reports"]
+            result = ResearchPlanner(index).recommend(args.budget, args.limit, reports)
+            control.update({"paused": False, "last_generated_at": result["generated_at"],
+                            "last_recommendation_count": len(result["recommendations"])})
+            _write_control(control_file, control)
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            _display(result)
+        return 0
+    except Exception as exc:
+        print(f"[!] Planning failed closed: {exc}", file=sys.stderr)
+        return 2
+
+
+def _read_control(path: str) -> dict:
+    if not os.path.exists(path):
+        return {"paused": False}
+    with open(path, "r", encoding="utf-8") as stream:
+        value = json.load(stream)
+    if not isinstance(value, dict) or not isinstance(value.get("paused", False), bool):
+        raise ValueError("research_planning.json is malformed")
+    return value
+
+
+def _write_control(path: str, value: dict) -> None:
+    if os.path.islink(path):
+        raise ValueError("research_planning.json must not be a symbolic link")
+    directory = os.path.dirname(path)
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=directory, encoding="utf-8", delete=False) as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            temp = stream.name
+        if os.name != "nt":
+            os.chmod(temp, 0o600)
+        else:
+            from framework.auth_correlation.state import _enforce_windows_file_dacl
+            _enforce_windows_file_dacl(temp)
+        os.replace(temp, path)
+        temp = None
+    finally:
+        if temp and os.path.exists(temp):
+            os.unlink(temp)
+
+
+def _secure_state_dir(path: str) -> None:
+    if os.path.islink(path):
+        raise ValueError("Program state directory must not be a symbolic link")
+    if os.name != "nt":
+        os.chmod(path, 0o700)
+    else:
+        from framework.auth_correlation.state import _enforce_windows_directory_dacl
+        _enforce_windows_directory_dacl(path)
+
+
+def _display(data: dict) -> None:
+    if "assets_in_scope" in data:
+        print(f"In-scope assets: {data['assets_in_scope']} | endpoints: {data['endpoints_in_scope']} | "
+              f"tests: {data['tests_in_scope']} | validated findings: {data['validated_findings_in_scope']}")
+    if data.get("paused"):
+        print(data["message"])
+        return
+    print("Recommendations (planning only; no target requests sent):")
+    for item in data.get("recommendations", []):
+        print(f"  {item['score']:>3}  {item['category']:<16} {item['target']} — {item['rationale']}")
+    print(f"Skipped: {len(data.get('skipped', []))}; approval required before active validation.")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

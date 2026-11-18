@@ -22,10 +22,14 @@ This document captures candidate improvements for completing the roadmap and mak
 
 ### Phase 23 — Research planning and coverage intelligence
 
-- Generate researcher-reviewed next-step recommendations from scope, asset inventory, technology observations, prior tests and known coverage gaps.
-- Prioritize by potential bounty impact, confidence, test cost, safety and duplicate coverage.
-- Track test fingerprints and explain why a test is recommended or skipped.
-- Add budget-aware plans and a clear pause/stop control; recommendation generation must not imply permission to execute.
+Core offline coverage planning and `/Arise` metadata reconciliation are implemented. These are follow-on improvements:
+
+- Add optional, narrowly scoped source adapters for feeds/APIs that permit public disclosure indexing; retain the explicit read-only search workflow when no adapter is available.
+- Improve exact-hypothesis matching by storing research fingerprints with test records; current deduplication is based on current target and vulnerability category.
+- Add an asset-by-vulnerability-family coverage view with dates, confidence and explicit exclusions, while keeping ranking factors explainable and researcher-editable.
+- Calibrate ranking weights against researcher feedback and local fixture outcomes without presenting the score as exploitability probability.
+- Add local fixture cases for recommendation quality, category boundaries, stale inventory and source removal/version changes.
+- Preserve the Phase 23 rule that public research remains separate from target evidence and recommendations never authorize active testing.
 
 ### Phase 24 — Integration and production readiness
 

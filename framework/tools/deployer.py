@@ -1,8 +1,8 @@
 """
 OpenCode Global Deployment and Synchronization Engine.
 
-Deploys and synchronizes the canonical Bug-Bounty agent and 18 modular skills
-from the BugBounty-Agent repository into the user's global OpenCode environment
+Deploys and synchronizes the canonical Bug-Bounty agent, 18 modular skills,
+and the /Arise command from the BugBounty-Agent repository into global OpenCode
 (~/.config/opencode/ and ~/.local/bin/).
 """
 
@@ -50,9 +50,11 @@ class OpenCodeDeployer:
         self.agents_src = os.path.join(self.repo_root, "agents")
         self.skills_src = os.path.join(self.repo_root, "skills")
         self.scripts_src = os.path.join(self.repo_root, "scripts")
+        self.commands_src = os.path.join(self.repo_root, ".opencode", "commands")
 
         self.target_agents = os.path.join(self.config_dir, "agents")
         self.target_skills = os.path.join(self.config_dir, "skills")
+        self.target_commands = os.path.join(self.config_dir, "commands")
         self.target_config_file = os.path.join(self.config_dir, "opencode.jsonc")
 
     def _link_or_copy(self, src: str, dst: str, prefer_symlink: bool = True) -> str:
@@ -148,6 +150,30 @@ class OpenCodeDeployer:
             results[script] = mode
 
         return {"status": "ok", "scripts_linked": len(results), "details": results}
+
+    def deploy_commands(self, prefer_symlink: bool = True) -> Dict[str, Any]:
+        """Deploys the repository-owned /Arise prompt globally without replacing other commands."""
+        command_file = os.path.join(self.commands_src, "Arise.md")
+        if not os.path.isfile(command_file):
+            return {"status": "error", "message": f"/Arise command not found: {command_file}"}
+        dst = os.path.join(self.target_commands, "Arise.md")
+        if os.path.lexists(dst) and not self._owns_arise_command(dst):
+            return {"status": "error", "message": f"Refusing to overwrite an existing user command: {dst}"}
+        mode = self._link_or_copy(command_file, dst, prefer_symlink=prefer_symlink)
+        return {"status": "ok", "command": "Arise", "mode": mode, "destination": dst}
+
+    def _owns_arise_command(self, path: str) -> bool:
+        """Returns true only for a symlink to, or unchanged copy of, this repository command."""
+        source = os.path.join(self.commands_src, "Arise.md")
+        if os.path.islink(path):
+            return os.path.realpath(path) == os.path.realpath(source)
+        if not os.path.isfile(path) or not os.path.isfile(source):
+            return False
+        try:
+            with open(path, "rb") as deployed, open(source, "rb") as canonical:
+                return deployed.read() == canonical.read()
+        except OSError:
+            return False
 
     def configure_global_opencode(self) -> Dict[str, Any]:
         """Ensures global opencode.jsonc sets Bug-Bounty as default agent and enforces permissions."""
@@ -320,19 +346,22 @@ class OpenCodeDeployer:
         2. Deploys 18 skills to ~/.config/opencode/skills/
         3. Configures default_agent and permissions in ~/.config/opencode/opencode.jsonc
         4. Links CLI utilities to ~/.local/bin/
-        5. Verifies duplicate prevention
+        5. Deploys the /Arise global slash command
+        6. Verifies duplicate prevention
         """
         prefer_symlink = mode != "copy"
 
         agent_res = self.deploy_agent(prefer_symlink=prefer_symlink)
         skills_res = self.deploy_skills(prefer_symlink=prefer_symlink)
         scripts_res = self.deploy_scripts(prefer_symlink=prefer_symlink)
+        commands_res = self.deploy_commands(prefer_symlink=prefer_symlink)
         config_res = self.configure_global_opencode()
         dup_check = self.check_duplicate_prevention()
 
         success = (
             agent_res.get("status") == "ok"
             and skills_res.get("status") == "ok"
+            and commands_res.get("status") == "ok"
             and config_res.get("status") == "ok"
             and not dup_check["duplicate_risk"]
         )
@@ -342,12 +371,13 @@ class OpenCodeDeployer:
             "agent": agent_res,
             "skills": skills_res,
             "scripts": scripts_res,
+            "commands": commands_res,
             "config": config_res,
             "duplicate_prevention": dup_check,
         }
 
     def uninstall(self) -> Dict[str, Any]:
-        """Removes global Bug-Bounty agent, skills, and binary links."""
+        """Removes global Bug-Bounty agent, skills, /Arise command, and binary links."""
         agent_dst = os.path.join(self.target_agents, "Bug-Bounty.md")
         legacy_dst = os.path.join(self.target_agents, "bug-bounty.md")
         for target in [agent_dst, legacy_dst]:
@@ -378,11 +408,16 @@ class OpenCodeDeployer:
                     os.remove(dst)
                     scripts_removed += 1
 
+        command_dst = os.path.join(self.target_commands, "Arise.md")
+        if self._owns_arise_command(command_dst):
+            os.remove(command_dst)
+
         return {
             "status": "ok",
             "agent_removed": not os.path.exists(agent_dst),
             "skills_removed": skills_removed,
             "scripts_removed": scripts_removed,
+            "arise_command_removed": not os.path.exists(command_dst),
         }
 
     def check_status(self) -> Dict[str, Any]:
@@ -390,6 +425,8 @@ class OpenCodeDeployer:
         agent_dst = os.path.join(self.target_agents, "Bug-Bounty.md")
         agent_deployed = os.path.exists(agent_dst)
         agent_is_symlink = os.path.islink(agent_dst)
+        arise_command_dst = os.path.join(self.target_commands, "Arise.md")
+        arise_command_deployed = self._owns_arise_command(arise_command_dst)
 
         deployed_skills = []
         if os.path.isdir(self.target_skills):
@@ -413,6 +450,7 @@ class OpenCodeDeployer:
             agent_deployed
             and len(deployed_skills) >= 18
             and default_agent == "Bug-Bounty"
+            and arise_command_deployed
             and not dup["duplicate_risk"]
         )
 
@@ -424,6 +462,8 @@ class OpenCodeDeployer:
             "skills_count": len(deployed_skills),
             "skills_dir": self.target_skills,
             "default_agent": default_agent,
+            "arise_command_deployed": arise_command_deployed,
+            "arise_command_path": arise_command_dst,
             "global_config": self.target_config_file,
             "duplicate_prevention": dup,
         }

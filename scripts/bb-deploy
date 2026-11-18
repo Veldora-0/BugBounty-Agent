@@ -25,7 +25,7 @@ from framework.tools.deployer import OpenCodeDeployer
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Deploy and synchronize Bug-Bounty agent and skills to global OpenCode (~/.config/opencode/)."
+        description="Deploy and synchronize Bug-Bounty agent, skills, /Arise command, and CLIs to global OpenCode."
     )
     parser.add_argument(
         "--copy",
@@ -46,7 +46,7 @@ def main():
     parser.add_argument(
         "--uninstall",
         action="store_true",
-        help="Remove global Bug-Bounty agent and skills",
+        help="Remove the global Bug-Bounty agent, its 18 skills, /Arise command, and CLI links",
     )
     args = parser.parse_args()
 
@@ -64,6 +64,7 @@ def main():
         print(f"Deployed Skills:       {st['skills_count']} / 18 in {st['skills_dir']}")
         print(f"Global Default Agent:  {st['default_agent']}")
         print(f"Duplicate Risk:        {st['duplicate_prevention']['status']}")
+        print(f"/Arise Command:        {'Deployed' if st['arise_command_deployed'] else 'Missing'} ({st['arise_command_path']})")
         print(f"  Note: {st['duplicate_prevention']['message']}")
         print("=" * 70)
         sys.exit(0 if st["is_valid"] else 1)
@@ -74,11 +75,12 @@ def main():
         print(f"[+] Agent removed:  {res['agent_removed']}")
         print(f"[+] Skills removed: {res['skills_removed']}")
         print(f"[+] Scripts unlinked: {res['scripts_removed']}")
+        print(f"[+] /Arise command removed: {res['arise_command_removed']}")
         print("[+] Uninstallation complete.")
         sys.exit(0)
 
     mode = "copy" if args.copy else "symlink"
-    print(f"[*] Deploying Bug-Bounty agent and 18 skills to global OpenCode ({deployer.config_dir})...")
+    print(f"[*] Deploying Bug-Bounty agent, 18 skills, /Arise command, and CLIs to global OpenCode ({deployer.config_dir})...")
     print(f"[*] Deployment mode: {mode}")
 
     res = deployer.deploy(mode=mode)
@@ -86,6 +88,10 @@ def main():
     print(f"\n[+] Agent:     {res['agent'].get('agent')} -> {res['agent'].get('mode')} to {res['agent'].get('destination')}")
     print(f"[+] Skills:    {res['skills'].get('skills_deployed')} skills deployed ({mode})")
     print(f"[+] Scripts:   {res['scripts'].get('scripts_linked')} utilities linked to {deployer.bin_dir}")
+    if res["commands"].get("status") == "ok":
+        print(f"[+] Command:   /Arise {res['commands'].get('mode')} to {res['commands'].get('destination')}")
+    else:
+        print(f"[!] Command:   /Arise was not deployed: {res['commands'].get('message')}")
     print(f"[+] Config:    default_agent = {res['config'].get('default_agent')} in {res['config'].get('config_file')}")
     print(f"[+] Duplicate: {res['duplicate_prevention'].get('status')}")
 
