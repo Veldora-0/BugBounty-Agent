@@ -3,8 +3,8 @@
 ## Purpose
 WPScan is a specialized security scanner designed specifically for WordPress content management systems.
 
-## Why BugBounty-Agent Uses It
-When `bb-recon` or `bb-web` discovers a WordPress installation (`wp-login.php`, `wp-content`), WPScan can enumerate installed plugins, active themes, and known CVEs.
+## Integration status
+WPScan is an optional standalone scanner in the tool catalog. `bb-recon` and `bb-web` do not launch it, and BugBounty-Agent does not pass `WPSCAN_API_TOKEN` to it. A researcher may invoke WPScan manually after verifying the WordPress host is explicitly in scope and the program permits that scan.
 
 ## Account Required
 **OPTIONAL** (Scanning without an API token detects core version and plugin names; an API token enables CVE matching against the WPScan vulnerability database).
@@ -33,7 +33,7 @@ bb-install wpscan
 Or via apt: `sudo apt install wpscan`.
 
 ## Configuration
-Add your API token to `~/.config/bugbounty-agent/secrets.env`:
+BugBounty-Agent's `secrets.env` reader can report whether the token is present, but does not inject it into WPScan. For a manual WPScan run, provide the token through WPScan's documented option or native configuration:
 ```text
 WPSCAN_API_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
@@ -45,13 +45,10 @@ wpscan --api-token "${WPSCAN_API_TOKEN}" --version
 ```
 
 ## Rate Limits / Quotas
-* Free API Tier: 25 API requests per day.
-* Paid Tiers: Higher daily allowances for active security consultancies.
+Check the current WPScan account documentation for API limits and terms.
 
 ## Privacy / Terms Considerations
 Only execute WPScan against confirmed in-scope targets after WordPress signatures are positively verified.
 
 ## Failure Behavior
-If `WPSCAN_API_TOKEN` is not configured:
-* WPScan runs in fallback mode without the vulnerability database.
-* It reports discovered plugins and versions but advises configuring `WPSCAN_API_TOKEN` for CVE vulnerability matching.
+If the token is missing, consult WPScan's current behavior for vulnerability data. BugBounty-Agent does not run WPScan or apply an automatic fallback.

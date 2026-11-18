@@ -458,7 +458,7 @@ BugBounty-Agent has delivered 21 cohesive security research phases, establishing
   * `LocalAuthCorrelationLab`: 6 deterministic authentication & authorization correlation scenarios.
 
 ### 19. Roadmap Status & Verification Baseline
-The older Phase 21 acceptance documents cited below contain superseded conclusions. Phase 21 is **not accepted**: execution capability and controlled-attestation issuance remain disabled. See the [canonical roadmap](docs/ROADMAP-24-PHASES.md), [Phase 21 guide](docs/phases/PHASE-21-authentication-authorization-correlation.md), and [project issue register](docs/PROJECT-AUDIT-ISSUES.md). The old roadmap path is retained only for historical references.
+Older Phase 21 acceptance documents describe superseded repository states. Execution-capability issuance is now restored with independent Ed25519 receipt verification. Linux dispatcher checks passed on Kali, while Windows production service isolation is unsupported and successful authorized mutation through the installed Linux service remains unverified. See the [canonical roadmap](docs/ROADMAP-24-PHASES.md), [Phase 21 guide](docs/phases/PHASE-21-authentication-authorization-correlation.md), and [project issue register](docs/PROJECT-AUDIT-ISSUES.md). The old roadmap path is retained only for historical references.
 
 ---
 

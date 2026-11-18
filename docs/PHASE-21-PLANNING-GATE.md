@@ -438,4 +438,4 @@ The architectural trust-boundary vulnerability has been permanently resolved thr
 - **Fail-Closed Evidence Writer**: `EvidenceStore.save_transport_dispatch_capture()` requires the private `authority_token`, failing closed with `EvidencePersistenceError` for unauthorized in-process callers.
 - **Replay Resistance & Single-Use Enforcement**: Dispatch requests enforce 4-byte big-endian framing, cryptographic receipts (`RCPT-SIG-...`), atomic cross-process file locking, and single-use consumption tokens.
 - **Definitive Verification**: 100% verified across Windows 11 (145 passed, 1 skipped) and Kali Linux (145 passed, 1 skipped) with 0 failures, and 1088 full repository regression tests passing cleanly.
-- **Accepted Baseline**: See [`docs/PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md`](PHASE-21-FINAL-SECURITY-ACCEPTANCE-REPORT.md). Phase 22 is **NOT STARTED**.
+- **Historical planning-gate status at the time this plan was written**: Phase 22 had not started then. Current implementation and platform status are in the [canonical roadmap](ROADMAP-24-PHASES.md).

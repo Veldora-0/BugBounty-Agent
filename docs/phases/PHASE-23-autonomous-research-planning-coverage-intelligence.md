@@ -76,6 +76,7 @@ Verified on Kali Linux at commit `0a2d7a8` on 2026-11-18:
 
 - `python3 -m pytest tests/test_phase23_research_planning.py tests/test_deploy.py -q`: **28 passed**.
 - `python3 -m pytest tests/ -ra`: **1,245 passed, 1 skipped**. The skipped test is the Windows-only DACL check.
+- After the subsequent audit fixes, the full Kali suite passed **1,264 tests with 1 Windows-only DACL test skipped** at `c1a791f`; see the [current audit evidence](../PROJECT-AUDIT-ISSUES.md).
 - The local `voting-limit` concurrency fixture passed **10 consecutive** isolated runs after its simulation-only race window was widened to 500 ms to reduce scheduler-sensitive false negatives under suite load.
 - `bb-plan --help` and `bb-arise --help` both returned successfully on Kali.
 

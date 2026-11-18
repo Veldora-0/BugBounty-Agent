@@ -44,7 +44,7 @@ In previous remediation iterations, the system attempted to verify execution pro
 
 ## 4. Final Architecture and Trust Boundaries
 
-The definitive architecture establishes an isolated execution boundary centered around `ControlledDispatchWorkflow` in [`framework/auth_correlation/dispatcher.py`](file:///d:/BugBounty-Agent/framework/auth_correlation/dispatcher.py):
+The definitive architecture establishes an isolated execution boundary centered around `ControlledDispatchWorkflow` in [`framework/auth_correlation/dispatcher.py`](../framework/auth_correlation/dispatcher.py):
 
 ```mermaid
 sequenceDiagram
@@ -97,7 +97,7 @@ However, within the defined BugBounty-Agent security boundary:
 
 ## 5. Capability Issuance Design
 
-The issuance of `ExecutionCapability` in [`framework/auth_correlation/ledger.py`](file:///d:/BugBounty-Agent/framework/auth_correlation/ledger.py) enforces strict prerequisite validation:
+The issuance of `ExecutionCapability` in [`framework/auth_correlation/ledger.py`](../framework/auth_correlation/ledger.py) enforces strict prerequisite validation:
 1. **Mandatory Dispatch Result**: Requires `dispatch_result` to be an instance of `ControlledDispatchResult` with `is_genuine_dispatch is True`.
 2. **Evidence Integrity Verification**: Retrieves both mutation and verification evidence entries from `EvidenceStore`. Verifies that both carry `"capture_source": "CONTROLLED_TRANSPORT_DISPATCH"` and `"evidence_class": "CONTROLLED_TRANSPORT_DISPATCH"`.
 3. **Digest Recalculation**: Independently reads raw capture files from disk, recalculates SHA-256 byte digests, and matches them against `dispatch_result`.
@@ -109,7 +109,7 @@ The issuance of `ExecutionCapability` in [`framework/auth_correlation/ledger.py`
 
 ## 6. Approval Receipt Design
 
-Single-use, concurrency-safe approval receipts are enforced via [`framework/auth_correlation/state.py`](file:///d:/BugBounty-Agent/framework/auth_correlation/state.py) and [`framework/auth_correlation/ledger.py`](file:///d:/BugBounty-Agent/framework/auth_correlation/ledger.py):
+Single-use, concurrency-safe approval receipts are enforced via [`framework/auth_correlation/state.py`](../framework/auth_correlation/state.py) and [`framework/auth_correlation/ledger.py`](../framework/auth_correlation/ledger.py):
 * **Cross-Process File Lock**: `CrossProcessFileLock` uses Windows `msvcrt.locking` on Windows and POSIX `fcntl.flock` on Linux, with non-blocking polling and timeout handling.
 * **Canonical Fields**: Receipts bind `action_dossier_digest`, `action_id`, `action_type`, `approval_id`, `consumed_at`, `consumption_token`, `dispatch_op_id`, `method`, `operator_signature`, `principal_id`, `program_id`, `session_ref`, `target_endpoint`, and `test_account`.
 * **Receipt Signature**: `sign_consumption_receipt()` computes an HMAC-SHA256 signature (`RCPT-SIG-...`) under `approval.key`.
@@ -119,7 +119,7 @@ Single-use, concurrency-safe approval receipts are enforced via [`framework/auth
 
 ## 7. Evidence Capture and Binding Design
 
-Evidence capture is strictly decoupled from arbitrary caller inputs in [`framework/common/evidence.py`](file:///d:/BugBounty-Agent/framework/common/evidence.py):
+Evidence capture is strictly decoupled from arbitrary caller inputs in [`framework/common/evidence.py`](../framework/common/evidence.py):
 * **Removal of Insecure Methods**: `save_controlled_transport_capture()` was completely removed.
 * **Dedicated Transport Method**: `save_transport_dispatch_capture()` accepts authentic `ControlledRequest` and `ControlledResponse` instances.
 * **Deterministic Digest Calculation**:
@@ -143,7 +143,7 @@ Evidence capture is strictly decoupled from arbitrary caller inputs in [`framewo
 
 ## 9. Adversarial Attack Matrix
 
-All 10 mandatory adversarial attack scenarios were implemented and validated in [`tests/test_phase21_execution_ledger.py`](file:///d:/BugBounty-Agent/tests/test_phase21_execution_ledger.py):
+All 10 mandatory adversarial attack scenarios were implemented and validated in [`tests/test_phase21_execution_ledger.py`](../tests/test_phase21_execution_ledger.py):
 
 | Scenario | Attack Description | Public API / Path Used | Expected Security Behavior | Actual Behavior | Verifying Test | Verdict |
 | :--- | :--- | :--- | :--- | :--- | :--- | :---: |
@@ -215,10 +215,10 @@ All 10 mandatory adversarial attack scenarios were implemented and validated in 
 ## 14. Documentation Changes
 
 The following documentation files were updated:
-* [`README.md`](file:///d:/BugBounty-Agent/README.md): Updated Phase 21 status to Accepted, documented `ControlledDispatchWorkflow`, and synchronized test totals.
-* [`CHANGELOG.md`](file:///d:/BugBounty-Agent/CHANGELOG.md): Documented definitive execution provenance architecture, `ControlledDispatchWorkflow`, approval receipts, and cross-platform verification results.
-* [`docs/PHASE-21-PLANNING-GATE.md`](file:///d:/BugBounty-Agent/docs/PHASE-21-PLANNING-GATE.md): Updated planning status to Accepted and recorded final architecture.
-* [`docs/ROADMAP-24-PHASES-TEMP.md`](file:///d:/BugBounty-Agent/docs/ROADMAP-24-PHASES-TEMP.md): Marked Phase 21 as 100% complete and accepted.
+* [`README.md`](../README.md): Updated Phase 21 status to Accepted, documented `ControlledDispatchWorkflow`, and synchronized test totals.
+* [`CHANGELOG.md`](../CHANGELOG.md): Documented definitive execution provenance architecture, `ControlledDispatchWorkflow`, approval receipts, and cross-platform verification results.
+* [`PHASE-21-PLANNING-GATE.md`](PHASE-21-PLANNING-GATE.md): Updated planning status to Accepted and recorded final architecture.
+* [`ROADMAP-24-PHASES-TEMP.md`](ROADMAP-24-PHASES-TEMP.md): Marked Phase 21 as 100% complete and accepted.
 * Reference to historical resolver test commit: `e76b2468e4d039674f81c76a5916aa366dca9b40`.
 
 ---

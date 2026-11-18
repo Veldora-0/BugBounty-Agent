@@ -9,7 +9,7 @@
 
 This document establishes the definitive, empirical technical baseline for Phases 1 through 20 of the **BugBounty-Agent** framework (`Veldora-0/BugBounty-Agent`), verified at Git commit `396ed0e5986f9f1e41bb0bec1201ee217011bc56` (implementation baseline) and reconciled at commit `e740666759c85637cefe20d171acadaa69b567f3` (planning baseline) on branch `main`.
 
-### Final Baseline Verdict: **BASELINE ACCEPTED WITH DOCUMENTED LIMITATIONS**
+### Historical Baseline Verdict at the recorded snapshot: **BASELINE ACCEPTED WITH DOCUMENTED LIMITATIONS**
 
 The repository has successfully completed all Phase 1–20 milestones, verified through full cross-platform test execution on Windows 11 host and Kali Linux VM environments, complete static and structural architecture auditing, and rigorous security boundary reconciliation. All core architectural invariants are strictly preserved:
 
@@ -25,7 +25,7 @@ The repository has successfully completed all Phase 1–20 milestones, verified 
    * Tool Registry: 9 of 9 passed (`tests/test_tool_registry.py`) in 7.03s, exit code `0` (44 tools across 5 tiers).
    * OpenCode Runtime: 16 of 16 passed (`tests/test_opencode_runtime.py`) in 0.13s, exit code `0` (classified as static configuration & schema integrity; live CLI agent execution marked as unverified in automated tests).
 7. **Documentation Integrity**: 50 tracked Markdown files verified with zero broken internal relative links and verified semantic consistency.
-8. **Phase 21 Status**: Strictly **PLANNED / NOT STARTED**.
+8. **Phase 21 Status at the historical planning baseline**: Strictly **PLANNED / NOT STARTED**. Phase 21 is implemented now with documented platform and live-service limitations; consult its current guide.
 
 ---
 
@@ -110,7 +110,7 @@ To ensure full transparency, the matrix below details both the operational limit
 | **19** | Infrastructure & Config Exposure | `framework/infrastructure/` | `reconnaissance`, `web-security` | `InfrastructureIntelligenceEngine`, `DifferentialSoft404Engine` | `bb-infra`, `bb-doctor` | `test_infrastructure_engine.py` (47 tests) | Differential soft-404 token Jaccard similarity, response caps (32 KB, 8 KB config, 1 KB binary magic). Safe read-only methods (`GET`, `HEAD`, `OPTIONS`) only. | **VERIFIED** |
 | **20** | Race Conditions & Concurrency | `framework/concurrency/` | `business-logic` | `RaceIntelligenceEngine`, `BarrierSynchronizer` | `bb-race`, `bb-doctor` | `test_concurrency_engine.py` (128 tests) | Microsecond barrier synchronization (`threading.Barrier`), bounded bursts (2–5 reqs, max cap 10). Volumetric flooding strictly prohibited; out-of-scope targets fail closed. | **VERIFIED WITH DOCUMENTED LIMITATIONS** |
 
-*Reconciled Summary: Exactly 10 phases VERIFIED without operational limitations (Phases 1, 3, 4, 6, 11, 14, 15, 17, 18, 19); exactly 10 phases VERIFIED WITH DOCUMENTED LIMITATIONS (Phases 2, 5, 7, 8, 9, 10, 12, 13, 16, 20). 0 phases unverified, partial, or failed. Total: 20 Phases.*
+*Historical snapshot summary only: this earlier audit classified 10 phases as VERIFIED and 10 as VERIFIED WITH DOCUMENTED LIMITATIONS. Later review found implementation/integration gaps, including Phase 1 and Phase 2; these classifications are superseded by the current [roadmap](ROADMAP-24-PHASES.md) and phase guides.*
 
 ---
 
@@ -414,4 +414,4 @@ This implementation directly addresses and resolves **Gap 1 (Authentication & Au
 * **Kali Linux VM**: 983 passed, 0 skipped in 141.79s.
 * **Regression Count**: 0 failures, 0 regressions across all 941 baseline tests. Phase 21 adds 42 targeted test cases.
 
-Phase 21 is formally complete, verified, and accepted. Next planned phase is **Phase 22 (Cross-Engine Attack-Path Correlation)**.
+At the time of this historical baseline report, Phase 21 was considered complete and Phase 22 had not started. Both phases have since changed; see the current per-phase guides and roadmap.

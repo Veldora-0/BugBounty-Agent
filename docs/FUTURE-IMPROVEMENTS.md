@@ -13,12 +13,12 @@ This document captures candidate improvements for completing the roadmap and mak
 
 ### Phase 22 — Cross-engine attack-path correlation
 
-- Create a typed graph of assets, endpoints, identities, observations, hypotheses, findings and evidence.
-- Define provenance-bearing edges, confidence and freshness; distinguish observed relationships from validated exploit paths.
-- Starting from a validated bug, search for other in-scope weaknesses that could combine with it to produce a demonstrated higher-impact outcome. This bug-chaining workflow is a required Phase 22 deliverable.
-- Rank chains by demonstrated impact and prerequisites without summing severity mechanically. Keep component severities separate from the chain's evidenced impact.
-- Explain every proposed path, show missing evidence, inherit scope restrictions, and require human approval before any active follow-up.
-- Provide graph export and reproducible path reports without exposing secrets.
+- Expand ingestion from the current findings-centered model so additional engines can contribute scope-labelled assets, endpoints, identity context, and evidence references without creating unsupported joins.
+- Calibrate relationship freshness and confidence against real researcher-reviewed fixtures; keep inferred edges separate from observations and validated relationships.
+- Add more complete chain scenarios to local test fixtures, including chains that are disproven because a prerequisite, identity, or scope boundary does not match.
+- Preserve the existing rule that component severities stay distinct and a higher impact is reported only when the extra impact is demonstrated.
+- Complete the supported Windows ACL verification run and document the exact platform/runtime limits for operators.
+- Consider additional graph export formats only where they preserve provenance, scope labels, redaction, and reproducibility.
 - Complete a supported Windows run for ACL-protected state and add a regression proving the CLI loads the canonical program scope path and refuses validation when scope is absent or invalid.
 
 ### Phase 23 — Research planning and coverage intelligence

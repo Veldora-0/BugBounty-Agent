@@ -4,12 +4,12 @@ This register lists only material unresolved project problems. When an issue is 
 
 ## Open issues
 
-### AUD-03 — Verification evidence differs in age and scope across phases
+### AUD-03 — Current Windows acceptance evidence is unavailable
 
 - **Severity:** Medium confidence/maintenance risk.
-- **Evidence:** The full suite was rerun on Kali at `f8466bd` during this audit, but the working-tree fixes still require post-change verification. Windows acceptance was not obtained in this environment, and some platform-specific tests skip for unavailable browsers or OS-only capabilities.
+- **Evidence:** The full Kali suite passed at `c1a791f` after the audit fixes. This workspace could not start the Windows Python launcher, so no current Windows full-suite result was obtained; one DACL test is skipped on Kali and Windows ACL subprocess verification for Phase 22 still requires a supported Windows run.
 - **Impact:** Historical test numbers can be mistaken for current full regression or live-target coverage.
-- **Remediation:** Phase guides now distinguish repository implementation from live effectiveness and call out limits. Add a repeatable CI matrix and dated acceptance manifests as part of Phase 24.
+- **Remediation:** Phase guides now distinguish repository implementation from live effectiveness and call out limits. Add a repeatable Windows/Linux CI matrix and dated acceptance manifests as part of Phase 24.
 - **Acceptance gate:** Each maintained acceptance record identifies commit, exact commands, environment/dependencies, pass/skip/fail counts and untested live boundaries.
 
 ### AUD-04 — Live OOB integrations for SSRF/XXE are unavailable (Phases 9 and 18)
@@ -52,9 +52,16 @@ This register records repository review and current audit-run evidence, not a li
 
 - Older audit records cite historical commits and platform counts. Those numbers are not a claim about current `main`; use the commit-specific sections below and phase guides for newer evidence.
 
-## Current audit baseline at `f8466bd` (before working-tree fixes)
+## Pre-fix baseline at `f8466bd`
 
 - **Kali Linux, Python 3.14.10:** `python3 -m pytest tests/ -ra` — **1,245 passed, 1 skipped** in 576.12 seconds. The skipped test is the Windows-only DACL test (`tests/test_phase21_state.py:370`). This was run before the current working-tree changes; it is not final verification of those changes.
 - **Windows:** No full-suite result was obtained for this audit. The prior Phase 22 Windows ACL subprocess issue remains unresolved; do not treat Kali results as Windows evidence.
 - **Live-target testing:** None. No bounty target was contacted. Unit and integration results are not proof of live vulnerability-discovery effectiveness.
-- **Post-fix verification:** Pending. Run focused regressions for asset DNS, bounded content discovery, Phase 22 scope resolution and optional tool registry, then rerun the relevant broader suites on Kali before claiming these changes verified.
+- This baseline is retained for comparison only. It is superseded by the post-fix verification below.
+
+## Post-fix verification at `c1a791f` (2026-11-18)
+
+- **Kali Linux, Python 3.14.10:** `python3 -m pytest tests/ -ra` — **1,264 passed, 1 skipped** in 147.79 seconds. The single skip is the Windows-only DACL test (`tests/test_phase21_state.py:370`).
+- **Focused regressions:** 72 passed in 3.33 seconds across content discovery, Phase 22 CLI scope/reporting, Stage C remediations and the earlier CLI working-directory failure.
+- **Windows:** No test result is claimed. The Python launcher could not start in this Windows workspace; Phase 22 Windows ACL subprocess verification remains open.
+- **Live-target testing:** None. No bounty target was contacted. Test results validate local code and fixtures only.
