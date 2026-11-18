@@ -8,7 +8,7 @@ version = "1.14.2"
 description = "Autonomous, hypothesis-driven bug bounty research orchestrator and security toolchain."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
     { name = "BugBounty-Agent Contributors" }
 ]
