@@ -3,10 +3,13 @@ Tests for Tool Registry parsing, validation, schema consistency, and legacy Tool
 """
 
 import os
+import threading
+import time
 from unittest.mock import MagicMock, patch
 import pytest
 
 from framework.common.tools import KNOWN_TOOLS, ToolDetector
+from framework.tools.detector import ToolDetector as HostToolDetector
 from framework.tools.installer import InstallerSecurityError, ToolInstaller
 from framework.tools.registry import ToolDef, ToolRegistry, VALID_TIERS
 
@@ -107,6 +110,32 @@ def test_legacy_detector_registry_enumeration_and_summary():
     assert summary["total_supported"] == len(all_tools)
     assert summary["installed_count"] == len(summary["installed_tools"])
     assert len(summary["installed_tools"]) + len(summary["missing_tools"]) == summary["total_supported"]
+
+
+def test_host_detector_bounds_and_parallelizes_registry_checks():
+    """Local version checks run concurrently without spawning a worker per tool."""
+    tools = [ToolDef({"name": f"tool-{index}", "category": "test"}) for index in range(12)]
+    detector = HostToolDetector(registry=MagicMock(all_tools=lambda: tools))
+    guard = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def inspect(tool):
+        nonlocal active, max_active
+        with guard:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with guard:
+            active -= 1
+        return {"name": tool.name}
+
+    with patch.object(detector, "inspect_tool", side_effect=inspect):
+        results = detector.detect_all()
+
+    assert list(results) == [tool.name for tool in tools]
+    assert max_active > 1
+    assert max_active <= 8
 
 
 def test_legacy_detector_missing_registry_fallback():

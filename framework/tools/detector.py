@@ -12,6 +12,7 @@ import platform
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 from framework.tools.registry import ToolDef, ToolRegistry
@@ -172,11 +173,16 @@ class ToolDetector:
         }
 
     def detect_all(self) -> Dict[str, Dict[str, Any]]:
-        """Inspects all tools in registry."""
-        results = {}
-        for tool in self.registry.all_tools():
-            results[tool.name] = self.inspect_tool(tool)
-        return results
+        """Inspects registry tools concurrently with a bounded worker count."""
+        tools = self.registry.all_tools()
+        if not tools:
+            return {}
+
+        # Version checks are independent local subprocesses. A small worker cap
+        # avoids serial timeout accumulation without spawning one process per tool.
+        with ThreadPoolExecutor(max_workers=min(8, len(tools))) as executor:
+            inspections = executor.map(self.inspect_tool, tools)
+            return {tool.name: result for tool, result in zip(tools, inspections)}
 
     def get_summary(self) -> Dict[str, Any]:
         """Provides high-level summary of tool readiness."""
