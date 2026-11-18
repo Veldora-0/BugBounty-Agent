@@ -254,12 +254,7 @@ def _verify_and_prepare_state_dir(state_dir: str, workspace_root: Optional[str] 
         try:
             workspace_norm = os.path.normcase(workspace_abs)
             lexical_common = os.path.commonpath([workspace_norm, os.path.normcase(abs_dir)])
-            resolved_dir = os.path.realpath(abs_dir)
-            resolved_root_norm = os.path.normcase(abs_root)
-            resolved_common = os.path.commonpath([resolved_root_norm, os.path.normcase(resolved_dir)])
             if lexical_common != workspace_norm:
-                raise SerializationSecurityError("State directory escapes workspace boundary")
-            if resolved_common != resolved_root_norm:
                 raise SerializationSecurityError("State directory escapes workspace boundary")
         except ValueError:
             raise SerializationSecurityError("State directory is on a different drive or volume")
@@ -290,6 +285,17 @@ def _verify_and_prepare_state_dir(state_dir: str, workspace_root: Optional[str] 
                 else:
                     _enforce_windows_directory_dacl(current_ancestor)
                     _verify_windows_directory_security(current_ancestor)
+
+        try:
+            resolved_root_norm = os.path.normcase(abs_root)
+            resolved_common = os.path.commonpath([
+                resolved_root_norm,
+                os.path.normcase(os.path.realpath(abs_dir)),
+            ])
+            if resolved_common != resolved_root_norm:
+                raise SerializationSecurityError("State directory escapes workspace boundary")
+        except ValueError:
+            raise SerializationSecurityError("State directory is on a different drive or volume")
     else:
         if not os.path.exists(abs_dir):
             if os.name != "nt":
