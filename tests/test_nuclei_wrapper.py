@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ LOADER = importlib.machinery.SourceFileLoader("bb_nuclei_test_module", str(SCRIP
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 bb_nuclei = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(bb_nuclei)
+_REAL_SUBPROCESS_RUN = subprocess.run
 
 
 def _workspace(tmp_path, monkeypatch):
@@ -104,6 +106,8 @@ def test_main_scans_pinned_ip_and_ingests_only_curated_candidate(tmp_path, monke
     captured = {}
 
     def fake_run(command, **kwargs):
+        if os.name == "nt" and Path(command[0]).name.lower() == "icacls":
+            return _REAL_SUBPROCESS_RUN(command, **kwargs)
         captured["command"] = command
         captured["kwargs"] = kwargs
         output = command[command.index("-json-export") + 1]
@@ -119,8 +123,9 @@ def test_main_scans_pinned_ip_and_ingests_only_curated_candidate(tmp_path, monke
     assert captured["kwargs"]["timeout"] == bb_nuclei.MAX_RUNTIME_SECONDS
     assert captured["kwargs"]["stdout"] == bb_nuclei.subprocess.DEVNULL
     output_path = command[command.index("-json-export") + 1]
-    assert os.stat(output_path).st_mode & 0o777 == 0o600
-    assert os.stat(os.path.dirname(output_path)).st_mode & 0o777 == 0o700
+    if os.name != "nt":
+        assert os.stat(output_path).st_mode & 0o777 == 0o600
+        assert os.stat(os.path.dirname(output_path)).st_mode & 0o777 == 0o700
 
     from framework.state.manager import StateManager
 
@@ -138,6 +143,8 @@ def test_failed_process_output_is_never_ingested(tmp_path, monkeypatch):
     _argv(monkeypatch, "--approve-active-scan")
 
     def fake_run(command, **kwargs):
+        if os.name == "nt" and Path(command[0]).name.lower() == "icacls":
+            return _REAL_SUBPROCESS_RUN(command, **kwargs)
         output = command[command.index("-json-export") + 1]
         with open(output, "w", encoding="utf-8") as stream:
             stream.write(json.dumps(_hit()) + "\n")
@@ -154,6 +161,8 @@ def test_result_for_another_host_is_discarded(tmp_path, monkeypatch):
     _argv(monkeypatch, "--approve-active-scan")
 
     def fake_run(command, **kwargs):
+        if os.name == "nt" and Path(command[0]).name.lower() == "icacls":
+            return _REAL_SUBPROCESS_RUN(command, **kwargs)
         output = command[command.index("-json-export") + 1]
         with open(output, "w", encoding="utf-8") as stream:
             stream.write(json.dumps(_hit("https://other.example/path")) + "\n")

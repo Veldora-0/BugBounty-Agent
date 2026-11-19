@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 from framework.ssrf.model import OobInteractionType, OobProviderStatus
@@ -35,8 +36,13 @@ class _FakeProcess:
 
 def test_interactsh_session_keeps_token_private_and_correlates_exact_id(tmp_path, monkeypatch):
     process_holder = {}
+    real_popen = subprocess.Popen
 
-    def fake_popen(command, **_kwargs):
+    def fake_popen(command, *args, **kwargs):
+        # Windows ACL enforcement uses icacls through subprocess.run. Keep that
+        # platform security operation real while mocking only the OAST client.
+        if os.name == "nt" and Path(command[0]).name.lower() == "icacls":
+            return real_popen(command, *args, **kwargs)
         process_holder["process"] = _FakeProcess(command)
         return process_holder["process"]
 
@@ -55,8 +61,9 @@ def test_interactsh_session_keeps_token_private_and_correlates_exact_id(tmp_path
     assert "local-secret-token" not in process.command
     config_path = process.command[process.command.index("-config") + 1]
     assert "local-secret-token" in Path(config_path).read_text(encoding="utf-8")
-    assert stat.S_IMODE(os.stat(tmp_path / "session").st_mode) == 0o700
-    assert stat.S_IMODE(os.stat(config_path).st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(os.stat(tmp_path / "session").st_mode) == 0o700
+        assert stat.S_IMODE(os.stat(config_path).st_mode) == 0o600
 
     events = [
         {

@@ -10,6 +10,12 @@ from framework.auth_correlation.ipc.config import (
 )
 
 
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="The systemd dispatcher trust-file contract is Linux-only",
+)
+
+
 def test_load_operator_approval_key_accepts_private_32_byte_file(tmp_path):
     key_path = tmp_path / "operator.key"
     key_path.write_bytes(b"k" * 32)

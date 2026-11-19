@@ -5,7 +5,9 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -14,6 +16,9 @@ import yaml
 from framework.assets.subfinder import build_subfinder_command, run_subfinder
 from framework.scope.engine import ScopeEngine
 from framework.state.manager import StateManager
+
+
+_REAL_SUBPROCESS_RUN = subprocess.run
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "bb-assets"
@@ -46,6 +51,8 @@ def test_run_subfinder_scope_filters_and_attributes_passive_results(tmp_path, mo
     monkeypatch.setattr("framework.assets.subfinder.shutil.which", lambda _name: "/usr/bin/subfinder")
 
     def fake_run(command, **_kwargs):
+        if os.name == "nt" and Path(command[0]).name.lower() == "icacls":
+            return _REAL_SUBPROCESS_RUN(command, **_kwargs)
         output = command[command.index("-output") + 1]
         with open(output, "w", encoding="utf-8") as stream:
             stream.write(json.dumps({"host": "api.example.com", "sources": ["crtsh", "dnsdumpster"]}) + "\n")

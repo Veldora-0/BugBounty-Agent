@@ -14,6 +14,8 @@ class DispatcherConfigurationError(ValueError):
 def _read_trusted_file(path: str, *, maximum_bytes: int) -> bytes:
     if not path or not isinstance(path, str):
         raise DispatcherConfigurationError("Configuration path must be a non-empty string")
+    if os.name == "nt":
+        raise DispatcherConfigurationError("Linux system dispatcher trust files are unsupported on Windows")
 
     flags = os.O_RDONLY
     flags |= getattr(os, "O_CLOEXEC", 0)
