@@ -374,6 +374,49 @@ def is_ssrf_prohibited_ip(ip_input: Union[str, ipaddress.IPv4Address, ipaddress.
     return False, ""
 
 
+def resolve_public_destination_ips(host: str, port: int, max_addresses: int = 8) -> List[str]:
+    """Resolve a recon destination once, reject unsafe answers, and return pinned IPs.
+
+    A hostname being in program scope does not make every address it resolves to
+    safe. Reject the entire answer set if any destination is private, reserved,
+    loopback, link-local, multicast, or otherwise prohibited; accepting only the
+    public members of a mixed answer would hide a DNS configuration problem.
+    Callers must connect to the returned numeric addresses, never the hostname.
+    """
+    if not isinstance(host, str) or not host.strip():
+        raise ValueError("Destination hostname is required")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("Destination port must be between 1 and 65535")
+    if isinstance(max_addresses, bool) or not isinstance(max_addresses, int) or max_addresses < 1:
+        raise ValueError("max_addresses must be a positive integer")
+
+    clean_host = host.strip().strip("[]").rstrip(".")
+    literal = parse_alternate_ip(clean_host)
+    if literal is not None:
+        addresses = [str(literal)]
+    else:
+        answers = socket.getaddrinfo(clean_host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        addresses = []
+        for answer in answers:
+            try:
+                address = str(ipaddress.ip_address(answer[4][0].split("%", 1)[0]))
+            except (IndexError, TypeError, ValueError) as exc:
+                raise OSError("Resolver returned an invalid destination address") from exc
+            if address not in addresses:
+                addresses.append(address)
+
+    if not addresses:
+        raise OSError("Destination did not resolve to any IP addresses")
+    if len(addresses) > max_addresses:
+        raise OSError(f"Destination resolved to more than {max_addresses} IP addresses")
+
+    for address in addresses:
+        prohibited, reason = is_ssrf_prohibited_ip(address)
+        if prohibited:
+            raise OSError(f"Destination resolves to prohibited IP {address}: {reason}")
+    return addresses
+
+
 class ScopeViolationError(ValueError):
     """Raised when a request target falls outside authorized scope."""
     pass

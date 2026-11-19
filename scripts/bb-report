@@ -34,7 +34,7 @@ REPO_ROOT = os.environ.get(
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from framework.common.config import get_program_dir
+from framework.common.config import get_program_dir, ensure_private_directory, write_private_text_file
 from framework.findings.lifecycle import FindingLifecycle
 from framework.findings.schema import Finding, FindingValidationError
 from framework.state.manager import StateManager
@@ -138,7 +138,7 @@ def main() -> int:
 
     reports_dir = args.output_dir or os.path.join(prog_dir, "reports")
     try:
-        os.makedirs(reports_dir, exist_ok=True)
+        reports_dir = ensure_private_directory(reports_dir)
     except Exception as e:
         print(f"[!] Error creating reports directory '{reports_dir}': {e}", file=sys.stderr)
         return 1
@@ -209,8 +209,7 @@ def main() -> int:
 
         try:
             report_md = finding.to_markdown_report()
-            with open(target_path, "w", encoding="utf-8") as f:
-                f.write(report_md)
+            write_private_text_file(target_path, report_md)
         except Exception as e:
             print(f"[!] Error rendering report: {e}", file=sys.stderr)
             return 1
@@ -254,8 +253,7 @@ def main() -> int:
 
             try:
                 report_md = f.to_markdown_report()
-                with open(target_path, "w", encoding="utf-8") as rf:
-                    rf.write(report_md)
+                write_private_text_file(target_path, report_md)
                 generated_reports.append({
                     "finding_id": f.finding_id,
                     "report_file": target_path,

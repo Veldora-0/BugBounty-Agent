@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from framework.assets.graph import AssetGraph
+from framework.common.transport import resolve_public_destination_ips
 from framework.assets.model import (
     Asset,
     AssetConfidence,
@@ -227,35 +228,42 @@ class ReconnaissanceEngine:
             return None
 
         try:
+            destination_ips = resolve_public_destination_ips(host, port)
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-            with socket.create_connection((host, port), timeout=3.0) as sock:
-                with ctx.wrap_socket(sock, server_hostname=host) as ssock:
-                    cert = ssock.getpeercert(binary_form=False) or {}
-                    cipher_info = ssock.cipher()
-                    tls_ver = ssock.version()
+            last_error: Optional[Exception] = None
+            for destination_ip in destination_ips:
+                try:
+                    with socket.create_connection((destination_ip, port), timeout=3.0) as sock:
+                        with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                            cert = ssock.getpeercert(binary_form=False) or {}
+                            cipher_info = ssock.cipher()
+                            tls_ver = ssock.version()
 
-                    sans: List[str] = []
-                    for k, val in cert.get("subjectAltName", []):
-                        if k.lower() == "dns":
-                            sans.append(val.strip().lower())
+                            sans: List[str] = []
+                            for k, val in cert.get("subjectAltName", []):
+                                if k.lower() == "dns":
+                                    sans.append(val.strip().lower())
 
-                    obs = TlsObservation(
-                        host=host,
-                        port=port,
-                        san_names=sans,
-                        tls_version=tls_ver,
-                        cipher=cipher_info[0] if cipher_info else None,
-                        provenance=[
-                            ObservationProvenance(
-                                source="ssl_socket",
-                                method="tls-handshake",
-                                confidence="CONFIRMED",
+                            return TlsObservation(
+                                host=host,
+                                port=port,
+                                san_names=sans,
+                                tls_version=tls_ver,
+                                cipher=cipher_info[0] if cipher_info else None,
+                                provenance=[
+                                    ObservationProvenance(
+                                        source="ssl_socket_pinned",
+                                        method="tls-handshake",
+                                        confidence="CONFIRMED",
+                                    )
+                                ],
                             )
-                        ],
-                    )
-                    return obs
+                except Exception as exc:
+                    last_error = exc
+            if last_error:
+                raise last_error
         except Exception:
             return None
 
@@ -455,28 +463,39 @@ class ReconnaissanceEngine:
         if not self.scope_engine or not self._is_in_scope(host) or self.passive_only:
             return []
 
+        try:
+            destination_ips = resolve_public_destination_ips(host, target_ports[0] if target_ports else 80)
+        except (OSError, ValueError):
+            return []
+
         for p in target_ports:
             if self.request_count >= self.max_requests:
                 break
             self.request_count += 1
-            try:
-                with socket.create_connection((host, p), timeout=1.5):
-                    obs = PortServiceObservation(
-                        host=host,
-                        port=p,
-                        protocol="tcp",
-                        service="https" if p in (443, 8443) else "http" if p in (80, 8080) else "unknown",
-                        provenance=[
-                            ObservationProvenance(
-                                source="socket_connect",
-                                method="tcp-syn",
-                                confidence="CONFIRMED",
-                            )
-                        ],
-                    )
-                    observations.append(obs)
-            except (socket.timeout, ConnectionRefusedError, OSError):
+            connected = False
+            for destination_ip in destination_ips:
+                try:
+                    with socket.create_connection((destination_ip, p), timeout=1.5):
+                        connected = True
+                        break
+                except (socket.timeout, ConnectionRefusedError, OSError):
+                    continue
+            if not connected:
                 continue
+            obs = PortServiceObservation(
+                host=host,
+                port=p,
+                protocol="tcp",
+                service="https" if p in (443, 8443) else "http" if p in (80, 8080) else "unknown",
+                provenance=[
+                    ObservationProvenance(
+                        source="socket_connect_pinned",
+                        method="tcp-connect",
+                        confidence="CONFIRMED",
+                    )
+                ],
+            )
+            observations.append(obs)
 
         return observations
 

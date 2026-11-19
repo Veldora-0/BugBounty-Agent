@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import tempfile
 from typing import Dict, List, Optional
 import yaml
 
@@ -29,6 +30,69 @@ PROGRAM_SUBDIRECTORIES = [
     "state",
     "logs",
 ]
+
+
+def ensure_private_directory(path: str) -> str:
+    """Create or verify a directory reserved for program data (mode 0700/DACL)."""
+    abs_path = os.path.abspath(path)
+    os.makedirs(abs_path, mode=0o700, exist_ok=True)
+    if os.path.islink(abs_path):
+        raise PermissionError(f"Sensitive directory must not be a symbolic link: {abs_path}")
+    if os.name == "nt":
+        from framework.auth_correlation.state import (
+            _enforce_windows_directory_dacl,
+            _verify_windows_directory_security,
+        )
+        _enforce_windows_directory_dacl(abs_path)
+        _verify_windows_directory_security(abs_path)
+    else:
+        st = os.lstat(abs_path)
+        if st.st_uid != os.getuid():
+            raise PermissionError(f"Sensitive directory is not owned by the current user: {abs_path}")
+        if st.st_mode & 0o777 != 0o700:
+            os.chmod(abs_path, 0o700)
+        st = os.lstat(abs_path)
+        if st.st_mode & 0o777 != 0o700:
+            raise PermissionError(f"Could not enforce mode 0700 on sensitive directory: {abs_path}")
+    return abs_path
+
+
+def write_private_text_file(path: str, content: str) -> None:
+    """Atomically write sensitive text with mode 0600 or the current-user DACL."""
+    abs_path = os.path.abspath(path)
+    parent = ensure_private_directory(os.path.dirname(abs_path))
+    if os.path.islink(abs_path):
+        raise PermissionError(f"Sensitive file must not be a symbolic link: {abs_path}")
+    fd, temp_path = tempfile.mkstemp(prefix=".private-write-", dir=parent, text=True)
+    try:
+        if os.name != "nt":
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name == "nt":
+            from framework.auth_correlation.state import (
+                _enforce_windows_file_dacl,
+                _verify_windows_file_security,
+            )
+            _enforce_windows_file_dacl(temp_path)
+            _verify_windows_file_security(temp_path)
+        else:
+            mode = os.stat(temp_path).st_mode & 0o777
+            if mode != 0o600:
+                raise PermissionError(f"Could not enforce mode 0600 on sensitive file: {temp_path}")
+        os.replace(temp_path, abs_path)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
 
 
 def get_workspace_root() -> str:
@@ -63,12 +127,12 @@ def init_program_workspace(program_name: str, workspace_root: Optional[str] = No
     Creates all required subdirectories and returns their paths.
     """
     prog_dir = get_program_dir(program_name, workspace_root)
+    ensure_private_directory(prog_dir)
     paths = {"program_root": prog_dir}
 
     for subdir in PROGRAM_SUBDIRECTORIES:
         p = os.path.join(prog_dir, subdir)
-        os.makedirs(p, exist_ok=True)
-        paths[subdir] = p
+        paths[subdir] = ensure_private_directory(p)
 
     return paths
 

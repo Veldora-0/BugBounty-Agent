@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from framework.common.evidence import sanitize_sensitive_data
+from framework.common.config import ensure_private_directory
 from framework.findings.lifecycle import FindingLifecycle
 from framework.findings.schema import Finding
 from framework.state.dedup import (
@@ -73,7 +74,7 @@ class StateManager:
     def __init__(self, program_dir: str):
         self.program_dir = os.path.abspath(program_dir)
         self.state_dir = os.path.join(self.program_dir, "state")
-        os.makedirs(self.state_dir, exist_ok=True)
+        ensure_private_directory(self.state_dir)
 
         self.assets_file = os.path.join(self.state_dir, "assets.json")
         self.endpoints_file = os.path.join(self.state_dir, "endpoints.json")
