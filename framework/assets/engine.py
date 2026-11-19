@@ -12,7 +12,9 @@ from collections import deque
 from datetime import datetime, timezone
 import ipaddress
 import re
+import ssl
 import socket
+import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 import uuid
 
@@ -63,6 +65,8 @@ KNOWN_ASN_CDN_MAP = {
     "AS20940": ("Akamai", CDNAttribution.CONFIRMED),
 }
 
+MAX_TLS_SAN_PROBES = 100
+
 
 class AssetIntelligenceEngine:
     """
@@ -89,6 +93,8 @@ class AssetIntelligenceEngine:
         self.passive_only = passive_only
         self.detect_wildcards = detect_wildcards
         self.rate_limit_per_second = rate_limit_per_second
+        self._tls_probe_count = 0
+        self._last_tls_probe_monotonic: Optional[float] = None
 
         # Traversal tracking
         self.visited_hostnames: Set[str] = set()
@@ -232,14 +238,108 @@ class AssetIntelligenceEngine:
 
         return None, CDNAttribution.UNKNOWN
 
-    def extract_tls_sans(self, hostname: str, port: int = 443) -> List[str]:
+    def extract_tls_sans(
+        self,
+        hostname: str,
+        port: int = 443,
+        resolved_ips: Optional[List[str]] = None,
+    ) -> List[str]:
         """
-        Extracts Subject Alternative Names (SANs) from TLS certificate.
-        Uses tls_san_hook if provided.
+        Reads DNS SAN names from one bounded TLS handshake to a scoped host.
+        Connections use numeric, already-resolved public IPs so a DNS change
+        between scope verification and connect cannot redirect this probe.
         """
         if self.tls_san_hook:
             return self.tls_san_hook(hostname, port) or []
-        return []
+        if self.passive_only or not self.scope_engine:
+            return []
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            return []
+        try:
+            normalized_host = normalize_hostname(hostname)
+        except NormalizationError:
+            return []
+        if self.scope_engine.check(normalized_host).status != ScopeStatus.IN_SCOPE:
+            return []
+
+        # Reuse the DNS results collected by this discovery pass. Direct method
+        # callers get one scoped lookup with the same address-pinning rules.
+        candidate_ips = list(resolved_ips or [])
+        if not candidate_ips:
+            try:
+                answers = socket.getaddrinfo(normalized_host, port, type=socket.SOCK_STREAM)
+                candidate_ips = [answer[4][0] for answer in answers[:8]]
+            except OSError:
+                return []
+
+        pinned_ips: List[str] = []
+        for candidate in candidate_ips[:8]:
+            try:
+                address = ipaddress.ip_address(str(candidate).split("%", 1)[0])
+            except ValueError:
+                continue
+            if address.is_global and str(address) not in pinned_ips:
+                pinned_ips.append(str(address))
+        if not pinned_ips:
+            return []
+
+        from cryptography import x509
+        from cryptography.x509.oid import ExtensionOID
+
+        deadline = time.monotonic() + 5.0
+        certificate = None
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        # This certificate is inspected as public asset metadata. An untrusted
+        # certificate is never treated as proof of endpoint identity.
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+
+        for address in pinned_ips[:4]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if self._tls_probe_count >= MAX_TLS_SAN_PROBES:
+                break
+            interval = 1.0 / max(0.1, float(self.rate_limit_per_second))
+            now = time.monotonic()
+            if self._last_tls_probe_monotonic is not None:
+                delay = interval - (now - self._last_tls_probe_monotonic)
+                if delay > 0:
+                    time.sleep(min(delay, max(0.0, deadline - now)))
+            if time.monotonic() >= deadline:
+                break
+            self._tls_probe_count += 1
+            self._last_tls_probe_monotonic = time.monotonic()
+            try:
+                with socket.create_connection((address, port), timeout=min(2.5, remaining)) as raw_socket:
+                    raw_socket.settimeout(min(2.5, max(0.1, deadline - time.monotonic())))
+                    with context.wrap_socket(raw_socket, server_hostname=normalized_host) as tls_socket:
+                        der_certificate = tls_socket.getpeercert(binary_form=True)
+                if der_certificate and len(der_certificate) <= 1024 * 1024:
+                    certificate = x509.load_der_x509_certificate(der_certificate)
+                    break
+            except (OSError, ssl.SSLError, ValueError):
+                continue
+
+        if certificate is None:
+            return []
+        try:
+            san_extension = certificate.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+            dns_names = san_extension.value.get_values_for_type(x509.DNSName)
+        except x509.ExtensionNotFound:
+            return []
+
+        accepted: List[str] = []
+        for raw_name in dns_names[:256]:
+            if not isinstance(raw_name, str) or raw_name.startswith("*."):
+                continue
+            try:
+                san_name = normalize_hostname(raw_name)
+            except NormalizationError:
+                continue
+            if san_name not in accepted and self.scope_engine.check(san_name).status == ScopeStatus.IN_SCOPE:
+                accepted.append(san_name)
+        return accepted
 
     # ---------------- Recursive Discovery Pipeline ----------------
 
@@ -396,7 +496,10 @@ class AssetIntelligenceEngine:
 
             # Extract TLS SANs and enqueue newly discovered in-scope subdomains
             if not self.passive_only:
-                sans = self.extract_tls_sans(current_host)
+                sans = self.extract_tls_sans(
+                    current_host,
+                    resolved_ips=asset.attributes.get("ip_addresses", []),
+                )
                 for san in sans:
                     try:
                         norm_san = normalize_hostname(san)
@@ -405,6 +508,9 @@ class AssetIntelligenceEngine:
 
                     # Check if SAN belongs to root domain
                     if is_dns_label_descendant(norm_san, root_dom):
+                        san_scope = self.evaluate_scope(norm_san)
+                        if san_scope.status != ScopeStatus.IN_SCOPE and not is_offline_simulation:
+                            continue
                         san_depth, san_parent = calculate_subdomain_depth(norm_san, root_dom)
                         # Add PRESENT_IN_CERT relationship
                         san_id = generate_asset_id(AssetType.SUBDOMAIN, norm_san)

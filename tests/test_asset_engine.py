@@ -7,6 +7,7 @@ wildcard detection, and state management using isolated offline mocks.
 
 import os
 import tempfile
+from datetime import datetime, timedelta, timezone
 import pytest
 
 from framework.assets.engine import AssetIntelligenceEngine
@@ -15,6 +16,30 @@ from framework.assets.model import Asset, AssetConfidence, AssetStatus, AssetTyp
 from framework.assets.relationship import RelationType
 from framework.scope.engine import ScopeEngine, ScopeStatus
 from framework.state.manager import StateManager
+
+
+def _certificate_with_dns_sans(names):
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.serialization import Encoding
+    from cryptography.x509.oid import NameOID
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'example.test')])
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(name) for name in names]), critical=False)
+        .sign(private_key, hashes.SHA256())
+    )
+    return certificate.public_bytes(Encoding.DER)
 
 
 def test_engine_arbitrary_depth_recursion():
@@ -231,6 +256,111 @@ def test_engine_cdn_detection_cname_and_asn():
         relation_type=RelationType.HOSTED_BY,
     )
     assert len(rels) == 1
+
+
+def test_engine_tls_san_probe_pins_public_ip_and_keeps_only_in_scope_dns_names(monkeypatch):
+    from framework.assets import engine as asset_engine_module
+
+    certificate = _certificate_with_dns_sans(
+        [
+            "api.example.test",
+            "private.example.test",
+            "vendor.other.test",
+            "*.wild.example.test",
+        ]
+    )
+    scope = ScopeEngine(
+        {
+            "targets": {
+                "domains": ["example.test"],
+                "recursive_subdomains": {"enabled": True, "max_depth": 0},
+            },
+            "out_of_scope": {"domains": ["private.example.test"]},
+        }
+    )
+    engine = AssetIntelligenceEngine(scope_engine=scope)
+    connections = []
+    sni_names = []
+
+    class FakeSocket:
+        def settimeout(self, _timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeTlsSocket(FakeSocket):
+        def getpeercert(self, binary_form=False):
+            assert binary_form is True
+            return certificate
+
+    class FakeTlsContext:
+        check_hostname = True
+        verify_mode = None
+
+        def wrap_socket(self, raw_socket, server_hostname):
+            assert isinstance(raw_socket, FakeSocket)
+            sni_names.append(server_hostname)
+            return FakeTlsSocket()
+
+    context = FakeTlsContext()
+    monkeypatch.setattr(asset_engine_module.ssl, "SSLContext", lambda _protocol: context)
+    monkeypatch.setattr(
+        asset_engine_module.socket,
+        "create_connection",
+        lambda address, timeout: connections.append((address, timeout)) or FakeSocket(),
+    )
+
+    names = engine.extract_tls_sans(
+        "example.test",
+        resolved_ips=["127.0.0.1", "8.8.8.8"],
+    )
+
+    assert names == ["api.example.test"]
+    assert [address for address, _timeout in connections] == [("8.8.8.8", 443)]
+    assert sni_names == ["example.test"]
+
+
+def test_engine_tls_san_probe_skips_private_addresses_and_out_of_scope_hosts(monkeypatch):
+    from framework.assets import engine as asset_engine_module
+
+    scope = ScopeEngine({"targets": {"domains": ["example.test"]}})
+    engine = AssetIntelligenceEngine(scope_engine=scope)
+    connections = []
+    monkeypatch.setattr(
+        asset_engine_module.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(None, None, None, None, ("127.0.0.1", 443))],
+    )
+    monkeypatch.setattr(
+        asset_engine_module.socket,
+        "create_connection",
+        lambda *args, **kwargs: connections.append((args, kwargs)),
+    )
+
+    assert engine.extract_tls_sans("example.test") == []
+    assert engine.extract_tls_sans("outside.test", resolved_ips=["8.8.8.8"]) == []
+    assert connections == []
+
+
+def test_engine_tls_san_probe_respects_global_connection_budget(monkeypatch):
+    from framework.assets import engine as asset_engine_module
+
+    scope = ScopeEngine({"targets": {"domains": ["example.test"]}})
+    engine = AssetIntelligenceEngine(scope_engine=scope)
+    engine._tls_probe_count = asset_engine_module.MAX_TLS_SAN_PROBES
+    connections = []
+    monkeypatch.setattr(
+        asset_engine_module.socket,
+        "create_connection",
+        lambda *args, **kwargs: connections.append((args, kwargs)),
+    )
+
+    assert engine.extract_tls_sans("example.test", resolved_ips=["8.8.8.8"]) == []
+    assert connections == []
 
 
 def test_engine_tls_san_extraction_and_requeue():
