@@ -211,9 +211,11 @@ def test_provider_factory_and_fallbacks(monkeypatch):
     p_mock = OobProviderFactory.get_provider("mock")
     assert isinstance(p_mock, MockOobProvider)
 
-    # When the optional client binary is missing, factory preserves the offline mock fallback.
+    # Missing live integrations stay unavailable; simulation must be selected explicitly.
     p_inter = OobProviderFactory.get_provider("interactsh")
-    assert isinstance(p_inter, MockOobProvider)
+    assert isinstance(p_inter, InteractshOobProvider)
+    assert p_inter.registration_status() == OobProviderStatus.UNAVAILABLE
+    assert not isinstance(OobProviderFactory.get_provider("auto"), MockOobProvider)
 
 
 def test_canary_manager_correlation_and_filters():
@@ -608,6 +610,33 @@ def test_ssrf_engine_error_status_provider_fails_closed_zero_dispatch(temp_progr
     assert c_res.lifecycle_state == "ERROR"
     assert "Zero network requests dispatched" in c_res.notes
     assert len(dispatched) == 0
+
+
+def test_ssrf_canary_registration_failure_fails_closed_before_target_dispatch(temp_program_dir):
+    scope = ScopeEngine({
+        "program": {"name": "test-register-fail"},
+        "targets": {"domains": ["api.local"], "recursive_subdomains": {"enabled": True}},
+    })
+    provider = MockOobProvider()
+
+    def fail_registration(*_args, **_kwargs):
+        raise RuntimeError("registration failed")
+
+    provider.generate_canary = fail_registration
+    dispatched: List[ControlledRequest] = []
+    engine = SsrfIntelligenceEngine(
+        program_dir=temp_program_dir,
+        scope_engine=scope,
+        send_request_hook=lambda req: dispatched.append(req) or ControlledResponse(200, {}, "OK", 2),
+        oob_provider=provider,
+    )
+    candidate = SsrfCandidate(application="api.local", endpoint="https://api.local/fetch", parameter="url")
+
+    result, finding = engine.validate_candidate(candidate, force_approved=True)
+    assert finding is None
+    assert result.lifecycle_state == "UNAVAILABLE"
+    assert "Zero target requests dispatched" in result.notes
+    assert dispatched == []
 
 
 def test_ssrf_engine_untrusted_destination_rejected_zero_dispatch(temp_program_dir):

@@ -4,27 +4,27 @@ This register lists only material unresolved project problems. When an issue is 
 
 ## Open issues
 
-### AUD-04 — Live OOB integrations for SSRF/XXE are unavailable (Phases 9 and 18)
+### AUD-04 — Live OOB acceptance and Burp Collaborator polling remain open (Phases 9 and 18)
 
-- **Severity:** Medium; affects confirmation of blind SSRF/XXE only.
-- **Evidence:** `framework/ssrf/provider.py` reports configured Interactsh/Burp Collaborator providers as `UNAVAILABLE` because live polling is not implemented; `framework/ssrf/engine.py` and `framework/xxe/engine.py` fail closed and keep simulated callbacks labeled as simulation. The Phase 1–20 baseline records this limitation for Phase 9, and Phase 18 acceptance records it for XXE.
-- **Impact:** Blind server-side interaction hypotheses may remain unconfirmed even if local simulations pass.
-- **Remediation:** Implement supported provider polling and credential configuration with safe correlation identifiers, timeout/rate limits, scope checks and auditable callback provenance, or keep status unavailable.
-- **Acceptance gate:** An isolated owned test endpoint verifies attributable live callback receipt; mock providers remain labeled simulation and cannot create confirmed findings.
+- **Severity:** Medium; affects confirmation of blind SSRF/XXE when no live callback provider is available.
+- **Evidence:** `framework/ssrf/provider.py` now supports the official `interactsh-client` CLI with private token config, bounded registration/polling/output, exact `full-id` matching, and normalized events. `tests/test_interactsh_live_adapter.py` uses a fake process and establishes no live-server reachability. `CollaboratorOobProvider` still has no live polling adapter. SSRF/XXE registration exceptions stop before target dispatch.
+- **Impact:** Blind findings remain unconfirmed if the external service is unreachable, not installed, or the target cannot make callbacks. Burp Collaborator remains unavailable.
+- **Remediation:** Verify one end-to-end callback using a researcher-owned test endpoint and an explicitly authorized, controlled test; implement Collaborator polling only if the project needs it.
+- **Acceptance gate:** The owned test endpoint produces an attributable callback with exact correlation and fresh evidence; mock providers remain simulation-only. Do not claim live acceptance from unit tests.
 
-### AUD-06 — Phase 1 CLI does not perform the advertised broad asset enrichment
+### AUD-06 — Phase 1 still lacks live TLS SAN and ASN enrichment
 
 - **Severity:** Medium; asset coverage and confidence can be overstated if the phase guide is read without this limitation.
-- **Evidence:** `AssetIntelligenceEngine._discover_child_subdomains()` returns no candidates when its discovery hook is unset, and the normal `scripts/bb-assets` CLI does not configure that hook. The default ASN result is `UNKNOWN`; TLS SAN extraction is also exposed through a hook rather than a provider wired into the normal CLI. The current CLI can model supplied roots/seeds and perform its implemented DNS enrichment, but it does not independently discover arbitrary-depth subdomains as the older roadmap wording implied.
-- **Impact:** Researchers may have an incomplete asset inventory and miss hosts that a passive or active discovery provider would have found. `--depth` does not itself provide a discovery source.
-- **Remediation:** Wire a reviewed passive provider into the CLI with source attribution, limits, failure reporting and offline fixtures, or keep these features explicitly described as manual/hook-only. Add a CLI-level test proving provider-backed children are persisted and scope-labelled correctly.
-- **Acceptance gate:** On owned local fixtures and a controlled provider mock, a CLI run discovers nested children, records provenance, respects limits/exclusions, and remains usable offline without claiming undiscovered coverage.
+- **Evidence:** `scripts/bb-assets --subfinder` now invokes a bounded passive provider, rejects out-of-scope results, records provider-source metadata, and persists valid discoveries. `tests/test_subfinder_integration.py` covers CLI persistence with a controlled provider mock. ASN attribution still defaults to `UNKNOWN`, and `AssetIntelligenceEngine.extract_tls_sans()` still needs a wired, pinned live provider. `--depth` by itself does not discover names.
+- **Impact:** Assets absent from passive sources or supplied seeds may be missed; ASN and certificate-name context may be incomplete.
+- **Remediation:** Add an optional scope-checked TLS SAN probe and an attribution source for ASN with privacy, rate, and failure bounds, or keep these attributes explicitly unknown.
+- **Acceptance gate:** Local TLS fixtures and a controlled ASN provider mock verify in-scope attribution, nested graph persistence, provenance, exclusions, and fail-closed behavior.
 
 ### AUD-07 — Phase 2 tool catalog is not an execution integration
 
 - **Severity:** Medium; the current built-in reconnaissance is narrower than the tool catalog can suggest.
-- **Evidence:** `config/tools.yaml` and the capability graph describe tools such as Subfinder, httpx, and Nmap, but `scripts/bb-recon` does not launch those external binaries. The engine performs its own bounded Python DNS/TLS/HTTP probes and a short default port list.
-- **Impact:** Installing a listed binary or configuring an API key does not cause Phase 2 to use that capability. Recon coverage remains limited to the built-in probes and supplied/previously known assets.
+- **Evidence:** `scripts/bb-assets --subfinder` now invokes Subfinder explicitly. `config/tools.yaml` also describes httpx, Nmap, and other optional tools, but `scripts/bb-recon` continues to use its built-in bounded Python DNS/TLS/HTTP and port probes and does not launch those binaries.
+- **Impact:** Installing a listed external scanner or configuring an API key does not automatically add it to `bb-recon`; integrated recon remains limited to built-in probes and the scoped asset inventory.
 - **Remediation:** Decide which external tools should be integrated, then implement explicit invocation contracts with binary validation, offline scope preflight, constrained arguments, output/time/request bounds, and local-fixture tests. Until then, label entries as manual/available tools and avoid implying engine integration.
 - **Acceptance gate:** Tests demonstrate the CLI's exact execution behavior, including disabled/manual mode, out-of-scope rejection, timeout, malformed output and tool failure.
 

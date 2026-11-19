@@ -1,6 +1,6 @@
 # Phase 9 — Server-Side Request Forgery Intelligence
 
-**Status:** Candidate analysis and safety controls are implemented; live out-of-band callback confirmation is unavailable unless a supported provider is added.
+**Status:** Candidate analysis and safety controls are implemented. A live Interactsh adapter is now available when the official client is installed; end-to-end callback acceptance is still pending. Burp Collaborator polling is not integrated.
 **Implementation:** **framework/ssrf/**, **scripts/bb-ssrf**, and the **oob** skill
 **State file:** **state/ssrf.json** in the local program workspace.
 
@@ -8,13 +8,13 @@
 
 Server-Side Request Forgery (SSRF) is a weakness where an application can be induced to make a network request chosen by a user. The impact depends on what the server can reach and what the response reveals. A parameter named **url** or **callback** is only a clue; it does not prove that the server fetches that value.
 
-Some SSRF behavior is blind: the application does not show the response, so a researcher looks for a safe callback to a controlled out-of-band service. The callback must be uniquely attributable to the test. Phase 9 can model candidates and plan canary checks, but its configured Interactsh and Collaborator integrations currently report unavailable because live polling has not been implemented. Mock callbacks are simulations and cannot support a live-confirmed finding.
+Some SSRF behavior is blind: the application does not show the response, so a researcher looks for a safe callback to a controlled out-of-band service. The callback must be uniquely attributable to the test. When `interactsh-client` is installed, Phase 9 starts one bounded client session per canary and polls its JSONL events. It requires an exact correlation identifier, checks the configured callback domain against policy, and stores only a normalized interaction record. Private-server tokens go in a private temporary config file, never in process arguments. A missing binary, failed registration, invalid scope, or provider error stops before sending any request to the target. The public Interactsh server does not require an account or token; use `INTERACTSH_TOKEN` only for a protected private service. Mock callbacks remain simulations and cannot support a live-confirmed finding.
 
 ## How the phase works
 
 The engine gathers URL-like parameters from existing application and API state, ranks candidate inputs, checks scope and destination safety, and creates bounded test cases. Active tests require explicit approval and have ceilings for the number of cases, requests, response bytes, and callback wait time. The engine blocks local and cloud metadata destinations and prevents a candidate redirect or resolved address from silently crossing a safety boundary.
 
-Use the deterministic local lab to understand expected behavior without contacting a bounty target. For a live test, the program must permit the exact behavior and the operator must have a functioning, controlled callback provider. Until provider polling is independently verified, the correct result for blind confirmation is unavailable or unconfirmed, not vulnerable.
+Use the deterministic local lab to understand expected behavior without contacting a bounty target. For a live test, the program must permit the exact behavior and the operator must have a functioning, controlled callback provider. The automated tests use a fake client and do not prove a real callback was received; until an owned end-to-end callback test passes, treat live service availability and delivery as an external acceptance requirement. Burp Collaborator continues to report unavailable rather than silently falling back to simulation.
 
 ## How to run it
 
@@ -44,4 +44,4 @@ If callback confirmation is unavailable, document the hypothesis and missing evi
 
 Keep callback identifiers unique to one approved test. Stop on any unexpected interaction or impact. This phase is not an internal-network scanner and does not authorize testing cloud metadata or third-party systems.
 
-The unresolved provider limitation is tracked in the [project audit issues](../PROJECT-AUDIT-ISSUES.md). Tests in **tests/test_ssrf_engine.py** and **tests/test_providers.py** cover logic and provider failure states, not live callback delivery. See [Phase 18](PHASE-18-ssrf-xxe-server-side-parsers.md), the **OOB skill**, and [roadmap](../ROADMAP-24-PHASES.md).
+Tests in **tests/test_interactsh_live_adapter.py**, **tests/test_ssrf_engine.py**, and **tests/test_providers.py** exercise mocked CLI registration, private token handling, exact ID matching, and fail-closed behavior. They do not establish public-server availability or target-side delivery. See [Phase 18](PHASE-18-ssrf-xxe-server-side-parsers.md), the **OOB skill**, [Interactsh setup](../tools/interactsh.md), and the [project audit issues](../PROJECT-AUDIT-ISSUES.md).

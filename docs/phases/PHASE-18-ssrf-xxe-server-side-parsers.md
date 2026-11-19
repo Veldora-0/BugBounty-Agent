@@ -1,6 +1,6 @@
 # Phase 18 — SSRF, XXE, and Server-Side Parsers
 
-**Status:** XML safety checks and bounded XXE/SSRF candidate validators are implemented; live out-of-band callback confirmation is unavailable without a working provider.
+**Status:** XML safety checks and bounded XXE/SSRF candidate validators are implemented. The live Interactsh CLI adapter is available when installed, but end-to-end callback acceptance has not yet been recorded; Burp Collaborator remains unsupported.
 **Implementation:** **framework/xxe/**, **framework/ssrf/**, **framework/common/xml_safe.py**, **framework/validation/validator.py**, **scripts/bb-validate**, and the **injection** and **oob** skills
 **State:** XXE validation uses the local security-validation state; SSRF records use **state/ssrf.json**.
 
@@ -14,7 +14,7 @@ Phase 18 has two separate aims: make the project’s own XML parsing safer, and 
 
 The safe XML helper performs bounded, security-aware parsing and rejects unsafe constructions before ordinary parsing. The XXE validator uses a synthetic internal entity marker; if the application returns that marker, it records an informational observation that internal DTD processing occurred. It does not read local files or claim external entity resolution. Use **bb-validate --validator xxe** for a bounded plan or validation, subject to scope and the validator’s approval requirements.
 
-The SSRF engine reads candidate parameters from existing application and API state and creates bounded canary cases. It blocks internal and metadata address ranges. The provider interface can model supported OOB providers, but live Interactsh or Collaborator polling is not implemented. Therefore a simulated callback is only a test of local code. It cannot confirm a real blind SSRF.
+The SSRF engine reads candidate parameters from existing application and API state and creates bounded canary cases. It blocks internal and metadata address ranges. If the official `interactsh-client` binary is present, the provider registers a unique canary, reads bounded JSONL interaction events, and accepts only events with an exact correlation identifier. It filters private raw data before creating normalized records, and registration failure stops before target dispatch. A simulated callback is only a test of local code; it cannot confirm a real blind SSRF.
 
 ## How to use it
 
@@ -32,7 +32,7 @@ bb-ssrf --program <program-name> --passive-only --tree
 bb-ssrf --program <program-name> --lab --json
 ~~~
 
-A live blind test requires explicit program permission, an approved case, and a controlled callback service whose end-to-end polling has been verified. Until then, do not report callback-based confirmation.
+A live blind test requires explicit program permission, an approved case, an installed and reachable callback service, and a verified exact-ID callback. Current automated regressions mock the client process; they do not prove that public Interactsh registration or a target-side callback has succeeded. Until the owned live-service acceptance test is recorded, do not claim production callback verification.
 
 ## What evidence means
 
@@ -40,6 +40,6 @@ For XML, distinguish parser errors, internal-entity expansion, and external reso
 
 ## Safety and limitations
 
-Never use file URLs, real sensitive files, cloud metadata addresses, or third-party callback infrastructure without permission. Do not download or retain sensitive response content. Provider polling is an open limitation tracked in the [issue register](../PROJECT-AUDIT-ISSUES.md); tests cover local validators and failure behavior, not live external callbacks.
+Never use file URLs, real sensitive files, cloud metadata addresses, or third-party callback infrastructure without permission. Do not download or retain sensitive response content. Interactsh is an optional external service; Burp Collaborator polling and live callback acceptance remain open in the [issue register](../PROJECT-AUDIT-ISSUES.md). Tests cover local validators and a mocked CLI adapter, not live external callbacks.
 
 Tests: **tests/test_phase18_xml_security.py**, **tests/test_phase18_xxe_engine.py**, **tests/test_phase18_ssrf_transport.py**, and **tests/test_phase18_ssrf_mutation.py**. See [Phase 9](PHASE-09-ssrf-intelligence.md), [validation guide](PHASE-06-security-validation-foundation.md), and [roadmap](../ROADMAP-24-PHASES.md).

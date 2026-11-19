@@ -177,6 +177,7 @@ class InteractshOobProvider(OobProvider):
     """
 
     MAX_SESSIONS = 4
+    MAX_COMPLETED_SESSIONS = 128
     MAX_SESSION_SECONDS = 120.0
     MAX_POLL_SECONDS = 10.0
     MAX_OUTPUT_BYTES = 2 * 1024 * 1024
@@ -189,9 +190,10 @@ class InteractshOobProvider(OobProvider):
         token: Optional[str] = None,
     ):
         self.server_url = server_url or os.environ.get("INTERACTSH_SERVER", "oast.pro")
-        self.token = token or os.environ.get("INTERACTSH_TOKEN") or os.environ.get("PDCP_API_KEY")
+        self.token = token if token is not None else (os.environ.get("INTERACTSH_TOKEN") or None)
         self._client_path: Optional[str] = shutil.which("interactsh-client")
         self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._completed: Dict[str, List[SsrfInteraction]] = {}
         self._lock = threading.RLock()
         self._validated_server = self._normalize_server(self.server_url)
 
@@ -241,7 +243,28 @@ class InteractshOobProvider(OobProvider):
                     process.wait(timeout=2)
                 except (OSError, subprocess.TimeoutExpired):
                     pass
-        shutil.rmtree(session["directory"], ignore_errors=True)
+        directory = session.get("directory")
+        if directory:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    @staticmethod
+    def _stop_polling_process(session: Dict[str, Any]) -> None:
+        process = session.get("process")
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        session["process"] = None
+        directory = session.get("directory")
+        if directory:
+            shutil.rmtree(directory, ignore_errors=True)
+            session["directory"] = None
 
     def _expire_session_later(self, token: str) -> None:
         timer = threading.Timer(self.MAX_SESSION_SECONDS, self._finish_session, args=(token,))
@@ -349,7 +372,8 @@ class InteractshOobProvider(OobProvider):
         if self.registration_status() != OobProviderStatus.AVAILABLE or not self._client_path or not self._validated_server:
             raise RuntimeError("Interactsh client is unavailable or its server configuration is invalid")
         with self._lock:
-            if len(self._sessions) >= self.MAX_SESSIONS:
+            active_sessions = sum(1 for session in self._sessions.values() if session.get("process") is not None)
+            if active_sessions >= self.MAX_SESSIONS:
                 raise RuntimeError("Interactsh session limit reached; finish or expire an existing canary first")
 
         directory = tempfile.mkdtemp(prefix="bb-interactsh-")
@@ -408,7 +432,8 @@ class InteractshOobProvider(OobProvider):
                 raise RuntimeError("Interactsh client did not produce a payload before the registration deadline")
             token, hostname = generated
             with self._lock:
-                if len(self._sessions) >= self.MAX_SESSIONS:
+                active_sessions = sum(1 for session in self._sessions.values() if session.get("process") is not None)
+                if active_sessions >= self.MAX_SESSIONS:
                     process.terminate()
                     raise RuntimeError("Interactsh session limit reached")
                 self._sessions[token] = {
@@ -440,7 +465,8 @@ class InteractshOobProvider(OobProvider):
         with self._lock:
             session = self._sessions.get(token)
         if not session:
-            return []
+            with self._lock:
+                return list(self._completed.get(token, []))
         wait_for = max(0.0, min(float(timeout), self.MAX_POLL_SECONDS))
         deadline = time.monotonic() + wait_for
         while True:
@@ -450,13 +476,21 @@ class InteractshOobProvider(OobProvider):
             if time.monotonic() >= deadline:
                 break
             time.sleep(min(0.1, deadline - time.monotonic()))
-        return list(session["interactions"])
+        self._stop_polling_process(session)
+        interactions = list(session["interactions"])
+        with self._lock:
+            if self._sessions.get(token) is session:
+                self._sessions.pop(token, None)
+                self._completed[token] = interactions
+                while len(self._completed) > self.MAX_COMPLETED_SESSIONS:
+                    self._completed.pop(next(iter(self._completed)))
+        return interactions
 
     def consume_interactions(self, token: str) -> List[SsrfInteraction]:
         with self._lock:
             session = self._sessions.get(token)
-        if not session:
-            return []
+            if not session:
+                return self._completed.pop(token, [])
         interactions = list(session["interactions"])
         session["interactions"].clear()
         return interactions
@@ -466,6 +500,8 @@ class InteractshOobProvider(OobProvider):
             tokens = list(self._sessions)
         for token in tokens:
             self._finish_session(token)
+        with self._lock:
+            self._completed.clear()
 
 
 class CollaboratorOobProvider(OobProvider):
@@ -511,7 +547,7 @@ class CollaboratorOobProvider(OobProvider):
 
 class OobProviderFactory:
     """
-    Factory resolving active OOB provider with clean mock fallback.
+    Factory resolving live OOB providers without silently replacing them with simulation.
     """
 
     @classmethod
@@ -521,25 +557,17 @@ class OobProviderFactory:
         mock_domain: str = "oob.local",
     ) -> OobProvider:
         """
-        Returns configured provider instance. Never throws on missing keys.
+        Returns a provider whose status preserves missing dependencies/configuration.
+        Mock operation is selected only when explicitly requested.
         """
         p_name = provider_name.lower().strip()
         if p_name == "interactsh":
-            p = InteractshOobProvider()
-            if p.registration_status() == OobProviderStatus.AVAILABLE:
-                return p
-            return MockOobProvider(base_domain=mock_domain)
+            return InteractshOobProvider()
         elif p_name == "collaborator":
-            p = CollaboratorOobProvider()
-            if p.registration_status() == OobProviderStatus.AVAILABLE:
-                return p
-            return MockOobProvider(base_domain=mock_domain)
+            return CollaboratorOobProvider()
         elif p_name == "mock":
             return MockOobProvider(base_domain=mock_domain)
 
-        # "auto" resolution: prefer interactsh if configured, else mock
-        interactsh = InteractshOobProvider()
-        if interactsh.registration_status() == OobProviderStatus.AVAILABLE:
-            return interactsh
-
-        return MockOobProvider(base_domain=mock_domain)
+        # Auto selects the live Interactsh provider even when unavailable; engines
+        # can then fail closed instead of dispatching a simulated canary to a target.
+        return InteractshOobProvider()

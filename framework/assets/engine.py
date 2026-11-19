@@ -99,6 +99,7 @@ class AssetIntelligenceEngine:
         self.asn_resolver_hook: Optional[Callable[[str], Dict[str, Any]]] = None
         self.tls_san_hook: Optional[Callable[[str, int], List[str]]] = None
         self.subdomain_discovery_hook: Optional[Callable[[str], List[str]]] = None
+        self.subdomain_discovery_source: str = "child_discovery"
         self.cdn_detector_hook: Optional[
             Callable[[str, List[str], List[str]], Tuple[Optional[str], CDNAttribution]]
         ] = None
@@ -431,7 +432,8 @@ class AssetIntelligenceEngine:
 
                 if norm_child not in self.visited_hostnames:
                     child_depth, _ = calculate_subdomain_depth(norm_child, root_dom)
-                    queue.append((norm_child, root_dom, current_host, child_depth, "child_discovery"))
+                    child_parent = self._extract_parent_hostname(norm_child, root_dom)
+                    queue.append((norm_child, root_dom, child_parent, child_depth, self.subdomain_discovery_source))
 
             asset.status = AssetStatus.RECURSED.value
 

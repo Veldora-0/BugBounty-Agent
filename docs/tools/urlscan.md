@@ -4,7 +4,7 @@
 urlscan.io is a scanner for websites that analyzes web pages, resources requested, DOM contents, IP contacts, and TLS certificates.
 
 ## Integration status
-urlscan.io is listed as a possible Subfinder provider. BugBounty-Agent does not invoke Subfinder from its normal asset or reconnaissance CLI and does not pass this credential to it. `bb-doctor` can report whether the key is present.
+urlscan.io is listed as a possible Subfinder provider. `bb-assets --subfinder` can invoke the passive Subfinder CLI when explicitly selected, but BugBounty-Agent does not map secrets from `secrets.env` into Subfinder's native provider configuration. `bb-doctor` can report whether the key is present.
 
 ## Account Required
 **YES** (Free account unlocks automated API search).

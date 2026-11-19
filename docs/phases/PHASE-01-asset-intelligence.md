@@ -1,6 +1,6 @@
 # Phase 1 — Asset Intelligence
 
-**Status:** Partially implemented. The graph and safety checks exist, but the normal CLI is not connected to a subdomain-discovery provider; several advertised enrichment paths are hook-only.
+**Status:** Partially implemented. The graph, scope checks, and optional bounded passive Subfinder integration exist. ASN attribution and TLS SAN extraction remain hook-only.
 **Implementation:** **framework/assets/**, **framework/scope/**, **scripts/bb-assets**, and the **asset-intelligence skill**
 **State file:** **state/assets.json** in the local program workspace.
 
@@ -20,7 +20,9 @@ You can seed the graph with a root domain and known hostnames from the program p
 
 The CLI normalizes hostnames, creates root and seed nodes, associates children with their parent, and stores the resulting graph. When a configured scope is available, it checks candidate names before live DNS resolution. It can record DNS addresses and aliases, create relationships such as “resolves to,” and classify a candidate as in scope, out of scope, or ambiguous. A maximum-depth setting and asset-count budget put a ceiling on graph growth. Wildcard detection is an optional live DNS check intended to stop random names that all resolve to the same wildcard address from looking like real assets.
 
-The code also contains extension points for subdomain sources, TLS certificate names, and ASN data. The repository CLI does not currently configure those extension points. Without an injected discovery hook, child subdomain discovery returns no candidates; without an ASN provider, attribution is **UNKNOWN**; and the asset engine’s TLS SAN extraction only works through its hook. As a result, **--depth 0** means “do not impose a depth ceiling on discoveries that are supplied,” not “automatically enumerate every subdomain.” In normal use today, the CLI builds roots and explicit seeds, with only the enrichment that is actually connected and scope-approved.
+The CLI can optionally invoke Subfinder when `--subfinder` is supplied. Each in-scope root is queried once with Subfinder's passive mode, fixed rate and time limits, and JSON output. Results must be valid descendant hostnames and pass the local scope engine before they enter the graph. Each accepted asset stores the provider source names. Subfinder uses its own local provider configuration; BugBounty-Agent does not transfer values from `secrets.env` into that configuration. The output file is private and removed after parsing.
+
+Other extension points still are not wired into this CLI. Without an ASN provider, attribution is **UNKNOWN**; TLS SAN extraction only works through its hook. **--depth 0** means “do not impose a depth ceiling on discoveries that are supplied,” not “automatically enumerate every subdomain.” Without `--subfinder`, the CLI builds roots and explicit seeds with its built-in DNS enrichment. Even with Subfinder, findings depend on the provider's available sources, credentials, response, and terms; this is not a complete asset inventory.
 
 ## How to use it
 
@@ -30,6 +32,9 @@ bb-assets --program <program-name> --tree
 
 # Add hostnames you already collected from an allowed source.
 bb-assets --program <program-name> --seeds "api.example.org,login.example.org" --tree
+
+# Opt in to bounded passive enumeration, while keeping host probes disabled.
+bb-assets --program <program-name> --subfinder --passive-only --tree
 
 # Limit the graph size and save machine-readable output for review.
 bb-assets --program <program-name> --budget 300 --json
@@ -53,7 +58,7 @@ A useful result is a reviewed, deduplicated inventory with known provenance and 
 
 The phase must never use an out-of-scope or ambiguous asset for active probing. Keep the budget conservative, do not expand beyond the program’s written scope, and do not infer that a third-party CDN or hosting provider is authorized for direct testing. Passive-only and dry-run modes are useful when you are reviewing configuration or importing existing information.
 
-The missing provider wiring is a material implementation gap, tracked in the **project audit issues**. The present tests exercise the graph and provider hooks with local fixtures; they do not demonstrate production subdomain enumeration, useful ASN attribution, or live certificate-name discovery through **bb-assets**. The **future improvements** list provider integration work. Check the phase status in the **roadmap** before treating the asset graph as complete.
+The remaining ASN and TLS SAN wiring is a material gap tracked in the **project audit issues**. Tests use a fake Subfinder executable/provider output and prove filtering, attribution, and state persistence; they do not contact providers or demonstrate live enumeration coverage. `--passive-only` disables target DNS/TLS activity but does not suppress the provider queries made by `--subfinder`; those queries disclose the root domain to configured third-party data sources. Check current provider terms and the **roadmap** before treating the inventory as complete.
 
 ## Source references
 

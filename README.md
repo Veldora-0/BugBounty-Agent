@@ -102,10 +102,10 @@ BugBounty-Agent/
 │   ├── bb-install             # Automated tool installer using declared registry tiers
 │   ├── bb-update              # Optional external security-tool version updater
 │   ├── bb-report              # Standalone disclosure report compiler
-│   ├── bb-assets              # Recursive asset intelligence & graph engine CLI
+│   ├── bb-assets              # Scoped asset graph CLI; optional passive Subfinder integration
 │   ├── bb-scope-check         # Scope verification utility
 │   ├── bb-target-normalize    # Target canonicalization & DNS boundary check
-│   ├── bb-recon               # Controlled recon (subfinder, assetfinder, httpx)
+│   ├── bb-recon               # Bounded built-in DNS/TLS/HTTP/port reconnaissance
 │   ├── bb-http                # HTTP / Header Trust & Protocol Security validation engine
 │   ├── bb-workflow            # Business logic and multi-step workflow intelligence engine
 │   ├── bb-cloud               # Cloud security & misconfiguration intelligence engine
@@ -367,8 +367,8 @@ If a preferred tool is unavailable:
 BugBounty-Agent has delivered 21 cohesive security research phases, establishing a comprehensive, non-destructive intelligence and validation pipeline:
 
 ### 1. Asset Intelligence, Graph & Reconnaissance (Phases 1–3)
-* **Arbitrary-Depth Asset Graph (`bb-assets`)**: Traverses subdomains recursively without artificial depth caps (`example.com` $\to$ `sub` $\to$ `dev` $\to$ `api` $\to$ `internal`). Maps directional infrastructure relationships (`HAS_SUBDOMAIN`, `RESOLVES_TO`, `CNAME_TO`, `PRESENT_IN_CERT`, `HOSTED_BY`, `BELONGS_TO_ASN`), detects wildcard DNS, extracts X.509 TLS certificate SANs, identifies CDN/cloud reverse proxies, and calibrates multi-source provenance confidence (`LOW`, `MEDIUM`, `HIGH`, `CONFIRMED`).
-* **Reconnaissance Intelligence (`bb-recon`)**: Dynamically orchestrates passive CT logs, DNS intelligence (`crt.sh`, `subfinder`), and controlled active probing (`httpx`), mapping URLs, status codes, page titles, server banners, security headers, content lengths, response times, and redirect chains.
+* **Asset Graph (`bb-assets`)**: Builds a scoped graph from program roots and supplied seeds. `--depth 0` removes the graph's depth ceiling; it does not discover names by itself. `--subfinder` opts into a bounded passive Subfinder run per root and stores validated in-scope results with provider-source attribution. Without that flag, the CLI does not run Subfinder. ASN lookup remains a hook-only extension and may be `UNKNOWN`; see [AUD-06](docs/PROJECT-AUDIT-ISSUES.md).
+* **Reconnaissance Intelligence (`bb-recon`)**: Runs the project's own bounded DNS, TLS, HTTP, port, technology, and endpoint probes over its scoped asset graph. Installing `httpx`, `nmap`, or other entries in the tool catalog does not make `bb-recon` invoke them. External tools are separate capabilities unless a phase guide identifies an implemented invocation path.
 * **Web Application Mapping (`bb-webapp`)**: Converts web service observations into a structured attack surface relationship model stored atomically in `state/webapps.json`, indexing static and dynamic resources (scripts, stylesheets, fonts), form structures, input parameters, and link graphs.
 
 ### 2. Client-Side & JavaScript Intelligence (Phase 4)
@@ -402,8 +402,8 @@ BugBounty-Agent has delivered 21 cohesive security research phases, establishing
 ### 7. SSRF & Out-of-Band (OOB) Interaction Intelligence (Phases 9 & 18)
 * **Safe SSRF Request Mutation (`bb-ssrf`)**: Constructs non-destructive mutated requests across Query parameters, Path template parameters (`{param}`, `:param`), JSON bodies (flat and nested keys), Form-encoded bodies, and XML bodies (DOM text replacement with XML entity escaping).
 * **SSRF Transport Hardening**: Added `parse_alternate_ip` supporting alternate numeric notations (dotted decimal, decimal scalars, hex scalars, octal scalars, dotted octal/hex, and inet_aton multi-part formats); enforces multi-record DNS resolution anti-SSRF checks blocking loopback, private, carrier-grade NAT, and cloud metadata addresses.
-* **OOB Canary Correlation & Destination Policy Enforcement**: Unique canary tokens (`bb9-<program>-<test_id>-<hex>.<domain>`) tracked by `CanaryManager`. Enforces provider availability gating (status must be `AVAILABLE`, failing closed for `UNAVAILABLE`, `CONFIG_REQUIRED`, or `ERROR` with zero requests dispatched). Validates generated destinations against `validate_oob_destination()`, verifying that the method exists and is callable, failing closed with `PolicyViolationError` and zero requests if missing or non-callable.
-* **Truthful Mock vs. Live Classification**: Mock provider interactions strictly emit `SIMULATED` (`INFORMATIONAL`, `LOW` confidence) findings and can never become live validated findings. Configured external adapters without operational live wire polling report `UNAVAILABLE`.
+* **OOB Canary Correlation & Destination Policy Enforcement**: When the official `interactsh-client` is installed, the adapter creates one canary, polls bounded JSONL output, and accepts only an exact callback correlation ID. Private-service tokens stay in a private temporary config file. SSRF and XXE stop before target dispatch if provider registration fails or the OOB destination is not trusted by policy.
+* **Truthful Mock vs. Live Classification**: Mock provider use is explicit and remains `SIMULATED`; it cannot produce a live-confirmed finding. An unavailable live integration is not silently replaced with a mock. Live Interactsh reachability and target-side callback delivery still require an owned end-to-end acceptance check; Burp Collaborator polling is not implemented.
 
 ### 8. Injection Intelligence & Controlled Validation (Phases 10 & 18)
 * **Non-Destructive Injection Probes (`bb-inject`)**: Prioritizes parameters (0–100 score) and executes safe, canary-driven probes for SQLi (quote syntax fault, boolean differential, numeric identity), NoSQLi (`$ne`/`$eq` operators), and SSTI (`{{7*7}}` $\to$ `49`). Strictly prohibits destructive SQL (`DROP`, `DELETE`, `UPDATE`) or command execution (`curl`, `wget`, `bash`, `rm`).

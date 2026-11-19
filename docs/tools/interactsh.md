@@ -4,28 +4,28 @@
 Interactsh is an open-source tool for detecting out-of-band (OOB) interactions (blind SSRF, blind XSS, blind SQLi, and out-of-band remote code execution) through DNS, HTTP, SMTP, and LDAP callbacks.
 
 ## Integration status
-The standalone Interactsh client can provide out-of-band callbacks for a researcher-managed test. BugBounty-Agent's Python OOB adapter does not currently poll live Interactsh servers; it reports an unavailable/configuration state rather than treating a local simulation as a real callback. The standalone client is not automatically invoked by the research engines.
+`framework/ssrf/provider.py` integrates the official `interactsh-client` CLI for live canary creation and JSONL event polling. `bb-ssrf` and the Phase 18 XXE engine use it only after their own approval, scope, and OOB-destination policy checks pass. The public ProjectDiscovery server is the default and does not require an account or token. A protected private server can use `INTERACTSH_TOKEN`.
+
+The adapter keeps each session inside a private temporary directory. A private-server token is written to a mode-0600 config file inside a mode-0700 directory; it is not placed in command arguments. The adapter disables PDCP authentication, creates one payload per session, limits registration to 8 seconds, polling to 10 seconds, each process to 120 seconds, and event output to 2 MiB. It correlates only an exact Interactsh `full-id`, records a small normalized event, then removes raw session output after polling. Mock mode must be selected explicitly; an unavailable live provider is not silently replaced by simulation.
+
+The tests replace the client process with a local fake. They verify argument secrecy, permissions, exact callback correlation, redaction, and fail-closed behavior. They do not establish that an external Interactsh server is reachable or that an authorized target produced a callback. Burp Collaborator still has no live polling adapter.
 
 ## Account Required
-**OPTIONAL** (The default public ProjectDiscovery server `interact.sh` operates without an account; private or authenticated self-hosted servers require credentials).
+**OPTIONAL** (The default public ProjectDiscovery server does not require an account; protected self-hosted servers require their own token).
 
 ## API Key Required
-**OPTIONAL** (Only required when using authenticated self-hosted servers or PDCP cloud features).
+**OPTIONAL** (Only required for a protected self-hosted Interactsh server).
 
 ## Required Environment Variables
 ```bash
-# Optional: Authentication token for custom or private Interactsh server
+# Optional: Authentication token for a protected private Interactsh server
 INTERACTSH_TOKEN="your_custom_auth_token"
 INTERACTSH_SERVER="your.custom.interactsh.server"
-
-# Optional: ProjectDiscovery Cloud Platform token
-PDCP_API_KEY="your_pdcp_api_key"
 ```
 
 ## Where to Obtain Credentials
 * Public server: No token needed.
-* Self-hosted instance: Configured during server deployment.
-* PDCP Cloud: [https://cloud.projectdiscovery.io](https://cloud.projectdiscovery.io)
+* Protected self-hosted instance: Obtain its client token from the server administrator.
 
 ## Official Documentation
 * [Interactsh GitHub Repository](https://github.com/projectdiscovery/interactsh)
@@ -38,28 +38,30 @@ bb-install interactsh
 ```
 
 ## Configuration
-For public server usage, the standalone client may not need a token. For private server usage, configure the standalone client according to its own documentation. `secrets.env` lets BugBounty-Agent's doctor report key presence; it does not configure or invoke the client:
+For public server use, leave `INTERACTSH_TOKEN` unset. For a protected server, add its host and token to the local program's `secrets.env` or export them in the environment. The adapter reads `INTERACTSH_TOKEN`; it deliberately does not reuse `PDCP_API_KEY` as an Interactsh server token:
 ```text
 INTERACTSH_SERVER=oob.myresearchdomain.com
 INTERACTSH_TOKEN=secret_interactsh_token
 ```
 
 ## Verification
-Test client registration:
+Check that the optional binary is installed:
 ```bash
-interactsh-client -n 1
+interactsh-client -version
+bb-doctor
 ```
-A valid session outputs a unique OOB callback domain (e.g. `c12345678.oast.fun`).
+The framework adapter starts the client only when an approved SSRF or XXE test needs a canary. Its automated tests use a fake CLI and do not issue live requests. Use a researcher-controlled, in-scope test endpoint and the exact program rules for any live callback acceptance check.
 
 ## Rate Limits / Quotas
-* Public server applies rate limits to prevent volumetric abuse.
+* The public service may change, rate-limit, or reject client connections.
+* Each framework session creates one canary. The provider caps concurrent sessions at four and polling at ten seconds.
 * Do not flood the public server with high-frequency fuzzing payloads.
 
 ## Privacy / Terms Considerations
 Public `interact.sh` servers log DNS, HTTP, and SMTP transactions. For sensitive private bug bounty programs, deploying a self-hosted private Interactsh instance is strongly recommended.
 
 ## Failure Behavior
-If the server is blocked or unreachable, the standalone client reports its connection failure. The framework adapter remains unavailable for live polling; see the [Phase 9/18 OOB issue](../PROJECT-AUDIT-ISSUES.md).
+If the binary is missing, the server is unreachable, the token is rejected, or no payload is produced within the registration bound, the framework records the provider as unavailable or registration failure and sends no target request. The [Phase 9 and Phase 18 guides](../phases/PHASE-09-ssrf-intelligence.md) describe the distinction between mocked unit coverage and live acceptance.
 
 > [!NOTE]
-> **Framework Adapter Status (Phase 18)**: While the standalone `interactsh-client` CLI interacts with live servers, the Python framework provider adapter (`InteractshOobProvider` in `framework/ssrf/provider.py`) uses local in-memory storage and truthfully reports `CONFIG_REQUIRED` when unconfigured and `UNAVAILABLE` when configured because live wire polling over network protocols is not implemented. A configured token or hostname alone does not establish operational live polling.
+> **Callback evidence**: An installed binary means the provider can attempt registration; it does not prove the remote server accepted the session or that a target made a callback. Only a timestamped interaction with the exact canary ID is evidence of a callback. Simulation never upgrades to a live finding.

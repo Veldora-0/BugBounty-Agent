@@ -4,7 +4,7 @@
 Subfinder is a fast passive subdomain enumeration tool that queries over 40+ public datasets and intelligence providers to discover valid subdomains without sending direct traffic to the target.
 
 ## Integration status
-Subfinder is listed in the optional tool catalog, but the normal `bb-assets` and `bb-recon` commands do not invoke it. Installing it does not add provider-backed discovery to those engines. The project has no end-to-end Subfinder CLI integration at this time; see [AUD-06 and AUD-07](../PROJECT-AUDIT-ISSUES.md).
+Subfinder is an optional, explicitly selected passive provider for `bb-assets --subfinder`. `bb-recon` does not invoke it. The framework checks each root and result against the configured scope, records source names for accepted hosts, and enforces fixed output and time limits. Provider coverage still depends on Subfinder's native source configuration and does not imply complete discovery.
 
 ## Account Required
 **NO** (Basic discovery functions out of the box using free, unauthenticated sources such as crt.sh, HackerTarget, and Wayback Machine). Optional accounts unlock additional commercial datasets (SecurityTrails, Censys, Shodan, BinaryEdge, Chaos).
@@ -45,7 +45,14 @@ Configure Subfinder directly according to its current upstream documentation:
 ```bash
 subfinder -pc ~/.config/subfinder/provider-config.yaml
 ```
-BugBounty-Agent's provider manager can read `secrets.env` to report whether a key is present in `bb-doctor`. It does not export or map those values into Subfinder's process or native configuration. For a manual Subfinder run, configure the provider through Subfinder itself and invoke it separately.
+BugBounty-Agent does not copy values from `secrets.env` into Subfinder. Configure provider keys using Subfinder's own `provider-config.yaml`; the integrated invocation reads the native provider configuration. The tool registry may report key presence for diagnosis, but this does not prove a key is valid or that a source will return results.
+
+## Integrated usage
+Use the explicit flag with an initialized program and a current scope file:
+```bash
+bb-assets --program <program-name> --subfinder --passive-only --tree
+```
+The adapter queries each in-scope root once. It applies a 2-requests-per-second provider limit, 8-second per-source timeout, 1-minute Subfinder maximum, 75-second process ceiling, and a 1,000-result ceiling. Results outside scope, malformed hostnames, and excluded names are dropped. The default output path is a private temporary file that is removed after parsing. `--passive-only` prevents active DNS/TLS probes against discovered hosts, but the domain is still sent to Subfinder's configured data providers.
 
 ## Configuration
 If you want `bb-doctor` to report that credentials are present, you may store their names and values in `~/.config/bugbounty-agent/secrets.env`:
@@ -59,7 +66,7 @@ chmod 600 ~/.config/bugbounty-agent/secrets.env
 ```
 
 ## Verification
-Verify Subfinder manually only against an authorized root domain, with a small query budget and provider terms in mind:
+For a separate manual run, use only an authorized root domain, with a small query budget and provider terms in mind:
 ```bash
 subfinder -d example.com -silent -v
 ```
@@ -72,4 +79,4 @@ Provider coverage, request limits, quotas and free tiers change. Check the curre
 Queries to third-party providers reveal the domain name being investigated. Ensure the program policy permits passive intelligence queries against authorized root domains.
 
 ## Failure Behavior
-If credentials are missing or invalid, Subfinder's own current behavior applies. BugBounty-Agent does not run Subfinder or provide a fallback through `bb-recon`.
+If credentials are missing, Subfinder uses only sources that work without them. If the binary, provider config, command, or output fails, `bb-assets` reports a provider error and exits nonzero; it does not invent candidates or fall back to another scanner. `bb-recon` remains separate and never invokes Subfinder.

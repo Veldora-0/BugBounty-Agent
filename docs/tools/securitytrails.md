@@ -4,7 +4,7 @@
 SecurityTrails provides extensive historical and real-time DNS datasets, passive DNS records, WHOIS history, and comprehensive subdomain listings.
 
 ## Integration status
-SecurityTrails is listed as a possible Subfinder provider, but BugBounty-Agent does not invoke Subfinder from its normal asset or reconnaissance CLI and does not pass this credential to Subfinder. `bb-doctor` can only report whether a key is present.
+SecurityTrails is listed as a possible Subfinder provider. `bb-assets --subfinder` can invoke the passive Subfinder CLI when explicitly selected, but BugBounty-Agent does not map secrets from `secrets.env` into Subfinder's native provider configuration. `bb-doctor` can only report whether a key is present.
 
 ## Account Required
 **YES**

@@ -42,10 +42,9 @@ The Phase 24 beta gates for environment evidence, deploy/update/rollback/uninsta
 - Document key rotation and incident-response exercises for the Linux dispatcher and evidence signing keys.
 - Decide whether Windows production service isolation or macOS support is worth implementing; keep both unsupported until their platform-specific trust boundaries pass acceptance.
 
-### Phases 1–2 — Wire asset discovery and recon capabilities into the CLI
+### Phases 1–2 — Complete asset enrichment and clarify recon capabilities
 
-- Connect the asset engine to a deliberately selected, optional passive subdomain provider so normal CLI behavior matches its documented discovery workflow; preserve an offline mode and clear provenance for each source.
-- Implement or remove the currently hook-only ASN and TLS SAN extraction claims, with local fixtures and strict scope checks.
+- Add an optional, scope-checked TLS SAN probe and ASN attribution source, with privacy, rate, output, and failure bounds plus local fixtures.
 - Decide which external reconnaissance tools the project intends to execute. If enabled, add explicit per-tool configuration, binary verification, argument construction, timeout/output limits, and tests. Until then, describe them only as separately installable/manual tools and do not imply `bb-recon` invokes them.
 
 ## Cross-cutting improvements

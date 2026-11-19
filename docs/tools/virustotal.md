@@ -4,7 +4,7 @@
 VirusTotal inspects URLs, domains, IPs, and file samples, aggregating intelligence from 70+ antivirus engines and scanning tools alongside passive DNS datasets.
 
 ## Integration status
-VirusTotal is listed as a possible Subfinder provider. BugBounty-Agent does not invoke Subfinder from its normal asset or reconnaissance CLI and does not pass this credential to it. `bb-doctor` can report only whether a key is present.
+VirusTotal is listed as a possible Subfinder provider. `bb-assets --subfinder` can invoke the passive Subfinder CLI when explicitly selected, but BugBounty-Agent does not map secrets from `secrets.env` into Subfinder's native provider configuration. `bb-doctor` can report only whether a key is present.
 
 ## Account Required
 **YES**

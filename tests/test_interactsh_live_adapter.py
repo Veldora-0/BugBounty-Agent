@@ -96,6 +96,13 @@ def test_interactsh_unavailable_or_invalid_configuration_fails_closed(monkeypatc
     assert invalid.registration_status() == OobProviderStatus.CONFIG_REQUIRED
 
 
+def test_pdcp_api_key_is_never_reused_as_interactsh_server_token(monkeypatch):
+    monkeypatch.setenv("PDCP_API_KEY", "must-not-be-sent-to-oast")
+    monkeypatch.delenv("INTERACTSH_TOKEN", raising=False)
+    provider = InteractshOobProvider(server_url="oast.pro")
+    assert provider.token is None
+
+
 def test_interactsh_payload_must_belong_to_configured_server():
     assert InteractshOobProvider._payload_hostname("good-id.oast.pro", "oast.pro") == ("good-id", "good-id.oast.pro")
     assert InteractshOobProvider._payload_hostname("bad.example.net", "oast.pro") is None

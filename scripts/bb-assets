@@ -31,8 +31,10 @@ if REPO_ROOT not in sys.path:
 
 from framework.assets.engine import AssetIntelligenceEngine
 from framework.assets.graph import AssetGraph
+from framework.assets.subfinder import run_subfinder
 from framework.common.config import get_program_dir, resolve_program_scope_file
 from framework.scope.engine import ScopeEngine, ScopeStatus
+from framework.scope.normalizer import normalize_hostname
 from framework.state.manager import StateManager
 
 
@@ -63,6 +65,11 @@ Examples:
     parser.add_argument(
         "--seeds",
         help="Comma-separated or space-separated list of known seed subdomains",
+    )
+    parser.add_argument(
+        "--subfinder",
+        action="store_true",
+        help="Opt in to bounded passive Subfinder discovery for each in-scope root domain",
     )
     parser.add_argument(
         "--depth",
@@ -104,7 +111,7 @@ Examples:
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
 
     prog_dir: Optional[str] = None
@@ -146,6 +153,10 @@ def main() -> None:
         print("[!] Error: No root domains provided. Use --domain <dom> or configure --scope / --program.", file=sys.stderr)
         sys.exit(1)
 
+    if args.subfinder and not scope_engine:
+        print("[!] Subfinder requires an explicit program scope. No provider query was made.", file=sys.stderr)
+        sys.exit(1)
+
     # Parse seed subdomains if any
     seed_subdomains: List[str] = []
     if args.seeds:
@@ -177,6 +188,28 @@ def main() -> None:
         detect_wildcards=not args.no_wildcards,
     )
 
+    subfinder_sources = {}
+    subfinder_failures = []
+    queried_roots = set()
+    if args.subfinder:
+        root_set = {normalize_hostname(root) for root in root_domains}
+
+        def discover_with_subfinder(parent_hostname: str) -> List[str]:
+            if parent_hostname not in root_set or parent_hostname in queried_roots:
+                return []
+            queried_roots.add(parent_hostname)
+            try:
+                discovered = run_subfinder(parent_hostname, scope_engine)
+            except Exception as exc:
+                subfinder_failures.append((parent_hostname, type(exc).__name__))
+                return []
+            for record in discovered:
+                subfinder_sources[record["hostname"]] = record["sources"]
+            return [record["hostname"] for record in discovered]
+
+        engine.subdomain_discovery_hook = discover_with_subfinder
+        engine.subdomain_discovery_source = "subfinder"
+
     print(f"[*] Starting Asset Intelligence Engine...")
     print(f"[*] Target root domains: {', '.join(root_domains)}")
     print(f"[*] Max recursion depth: {'Unlimited (Arbitrary Depth)' if args.depth == 0 else args.depth}")
@@ -189,6 +222,11 @@ def main() -> None:
         seed_subdomains=seed_subdomains,
     )
 
+    for hostname, sources in subfinder_sources.items():
+        discovered_asset = result_graph.get_asset(hostname)
+        if discovered_asset:
+            discovered_asset.attributes["passive_discovery_sources"] = sources
+
     all_assets = result_graph.get_all_assets()
     in_scope = result_graph.get_assets_by_scope(ScopeStatus.IN_SCOPE)
     out_of_scope = result_graph.get_assets_by_scope(ScopeStatus.OUT_OF_SCOPE)
@@ -200,6 +238,10 @@ def main() -> None:
     print(f"    - Out-of-scope assets: {len(out_of_scope)}")
     print(f"    - Max depth achieved: {result_graph.get_max_depth()}")
     print(f"    - Graph edges / relationships: {len(relationships)}")
+    if args.subfinder:
+        print(f"    - Subfinder passive sources: {len(subfinder_sources)} in-scope hosts returned")
+        for root, reason in subfinder_failures:
+            print(f"[!] Subfinder failed for {root} ({reason}); existing discovery results were retained.", file=sys.stderr)
 
     # Persist state
     if state and not args.dry_run:
@@ -217,6 +259,8 @@ def main() -> None:
     if args.json:
         print(json.dumps(result_graph.to_dict(), indent=2))
 
+    return 1 if subfinder_failures else 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

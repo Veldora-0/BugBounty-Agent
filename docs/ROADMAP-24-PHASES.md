@@ -6,15 +6,15 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 
 | Phase | Name | Current status |
 |---:|---|---|
-| 1 | Asset Intelligence | Partial: CLI lacks a wired subdomain provider; ASN and TLS SAN enrichment have hook-only paths |
-| 2 | Reconnaissance | Partial: bounded built-in probes work; external tools in the catalog are not invoked by `bb-recon` |
+| 1 | Asset Intelligence | Partial: opt-in bounded passive Subfinder is wired into `bb-assets`; ASN and TLS SAN enrichment remain hook-only |
+| 2 | Reconnaissance | Partial: bounded built-in probes work; the external scanner catalog is not invoked by `bb-recon` |
 | 3 | Web Application Intelligence | Implemented; read-only mapping |
 | 4 | JavaScript Intelligence | Implemented; read-only analysis |
 | 5 | API Intelligence | Implemented with documented limits |
 | 6 | Security Validation Foundation | Implemented |
 | 7 | XSS Intelligence | Implemented with documented limits |
 | 8 | Authorization / BOLA / IDOR | Implemented with documented limits |
-| 9 | SSRF Intelligence | Implemented; live OOB confirmation depends on provider availability |
+| 9 | SSRF Intelligence | Live Interactsh CLI adapter implemented with bounded exact-ID polling; live service acceptance pending; Burp Collaborator polling unsupported |
 | 10 | Injection Intelligence | Implemented with documented limits |
 | 11 | HTTP Trust & Protocol Security | Implemented |
 | 12 | Business Logic Intelligence | Implemented with human approval gates |
@@ -23,7 +23,7 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 15 | File Upload, Path Traversal & Local File Exposure | Implemented with safe proof limits |
 | 16 | Browser Runtime & Client-Side Security | Implemented; browser runtime availability varies by host |
 | 17 | Advanced API Security | Implemented with documented limits |
-| 18 | SSRF, XXE & Server-Side Parsers | Implemented; live callback confirmation depends on provider availability |
+| 18 | SSRF, XXE & Server-Side Parsers | Live Interactsh CLI adapter implemented with fail-closed registration; live service acceptance pending; Burp Collaborator polling unsupported |
 | 19 | Infrastructure & Configuration Exposure | Implemented; read-only and size bounded |
 | 20 | Race Conditions & Distributed Workflows | Implemented with low-volume bounds |
 | 21 | Authentication & Authorization Correlation | Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; live Linux systemd mutation unverified) |

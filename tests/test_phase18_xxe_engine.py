@@ -374,6 +374,37 @@ class TestOobProviderAvailabilityTruthfulness:
         assert prov.registration_status() == OobProviderStatus.UNAVAILABLE
         assert prov.registration_status() != OobProviderStatus.AVAILABLE
 
+    def test_xxe_registration_failure_fails_closed_before_target_dispatch(self):
+        tmp_dir = tempfile.mkdtemp()
+        provider = MockOobProvider()
+
+        def fail_registration(*_args, **_kwargs):
+            raise RuntimeError("registration failed")
+
+        provider.generate_canary = fail_registration
+        dispatched = []
+        engine = XxeIntelligenceEngine(
+            program_dir=tmp_dir,
+            scope_engine=make_scope(),
+            policy=SecurityTestPolicy(allowed_methods={"GET", "HEAD", "OPTIONS", "POST"}, block_destructive_actions=False),
+            send_request_hook=lambda req: dispatched.append(req) or ControlledResponse(200, {}, "ok", 2, 0.01),
+            oob_provider=provider,
+        )
+        engine.validation_engine.allow_fixture_port(8080)
+        candidate = XxeCandidate(
+            application="OobApp",
+            endpoint="http://127.0.0.1:8080/api/oob",
+            parameter="xml",
+            category=XxeCategory.BLIND_OOB,
+            approval_status="APPROVED",
+        )
+
+        result, finding = engine.validate_oob_candidate(candidate, force_approved=True)
+        assert finding is None
+        assert result.lifecycle_state == "UNAVAILABLE"
+        assert "No external entity probe was sent" in result.notes
+        assert dispatched == []
+
     def test_collaborator_unconfigured_reports_config_required(self):
         prov = CollaboratorOobProvider(collab_host=None)
         assert prov.registration_status() == OobProviderStatus.CONFIG_REQUIRED

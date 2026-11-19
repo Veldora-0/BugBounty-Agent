@@ -14,7 +14,7 @@ Reconnaissance results are observations, not proof of a vulnerability. A server 
 
 Phase 2 normally reads the in-scope domain and host records produced by Phase 1. It also accepts a specific asset or domain. Provide a valid program scope file before any live probing. If the program’s rules change, update the file before running again. The engine skips candidates that fail the scope check and bounds the number of hosts and requests.
 
-The current engine uses its own modest Python-based probes for DNS, TLS, HTTP, and a small default port list. Although the repository has a tool registry and capability catalog, this runtime does not currently execute tools such as **subfinder**, **httpx**, or **nmap** as part of **bb-recon**. It should therefore be understood as a limited local enrichment engine, not a replacement for a curated reconnaissance workflow. New hostname discovery also depends on Phase 1 inputs or names found in TLS SAN data; it does not perform general wordlist enumeration.
+The current engine uses its own bounded Python-based probes for DNS, TLS, HTTP, and a small default port list. It does not launch **httpx**, **nmap**, or other catalog scanners as part of **bb-recon**. Subfinder has a separate opt-in integration under Phase 1 (`bb-assets --subfinder`); it is not run by **bb-recon**. This phase is a limited local enrichment engine, not a replacement for a curated reconnaissance workflow. New hostname discovery depends on the Phase 1 inventory or names found in TLS SAN data; **bb-recon** does not perform wordlist enumeration.
 
 ## How the phase works
 
@@ -55,7 +55,7 @@ Feed reviewed services into Phase 3 web mapping, Phase 4 JavaScript analysis, an
 
 The request and host budgets do not replace program rate limits. Use passive-only mode if scope is not yet verified. The engine is intentionally read-only and uses bounded requests; do not turn an endpoint inventory into broad fuzzing. The tool registry’s presence should not be confused with a tool being installed or invoked by this phase.
 
-The mismatch between the tool catalog and actual runtime integration is recorded in the **project audit issues**. Tests use hooks and local fixtures, so they check engine behavior but do not prove broad coverage or live-target effectiveness.
+The remaining mismatch between the tool catalog and runtime integration is recorded in the **project audit issues**. Tests use local fixtures and controlled hooks, so they check engine behavior but do not prove broad coverage or live-target effectiveness.
 
 ## Source references
 
