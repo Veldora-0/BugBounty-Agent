@@ -6,7 +6,7 @@ This document captures candidate improvements for completing the roadmap and mak
 
 ### Phase 21 — Trusted authentication/authorization correlation
 
-- Define the supported Windows service-isolation design, or explicitly scope production dispatcher support to Linux until an equivalent boundary is implemented.
+- Windows production dispatcher isolation is explicitly unsupported; keep this boundary visible in deployment status and documentation. Revisit only if Windows production deployment becomes a product requirement.
 - Verify a successful, operator-approved mutation through the installed Linux systemd service using controlled test keys provisioned through a documented privileged setup; retain the existing fail-closed negative tests.
 - Document safe key provisioning, rotation, backup, revocation and service recovery.
 - Keep independent signed-receipt verification, replay protection, and the rule against caller-writable evidence as release gates.
@@ -17,9 +17,7 @@ This document captures candidate improvements for completing the roadmap and mak
 - Calibrate relationship freshness and confidence against real researcher-reviewed fixtures; keep inferred edges separate from observations and validated relationships.
 - Add more complete chain scenarios to local test fixtures, including chains that are disproven because a prerequisite, identity, or scope boundary does not match.
 - Preserve the existing rule that component severities stay distinct and a higher impact is reported only when the extra impact is demonstrated.
-- Complete the supported Windows ACL verification run and document the exact platform/runtime limits for operators.
 - Consider additional graph export formats only where they preserve provenance, scope labels, redaction, and reproducibility.
-- Complete a supported Windows run for ACL-protected state and add a regression proving the CLI loads the canonical program scope path and refuses validation when scope is absent or invalid.
 
 ### Phase 23 — Research planning and coverage intelligence
 
@@ -34,7 +32,7 @@ Core offline coverage planning and `/Arise` metadata reconciliation are implemen
 
 ### Phase 24 follow-on — Release assurance and workspace operations
 
-The Phase 24 beta gates for environment evidence, deploy/update/rollback/uninstall, diagnostics, threat modeling and release documentation are implemented. The following work is optional follow-on hardening before a stable production release:
+Phase 24 has implemented much of its operational hardening, and the current cross-platform CI matrix passed for `b6308e8`. Closure still requires updated installed Linux dispatcher acceptance and explicit handling of the open audit issues. The following items are follow-on work after those gates are evidenced:
 
 - Add automated dependency advisory review and decide whether a reproducible dependency lockfile is appropriate for the supported packaging model.
 - Generate a software bill of materials and sign/tag release artifacts with a documented key custody and verification process.
@@ -44,7 +42,7 @@ The Phase 24 beta gates for environment evidence, deploy/update/rollback/uninsta
 
 ### Phases 1–2 — Complete asset enrichment and clarify recon capabilities
 
-- Add an optional, scope-checked TLS SAN probe and ASN attribution source, with privacy, rate, output, and failure bounds plus local fixtures.
+- Add an optional ASN attribution source with privacy, rate, output, and failure bounds plus local fixtures. Bounded TLS SAN enrichment is already wired into asset discovery; keep its scope checks, IP pinning, SNI and handshake budget covered by fixtures.
 - Decide which external reconnaissance tools the project intends to execute. If enabled, add explicit per-tool configuration, binary verification, argument construction, timeout/output limits, and tests. Until then, describe them only as separately installable/manual tools and do not imply `bb-recon` invokes them.
 
 ## Cross-cutting improvements

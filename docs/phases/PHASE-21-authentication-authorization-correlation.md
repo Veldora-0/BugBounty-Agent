@@ -1,6 +1,6 @@
 # Phase 21 — Authentication & Authorization Correlation
 
-**Status:** Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; live Linux systemd mutation execution unverified due to key provisioning prerequisite)
+**Status:** Partially implemented. The Linux dispatcher can be configured with one trusted program scope and operator key, and fails closed when configuration is absent. The updated service isolation and successful dispatch path are not yet live-verified on Kali; Windows production service isolation is unsupported.
 **Implementation:** framework/auth_correlation/, skills/authentication/, skills/authorization/, scripts/bb-auth-correlate
 
 ## What this phase is for
@@ -21,7 +21,17 @@ Expected outputs are phase-specific observations/hypotheses, state updates, and 
 
 ## The dispatcher trust path
 
-The Linux service runs under a dedicated unprivileged service identity. Its private signing key is isolated from the researcher account; the public verification key is used by the framework to verify receipts. The IPC socket is protected by operating-system ownership and permissions. The service checks the approval, request fields, freshness, nonce/replay state, and scope before accepting a dispatch. The framework then independently verifies the signed receipt before it issues an execution capability or promotes related evidence.
+The Linux service runs under a dedicated unprivileged service identity. Its private receipt-signing key is isolated from the researcher account; the public verification key is used by the framework to verify receipts. The IPC socket is accessible to the agent through `bbgroup`. The operator approval key is stored separately under a service-only `bbdispatcher-keys` group, so joining `bbgroup` for IPC does not grant access to that system copy. The service checks the approval, request fields, freshness, nonce/replay state, and scope before accepting a dispatch. The payload program ID, signed dossier program ID, and program ID configured for the dispatcher must agree. The framework independently verifies the signed receipt before it issues an execution capability or promotes related evidence.
+
+The systemd service is deliberately bound to one program configuration at a time. Install the current unit, then provision the scope and 32-byte approval key as root:
+
+~~~bash
+sudo bash scripts/install-dispatcher.sh
+sudo bash scripts/configure-dispatcher-program.sh <program-id> <scope.yaml> <auth_approval.key>
+scripts/bb-dispatcher --status
+~~~
+
+The provisioning command validates both input files before replacing configuration, installs the scope read-only, stores the HMAC key for the service-only group, and restarts the service. Status reports `production_dispatch_ready` only when a program ID, valid scope engine, and approval key are loaded. A missing or invalid value leaves production dispatch unavailable. Re-run provisioning to switch the service to a different program; do not assume the service holds several program scopes at once. The source approval key must be a regular 32-byte file with private permissions and must be the key used to sign the operator's action dossiers.
 
 This boundary is distinct from application testing. It protects the local control channel; it does not prove that a target has a vulnerability, and it does not grant permission to test a target.
 
@@ -33,14 +43,15 @@ This boundary is distinct from application testing. It protects the local contro
 
 ## What is verified and what remains limited
 
-The Linux dispatcher identity, socket access, protected key/data permissions, pinned public key, and rejection of invalid approval have been checked on Kali. Unit and adversarial tests also cover signed receipt verification, altered or missing receipts, replay, expiry, future timestamps, unauthorized evidence writes, and provenance status. These checks verify the implementation's trust rules; they do not prove application vulnerability detection or live operation in every environment.
+Before the latest configuration hardening, Kali checks verified the Linux dispatcher identity, socket access, signing-key/data permissions, pinned public key, and rejection of invalid approval. Unit and adversarial tests cover signed receipt verification, altered or missing receipts, replay, expiry, future timestamps, unauthorized evidence writes, program binding, and production-readiness status. The updated files add explicit service-only approval-key group checks. On 2026-11-19, the Kali checkout's installed systemd unit did not yet include this new group, no program approval key was provisioned, and noninteractive `sudo` was unavailable. Therefore the revised installed-service permissions and a successful authorized mutation have not been verified live. Repository tests verify the configuration contract; they do not prove that the current host has been upgraded.
 
 ## Remaining work and limitations
-Provenance gates have been resolved via independent Ed25519 execution receipt verification and dynamic capability assessment. Outstanding limitations:
-1. Windows production service isolation remains a documented platform limitation (Named Pipes used for local development/testing; production service isolation under dedicated service account active on Linux).
-2. Live authorized mutation execution through the installed Linux systemd service was NOT RUN because provisioning operator test keys in `/var/lib/bugbounty/keys` requires root/sudo privileges unavailable to the unprivileged test account. Live socket connectivity, STATUS, Ed25519 public key loading, and negative rejection of unapproved mutations were verified against the live service; end-to-end execution was verified in standalone isolated process mode.
+Outstanding limitations:
+1. Windows production service isolation remains unsupported (Named Pipes are used for local development and testing; the production service boundary is Linux systemd).
+2. The updated Linux installation and program provisioning path still needs a privileged host upgrade and live isolation check. Kali's noninteractive `sudo` was unavailable during this audit, and the installed service had not yet been configured with a program scope or approval key.
+3. A successful authorized mutation through the installed systemd service has not been run. Standalone isolated-process tests cover receipt creation and verification, but are not equivalent to the installed service boundary.
 
-Outstanding limits are important. Production service isolation is implemented for Linux; equivalent Windows service isolation is unsupported. On the installed Kali system, the live service's ping/status, public key, and rejection of invalid mutations were verified, but a successful authorized mutation was not run because the operator test-key setup required privileged provisioning. Standalone isolated-process tests cover successful receipt creation and verification. A current full-suite run on Kali is recorded in the [Phase 24 verification record](PHASE-24-final-integration-production-readiness.md#verification-record). See the [issue register](../PROJECT-AUDIT-ISSUES.md) and [roadmap](../ROADMAP-24-PHASES.md). Phase 22's hosted Windows full-suite now passes; this does not provide Windows production dispatcher isolation. Phase acceptance does not imply authorization to test any target.
+These limits remain release gates. Linux production service isolation is implemented in code, but the updated approval-key group and program configuration have not been installed and checked on the current Kali host. Windows production dispatcher isolation remains unsupported. No successful authorized mutation has been run through the installed service. See the [issue register](../PROJECT-AUDIT-ISSUES.md), [Phase 24 verification record](PHASE-24-final-integration-production-readiness.md), and [roadmap](../ROADMAP-24-PHASES.md). Phase acceptance does not imply authorization to test any target.
 
 ## Source references
 Relevant tests: `tests/test_phase21_*.py`, `tests/test_dispatcher*.py`, and the Kali isolation check `tests/verify-dispatcher-isolation.sh`. See the [project handbook](../PROJECT-HANDBOOK.md) and [24-phase roadmap](../ROADMAP-24-PHASES.md).

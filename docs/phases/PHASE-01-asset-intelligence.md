@@ -1,6 +1,6 @@
 # Phase 1 — Asset Intelligence
 
-**Status:** Partially implemented. The graph, scope checks, and optional bounded passive Subfinder integration exist. ASN attribution and TLS SAN extraction remain hook-only.
+**Status:** Partially implemented. The graph, scope checks, optional bounded passive Subfinder integration, and bounded in-scope TLS SAN enrichment are implemented. ASN attribution remains unavailable and is reported as `UNKNOWN`.
 **Implementation:** **framework/assets/**, **framework/scope/**, **scripts/bb-assets**, and the **asset-intelligence skill**
 **State file:** **state/assets.json** in the local program workspace.
 
@@ -22,7 +22,9 @@ The CLI normalizes hostnames, creates root and seed nodes, associates children w
 
 The CLI can optionally invoke Subfinder when `--subfinder` is supplied. Each in-scope root is queried once with Subfinder's passive mode, fixed rate and time limits, and JSON output. Results must be valid descendant hostnames and pass the local scope engine before they enter the graph. Each accepted asset stores the provider source names. Subfinder uses its own local provider configuration; BugBounty-Agent does not transfer values from `secrets.env` into that configuration. The output file is private and removed after parsing.
 
-Other extension points still are not wired into this CLI. Without an ASN provider, attribution is **UNKNOWN**; TLS SAN extraction only works through its hook. **--depth 0** means “do not impose a depth ceiling on discoveries that are supplied,” not “automatically enumerate every subdomain.” Without `--subfinder`, the CLI builds roots and explicit seeds with its built-in DNS enrichment. Even with Subfinder, findings depend on the provider's available sources, credentials, response, and terms; this is not a complete asset inventory.
+TLS SAN extraction is wired into active asset discovery. For an in-scope host, the engine resolves candidate addresses, ignores non-public IP addresses, and connects to a numeric public address while sending the hostname as TLS SNI. Each host is limited to four candidate addresses and a five-second deadline; each discovery engine is limited to 100 TLS handshakes. At most 256 DNS names are read from the certificate. Wildcard names are discarded, and each remaining name must independently pass the scope rules before it can be added. The certificate is treated as public metadata; an untrusted certificate is not proof of endpoint identity. `--passive-only` disables this TLS and DNS enrichment. ASN attribution still has no provider and remains **UNKNOWN**.
+
+**--depth 0** means “do not impose a depth ceiling on discoveries that are supplied,” not “automatically enumerate every subdomain.” Without `--subfinder`, the CLI builds roots and explicit seeds with its built-in DNS enrichment. Even with Subfinder, findings depend on the provider's available sources, credentials, response, and terms; this is not a complete asset inventory.
 
 ## How to use it
 
@@ -58,7 +60,7 @@ A useful result is a reviewed, deduplicated inventory with known provenance and 
 
 The phase must never use an out-of-scope or ambiguous asset for active probing. Keep the budget conservative, do not expand beyond the program’s written scope, and do not infer that a third-party CDN or hosting provider is authorized for direct testing. Passive-only and dry-run modes are useful when you are reviewing configuration or importing existing information.
 
-The remaining ASN and TLS SAN wiring is a material gap tracked in the **project audit issues**. Tests use a fake Subfinder executable/provider output and prove filtering, attribution, and state persistence; they do not contact providers or demonstrate live enumeration coverage. `--passive-only` disables target DNS/TLS activity but does not suppress the provider queries made by `--subfinder`; those queries disclose the root domain to configured third-party data sources. Check current provider terms and the **roadmap** before treating the inventory as complete.
+The remaining ASN attribution gap is tracked in the **project audit issues**. TLS SAN tests use mocked sockets and certificates to exercise SNI, public-IP pinning, in-scope filtering, exclusions, and the discovery-wide handshake budget; they do not contact a target or establish real-world asset coverage. Subfinder tests use a fake executable/provider output and prove filtering, attribution, and state persistence; they do not demonstrate live enumeration coverage. `--passive-only` disables target DNS/TLS activity but does not suppress the provider queries made by `--subfinder`; those queries disclose the root domain to configured third-party data sources. Check current provider terms and the **roadmap** before treating the inventory as complete.
 
 ## Source references
 

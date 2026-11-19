@@ -1,6 +1,6 @@
 # Phase 24 — Final Integration and Production Readiness
 
-**Status:** Implemented and acceptance-verified for the documented beta support boundary. The project remains beta; this phase does not close the capability and live-service limits listed in the audit register or authorize a production release.
+**Status:** In progress. Operational hardening, documentation and current hosted full-suite CI are in place; updated installed Linux dispatcher acceptance is still pending. The project remains beta, and this phase does not authorize a production release or close the capability limits listed in the audit register.
 **Main areas:** `framework/tools/`, `scripts/`, `.github/workflows/`, `docs/`, `tests/`, packaging and release configuration.
 
 ## Purpose
@@ -115,7 +115,7 @@ No live bounty target was contacted. Unit and local integration tests demonstrat
 
 ## Boundaries that remain after Phase 24 acceptance
 
-1. Keep the project beta until open issues `AUD-04`, `AUD-06`, `AUD-07`, `AUD-08`, and `AUD-09` are resolved or deliberately accepted with the relevant capability limits visible to users. These cover live OOB callback confirmation, asset discovery wiring, external reconnaissance tool execution, live dispatcher mutation evidence, and empirical Phase 22 chain validation.
+1. Keep the project beta until open issues `AUD-04`, `AUD-06`, `AUD-07`, `AUD-08`, and `AUD-09` are resolved or deliberately accepted with the relevant capability limits visible to users. These cover live OOB callback confirmation, unavailable ASN attribution, external reconnaissance tool execution, live dispatcher mutation evidence, and empirical Phase 22 chain validation.
 2. Treat macOS as unverified and Windows as development/CI only. The Linux systemd dispatcher is the only production service boundary currently implemented.
 3. Before a stable tagged release, review dependency provenance and decide on a lockfile, automated advisory scanning, an SBOM, and signed release artifacts. The release checklist remains a stop gate.
 4. Run the release checklist again for each release candidate; these results describe commit `9361df3`, not future source changes.
@@ -133,6 +133,19 @@ This section records the audit of the Phase 22 evidence-promotion and scope-enfo
 | GitHub Windows Server 2025, Python 3.14 | `48d1f7e` | `Tests` workflow, `python -m pytest tests/ -ra` | Full-suite job passed, including native Windows path and DACL tests. |
 
 The hosted jobs are recorded in [GitHub Actions run 44494335350](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44494335350). The audit confirmed and fixed two Phase 22 defects: simulation could previously manufacture evidence-shaped data for promotion, and scope authorization could rely on a prose marker while omitting other path assets. The current code emits no simulated evidence, requires a real `ScopeEngine`, binds every path target into the plan hash, and rechecks current scope before authorization and execution. Because no trusted empirical receipt integration exists yet, Phase 22 remains unable to empirically validate or promote links; this is tracked as AUD-09. No bounty target was contacted. These results establish regression behavior on tests and hosted operating systems, not live vulnerability-discovery effectiveness.
+
+## Current code verification at `b6308e8`
+
+The full hosted matrix and Kali full-suite passed for code commit `b6308e8`.
+
+| Environment | Code commit | Command or workflow | Result |
+|---|---|---|---|
+| Kali Linux x86-64, Python 3.14.10 | `b6308e8` | `python3 -m pytest tests/ -ra --durations=10`; focused dispatcher/provider regression selection | Full: **1,329 passed, 2 skipped** in 382.29 seconds. Focused selection: **46 passed** in 2.45 seconds. |
+| GitHub Ubuntu, Python 3.10 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed. |
+| GitHub Ubuntu, Python 3.14 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed. |
+| GitHub Windows Server 2025, Python 3.14 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed, including Windows path and DACL checks. |
+
+The hosted jobs are recorded in [GitHub Actions run 44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317). The focused Kali selection covered dispatcher configuration, Interactsh adapter behavior, Nuclei and Subfinder integration, and Phase 21 security tests. The full test run did not contact a bounty target or prove live OOB reachability. The Kali host is still running the older installed dispatcher unit; its updated service-only approval-key group and a successful approved mutation require privileged installation and verification. Open issue classifications and required next evidence are maintained in the [audit register](../PROJECT-AUDIT-ISSUES.md#current-checkpoint-verification-at-b6308e8-2026-11-19).
 
 ## Starting points
 

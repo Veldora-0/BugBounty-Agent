@@ -2,11 +2,11 @@
 
 This is the canonical status index. Detailed plans, implementation paths, safety boundaries and completion criteria live in [the per-phase guides](phases/) and [project handbook](PROJECT-HANDBOOK.md). Status describes the code and documentation currently present; historic test success does not establish live-target effectiveness.
 
-**Current status:** Phase 24's documented beta acceptance gates are implemented. At code commit `48d1f7e`, the full Kali suite and hosted Ubuntu Python 3.10/3.14 and Windows Python 3.14 CI jobs passed; isolated deployment/rollback evidence remains tied to its earlier recorded commit. See the [Phase 24 guide](phases/PHASE-24-final-integration-production-readiness.md). Phase 22 candidate correlation and planning are implemented, but empirical chain validation remains open. The repository remains beta with the capability and live-service limits listed in the [issue register](PROJECT-AUDIT-ISSUES.md); this does not claim production-ready live bounty coverage.
+**Current status:** Phase 24 closure is in progress. At `b6308e8`, the full Kali suite passed (1,329 passed, 2 skipped, 382.29 seconds) and hosted Ubuntu Python 3.10/3.14 plus Windows Python 3.14 full-suite jobs passed in [GitHub Actions run 44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317). A focused dispatcher/provider selection also passed 46 tests. See the [Phase 24 guide](phases/PHASE-24-final-integration-production-readiness.md). Phase 1 now has bounded TLS SAN enrichment but lacks ASN attribution. Phase 22 candidate correlation and planning are implemented, but empirical chain validation remains open. The project remains beta with the capability and live-service limits listed in the [issue register](PROJECT-AUDIT-ISSUES.md); these results do not establish production-ready live bounty coverage.
 
 | Phase | Name | Current status |
 |---:|---|---|
-| 1 | Asset Intelligence | Partial: opt-in bounded passive Subfinder is wired into `bb-assets`; ASN and TLS SAN enrichment remain hook-only |
+| 1 | Asset Intelligence | Partial: opt-in bounded passive Subfinder and scope-checked TLS SAN enrichment are wired; ASN attribution remains unavailable |
 | 2 | Reconnaissance | Partial: bounded built-in probes work; the external scanner catalog is not invoked by `bb-recon` |
 | 3 | Web Application Intelligence | Implemented; read-only mapping |
 | 4 | JavaScript Intelligence | Implemented; read-only analysis |
@@ -26,10 +26,10 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 18 | SSRF, XXE & Server-Side Parsers | Live Interactsh CLI adapter implemented with fail-closed registration; live service acceptance pending; Burp Collaborator polling unsupported |
 | 19 | Infrastructure & Configuration Exposure | Implemented; read-only and size bounded |
 | 20 | Race Conditions & Distributed Workflows | Implemented with low-volume bounds |
-| 21 | Authentication & Authorization Correlation | Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; live Linux systemd mutation unverified) |
+| 21 | Authentication & Authorization Correlation | Linux production service configured for one program at a time with a service-only approval-key group; updated installed service and successful approved dispatch remain unverified on Kali; Windows production isolation unsupported |
 | 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Candidate graph, correlation, reporting, and approval planning implemented; CLI validation is simulation-only and empirical link promotion remains open (AUD-09) |
 | 23 | Autonomous Research Planning & Coverage Intelligence | Implemented; Linux and hosted Windows full-suite acceptance passed; public-source discovery requires an available read-only research capability |
-| 24 | Final Integration & Production Readiness | Implemented and verified for the documented beta support boundary; project-wide capability and live-service issues remain open |
+| 24 | Final Integration & Production Readiness | In progress: operational hardening and docs are implemented and hosted CI passed at `b6308e8`; updated Linux service acceptance remains pending, with further capability issues tracked separately |
 
 ## Roadmap-wide completion requirements
 
