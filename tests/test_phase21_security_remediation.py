@@ -171,6 +171,48 @@ def test_02_invalid_operator_approval_signature(tmp_path):
     assert resp["error_code"] == "INVALID_OPERATOR_SIGNATURE"
 
 
+@pytest.mark.parametrize(
+    ("envelope_program_id", "dossier_program_id"),
+    [("other_prog", "test_prog"), ("test_prog", "other_prog")],
+)
+def test_dispatcher_binds_payload_dossier_and_configured_program(
+    tmp_path, envelope_program_id, dossier_program_id
+):
+    """A request cannot relabel a signed action under another program identity."""
+    app_key = secrets.token_bytes(32)
+    transport = MockLabTransport()
+    disp = IsolatedExecutionDispatcher(
+        program_id="test_prog",
+        key_dir=str(tmp_path / "keys"),
+        state_dir=str(tmp_path / "state"),
+        evidence_dir=str(tmp_path / "ev"),
+        approval_key=app_key,
+        transport_engine=transport,
+        is_lab=True,
+    )
+    dossier = _make_signed_dossier(app_key, "test_prog", "https://target.local/logout")
+    dossier["program_id"] = dossier_program_id
+    req = {
+        "version": PROTOCOL_VERSION,
+        "request_id": f"REQ-{secrets.token_hex(16).upper()}",
+        "nonce": f"NONCE-{secrets.token_hex(16).upper()}",
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "action": "DISPATCH_MUTATION",
+        "payload": {
+            "program_id": envelope_program_id,
+            "action_id": dossier["action_id"],
+            "action_dossier": dossier,
+            "session_context": {"session_ref": VALID_SESSION_REF, "principal_id": "alice"},
+        },
+    }
+
+    response = disp.handle_request(req)
+
+    assert response["status"] == "REJECTED"
+    assert response["error_code"] == "PROGRAM_BINDING_MISMATCH"
+    assert transport.requests == []
+
+
 # ==============================================================================
 # TEST 3: Missing ScopeEngine
 # ==============================================================================

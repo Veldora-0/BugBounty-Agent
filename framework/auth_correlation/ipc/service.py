@@ -618,6 +618,28 @@ class IsolatedExecutionDispatcher:
                 dossier = payload["action_dossier"]
                 sess_ctx = payload["session_context"]
 
+                # A system dispatcher is bound to one configured program.  Bind
+                # the IPC envelope, signed dossier, and service identity before
+                # considering approval or scope so evidence cannot be relabelled
+                # under a different program by the caller.
+                dossier_program_id = dossier.get("program_id") if isinstance(dossier, dict) else None
+                if (
+                    not isinstance(prog_id, str)
+                    or not prog_id
+                    or prog_id != self.program_id
+                    or dossier_program_id != prog_id
+                ):
+                    return {
+                        "version": PROTOCOL_VERSION,
+                        "request_id": req_id,
+                        "response_nonce": resp_nonce,
+                        "timestamp": now_iso,
+                        "status": "REJECTED",
+                        "error_code": "PROGRAM_BINDING_MISMATCH",
+                        "error_message": "IPC program, signed dossier, and configured dispatcher program must match",
+                        "receipt": None,
+                    }
+
                 # 0. Request Nonce Replay Check
                 if self._is_nonce_consumed(nonce):
                     return {
