@@ -380,7 +380,9 @@ class EvidenceStore:
                                 continue
 
                             # Recompute request and response SHA-256 digests
-                            with open(capture_path, "r", encoding="utf-8", errors="replace") as cf_text:
+                            # HTTP captures commonly contain CRLF. Preserve
+                            # those bytes while recomputing the component hashes.
+                            with open(capture_path, "r", encoding="utf-8", errors="replace", newline="") as cf_text:
                                 combined_content = cf_text.read()
                             parts = combined_content.split("\n\n--- RESPONSE ---\n", 1)
                             if len(parts) == 2 and parts[0].startswith("--- REQUEST ---\n"):
@@ -435,7 +437,9 @@ class EvidenceStore:
             return False, "EvidenceStore capture is missing, altered, or has a mismatched digest"
         capture_path = descriptor.get("capture_path")
         try:
-            with open(capture_path, "r", encoding="utf-8", errors="replace") as stream:
+            # Keep wire-format line endings intact so a valid CRLF response is
+            # compared against the same content that was originally captured.
+            with open(capture_path, "r", encoding="utf-8", errors="replace", newline="") as stream:
                 capture_text = stream.read()
         except (OSError, TypeError):
             return False, "EvidenceStore capture could not be read"
