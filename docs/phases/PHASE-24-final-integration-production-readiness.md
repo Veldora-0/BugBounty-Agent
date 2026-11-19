@@ -1,6 +1,6 @@
 # Phase 24 — Final Integration and Production Readiness
 
-**Status:** In progress. Operational hardening, documentation and current hosted full-suite CI are in place; updated installed Linux dispatcher acceptance is still pending. The project remains beta, and this phase does not authorize a production release or close the capability limits listed in the audit register.
+**Status:** In progress. Operational hardening, documentation and historical hosted full-suite CI evidence are in place; the current automated workflow targets Linux only. The two native Windows-only cases, one Windows service-status test, and the Windows CI matrix entry have been removed. Linux-run mocked DACL failure cases remain. These latest test/documentation edits have not been rerun, as requested. Updated installed Linux dispatcher acceptance is still pending. The project remains beta, and this phase does not authorize a production release or close the capability limits listed in the audit register.
 **Main areas:** `framework/tools/`, `scripts/`, `.github/workflows/`, `docs/`, `tests/`, packaging and release configuration.
 
 ## Purpose
@@ -9,7 +9,7 @@ Phases 1–23 add capabilities for an authorized researcher: scope validation, a
 
 Production readiness here is an operational standard, not a promise that the agent finds every vulnerability. A ready release must say which environments have evidence, identify unsupported behavior, preserve the researcher's data, fail closed when configuration is unsafe, and provide repeatable test results tied to a commit. No repository test proves the agent's effectiveness against a bounty target.
 
-The primary environment is Kali Linux. Windows is useful for development and CLI checks but does not provide the Linux dispatcher service boundary. macOS and other Linux distributions are not assumed supported without test evidence. See [Supported Environments](../supported-environments.md).
+The primary environment is Kali Linux. Windows may be used for editing, but it is not a current test target and does not provide the Linux dispatcher service boundary. macOS and other Linux distributions are not assumed supported without test evidence. See [Supported Environments](../supported-environments.md).
 
 ## How Phase 24 fits the research workflow
 
@@ -30,7 +30,7 @@ The project declares Python 3.10 or later, but that declaration is not proof tha
 
 The installation guide identifies PyYAML and `cryptography` as required runtime packages. Playwright belongs to an optional package extra, and its browser binary is a separate runtime requirement. Go, Git, Docker, `jq`, and external security tools are optional host tools rather than required Python dependencies.
 
-The new GitHub Actions workflow runs the repository test suite on Ubuntu with Python 3.10 and 3.14 and on Windows with Python 3.14. These are configured verification jobs, not evidence until they have completed successfully for the commit under review. Kali Linux remains a separate required local acceptance environment because GitHub's Ubuntu runner is not Kali.
+The current GitHub Actions workflow runs the repository test suite on Ubuntu with Python 3.10 and 3.14. Earlier Windows jobs are historical and are not part of current platform support. Kali Linux remains a separate required local acceptance environment because GitHub's Ubuntu runner is not Kali.
 
 ### 2. Safe global deployment and configuration lifecycle
 
@@ -71,7 +71,7 @@ Before running a target-facing workflow, use `bb-doctor`, inspect the active pro
 
 ### 6. Security review and release evidence
 
-The versioned [Threat Model](../THREAT-MODEL.md) identifies protected data, trust boundaries, likely failure modes, expected controls, and gaps that remain. The [Release Checklist](../release-checklist.md) defines a stop gate for versioning, dependency review, Linux/Kali and Windows test evidence, deployment lifecycle tests, dispatcher verification, and release notes.
+The versioned [Threat Model](../THREAT-MODEL.md) identifies protected data, trust boundaries, likely failure modes, expected controls, and gaps that remain. The [Release Checklist](../release-checklist.md) defines a stop gate for versioning, dependency review, Linux/Kali test evidence, deployment lifecycle tests, dispatcher verification, and release notes.
 
 The workflow grants only `contents: read` and pins its GitHub-maintained actions to full commit identifiers. This reduces mutable action-reference risk; it does not replace dependency review or a complete software supply-chain audit. No dependency vulnerability scanner or signed release artifact is established by this phase yet.
 
@@ -116,7 +116,7 @@ No live bounty target was contacted. Unit and local integration tests demonstrat
 ## Boundaries that remain after Phase 24 acceptance
 
 1. Keep the project beta until open issues `AUD-04`, `AUD-06`, `AUD-07`, `AUD-08`, and `AUD-09` are resolved or deliberately accepted with the relevant capability limits visible to users. These cover live OOB callback confirmation, unavailable ASN attribution, external reconnaissance tool execution, live dispatcher mutation evidence, and empirical Phase 22 chain validation.
-2. Treat macOS as unverified and Windows as development/CI only. The Linux systemd dispatcher is the only production service boundary currently implemented.
+2. Treat macOS as unverified and Windows as development only. The current automated test matrix is Linux-only; the Linux systemd dispatcher is the only production service boundary currently implemented.
 3. Before a stable tagged release, review dependency provenance and decide on a lockfile, automated advisory scanning, an SBOM, and signed release artifacts. The release checklist remains a stop gate.
 4. Run the release checklist again for each release candidate; these results describe commit `9361df3`, not future source changes.
 
@@ -134,9 +134,9 @@ This section records the audit of the Phase 22 evidence-promotion and scope-enfo
 
 The hosted jobs are recorded in [GitHub Actions run 44494335350](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44494335350). The audit confirmed and fixed two Phase 22 defects: simulation could previously manufacture evidence-shaped data for promotion, and scope authorization could rely on a prose marker while omitting other path assets. The current code emits no simulated evidence, requires a real `ScopeEngine`, binds every path target into the plan hash, and rechecks current scope before authorization and execution. Because no trusted empirical receipt integration exists yet, Phase 22 remains unable to empirically validate or promote links; this is tracked as AUD-09. No bounty target was contacted. These results establish regression behavior on tests and hosted operating systems, not live vulnerability-discovery effectiveness.
 
-## Current code verification at `b6308e8` (2026-11-20)
+## Historical code verification at `b6308e8` (2026-11-20)
 
-The full hosted matrix and Kali full-suite passed for code commit `b6308e8`.
+The full hosted matrix and Kali full-suite passed for code commit `b6308e8`, before the Windows-only test cases and Windows CI entry were removed. These results remain historical; they do not verify the current Linux-only test-policy edits, which have not been rerun.
 
 | Environment | Code commit | Command or workflow | Result |
 |---|---|---|---|
@@ -145,7 +145,7 @@ The full hosted matrix and Kali full-suite passed for code commit `b6308e8`.
 | GitHub Ubuntu, Python 3.14 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed. |
 | GitHub Windows Server 2025, Python 3.14 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed, including Windows path and DACL checks. |
 
-The hosted jobs are recorded in [GitHub Actions run 44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317). The focused Kali selection covered dispatcher configuration, Interactsh adapter behavior, Nuclei and Subfinder integration, and Phase 21 security tests. The full test run did not contact a bounty target or prove live OOB reachability. The Kali host is still running the older installed dispatcher unit; its updated service-only approval-key group and a successful approved mutation require privileged installation and verification. Open issue classifications and required next evidence are maintained in the [audit register](../PROJECT-AUDIT-ISSUES.md#current-checkpoint-verification-at-b6308e8-2026-11-20).
+The hosted jobs are recorded in [GitHub Actions run 44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317). The focused Kali selection covered dispatcher configuration, Interactsh adapter behavior, Nuclei and Subfinder integration, and Phase 21 security tests. The full test run did not contact a bounty target or prove live OOB reachability. The Kali host is still running the older installed dispatcher unit; its updated service-only approval-key group and a successful approved mutation require privileged installation and verification. Open issue classifications and required next evidence are maintained in the [audit register](../PROJECT-AUDIT-ISSUES.md#historical-checkpoint-verification-at-b6308e8-2026-11-20).
 
 ## Starting points
 

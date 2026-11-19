@@ -14,7 +14,7 @@ Use this checklist before tagging or distributing a release. It is a stop gate: 
 
 - [ ] Run `python3 -m pytest tests/ -ra` on Kali/Linux from the repository root.
 - [ ] Record commit, OS/release, architecture, Python version, install extras, command, duration, pass/skip/fail counts, and relevant skip reasons.
-- [ ] Run the required GitHub Actions jobs for Linux Python 3.10/3.14 and Windows Python 3.14; link the exact run and commit.
+- [ ] Run the required GitHub Actions jobs for Linux Python 3.10/3.14; link the exact run and commit.
 - [ ] Run browser-specific checks only with the optional browser extra and required browser binary installed; identify skips separately.
 - [ ] Run `bb-doctor --json`; confirm required Python packages, optional tools, engines, and OpenCode deployment are described accurately.
 - [ ] Exercise deployment in isolated temporary config and bin directories, including copy mode, idempotence, collision refusal, modified-file preservation, JSONC errors, config restoration, and uninstall.
@@ -37,7 +37,6 @@ Create a short record in the release notes with:
 Release/version:
 Commit:
 Kali/Linux result:
-Windows result:
 Browser result:
 Dispatcher live-service result:
 Known limitations:

@@ -8,7 +8,7 @@ Validates acceptance criteria AC-22.4-01 through AC-22.4-25:
 - Anti-inflation invariant: finding and path severities are never inflated.
 - Concurrency, race conditions, atomic persistence, and corrupted state recovery.
 - Full end-to-end integration across the entire Phase 22 subsystem.
-- Cross-platform determinism across Windows 11 and Kali Linux.
+- Linux/Kali CLI, reporting, and state behavior.
 """
 
 from __future__ import annotations

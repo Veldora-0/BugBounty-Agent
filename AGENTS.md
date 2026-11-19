@@ -122,6 +122,12 @@ flowchart TD
 
 ---
 
+## Test Platform Policy
+
+Kali Linux and Linux are the supported test platforms for this repository. Keep the automated test workflow on Linux. Do not add Windows-only tests, tests that assert Windows runtime/API behavior, Windows-specific CI jobs, or acceptance requirements that depend on Windows. Existing Linux-hosted mocked failure cases may remain as regression checks, but do not expand them into Windows-specific assertions. Existing Windows test results are historical evidence only and do not define current support. Keep platform-neutral security inputs (for example, a Windows-style traversal string) when they test parsing or validation behavior on Linux.
+
+---
+
 ## Autonomous Engineering Agent Directive
 
 Act as an autonomous AI engineering agent.

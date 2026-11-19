@@ -31,7 +31,7 @@ This register lists only material unresolved project problems. When an issue is 
 ### AUD-08 — Phase 21 production acceptance remains platform-limited
 
 - **Severity:** Medium; affects deployment support and confidence in the installed dispatcher path.
-- **Evidence:** Earlier Kali checks verified the installed dispatcher identity, socket access, status/ping, and invalid-approval rejection. New code separates the operator HMAC key into a service-only `bbdispatcher-keys` group, but the currently inspected Kali systemd unit has not yet been upgraded to that configuration and no program approval key is provisioned there. A successful operator-approved mutation through the installed service has not been run. Windows production service isolation is unsupported; Windows tests cover state permissions and development IPC, not a dedicated production service.
+- **Evidence:** Earlier Kali checks verified the installed dispatcher identity, socket access, status/ping, and invalid-approval rejection. New code separates the operator HMAC key into a service-only `bbdispatcher-keys` group, but the currently inspected Kali systemd unit has not yet been upgraded to that configuration and no program approval key is provisioned there. A successful operator-approved mutation through the installed service has not been run. Windows production service isolation is unsupported; historical Windows tests covered state permissions and development IPC, not a dedicated production service.
 - **Impact:** The installed Linux service's successful authorized dispatch path lacks direct live-service acceptance evidence, and the Windows deployment boundary differs from Linux.
 - **Remediation:** Upgrade the Kali unit and run a controlled, reversible Linux integration test using a dedicated test program/action and provisioned test keys. Treat Windows production dispatcher service isolation as unsupported unless a separate design and acceptance effort is approved; keep readiness status explicit.
 - **Acceptance gate:** A supported-platform matrix includes successful and rejected dispatch through the actual service boundary, proves receipt/evidence binding and replay rejection, and records platform-specific unsupported behavior without overstating parity.
@@ -54,14 +54,14 @@ This register records repository review and current audit-run evidence, not a li
 
 ## Pre-fix baseline at `f8466bd`
 
-- **Kali Linux, Python 3.14.10:** `python3 -m pytest tests/ -ra` — **1,245 passed, 1 skipped** in 576.12 seconds. The skipped test is the Windows-only DACL test (`tests/test_phase21_state.py:370`). This was run before the current working-tree changes; it is not final verification of those changes.
+- **Kali Linux, Python 3.14.10:** `python3 -m pytest tests/ -ra` — **1,245 passed, 1 skipped** in 576.12 seconds. The skipped test at that historical revision was a Windows-only DACL case. This was run before the current working-tree changes; it is not final verification of those changes.
 - **Windows:** No full-suite result was obtained for this audit. The prior Phase 22 Windows ACL subprocess issue remains unresolved; do not treat Kali results as Windows evidence.
 - **Live-target testing:** None. No bounty target was contacted. Unit and integration results are not proof of live vulnerability-discovery effectiveness.
 - This baseline is retained for comparison only. It is superseded by the post-fix verification below.
 
 ## Post-fix verification at `c1a791f` (2026-11-18)
 
-- **Kali Linux, Python 3.14.10:** `python3 -m pytest tests/ -ra` — **1,264 passed, 1 skipped** in 147.79 seconds. The single skip is the Windows-only DACL test (`tests/test_phase21_state.py:370`).
+- **Kali Linux, Python 3.14.10:** `python3 -m pytest tests/ -ra` — **1,264 passed, 1 skipped** in 147.79 seconds. The single skip at that historical revision was a Windows-only DACL case.
 - **Focused regressions:** 72 passed in 3.33 seconds across content discovery, Phase 22 CLI scope/reporting, Stage C remediations and the earlier CLI working-directory failure.
 - **Windows:** No test result is claimed. The Python launcher could not start in this Windows workspace; Phase 22 Windows ACL subprocess verification remains open.
 - **Live-target testing:** None. No bounty target was contacted. Test results validate local code and fixtures only.
@@ -80,13 +80,15 @@ This register records repository review and current audit-run evidence, not a li
 - **Starting point:** Clean `main` at `99e2b61f2dd7bff9d2af1f996b8b339e809bafaa`. Findings were reproduced before changes. The source remediation is commit `48d1f7e1eafe5c51724558188b91ca6a56137524`.
 - **Confirmed findings fixed:** Phase 22 simulation previously fabricated evidence-shaped values and could promote simulated graph state; dispatch authorization could also fall back to a prose `IN_SCOPE` marker and did not bind every path target. The fix removes fabricated simulation evidence, prevents simulated or unbound caller-created results from promotion, requires a real `ScopeEngine`, binds all path assets/URLs into the plan hash, and rechecks scope at authorization and immediately before execution.
 - **Focused Phase 22 and scope suite, Kali Linux x86-64 / Python 3.14.10:** `python3 -m pytest tests/test_phase22_*.py tests/test_scope_fail_closed_validation.py -ra` — **125 passed** in 36.62 seconds.
-- **Neighbor-phase regressions:** `python3 -m pytest tests/test_authz_engine.py tests/test_authentication_engine.py tests/test_ssrf_engine.py tests/test_phase18_*.py tests/test_phase21_*.py tests/test_phase23_research_planning.py tests/test_deploy.py tests/test_installer.py tests/test_installer_security.py -ra` — **423 passed, 2 skipped** in 163.21 seconds. The skipped tests are Windows path-canonicalization and DACL checks, which run on hosted Windows.
+- **Neighbor-phase regressions:** `python3 -m pytest tests/test_authz_engine.py tests/test_authentication_engine.py tests/test_ssrf_engine.py tests/test_phase18_*.py tests/test_phase21_*.py tests/test_phase23_research_planning.py tests/test_deploy.py tests/test_installer.py tests/test_installer_security.py -ra` — **423 passed, 2 skipped** in 163.21 seconds. The skipped tests at that historical revision were Windows path-canonicalization and DACL checks, which ran on hosted Windows.
 - **Complete Kali suite:** `python3 -m pytest tests/ -ra --durations=10` — **1,277 passed, 2 skipped** in 393.52 seconds, across **72 test modules and 1,279 collected tests**. The two skips are Windows path-canonicalization and DACL checks.
 - **Hosted platforms:** Ubuntu Python 3.10, Ubuntu Python 3.14, and Windows Server 2025 Python 3.14 full-suite jobs passed for code commit `48d1f7e` in [GitHub Actions run 44494335350](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44494335350).
 - **Issue status:** The two confirmed Phase 22 bypasses were fixed and regression-tested. AUD-04, AUD-06, AUD-07, and AUD-08 remain open. AUD-09 records the intentional current limitation: Phase 22 has no trusted empirical receipt integration, so its validation CLI remains simulation-only and cannot promote a chain.
 - **Live-target testing:** None. No bounty target was contacted. Results are local code, fixture, and hosted-OS evidence, not proof of live vulnerability discovery effectiveness.
 
-## Current checkpoint verification at `b6308e8` (2026-11-20)
+## Historical checkpoint verification at `b6308e8` (2026-11-20)
+
+The results below predate the current Linux-only test-policy edits. The two native Windows-only cases and Windows CI job have since been removed, along with the Windows service-status test. No tests were rerun for those removals at the user's request.
 
 ### Closure classification
 
@@ -99,8 +101,8 @@ This register records repository review and current audit-run evidence, not a li
 | AUD-09 | Phase 22 blocker for empirical vulnerability chaining | Candidate path correlation and reviewable plans work, but `bb-chain validate` is simulation-only and cannot promote empirical links. | Integrate trusted, single-use Phase 21 receipts with disk-backed evidence bound to the approved plan, target, scope and each edge; add adversarial receipt/evidence tests. |
 
 - **Kali focused regressions:** `python3 -m pytest tests/test_dispatcher_config.py tests/test_interactsh_live_adapter.py tests/test_nuclei_integration.py tests/test_subfinder_integration.py tests/test_phase21_security.py -ra` — **46 passed** in 2.45 seconds.
-- **Kali full suite at the current checkpoint:** `python3 -m pytest tests/ -ra --durations=10` — **1,329 passed, 2 skipped** in 382.29 seconds at `b6308e8`. The skips are Windows path-canonicalization and Windows DACL checks; hosted Windows CI passed those on this same code commit.
-- **Hosted platforms:** GitHub Actions run [44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317) passed the full Ubuntu Python 3.10/3.14 and Windows Python 3.14 matrix for `b6308e8`.
+- **Kali full suite at historical checkpoint:** `python3 -m pytest tests/ -ra --durations=10` — **1,329 passed, 2 skipped** in 382.29 seconds at `b6308e8`. The skips were Windows path-canonicalization and Windows DACL checks; hosted Windows CI passed those on this same code commit.
+- **Hosted platforms at historical checkpoint:** GitHub Actions run [44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317) passed the full Ubuntu Python 3.10/3.14 and Windows Python 3.14 matrix for `b6308e8`.
 - **Latest Kali installed-host check (2026-11-20):** The checkout is clean on `main` at documentation commit `6e000ce`, with code unchanged from `b6308e8`. The dispatcher service is active, but `SupplementaryGroups` is empty, the agent is not in `bbdispatcher-keys`, the operator approval key is not readable/provisioned, and `sudo -n` requires a password. The updated service has not been installed.
 - **Remaining issues:** AUD-04 is externally dependent on live OOB provider reachability; AUD-06 is limited to ASN attribution; AUD-07 is an explicit product integration boundary; AUD-08 still lacks upgraded-host and successful installed-service acceptance evidence; AUD-09 lacks trusted empirical evidence promotion. None is resolved by this focused test selection.
 - **Live-target testing:** None. These tests used fixtures and did not contact a bounty target.

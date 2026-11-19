@@ -13,7 +13,6 @@ Verifies:
 
 import json
 import os
-import stat
 import pytest
 
 from framework.auth_correlation.model import (
@@ -202,20 +201,6 @@ def test_state_dir_security_and_workspace_confinement(tmp_path):
     assert os.path.exists(prepared)
 
 
-def test_windows_workspace_confinement_handles_path_canonicalization(tmp_path):
-    """Windows canonical paths may differ from lexical paths returned by tempfile."""
-    if os.name != "nt":
-        pytest.skip("Windows path canonicalization regression")
-
-    workspace = tmp_path / "Workspace"
-    workspace.mkdir()
-    case_variant = str(workspace).swapcase()
-
-    prepared = _verify_and_prepare_state_dir(case_variant, str(workspace))
-
-    assert os.path.normcase(prepared) == os.path.normcase(str(workspace))
-
-
 def test_atomic_persistence_save_and_descriptor_load(tmp_path):
     """Verifies save_state() atomic replacement and descriptor-based load_state() checks."""
     workspace = tmp_path / "workspace"
@@ -320,35 +305,15 @@ def test_hmac_fingerprinting_and_quarantine(tmp_path):
     assert len(corrupted_files) == 1
 
 
-def test_state_directory_security_native_platform_enforcement(tmp_path):
-    """Verifies native platform DACL (Windows) and POSIX permission enforcement for state directories."""
+def test_state_directory_security_posix_permission_enforcement(tmp_path):
+    """Verifies POSIX state-directory permissions reject group/world writable access."""
     workspace = tmp_path / "ws_sec"
     workspace.mkdir()
     state_dir = workspace / "sec_state"
-
-    if os.name == "nt":
-        import subprocess
-        from framework.auth_correlation.state import (
-            _enforce_windows_directory_dacl,
-            _verify_windows_directory_security,
-        )
-
-        state_dir.mkdir()
-        # Enforce protected DACL
-        _enforce_windows_directory_dacl(str(state_dir))
-        # Verification passes on protected DACL
-        _verify_windows_directory_security(str(state_dir))
-
-        # Grant unsafe write permission to Everyone
-        subprocess.run(["icacls", str(state_dir), "/grant", "Everyone:(OI)(CI)W"], capture_output=True)
-        with pytest.raises(SerializationSecurityError, match="grants unsafe write access"):
-            _verify_windows_directory_security(str(state_dir))
-    else:
-        # On POSIX: verify group- or world-writable directory rejection
-        state_dir.mkdir(mode=0o777)
-        os.chmod(str(state_dir), 0o777)
-        with pytest.raises(SerializationSecurityError, match="must not be group- or world-writable"):
-            _verify_and_prepare_state_dir(str(state_dir), str(workspace))
+    state_dir.mkdir(mode=0o777)
+    os.chmod(str(state_dir), 0o777)
+    with pytest.raises(SerializationSecurityError, match="must not be group- or world-writable"):
+        _verify_and_prepare_state_dir(str(state_dir), str(workspace))
 
 
 def test_external_hmac_key_security_enforcement(tmp_path):
@@ -376,52 +341,6 @@ def test_external_hmac_key_security_enforcement(tmp_path):
         )
         with pytest.raises(KeySecurityError, match="Key file permissions are not private"):
             mgr_fail.get_or_create_hmac_key()
-
-
-def test_windows_dacl_inheritance_and_unexpected_ace_rejection(tmp_path):
-    """Verifies that Windows DACL fails closed on inheritance or unexpected ACEs."""
-    if os.name != "nt":
-        pytest.skip("Windows-only DACL enforcement test")
-
-    import subprocess
-    from framework.auth_correlation.state import (
-        _enforce_windows_directory_dacl,
-        _verify_windows_directory_security,
-        _enforce_windows_file_dacl,
-        _verify_windows_file_security,
-    )
-
-    test_dir = tmp_path / "dacl_test_dir"
-    test_dir.mkdir()
-    _enforce_windows_directory_dacl(str(test_dir))
-    _verify_windows_directory_security(str(test_dir))
-
-    # Enable inheritance: must fail closed
-    subprocess.run(["icacls", str(test_dir), "/inheritance:e"], capture_output=True)
-    with pytest.raises(SerializationSecurityError, match="inheritance enabled"):
-        _verify_windows_directory_security(str(test_dir))
-
-    # Unprivileged public principal (e.g. Guests SID S-1-5-32-546) on fresh dir
-    unprivileged_dir = tmp_path / "unprivileged_dir"
-    unprivileged_dir.mkdir()
-    _enforce_windows_directory_dacl(str(unprivileged_dir))
-    subprocess.run(["icacls", str(unprivileged_dir), "/grant", "*S-1-5-32-546:(OI)(CI)R"], capture_output=True)
-    with pytest.raises(SerializationSecurityError, match="grants unsafe write access to unprivileged or public principals"):
-        _verify_windows_directory_security(str(unprivileged_dir))
-
-    # Unexpected third-party / service SID on fresh dir (e.g. LOCAL SERVICE S-1-5-19)
-    unexpected_dir = tmp_path / "unexpected_dir"
-    unexpected_dir.mkdir()
-    _enforce_windows_directory_dacl(str(unexpected_dir))
-    subprocess.run(["icacls", str(unexpected_dir), "/grant", "*S-1-5-19:(OI)(CI)R"], capture_output=True)
-    with pytest.raises(SerializationSecurityError, match="unexpected access to unapproved principal"):
-        _verify_windows_directory_security(str(unexpected_dir))
-
-    # Test file DACL enforcement and verification
-    test_file = test_dir / "secure_sample.key"
-    test_file.write_bytes(b"A" * 32)
-    _enforce_windows_file_dacl(str(test_file))
-    _verify_windows_file_security(str(test_file))
 
 
 def test_posix_key_hardlink_and_symlink_rejection(tmp_path):

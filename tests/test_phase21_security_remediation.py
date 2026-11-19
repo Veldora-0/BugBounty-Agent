@@ -1,7 +1,7 @@
 """
 Focused Security Remediation and Acceptance Tests for Phase 21.
 
-Covers the 20 mandatory acceptance blocker requirements:
+Covers the 19 Linux acceptance requirements:
 1. Missing operator approval key.
 2. Invalid operator approval signature.
 3. Missing ScopeEngine.
@@ -20,8 +20,7 @@ Covers the 20 mandatory acceptance blocker requirements:
 16. Agent cannot replace the IPC socket (directory permissions).
 17. Dispatcher unavailable: no mutation occurs.
 18. Approval replay: no second mutation occurs.
-19. Windows service isolation status (explicitly NOT IMPLEMENTED / documented limitation).
-20. Linux systemd service configuration (_bbdispatcher identity and permissions).
+19. Linux systemd service configuration (_bbdispatcher identity and permissions).
 """
 
 from datetime import datetime, timezone
@@ -783,40 +782,9 @@ def test_18_approval_replay_no_second_mutation_occurs(tmp_path, request):
 
 
 # ==============================================================================
-# TEST 19: Windows Service Isolation Status
+# TEST 19: Linux Systemd Service Configuration
 # ==============================================================================
-def test_19_windows_service_isolation_status(tmp_path):
-    """Windows platform limitation must be explicitly recorded and queried."""
-    disp = IsolatedExecutionDispatcher(
-        program_id="test_prog",
-        key_dir=str(tmp_path / "keys"),
-        state_dir=str(tmp_path / "state"),
-        evidence_dir=str(tmp_path / "ev"),
-        is_lab=True,
-    )
-    req = {
-        "version": PROTOCOL_VERSION,
-        "request_id": f"REQ-{secrets.token_hex(16).upper()}",
-        "nonce": f"NONCE-{secrets.token_hex(16).upper()}",
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "action": "STATUS",
-        "payload": {},
-    }
-    resp = disp.handle_request(req)
-    assert resp["status"] == "SUCCESS"
-    receipt = resp["receipt"]
-    if os.name == "nt":
-        assert receipt["production_isolation_supported"] is False
-        assert "NOT IMPLEMENTED" in receipt["platform_limitation"]
-    else:
-        assert receipt["production_isolation_supported"] is True
-        assert receipt["platform_limitation"] is None
-
-
-# ==============================================================================
-# TEST 20: Linux Systemd Service Configuration
-# ==============================================================================
-def test_20_linux_systemd_service_configuration():
+def test_19_linux_systemd_service_configuration():
     """Systemd service unit must configure unprivileged user and restrictive permissions."""
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     service_file = os.path.join(repo_root, "systemd", "bugbounty-dispatcher.service")
@@ -835,7 +803,7 @@ def test_20_linux_systemd_service_configuration():
     assert "ProtectSystem=strict" in content
 
 
-def test_21_dispatcher_approval_key_group_is_service_only():
+def test_20_dispatcher_approval_key_group_is_service_only():
     """The agent IPC group must not also grant access to the dispatcher HMAC key."""
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     installer = os.path.join(repo_root, "scripts", "install-dispatcher.sh")

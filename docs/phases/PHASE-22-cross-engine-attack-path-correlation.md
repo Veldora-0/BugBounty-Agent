@@ -160,7 +160,7 @@ Milestone 22.4 delivers the final operational CLI commands, reporting engine, an
     - **Zero-Secret Compliance**: Validated with `assert_no_raw_secrets` before output or write.
 - **Milestone 22.4 Acceptance Test Suite (`tests/test_phase22_cli_reporting.py`)**:
   - 25 comprehensive unit, adversarial, concurrency, and integration tests validating criteria AC-22.4-01 through AC-22.4-25 with 100% pass rate.
-  - **Current regression evidence**: the Phase 22 and scope fail-closed suites passed **125 tests** on Kali Linux at code commit `48d1f7e`. The full Kali suite passed 1,277 tests with two Windows-only skips; hosted Ubuntu Python 3.10/3.14 and Windows Server 2025 Python 3.14 full-suite jobs passed in [GitHub Actions run 44494335350](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44494335350). Exact commands and results are in the [Phase 24 verification record](PHASE-24-final-integration-production-readiness.md#post-audit-regression-verification).
+  - **Historical regression evidence**: the Phase 22 and scope fail-closed suites passed **125 tests** on Kali Linux at code commit `48d1f7e`. The full Kali suite passed 1,277 tests with two Windows-only skips; hosted Ubuntu Python 3.10/3.14 and Windows Server 2025 Python 3.14 full-suite jobs passed in [GitHub Actions run 44494335350](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44494335350). These are historical results; the current CI matrix targets Linux. Exact commands and results are in the [Phase 24 verification record](PHASE-24-final-integration-production-readiness.md#post-audit-regression-verification).
 
 ---
 
@@ -210,7 +210,7 @@ Candidate correlation, bounded traversal, graph reporting, plan creation, human 
 
 The two reproduced audit defects are fixed: Phase 22 no longer manufactures evidence-shaped values from simulation, and dispatch requires a real scope engine that checks every path-bound target at authorization and again before execution. However, the current `validate` command is a deterministic simulation only. No target request is sent, no evidence is created, and no graph relationship is promoted. A trusted Phase 21 receipt plus verified disk evidence is not yet integrated; empirical chain validation remains open under AUD-09. Older saved plans without bound `scope_targets` cannot be dispatched and must be regenerated and approved.
 
-Hosted Windows testing covers repository behavior but does not mean Windows production dispatcher isolation is supported; that remains unsupported under Phase 21. The CLI refuses dispatch when scope is missing or invalid. Remaining system limits are tracked in [Future Improvements](../FUTURE-IMPROVEMENTS.md) and the [issue register](../PROJECT-AUDIT-ISSUES.md).
+Historical hosted Windows testing covered repository behavior but does not mean Windows production dispatcher isolation is supported; that remains unsupported under Phase 21. Windows is no longer a current automated test target. The CLI refuses dispatch when scope is missing or invalid. Remaining system limits are tracked in [Future Improvements](../FUTURE-IMPROVEMENTS.md) and the [issue register](../PROJECT-AUDIT-ISSUES.md).
 
 ## Source references
 

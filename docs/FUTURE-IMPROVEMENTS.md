@@ -32,7 +32,7 @@ Core offline coverage planning and `/Arise` metadata reconciliation are implemen
 
 ### Phase 24 follow-on — Release assurance and workspace operations
 
-Phase 24 has implemented much of its operational hardening, and the current cross-platform CI matrix passed for `b6308e8`. Closure still requires updated installed Linux dispatcher acceptance and explicit handling of the open audit issues. The following items are follow-on work after those gates are evidenced:
+Phase 24 has implemented much of its operational hardening. Historical Linux and Windows CI jobs passed for `b6308e8`; the current CI matrix targets Linux only. Closure still requires updated installed Linux dispatcher acceptance and explicit handling of the open audit issues. The following items are follow-on work after those gates are evidenced:
 
 - Add automated dependency advisory review and decide whether a reproducible dependency lockfile is appropriate for the supported packaging model.
 - Generate a software bill of materials and sign/tag release artifacts with a documented key custody and verification process.
