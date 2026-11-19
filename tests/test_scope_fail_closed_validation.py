@@ -442,10 +442,11 @@ def test_real_observations_progress_to_validated_and_report_ready(tmp_path):
         scope_reference="scope.yaml: authorized.example.com",
         confidence="HIGH",
         lifecycle_state=FindingLifecycle.OBSERVED,
-        evidence=[{
-            "content": evidence_content,
-            "metadata": {"evidence_id": capture["evidence_id"], "sha256": capture["sha256"]},
-        }],
+    )
+    finding.add_evidence(
+        "HTTP_TRANSACTION",
+        evidence_content,
+        metadata={"evidence_id": capture["evidence_id"], "sha256": capture["sha256"]},
     )
 
     finding.transition_to(
