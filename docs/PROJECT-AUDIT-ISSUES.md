@@ -86,7 +86,7 @@ This register records repository review and current audit-run evidence, not a li
 - **Issue status:** The two confirmed Phase 22 bypasses were fixed and regression-tested. AUD-04, AUD-06, AUD-07, and AUD-08 remain open. AUD-09 records the intentional current limitation: Phase 22 has no trusted empirical receipt integration, so its validation CLI remains simulation-only and cannot promote a chain.
 - **Live-target testing:** None. No bounty target was contacted. Results are local code, fixture, and hosted-OS evidence, not proof of live vulnerability discovery effectiveness.
 
-## Current checkpoint verification at `b6308e8` (2026-11-19)
+## Current checkpoint verification at `b6308e8` (2026-11-20)
 
 ### Closure classification
 
@@ -101,5 +101,6 @@ This register records repository review and current audit-run evidence, not a li
 - **Kali focused regressions:** `python3 -m pytest tests/test_dispatcher_config.py tests/test_interactsh_live_adapter.py tests/test_nuclei_integration.py tests/test_subfinder_integration.py tests/test_phase21_security.py -ra` — **46 passed** in 2.45 seconds.
 - **Kali full suite at the current checkpoint:** `python3 -m pytest tests/ -ra --durations=10` — **1,329 passed, 2 skipped** in 382.29 seconds at `b6308e8`. The skips are Windows path-canonicalization and Windows DACL checks; hosted Windows CI passed those on this same code commit.
 - **Hosted platforms:** GitHub Actions run [44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317) passed the full Ubuntu Python 3.10/3.14 and Windows Python 3.14 matrix for `b6308e8`.
+- **Latest Kali installed-host check (2026-11-20):** The checkout is clean on `main` at documentation commit `6e000ce`, with code unchanged from `b6308e8`. The dispatcher service is active, but `SupplementaryGroups` is empty, the agent is not in `bbdispatcher-keys`, the operator approval key is not readable/provisioned, and `sudo -n` requires a password. The updated service has not been installed.
 - **Remaining issues:** AUD-04 is externally dependent on live OOB provider reachability; AUD-06 is limited to ASN attribution; AUD-07 is an explicit product integration boundary; AUD-08 still lacks upgraded-host and successful installed-service acceptance evidence; AUD-09 lacks trusted empirical evidence promotion. None is resolved by this focused test selection.
 - **Live-target testing:** None. These tests used fixtures and did not contact a bounty target.

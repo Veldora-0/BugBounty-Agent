@@ -8,7 +8,7 @@ Interactsh is an open-source tool for detecting out-of-band (OOB) interactions (
 
 The adapter keeps each session inside a private temporary directory. A private-server token is written to a mode-0600 config file inside a mode-0700 directory; it is not placed in command arguments. The adapter disables PDCP authentication, creates one payload per session, limits registration to 8 seconds, polling to 10 seconds, each process to 120 seconds, and event output to 2 MiB. It correlates only an exact Interactsh `full-id`, records a small normalized event, then removes raw session output after polling. Mock mode must be selected explicitly; an unavailable live provider is not silently replaced by simulation.
 
-The tests replace the client process with a local fake. They verify argument secrecy, permissions, exact callback correlation, redaction, and fail-closed behavior. They do not establish that an external Interactsh server is reachable or that an authorized target produced a callback. Burp Collaborator still has no live polling adapter.
+The tests replace the client process with a local fake. They verify argument secrecy, permissions, exact callback correlation, redaction, and fail-closed behavior. A Kali self-check on 2026-11-19 found `interactsh-client` 1.4.1 installed, but the client exited before it registered a canary; live server reachability remains unverified. The tests do not establish that an external Interactsh server is reachable or that an authorized target produced a callback. Burp Collaborator still has no live polling adapter.
 
 ## Account Required
 **OPTIONAL** (The default public ProjectDiscovery server does not require an account; protected self-hosted servers require their own token).

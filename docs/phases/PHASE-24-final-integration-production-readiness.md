@@ -134,7 +134,7 @@ This section records the audit of the Phase 22 evidence-promotion and scope-enfo
 
 The hosted jobs are recorded in [GitHub Actions run 44494335350](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44494335350). The audit confirmed and fixed two Phase 22 defects: simulation could previously manufacture evidence-shaped data for promotion, and scope authorization could rely on a prose marker while omitting other path assets. The current code emits no simulated evidence, requires a real `ScopeEngine`, binds every path target into the plan hash, and rechecks current scope before authorization and execution. Because no trusted empirical receipt integration exists yet, Phase 22 remains unable to empirically validate or promote links; this is tracked as AUD-09. No bounty target was contacted. These results establish regression behavior on tests and hosted operating systems, not live vulnerability-discovery effectiveness.
 
-## Current code verification at `b6308e8`
+## Current code verification at `b6308e8` (2026-11-20)
 
 The full hosted matrix and Kali full-suite passed for code commit `b6308e8`.
 
@@ -145,7 +145,7 @@ The full hosted matrix and Kali full-suite passed for code commit `b6308e8`.
 | GitHub Ubuntu, Python 3.14 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed. |
 | GitHub Windows Server 2025, Python 3.14 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed, including Windows path and DACL checks. |
 
-The hosted jobs are recorded in [GitHub Actions run 44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317). The focused Kali selection covered dispatcher configuration, Interactsh adapter behavior, Nuclei and Subfinder integration, and Phase 21 security tests. The full test run did not contact a bounty target or prove live OOB reachability. The Kali host is still running the older installed dispatcher unit; its updated service-only approval-key group and a successful approved mutation require privileged installation and verification. Open issue classifications and required next evidence are maintained in the [audit register](../PROJECT-AUDIT-ISSUES.md#current-checkpoint-verification-at-b6308e8-2026-11-19).
+The hosted jobs are recorded in [GitHub Actions run 44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317). The focused Kali selection covered dispatcher configuration, Interactsh adapter behavior, Nuclei and Subfinder integration, and Phase 21 security tests. The full test run did not contact a bounty target or prove live OOB reachability. The Kali host is still running the older installed dispatcher unit; its updated service-only approval-key group and a successful approved mutation require privileged installation and verification. Open issue classifications and required next evidence are maintained in the [audit register](../PROJECT-AUDIT-ISSUES.md#current-checkpoint-verification-at-b6308e8-2026-11-20).
 
 ## Starting points
 

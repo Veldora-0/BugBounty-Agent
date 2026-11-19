@@ -1,8 +1,8 @@
 # Supported Environments
 
-**Last reviewed:** 2026-11-19  
-**Primary platform:** Kali Linux  
-**Project status:** Beta; use only against targets that explicitly authorize the planned testing.
+- **Last reviewed:** 2026-11-20
+- **Primary platform:** Kali Linux
+- **Project status:** Beta; use only against targets that explicitly authorize the planned testing.
 
 This page separates the Python package's declared compatibility from environments that have actually been exercised. A `requires-python` value says which interpreter versions the package accepts; it does not prove that every operating-system and Python combination has passed the complete test suite.
 
