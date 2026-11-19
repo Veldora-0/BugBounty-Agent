@@ -1,7 +1,7 @@
 """
 Focused Security Remediation and Acceptance Tests for Phase 21.
 
-Covers the 19 Linux acceptance requirements:
+Covers the 20 Linux acceptance requirements:
 1. Missing operator approval key.
 2. Invalid operator approval signature.
 3. Missing ScopeEngine.
@@ -20,7 +20,8 @@ Covers the 19 Linux acceptance requirements:
 16. Agent cannot replace the IPC socket (directory permissions).
 17. Dispatcher unavailable: no mutation occurs.
 18. Approval replay: no second mutation occurs.
-19. Linux systemd service configuration (_bbdispatcher identity and permissions).
+19. Linux dispatcher service isolation status.
+20. Linux systemd service configuration (_bbdispatcher identity and permissions).
 """
 
 from datetime import datetime, timezone
@@ -782,9 +783,35 @@ def test_18_approval_replay_no_second_mutation_occurs(tmp_path, request):
 
 
 # ==============================================================================
-# TEST 19: Linux Systemd Service Configuration
+# TEST 19: Linux Dispatcher Service Isolation Status
 # ==============================================================================
-def test_19_linux_systemd_service_configuration():
+def test_19_linux_service_isolation_status(tmp_path):
+    """The Linux dispatcher reports its supported production isolation boundary."""
+    disp = IsolatedExecutionDispatcher(
+        program_id="test_prog",
+        key_dir=str(tmp_path / "keys"),
+        state_dir=str(tmp_path / "state"),
+        evidence_dir=str(tmp_path / "ev"),
+        is_lab=True,
+    )
+    req = {
+        "version": PROTOCOL_VERSION,
+        "request_id": f"REQ-{secrets.token_hex(16).upper()}",
+        "nonce": f"NONCE-{secrets.token_hex(16).upper()}",
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "action": "STATUS",
+        "payload": {},
+    }
+    resp = disp.handle_request(req)
+    assert resp["status"] == "SUCCESS"
+    assert resp["receipt"]["production_isolation_supported"] is True
+    assert resp["receipt"]["platform_limitation"] is None
+
+
+# ==============================================================================
+# TEST 20: Linux Systemd Service Configuration
+# ==============================================================================
+def test_20_linux_systemd_service_configuration():
     """Systemd service unit must configure unprivileged user and restrictive permissions."""
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     service_file = os.path.join(repo_root, "systemd", "bugbounty-dispatcher.service")
@@ -803,7 +830,7 @@ def test_19_linux_systemd_service_configuration():
     assert "ProtectSystem=strict" in content
 
 
-def test_20_dispatcher_approval_key_group_is_service_only():
+def test_21_dispatcher_approval_key_group_is_service_only():
     """The agent IPC group must not also grant access to the dispatcher HMAC key."""
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     installer = os.path.join(repo_root, "scripts", "install-dispatcher.sh")

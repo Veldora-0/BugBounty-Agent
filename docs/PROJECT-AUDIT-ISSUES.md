@@ -88,7 +88,7 @@ This register records repository review and current audit-run evidence, not a li
 
 ## Historical checkpoint verification at `b6308e8` (2026-11-20)
 
-The results below predate the current Linux-only test-policy edits. The two native Windows-only cases and Windows CI job have since been removed, along with the Windows service-status test. No tests were rerun for those removals at the user's request.
+The results below predate the current Linux-only test-policy edits. The two native Windows-only cases and Windows CI job have since been removed. The cross-platform service-status test was narrowed to retain its Linux assertions only. No tests were rerun for these changes at the user's request.
 
 ### Closure classification
 

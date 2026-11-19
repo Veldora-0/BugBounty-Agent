@@ -1,6 +1,6 @@
 # Phase 24 — Final Integration and Production Readiness
 
-**Status:** In progress. Operational hardening, documentation and historical hosted full-suite CI evidence are in place; the current automated workflow targets Linux only. The two native Windows-only cases, one Windows service-status test, and the Windows CI matrix entry have been removed. Linux-run mocked DACL failure cases remain. These latest test/documentation edits have not been rerun, as requested. Updated installed Linux dispatcher acceptance is still pending. The project remains beta, and this phase does not authorize a production release or close the capability limits listed in the audit register.
+**Status:** In progress. Operational hardening, documentation and historical hosted full-suite CI evidence are in place; the current automated workflow targets Linux only. The two native Windows-only cases and Windows CI matrix entry have been removed. The cross-platform service-status test is now Linux-only, preserving the Linux isolation assertion. Linux-run mocked DACL failure cases remain. These latest test/documentation edits have not been rerun, as requested. Updated installed Linux dispatcher acceptance is still pending. The project remains beta, and this phase does not authorize a production release or close the capability limits listed in the audit register.
 **Main areas:** `framework/tools/`, `scripts/`, `.github/workflows/`, `docs/`, `tests/`, packaging and release configuration.
 
 ## Purpose
