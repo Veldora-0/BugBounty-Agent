@@ -1,138 +1,336 @@
 #!/usr/bin/env python3
-"""
-bb-nuclei — Controlled Nuclei Runner and Signal Ingestion.
+"""Run a single explicitly approved, bounded Nuclei HTTP check and ingest signals."""
 
-Treats Nuclei strictly as a SIGNAL SOURCE, NEVER as an automatic confirmed vulnerability.
-Pipeline: Nuclei signal -> Candidate finding -> Independent validation -> Verified Finding.
-Enforces scope before execution and records provenance in program state.
-"""
+from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-from typing import List
+import uuid
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
-REPO_ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")))
+REPO_ROOT = os.environ.get(
+    "BUGBOUNTY_AGENT_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")),
+)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from framework.common.config import get_program_dir, resolve_program_scope_file
+from framework.common.config import ensure_private_directory, get_program_dir, write_private_text_file
+from framework.common.evidence import sanitize_sensitive_data, sanitize_sensitive_value
+from framework.common.transport import resolve_public_destination_ips
 from framework.findings.lifecycle import FindingLifecycle
 from framework.findings.schema import Finding
 from framework.scope.engine import ScopeEngine, ScopeStatus
+from framework.scope.normalizer import normalize_hostname
 from framework.state.manager import StateManager
 
 
-def main():
+MAX_RUNTIME_SECONDS = 90
+MAX_OUTPUT_BYTES = 10 * 1024 * 1024
+MAX_OUTPUT_LINES = 2000
+MAX_OUTPUT_LINE_BYTES = 100 * 1024
+ALLOWED_TAGS = {"misconfig", "exposure"}
+ALLOWED_SEVERITIES = {"info", "low", "medium"}
+
+
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Controlled Nuclei scanner wrapper. Ingests findings as unverified CANDIDATES."
+        description="Run a bounded Nuclei HTTP check; results are imported only as unverified candidates."
     )
-    parser.add_argument("target", help="Target URL or host to test")
+    parser.add_argument("target", help="One scoped HTTP(S) URL or hostname")
     parser.add_argument("--program", "-p", required=True, help="Bug bounty program name")
-    parser.add_argument("--tags", "-t", default="cve,misconfig,exposure", help="Template tags to execute")
-    parser.add_argument("--severity", "-s", default="medium,high,critical", help="Severities to check")
-    parser.add_argument("--rate-limit", "-r", type=int, default=5, help="Requests per second limit")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--approve-active-scan",
+        action="store_true",
+        help="Confirm that this bounded active scan is allowed by the program rules",
+    )
+    parser.add_argument("--tag", action="append", choices=sorted(ALLOWED_TAGS), help="Safe template tag (repeatable)")
+    parser.add_argument(
+        "--severity",
+        action="append",
+        choices=sorted(ALLOWED_SEVERITIES),
+        help="Template severity to include (repeatable; high/critical are excluded)",
+    )
+    return parser.parse_args()
 
-    prog_dir = get_program_dir(args.program)
-    scope_file = resolve_program_scope_file(prog_dir)
-    if not scope_file:
-        print(f"[!] Error: Scope configuration not found for program '{args.program}'", file=sys.stderr)
-        sys.exit(2)
 
-    engine = ScopeEngine.from_file(scope_file)
-    state = StateManager(prog_dir)
+def _normalized_target(target: str) -> str:
+    candidate = target if "://" in target else f"https://{target}"
+    parsed = urlsplit(candidate)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Only HTTP and HTTPS targets are supported")
+    if not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        raise ValueError("Target must be a hostname/URL without credentials or a fragment")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("Target contains an invalid port") from exc
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc, parsed.path or "/", parsed.query, ""))
 
-    # 1. SCOPE VERIFICATION
-    decision = engine.check(args.target)
-    if decision.status != ScopeStatus.IN_SCOPE:
-        print(f"[!] REFUSING SCAN: Target '{args.target}' is OUT OF SCOPE: {decision.reason}", file=sys.stderr)
-        sys.exit(1)
 
-    if not shutil.which("nuclei"):
-        print("[!] Nuclei is not installed. Install via: sudo apt install nuclei", file=sys.stderr)
-        sys.exit(1)
-
-    scans_dir = os.path.join(prog_dir, "scans")
-    output_json = os.path.join(scans_dir, f"nuclei_{args.target.replace('://', '_').replace('/', '_')}.json")
-
-    cmd = [
+def build_nuclei_command(
+    scanned_url: str,
+    original_host: str,
+    port: int,
+    output_path: str,
+    config_path: str,
+    tags: List[str],
+    severities: List[str],
+    scheme: str,
+) -> List[str]:
+    """Build fixed safe-mode arguments; the caller cannot inject templates or extra flags."""
+    host_header = original_host
+    if (scheme == "http" and port != 80) or (scheme == "https" and port != 443):
+        host_header = f"{original_host}:{port}"
+    command = [
         "nuclei",
-        "-u", args.target,
-        "-tags", args.tags,
-        "-severity", args.severity,
-        "-rate-limit", str(args.rate_limit),
-        "-json-export", output_json,
+        "-target", scanned_url,
+        "-config", config_path,
+        "-tags", ",".join(tags),
+        "-severity", ",".join(severities),
+        "-type", "http",
+        "-rate-limit", "1",
+        "-concurrency", "1",
+        "-timeout", "5",
+        "-retries", "0",
+        "-disable-redirects",
+        "-no-interactsh",
+        "-restrict-local-network-access",
+        "-no-stdin",
+        "-disable-update-check",
+        "-omit-raw",
+        "-header", f"Host: {host_header}",
+        "-json-export", output_path,
         "-silent",
     ]
+    if scheme == "https":
+        command.extend(["-sni", original_host])
+    return command
 
-    print(f"[*] Executing controlled Nuclei scan against: {args.target}")
-    print(f"[*] Tags: {args.tags} | Severities: {args.severity} | Rate: {args.rate_limit} req/s")
+
+def _result_is_for_pinned_target(hit: Dict[str, Any], original_host: str, destination_ip: str, port: int) -> bool:
+    matched_at = hit.get("matched-at") or hit.get("matched_at") or ""
+    if not isinstance(matched_at, str) or not matched_at:
+        return False
+    candidate = matched_at if "://" in matched_at else f"https://{matched_at}"
+    parsed = urlsplit(candidate)
+    result_host = (parsed.hostname or "").lower().strip("[]")
+    result_port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    return result_host in {original_host.lower().strip("[]"), destination_ip.lower().strip("[]")} and result_port == port
+
+
+def _clean_text(value: Any, maximum: int = 2000) -> str:
+    without_controls = re.sub(r"[\x00-\x1f\x7f]", " ", str(value or ""))
+    return sanitize_sensitive_data(without_controls)[:maximum]
+
+
+def main() -> int:
+    args = parse_args()
+    if not args.approve_active_scan:
+        print("[!] Refusing active scan: pass --approve-active-scan after confirming program permission.", file=sys.stderr)
+        return 2
 
     try:
-        subprocess.run(cmd, check=True)
-    except Exception as e:
-        print(f"[!] Nuclei execution finished or encountered error: {e}", file=sys.stderr)
+        target_url = _normalized_target(args.target)
+        parsed = urlsplit(target_url)
+        original_host = normalize_hostname(parsed.hostname or "")
+        if not original_host or any(ord(char) <= 32 for char in original_host):
+            raise ValueError("Target has an invalid hostname")
+        scheme = parsed.scheme.lower()
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError as exc:
+        print(f"[!] Invalid target: {exc}", file=sys.stderr)
+        return 2
 
-    # Ingest signals as CANDIDATE findings only
-    if os.path.isfile(output_json):
+    try:
+        program_dir = get_program_dir(args.program)
+        scope_file = os.path.join(program_dir, "scope", "scope.yaml")
+        if not os.path.isfile(scope_file):
+            legacy_scope = os.path.join(program_dir, "scope.yaml")
+            if not os.path.isfile(legacy_scope):
+                print(f"[!] Scope configuration not found for program '{args.program}'.", file=sys.stderr)
+                return 2
+            scope_file = legacy_scope
+        scope_engine = ScopeEngine.from_file(scope_file)
+        decision = scope_engine.check(target_url)
+        if decision.status != ScopeStatus.IN_SCOPE:
+            print("[!] Refusing scan: target is outside the configured program scope.", file=sys.stderr)
+            return 1
+        destination_ip = resolve_public_destination_ips(original_host, port)[0]
+    except Exception as exc:
+        print(f"[!] Refusing scan: scope or destination validation failed ({type(exc).__name__}).", file=sys.stderr)
+        return 1
+
+    if not shutil.which("nuclei"):
+        print("[!] Nuclei is not installed. Install it separately and review its upstream documentation.", file=sys.stderr)
+        return 1
+
+    tags = sorted(set(args.tag or ["misconfig", "exposure"]))
+    severities = sorted(set(args.severity or ["medium", "low"]))
+    if not tags or not set(tags) <= ALLOWED_TAGS or not severities or not set(severities) <= ALLOWED_SEVERITIES:
+        print("[!] Unsupported template policy selection.", file=sys.stderr)
+        return 2
+
+    ip_host = f"[{destination_ip}]" if ":" in destination_ip else destination_ip
+    netloc = ip_host
+    if parsed.port is not None:
+        netloc = f"{ip_host}:{port}"
+    scanned_url = urlunsplit((scheme, netloc, parsed.path or "/", parsed.query, ""))
+
+    scans_dir = ensure_private_directory(os.path.join(program_dir, "scans"))
+    output_json = os.path.join(scans_dir, f"nuclei_{uuid.uuid4().hex}.jsonl")
+    config_path = os.path.join(scans_dir, f"nuclei_{uuid.uuid4().hex}.yaml")
+    write_private_text_file(output_json, "")
+    write_private_text_file(config_path, "{}\n")
+    command = build_nuclei_command(
+        scanned_url=scanned_url,
+        original_host=original_host,
+        port=port,
+        output_path=output_json,
+        config_path=config_path,
+        tags=tags,
+        severities=severities,
+        scheme=scheme,
+    )
+    environment = dict(os.environ)
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        environment.pop(key, None)
+
+    print(f"[*] Running bounded Nuclei HTTP check for in-scope host {original_host} (rate 1/s; max {MAX_RUNTIME_SECONDS}s).")
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=MAX_RUNTIME_SECONDS,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired:
+        try:
+            os.remove(config_path)
+        except OSError:
+            pass
+        try:
+            os.remove(output_json)
+        except OSError:
+            pass
+        print("[!] Nuclei exceeded the fixed runtime limit; no results were ingested.", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        try:
+            os.remove(config_path)
+        except OSError:
+            pass
+        try:
+            os.remove(output_json)
+        except OSError:
+            pass
+        print(f"[!] Nuclei could not start ({type(exc).__name__}); no results were ingested.", file=sys.stderr)
+        return 1
+
+    if result.returncode != 0:
+        try:
+            os.remove(config_path)
+        except OSError:
+            pass
+        try:
+            os.remove(output_json)
+        except OSError:
+            pass
+        print(f"[!] Nuclei exited with status {result.returncode}; no results were ingested.", file=sys.stderr)
+        return 1
+
+    try:
+        try:
+            os.remove(config_path)
+        except OSError:
+            pass
+        if os.path.islink(output_json) or not os.path.isfile(output_json):
+            raise ValueError("Nuclei output is missing or not a regular file")
+        os.chmod(output_json, 0o600)
+        if os.path.getsize(output_json) > MAX_OUTPUT_BYTES:
+            raise ValueError("Nuclei output exceeded the fixed 10 MiB limit")
+        state = StateManager(program_dir)
         candidates_count = 0
-        with open(output_json, "r", encoding="utf-8") as f:
-            for line in f:
+        rejected_count = 0
+        with open(output_json, "r", encoding="utf-8", errors="replace") as stream:
+            for line_number, line in enumerate(stream, 1):
+                if line_number > MAX_OUTPUT_LINES:
+                    raise ValueError("Nuclei output exceeded the fixed result-count limit")
+                if len(line.encode("utf-8", errors="replace")) > MAX_OUTPUT_LINE_BYTES:
+                    rejected_count += 1
+                    continue
                 if not line.strip():
                     continue
                 try:
-                    hit = json.loads(line.strip())
-                    template_id = hit.get("template-id", "unknown-template")
-                    info = hit.get("info", {})
-                    matched_at = hit.get("matched-at", args.target)
-                    vuln_name = info.get("name", template_id)
-                    severity = info.get("severity", "medium").upper()
-                    if severity not in {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"}:
-                        severity = "INFORMATIONAL"
+                    hit = json.loads(line)
+                except json.JSONDecodeError:
+                    rejected_count += 1
+                    continue
+                if not isinstance(hit, dict) or not _result_is_for_pinned_target(hit, original_host, destination_ip, port):
+                    rejected_count += 1
+                    continue
 
-                    # Create Candidate Finding
-                    finding = Finding(
-                        title=f"Potential {vuln_name} via {template_id}",
-                        summary=f"Automated signal from Nuclei template '{template_id}' on {matched_at}.",
-                        affected_asset=args.target,
-                        affected_endpoint=matched_at,
-                        vulnerability_type=vuln_name,
-                        severity=severity,
-                        description=info.get("description", "Identified by automated template matching."),
-                        root_cause=f"Flagged by rule {template_id}. Requires independent manual verification.",
-                        prerequisites="Standard network reachability.",
-                        reproduction_steps=[
-                            f"Run standalone curl matching template '{template_id}' against {matched_at}.",
-                            "Verify that response reproduces without false-positive caching or CDN masks.",
-                        ],
-                        expected_result="Normal application response without vulnerability signature.",
-                        observed_result=f"Matched template pattern: {hit.get('matcher-name', 'status/body match')}",
-                        security_impact=f"Potential security risk if validated. Impact level {severity}.",
-                        remediation=info.get("remediation", "Review vendor advisories and patch component."),
-                        scope_reference=f"Target {args.target} verified in scope ({decision.matched_rule})",
-                        confidence="LOW",  # Strictly unverified signal
-                        lifecycle_state=FindingLifecycle.CANDIDATE,  # NEVER VALIDATED DIRECTLY
-                        provenance={
-                            "tool": "nuclei",
-                            "template": template_id,
-                            "raw_hit": hit,
-                        },
-                    )
+                template_id = re.sub(r"[^A-Za-z0-9_.:/-]", "_", _clean_text(hit.get("template-id", "unknown-template"), 160))
+                info = hit.get("info", {}) if isinstance(hit.get("info"), dict) else {}
+                name = _clean_text(info.get("name") or template_id, 200)
+                severity = str(info.get("severity", "informational")).upper()
+                if severity not in {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"}:
+                    severity = "INFORMATIONAL"
+                finding = Finding(
+                    title=f"Potential {name} via {template_id}",
+                    summary=f"Nuclei reported an unverified template signal for the in-scope host {original_host}.",
+                    affected_asset=original_host,
+                    affected_endpoint=sanitize_sensitive_data(target_url),
+                    vulnerability_type=name,
+                    severity=severity,
+                    description=_clean_text(info.get("description") or "Automated template signal; verify independently.", 4000),
+                    root_cause=f"Template {template_id} matched a response; the match is not an independently confirmed vulnerability.",
+                    prerequisites="The scoped service is reachable.",
+                    reproduction_steps=[
+                        "Review the template and its request details against the program rules.",
+                        "Reproduce the signal with a minimal, safe manual request before reporting.",
+                    ],
+                    expected_result="The scoped service does not exhibit the template's reported condition.",
+                    observed_result=_clean_text(hit.get("matcher-name") or "Template response matcher signaled.", 1000),
+                    security_impact="Potential security impact requires independent validation.",
+                    remediation=_clean_text(info.get("remediation") or "Review the affected component and apply vendor guidance if confirmed.", 2000),
+                    scope_reference=f"{original_host} passed local scope validation ({decision.matched_rule}).",
+                    confidence="LOW",
+                    lifecycle_state=FindingLifecycle.CANDIDATE,
+                    provenance=sanitize_sensitive_value({
+                        "tool": "nuclei",
+                        "template_id": template_id,
+                        "template_name": name,
+                        "template_severity": severity,
+                        "pinned_target_ip": destination_ip,
+                        "raw_hit": None,
+                    }),
+                )
+                state.save_finding(finding)
+                candidates_count += 1
 
-                    state.save_finding(finding)
-                    candidates_count += 1
-                except Exception as ex:
-                    print(f"[!] Failed to parse Nuclei hit: {ex}", file=sys.stderr)
-
-        print(f"\n[+] Ingested {candidates_count} raw signals as CANDIDATE findings.")
-        print("[!] REMINDER: These findings are UNVERIFIED CANDIDATES. Delegate to 'bb-validator' for independent proof.")
-    else:
-        print("[*] No signals reported by Nuclei.")
+        print(f"[+] Ingested {candidates_count} Nuclei signals as unverified CANDIDATE findings.")
+        if rejected_count:
+            print(f"[!] Ignored {rejected_count} malformed, oversized, or non-matching output records.")
+        print(f"[*] Private raw scanner output retained at: {output_json}")
+        print("[!] Candidate signals are not confirmed vulnerabilities and cannot be reported without independent proof.")
+        return 0
+    except Exception as exc:
+        try:
+            os.remove(output_json)
+        except OSError:
+            pass
+        print(f"[!] Nuclei output was rejected ({type(exc).__name__}); no results were accepted.", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

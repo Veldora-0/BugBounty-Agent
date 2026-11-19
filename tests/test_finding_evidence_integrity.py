@@ -113,7 +113,8 @@ def test_deserialized_validated_finding_with_forged_digest_is_not_reportable(tmp
 
     ready, reason = restored.is_report_ready(evidence_store=store)
     assert ready is False
-    assert "EvidenceStore capture" in reason
+    assert restored.lifecycle_state == FindingLifecycle.NEEDS_MANUAL_REVIEW
+    assert "only VALIDATED findings can be reported" in reason
     assert json.loads(restored.to_json())["lifecycle_state"] == "NEEDS_MANUAL_REVIEW"
 
 
