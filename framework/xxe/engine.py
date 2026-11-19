@@ -488,10 +488,19 @@ class XxeIntelligenceEngine:
             return candidate, None
 
         # Generate unique canary token and URL
-        canary_token, canary_url = self.oob_provider.generate_canary(
-            prefix="bb-xxe",
-            test_id=candidate.candidate_id,
-        )
+        try:
+            canary_token, canary_url = self.oob_provider.generate_canary(
+                prefix="bb-xxe",
+                test_id=candidate.candidate_id,
+            )
+        except Exception as exc:
+            candidate.notes = (
+                "OOB canary registration failed before target dispatch "
+                f"({type(exc).__name__}). No external entity probe was sent."
+            )
+            candidate.lifecycle_state = "UNAVAILABLE"
+            self.state_mgr.save_candidate(candidate)
+            return candidate, None
 
         # Explicitly validate generated canary destination against dedicated trusted-provider policy before dispatch
         validate_fn = getattr(self.policy, "validate_oob_destination", None)

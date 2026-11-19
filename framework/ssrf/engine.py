@@ -403,7 +403,16 @@ class SsrfIntelligenceEngine:
             return candidate, None
 
         # 5. Canary Issuance
-        canary_token, canary_url = self.canary_mgr.issue_canary(candidate.candidate_id)
+        try:
+            canary_token, canary_url = self.canary_mgr.issue_canary(candidate.candidate_id)
+        except Exception as exc:
+            candidate.lifecycle_state = "UNAVAILABLE"
+            candidate.notes = (
+                "SSRF OOB canary registration failed before target dispatch "
+                f"({type(exc).__name__}). Zero target requests dispatched."
+            )
+            self.state_mgr.save_candidate(candidate)
+            return candidate, None
         candidate.callback_token = canary_token
 
         # 6. Explicit OOB Destination Trust Validation (Must not silently skip)
