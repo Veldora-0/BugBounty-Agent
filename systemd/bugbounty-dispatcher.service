@@ -21,6 +21,11 @@ RuntimeDirectoryMode=0750
 StateDirectory=bugbounty
 StateDirectoryMode=0700
 
+# Optional root-managed program binding. Configure this file with
+# BUGBOUNTY_DISPATCHER_PROGRAM_ID, BUGBOUNTY_DISPATCHER_SCOPE_FILE, and
+# BUGBOUNTY_DISPATCHER_APPROVAL_KEY_FILE before enabling controlled dispatch.
+EnvironmentFile=-/etc/bugbounty/dispatcher.env
+
 ExecStart=/usr/bin/python3 /opt/BugBounty-Agent/scripts/bb-dispatcher \
     --socket /run/bugbounty/dispatcher.sock \
     --key-dir /var/lib/bugbounty/keys \

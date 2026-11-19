@@ -829,5 +829,6 @@ def test_20_linux_systemd_service_configuration():
     assert "RuntimeDirectory=bugbounty" in content
     assert "RuntimeDirectoryMode=0750" in content
     assert "StateDirectoryMode=0700" in content
+    assert "EnvironmentFile=-/etc/bugbounty/dispatcher.env" in content
     assert "NoNewPrivileges=yes" in content
     assert "ProtectSystem=strict" in content

@@ -24,13 +24,18 @@ def main() -> int:
         raise SystemExit("usage: dispatcher_ipc_probe.py <unix-socket>")
 
     client = IsolatedDispatcherClient(endpoint_type="unix", address=sys.argv[1], timeout=3.0)
-    program_id = "phase21-isolation-probe"
+    status = client.get_status()
+    if status.get("status") != "SUCCESS":
+        raise SystemExit("FAIL: unable to read live dispatcher status")
+    program_id = status.get("receipt", {}).get("program_id")
+    if not isinstance(program_id, str) or not program_id:
+        raise SystemExit("FAIL: live dispatcher status has no configured program binding")
     canonical_fields = {
         "action_type": "LOGOUT",
         "created_at": time.time(),
         "method": "POST",
         "program_id": program_id,
-        "target_endpoint": "https://phase21-isolation-probe.invalid/logout",
+        "target_endpoint": "https://invalid-approval-probe.invalid/logout",
         "test_account": "phase21-isolation-probe",
         "ttl": 300.0,
         "unique_approval_id": f"APPR-{secrets.token_hex(8).upper()}",

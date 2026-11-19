@@ -599,12 +599,18 @@ class IsolatedExecutionDispatcher:
                 "receipt": {
                     "dispatcher_id": self.dispatcher_id,
                     "dispatcher_key_id": self.dispatcher_key_id,
+                    "program_id": self.program_id,
                     "endpoint_type": self.endpoint_type,
                     "endpoint_address": self.endpoint_address,
                     "evidence_dir": self.evidence_dir,
                     "is_lab": self.is_lab,
                     "has_approval_key": self.approval_key is not None,
                     "has_scope_engine": self.scope_engine is not None,
+                    "production_dispatch_ready": (
+                        not self.is_lab
+                        and self.approval_key is not None
+                        and self.scope_engine is not None
+                    ),
                     "production_isolation_supported": (os.name != "nt"),
                     "platform_limitation": None if os.name != "nt" else "Windows service isolation under dedicated service account is NOT IMPLEMENTED",
                 },

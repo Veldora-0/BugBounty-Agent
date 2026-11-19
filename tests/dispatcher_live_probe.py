@@ -6,90 +6,37 @@ Validates the live isolated execution dispatcher on Linux / Windows:
 2. Verifies PING and STATUS responses.
 3. Validates the pinned Ed25519 public verification key (/etc/bugbounty/dispatcher.pub).
 4. Tests negative rejection of unapproved / unauthorized mutation requests.
-5. If approval keys are provisioned, performs live end-to-end execution against a local
-   HTTP fixture server, verifies signed Ed25519 receipt, issues ExecutionCapability,
-   and tests replay rejection.
-6. If root/systemd privileges are unavailable to configure service keys, reports NOT RUN
-   for the live execution portion without fabricating results or mocking.
+5. Reports positive systemd execution as NOT RUN: production dispatch correctly blocks
+   loopback fixtures, and this probe has no independently owned authorized endpoint.
+6. The standalone mode exercises success and replay rejection with an isolated mock transport;
+   it is not evidence of successful execution through the installed systemd service.
 """
 
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
-import http.server
-import json
 import os
 import secrets
-import socket
 import sys
 import tempfile
-import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional
 
 # Add repository root to path
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from framework.auth_correlation.dispatcher import ControlledDispatchResult
 from framework.auth_correlation.ipc.client import IsolatedDispatcherClient
-from framework.auth_correlation.ipc.protocol import PROTOCOL_VERSION, DispatcherUnavailableError
+from framework.auth_correlation.ipc.protocol import PROTOCOL_VERSION
 from framework.auth_correlation.ipc.receipt import (
-    derive_verification_key,
     load_dispatcher_verification_key,
     verify_execution_receipt,
 )
-from framework.auth_correlation.ipc.service import CANONICAL_ACTION_FIELDS, IsolatedExecutionDispatcher
-from framework.auth_correlation.ledger import (
-    ExecutionLedger,
-    ExecutionProvenanceError,
-    issue_execution_capability,
-)
+from framework.auth_correlation.ipc.service import IsolatedExecutionDispatcher
 from framework.auth_correlation.revocation import get_or_create_approval_key, sign_action_approval
-from framework.common.evidence import EvidenceStore
 from framework.validation.request import ControlledRequest, ControlledResponse
-
-
-class FixtureHTTPHandler(http.server.BaseHTTPRequestHandler):
-    """Local fixture HTTP server for controlled invalidation testing."""
-
-    def log_message(self, format: str, *args: Any) -> None:
-        pass  # Suppress console logging
-
-    def do_POST(self) -> None:
-        if self.path == "/auth/logout":
-            content_length = int(self.headers.get("Content-Length", 0))
-            if content_length > 0:
-                _ = self.rfile.read(content_length)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"status": "logged_out", "revoked": true}')
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def do_GET(self) -> None:
-        if self.path == "/auth/logout" or self.path.startswith("/auth/logout?"):
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(b'{"error": "Session revoked", "status": "revoked"}')
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-
-def start_fixture_server() -> Tuple[http.server.HTTPServer, int, threading.Thread]:
-    """Starts local fixture HTTP server on 127.0.0.1 on an available port."""
-    server = http.server.HTTPServer(("127.0.0.1", 0), FixtureHTTPHandler)
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server, port, thread
 
 
 def run_live_service_probe(
@@ -139,13 +86,22 @@ def run_live_service_probe(
     receipt_info = status_resp.get("receipt", {})
     disp_id = receipt_info.get("dispatcher_id", "UNKNOWN")
     key_id = receipt_info.get("dispatcher_key_id", "UNKNOWN")
+    program_id = receipt_info.get("program_id")
     has_app_key = receipt_info.get("has_approval_key", False)
+    has_scope_engine = receipt_info.get("has_scope_engine", False)
+    production_ready = receipt_info.get("production_dispatch_ready", False)
     prod_iso = receipt_info.get("production_isolation_supported", False)
     plat_lim = receipt_info.get("platform_limitation")
 
-    print(f"[+] STATUS query succeeded: dispatcher_id={disp_id}, key_id={key_id}")
+    if not isinstance(program_id, str) or not program_id:
+        print("[!] STATUS response does not identify the dispatcher program binding.")
+        return 1
+
+    print(f"[+] STATUS query succeeded: dispatcher_id={disp_id}, key_id={key_id}, program_id={program_id}")
     print(f"[*] Production isolation: {prod_iso} (limitation: {plat_lim})")
     print(f"[*] Service has operator approval key configured: {has_app_key}")
+    print(f"[*] Service has configured program scope: {has_scope_engine}")
+    print(f"[*] Production dispatch ready: {production_ready}")
 
     # 3. Public Verification Key Check
     pub_path = public_key_path
@@ -178,7 +134,7 @@ def run_live_service_probe(
         "action_type": "LOGOUT",
         "created_at": time.time(),
         "method": "POST",
-        "program_id": "probe-prog",
+        "program_id": program_id,
         "target_endpoint": "https://target.local/auth/logout",
         "test_account": "probe-user",
         "ttl": 300,
@@ -189,7 +145,7 @@ def run_live_service_probe(
 
     try:
         reject_resp = client.dispatch_mutation(
-            program_id="probe-prog",
+            program_id=program_id,
             action_id=bogus_aid,
             action_dossier=bogus_dossier,
             session_context=bogus_sess,
@@ -207,101 +163,17 @@ def run_live_service_probe(
         print(f"[!] Negative rejection FAILED: expected REJECTED, got {reject_resp}")
         return 1
 
-    # 5. Live execution assessment
-    if not has_app_key:
-        print("=" * 70)
-        print("[!] LIVE SERVICE MUTATION EXECUTION: NOT RUN")
-        print("    Reason: The live systemd service is running under _bbdispatcher:bbgroup,")
-        print("    but has not been provisioned with an operator action_approval.key in")
-        print("    /var/lib/bugbounty/keys. Root/sudo privileges are required to configure")
-        print("    keys for the systemd service. Live rejection checks PASSED.")
-        print("=" * 70)
-        return 0
-
-    print("[+] Live service has approval key configured; proceeding to local fixture test...")
-    # Run full execution test with local fixture server
-    return run_full_execution_test(client, verification_key)
-
-
-def run_full_execution_test(client: IsolatedDispatcherClient, verification_key: bytes) -> int:
-    """Performs live mutation execution against local HTTP fixture."""
-    server, port, thread = start_fixture_server()
-    target_url = f"http://127.0.0.1:{port}/auth/logout"
-    print(f"[*] Local fixture HTTP server started on {target_url}")
-
-    try:
-        temp_dir = tempfile.mkdtemp(prefix="bb_probe_")
-        state_dir = os.path.join(temp_dir, "state")
-        key_dir = os.path.join(temp_dir, "keys")
-        ev_dir = os.path.join(temp_dir, "evidence")
-        os.makedirs(state_dir, exist_ok=True)
-        os.makedirs(key_dir, exist_ok=True)
-        os.makedirs(ev_dir, exist_ok=True)
-
-        app_key = get_or_create_approval_key(key_dir=key_dir)
-        dossier_data = {
-            "action_type": "LOGOUT",
-            "created_at": time.time(),
-            "method": "POST",
-            "program_id": "probe-prog",
-            "target_endpoint": target_url,
-            "test_account": "probe-alice",
-            "ttl": 300,
-            "unique_approval_id": f"APPR-{secrets.token_hex(16).upper()}",
-        }
-        signed_dossier = sign_action_approval(dossier_data, approval_key=app_key)
-        aid = signed_dossier["action_id"]
-        sess_ctx = {"session_ref": f"sess_{secrets.token_hex(16)}", "principal_id": "probe-alice"}
-
-        print(f"[*] Dispatching approved Mode B mutation: action_id={aid[:20]}...")
-        resp = client.dispatch_mutation(
-            program_id="probe-prog",
-            action_id=aid,
-            action_dossier=signed_dossier,
-            session_context=sess_ctx,
-        )
-
-        if resp.get("status") != "SUCCESS":
-            print(f"[!] Dispatch mutation failed: {resp}")
-            return 1
-
-        receipt = resp.get("receipt")
-        if not receipt:
-            print("[!] Dispatch mutation succeeded but receipt is missing")
-            return 1
-
-        # Verify receipt signature
-        v_ok, v_reason = verify_execution_receipt(
-            receipt,
-            verification_key=verification_key,
-            expected_action_id=aid,
-            expected_program_id="probe-prog",
-        )
-        if not v_ok:
-            print(f"[!] Receipt verification failed: {v_reason}")
-            return 1
-        print(f"[+] Ed25519 ExecutionReceipt cryptographically verified: receipt_id={receipt['receipt_id']}")
-
-        # Test replay rejection
-        print("[*] Testing replay attack rejection with duplicate action ID...")
-        replay_resp = client.dispatch_mutation(
-            program_id="probe-prog",
-            action_id=aid,
-            action_dossier=signed_dossier,
-            session_context=sess_ctx,
-        )
-        if replay_resp.get("status") != "REJECTED":
-            print(f"[!] Replay rejection FAILED: got {replay_resp}")
-            return 1
-        print(f"[+] Replay attack rejected: {replay_resp.get('error_code')}")
-
-        print("=" * 70)
-        print("[+] LIVE EXECUTION VERIFICATION: ALL CHECKS PASSED")
-        print("=" * 70)
-        return 0
-    finally:
-        server.shutdown()
-        server.server_close()
+    print("=" * 70)
+    print("[!] LIVE SYSTEMD SUCCESSFUL MUTATION: NOT RUN")
+    if not has_app_key or not has_scope_engine or not production_ready:
+        print("    Reason: the installed service is not fully configured with both a protected")
+        print("    operator key and a trusted program scope. Configure it before controlled dispatch.")
+    else:
+        print("    Reason: this probe has no independently authorized test endpoint. Production")
+        print("    dispatch forbids loopback, so it must not reuse a local fixture as a live test.")
+    print("    Negative rejection checks PASSED; standalone success is separately simulated.")
+    print("=" * 70)
+    return 0
 
 
 class MockLabTransport:

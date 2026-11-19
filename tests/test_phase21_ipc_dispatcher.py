@@ -229,6 +229,8 @@ def test_dispatcher_service_ipc_lifecycle(tmp_path):
         status_res = client.get_status()
         assert status_res["status"] == "SUCCESS"
         assert status_res["receipt"]["dispatcher_id"] == disp.dispatcher_id
+        assert status_res["receipt"]["program_id"] == "test_prog"
+        assert status_res["receipt"]["production_dispatch_ready"] is False
 
         # 3. DISPATCH_MUTATION
         endpoint = "http://127.0.0.1:8080/auth/logout"
