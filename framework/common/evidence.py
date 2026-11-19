@@ -41,6 +41,10 @@ _SENSITIVE_PATTERNS = [
 ]
 
 SAFE_PREFIX_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_SENSITIVE_FIELD_NAME = re.compile(
+    r"(?:password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|session|credential)",
+    re.IGNORECASE,
+)
 
 
 class EvidencePersistenceError(Exception):
@@ -56,6 +60,25 @@ def sanitize_sensitive_data(text: str) -> str:
     for pattern, replacement in _SENSITIVE_PATTERNS:
         sanitized = pattern.sub(replacement, sanitized)
     return sanitized
+
+
+def sanitize_sensitive_value(value: Any) -> Any:
+    """Redact credential-like mapping fields recursively before persistence."""
+    if isinstance(value, dict):
+        clean: Dict[Any, Any] = {}
+        for key, child in value.items():
+            if isinstance(key, str) and _SENSITIVE_FIELD_NAME.search(key):
+                clean[key] = "[REDACTED_BY_BB_AGENT]"
+            else:
+                clean[key] = sanitize_sensitive_value(child)
+        return clean
+    if isinstance(value, list):
+        return [sanitize_sensitive_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_sensitive_value(item) for item in value)
+    if isinstance(value, str):
+        return sanitize_sensitive_data(value)
+    return value
 
 
 class EvidenceStore:

@@ -14,7 +14,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
-from framework.common.evidence import sanitize_sensitive_data
+from framework.common.evidence import EvidenceStore, sanitize_sensitive_data, sanitize_sensitive_value
 from framework.findings.lifecycle import (
     FindingLifecycle,
     validate_transition,
@@ -123,7 +123,7 @@ class Finding:
         if not self.scope_reference or not self.scope_reference.strip():
             raise FindingValidationError("Scope reference is required.")
 
-    def is_report_ready(self, evidence_store: Optional[Any] = None) -> Tuple[bool, str]:
+    def is_report_ready(self, evidence_store: Optional[EvidenceStore] = None) -> Tuple[bool, str]:
         """
         Evaluates whether finding satisfies all requirements for formal disclosure reporting.
         Returns (is_ready, diagnostic_reason).
@@ -189,7 +189,7 @@ class Finding:
         self,
         new_state: FindingLifecycle,
         notes: Optional[str] = None,
-        evidence_store: Optional[Any] = None,
+        evidence_store: Optional[EvidenceStore] = None,
     ) -> None:
         """Transitions finding lifecycle state."""
         validate_transition(self.lifecycle_state, new_state)
@@ -283,6 +283,8 @@ class Finding:
                 ev_copy = dict(ev)
                 if "content" in ev_copy and isinstance(ev_copy["content"], str):
                     ev_copy["content"] = sanitize_sensitive_data(ev_copy["content"])
+                if "metadata" in ev_copy:
+                    ev_copy["metadata"] = sanitize_sensitive_value(ev_copy["metadata"])
                 sanitized_evidence.append(ev_copy)
             else:
                 sanitized_evidence.append(ev)
@@ -307,7 +309,7 @@ class Finding:
             "remediation": self.remediation,
             "scope_reference": self.scope_reference,
             "evidence": sanitized_evidence,
-            "provenance": self.provenance,
+            "provenance": sanitize_sensitive_value(self.provenance),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "validation_notes": self.validation_notes,
@@ -319,20 +321,29 @@ class Finding:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> Finding:
+    def from_dict(cls, data: Dict[str, Any], evidence_store: Optional[EvidenceStore] = None) -> Finding:
         """Deserializes finding from dictionary."""
         raw_state = data.get("lifecycle_state", "CANDIDATE")
         ev_list = data.get("evidence", [])
         val_notes = data.get("validation_notes")
-        # Safe migration: if older serialized finding was marked VALIDATED but has no evidence or validation notes,
-        # downgrade to NEEDS_MANUAL_REVIEW to preserve state without invalid promotion
-        if raw_state == "VALIDATED" and not ev_list:
+        provenance = data.get("provenance", {})
+        if not isinstance(provenance, dict):
+            provenance = {}
+
+        # Serialized lifecycle labels are not proof. Preserve VALIDATED only
+        # when the caller supplies the program's EvidenceStore and every
+        # referenced capture and response excerpt verifies against it.
+        validation_verified = bool(
+            raw_state == "VALIDATED"
+            and ev_list
+            and (val_notes or provenance.get("validation_notes"))
+            and evidence_store is not None
+            and all(evidence_store.verify_finding_evidence(item)[0] for item in ev_list)
+        )
+        if raw_state == "VALIDATED" and not validation_verified:
             state = FindingLifecycle.NEEDS_MANUAL_REVIEW
             if not val_notes:
-                val_notes = "Migrated finding lacks attached evidence; flagged for manual review."
-        elif raw_state == "VALIDATED" and not val_notes and not (data.get("provenance", {}).get("validation_notes")):
-            val_notes = "Legacy validated finding imported with attached evidence."
-            state = FindingLifecycle.VALIDATED
+                val_notes = "Serialized validation lacks a verified EvidenceStore capture; flagged for manual review."
         else:
             state = FindingLifecycle(raw_state)
 
@@ -362,7 +373,7 @@ class Finding:
             confidence=conf_val,
             lifecycle_state=state,
             evidence=ev_list,
-            provenance=data.get("provenance", {}),
+            provenance=provenance,
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
             validation_notes=val_notes,
@@ -377,7 +388,7 @@ class Finding:
         """Returns JSON representation."""
         return json.dumps(self.to_dict(), indent=indent)
 
-    def to_markdown_report(self, evidence_store: Optional[Any] = None) -> str:
+    def to_markdown_report(self, evidence_store: Optional[EvidenceStore] = None) -> str:
         """
         Renders the finding into a professional markdown report conforming
         to the 17 standard bug bounty disclosure sections.

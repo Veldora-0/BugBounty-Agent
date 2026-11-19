@@ -15,7 +15,7 @@ import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from framework.common.evidence import sanitize_sensitive_data
+from framework.common.evidence import EvidenceStore, sanitize_sensitive_data
 from framework.common.config import ensure_private_directory
 from framework.findings.lifecycle import FindingLifecycle
 from framework.findings.schema import Finding
@@ -75,6 +75,7 @@ class StateManager:
         self.program_dir = os.path.abspath(program_dir)
         self.state_dir = os.path.join(self.program_dir, "state")
         ensure_private_directory(self.state_dir)
+        self.evidence_store = EvidenceStore(os.path.join(self.program_dir, "evidence"))
 
         self.assets_file = os.path.join(self.state_dir, "assets.json")
         self.endpoints_file = os.path.join(self.state_dir, "endpoints.json")
@@ -573,7 +574,7 @@ class StateManager:
         result = []
         for d in findings_dict.values():
             try:
-                f = Finding.from_dict(d)
+                f = Finding.from_dict(d, evidence_store=self.evidence_store)
                 if lifecycle_state is None or f.lifecycle_state.value == lifecycle_state:
                     result.append(f)
             except Exception:

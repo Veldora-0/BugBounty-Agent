@@ -46,6 +46,7 @@ from framework.attack_path.validator import (
     ValidationPlanStatus,
 )
 from framework.common.config import get_workspace_root, resolve_program_scope_file
+from framework.common.evidence import EvidenceStore
 from framework.findings.schema import Finding
 from framework.scope.engine import ScopeEngine
 
@@ -209,6 +210,7 @@ def cmd_analyze(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> 
 
     # Load findings from program directory
     findings_dir = os.path.join(state_mgr.program_dir, "findings")
+    evidence_store = EvidenceStore(os.path.join(state_mgr.program_dir, "evidence"))
     findings: List[Finding] = []
     if os.path.isdir(findings_dir):
         for fname in os.listdir(findings_dir):
@@ -218,7 +220,7 @@ def cmd_analyze(args: argparse.Namespace, state_mgr: AttackPathStateManager) -> 
                     with open(fpath, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     if isinstance(data, dict) and "id" in data:
-                        findings.append(Finding.from_dict(data))
+                        findings.append(Finding.from_dict(data, evidence_store=evidence_store))
                 except Exception:
                     continue
 

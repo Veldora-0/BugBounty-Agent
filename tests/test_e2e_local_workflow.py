@@ -224,7 +224,7 @@ def test_end_to_end_local_discovery_to_report_workflow(temp_workspace):
         assert file_hash == digest, "Cryptographic evidence file SHA-256 hash mismatch"
 
     # 6. Candidate finding lifecycle progression
-    finding = Finding.from_dict(observed_finding_dict)
+    finding = Finding.from_dict(observed_finding_dict, evidence_store=engine.evidence_store)
     assert finding.lifecycle_state == FindingLifecycle.OBSERVED
 
     # An OBSERVED finding cannot be reported (fail-closed)

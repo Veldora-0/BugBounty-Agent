@@ -16,6 +16,7 @@ import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from framework.common.evidence import EvidenceStore
 from framework.findings.schema import Finding
 from framework.state.dedup import FindingDeduplicator
 from framework.validation.baseline import BaselineObservation
@@ -208,7 +209,10 @@ class SecurityStateManager:
         res = []
         for d in findings.values():
             try:
-                f = Finding.from_dict(d)
+                f = Finding.from_dict(
+                    d,
+                    evidence_store=EvidenceStore(os.path.join(self.program_dir, "evidence")),
+                )
                 if lifecycle_state is None or f.lifecycle_state.value == lifecycle_state:
                     res.append(f)
             except Exception:

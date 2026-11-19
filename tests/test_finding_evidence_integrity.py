@@ -109,12 +109,27 @@ def test_deserialized_validated_finding_with_forged_digest_is_not_reportable(tmp
     )
     serialized = finding.to_dict()
     serialized["evidence"][0]["metadata"]["sha256"] = "f" * 64
-    restored = Finding.from_dict(serialized)
+    restored = Finding.from_dict(serialized, evidence_store=store)
 
     ready, reason = restored.is_report_ready(evidence_store=store)
     assert ready is False
     assert "EvidenceStore capture" in reason
-    assert json.loads(restored.to_json())["lifecycle_state"] == "VALIDATED"
+    assert json.loads(restored.to_json())["lifecycle_state"] == "NEEDS_MANUAL_REVIEW"
+
+
+def test_provenance_credentials_are_redacted_before_serialization():
+    finding = _finding()
+    finding.provenance = {
+        "tool": "nuclei",
+        "raw_hit": {
+            "request": "GET /private?token=secret_value HTTP/1.1\nAuthorization: Bearer header_secret",
+            "headers": {"Cookie": "session=secret_cookie"},
+        },
+    }
+
+    serialized = json.dumps(finding.to_dict())
+    for secret in ("secret_value", "header_secret", "secret_cookie"):
+        assert secret not in serialized
 
 
 def test_report_gate_requires_a_bound_content_digest(tmp_path):
