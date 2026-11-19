@@ -58,6 +58,7 @@ from framework.attack_path.validator import (
 from importlib.machinery import SourceFileLoader
 import importlib.util
 from framework.findings.schema import Finding
+from framework.scope.engine import ScopeEngine
 
 _chain_script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "bb-chain"))
 _loader = SourceFileLoader("bb_chain", _chain_script_path)
@@ -355,7 +356,7 @@ def test_ac_22_4_11_cli_revoke_plan_approval(temp_workspace, capsys):
 
 
 def test_ac_22_4_12_cli_validate_execution(temp_workspace, capsys):
-    """AC-22.4-12: CLI validate authorizes dispatch, executes safe probe, and updates graph state."""
+    """AC-22.4-12: CLI validate runs the fixture but leaves links as empirical hypotheses."""
     state_mgr, graph, path = _seed_workspace_with_graph(temp_workspace)
     planner = SafeChainValidationPlanner(state_manager=state_mgr)
     plan = planner.create_validation_plan(path, graph)
@@ -364,13 +365,17 @@ def test_ac_22_4_12_cli_validate_execution(temp_workspace, capsys):
     state_mgr.save_plans({plan.plan_id: plan})
 
     rc = bb_chain.main(["--workspace", temp_workspace, "validate", plan.plan_id])
-    assert rc == 0
+    assert rc == 1
     captured = capsys.readouterr().out
     assert "VALIDATION WORKFLOW RESULT" in captured
-    assert "VALIDATED" in captured
+    assert "SIMULATED FIXTURE (no target request)" in captured
+    assert "Simulated execution completed" in captured
+    assert "Promoted Edges:    None" in captured
 
     reloaded_plans = state_mgr.load_plans()
-    assert reloaded_plans[plan.plan_id].status == ValidationPlanStatus.RELATIONSHIP_VALIDATED
+    assert reloaded_plans[plan.plan_id].status == ValidationPlanStatus.COMPLETED
+    reloaded_graph = state_mgr.load_graph()
+    assert all(reloaded_graph.get_edge(eid).state == RelationshipState.THEORETICAL for eid in path.edge_ids)
 
 
 def test_ac_22_4_13_cli_validate_rejects_unapproved_plan(temp_workspace, capsys):
@@ -471,7 +476,10 @@ def test_ac_22_4_19_anti_inflation_severity_guarantee(temp_workspace):
 def test_ac_22_4_20_concurrency_double_dispatch_safety(temp_workspace):
     """AC-22.4-20: Two consecutive or concurrent dispatch attempts on same plan reject duplicate dispatch."""
     state_mgr, graph, path = _seed_workspace_with_graph(temp_workspace)
-    planner = SafeChainValidationPlanner(state_manager=state_mgr)
+    planner = SafeChainValidationPlanner(
+        state_manager=state_mgr,
+        scope_engine=ScopeEngine({"targets": {"domains": ["api.example.com"]}}),
+    )
     plan = planner.create_validation_plan(path, graph)
     planner.submit_for_approval(plan)
     planner.approve_plan(plan, approved_by="op1")
@@ -542,7 +550,11 @@ def test_ac_22_4_23_end_to_end_pipeline_integration(temp_workspace, capsys):
 
     # 4. Validate via CLI
     rc3 = bb_chain.main(["--workspace", temp_workspace, "validate", plan.plan_id])
-    assert rc3 == 0
+    assert rc3 == 1
+    validate_output = capsys.readouterr().out
+    assert "SIMULATED FIXTURE (no target request)" in validate_output
+    assert "Not empirically validated" in validate_output
+    assert state_mgr.load_plans()[plan.plan_id].status == ValidationPlanStatus.COMPLETED
 
     # 5. Report via CLI
     report_file = os.path.join(temp_workspace, "final_chain_report.md")

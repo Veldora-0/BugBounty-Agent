@@ -63,6 +63,7 @@ from framework.attack_path.validator import (
     validate_state_transition,
 )
 from framework.findings.schema import Finding
+from framework.scope.engine import ScopeEngine
 
 
 # ==============================================================================
@@ -76,13 +77,11 @@ def temp_workspace():
     shutil.rmtree(tmp, ignore_errors=True)
 
 
-class MockScopeEngine:
-    def __init__(self, in_scope_assets: Optional[List[str]] = None) -> None:
-        self.in_scope = set(in_scope_assets or ["api.example.com", "example.com"])
-
-    def is_in_scope(self, target: str) -> bool:
-        clean = target.strip().lower()
-        return clean in self.in_scope or any(clean.endswith("." + s) for s in self.in_scope)
+def _scope_engine(domains: Optional[List[str]] = None, excluded: Optional[List[str]] = None) -> ScopeEngine:
+    return ScopeEngine({
+        "targets": {"domains": domains or ["api.example.com"]},
+        "out_of_scope": {"domains": excluded or []},
+    })
 
 
 class MockEvidenceStore:
@@ -213,6 +212,7 @@ def test_ac_22_3_01_plan_creation_and_deterministic_hashing():
     assert plan.target_asset == "api.example.com"
     assert plan.target_endpoint == "/api/v1/reset-password"
     assert plan.validation_method == "PREREQUISITE_SATISFACTION_CHECK"
+    assert plan.scope_targets == ["api.example.com"]
     assert plan.version == 1
     assert len(plan.plan_hash) == 64
     assert plan.compute_plan_hash() == plan.plan_hash
@@ -371,23 +371,125 @@ def test_ac_22_3_09_illegal_state_machine_transitions():
 def test_ac_22_3_10_anti_toctou_dynamic_scope_revalidation():
     """AC-22.3-10: Dynamic scope engine re-evaluates target at dispatch gate (anti-TOCTOU)."""
     graph, path = _build_test_graph_and_path()
-    scope_eng = MockScopeEngine(in_scope_assets=["api.example.com"])
+    scope_eng = _scope_engine(["api.example.com"])
     planner = SafeChainValidationPlanner(scope_engine=scope_eng)
     plan = planner.create_validation_plan(path, graph)
     planner.submit_for_approval(plan)
     planner.approve_plan(plan, approved_by="OPERATOR-1")
 
     # Simulate scope contraction before dispatch
-    scope_eng.in_scope.remove("api.example.com")
+    changed_scope = _scope_engine(["api.example.com"], ["api.example.com"])
 
-    with pytest.raises(DispatchSecurityError, match="is no longer IN_SCOPE"):
-        planner.authorize_dispatch(plan, current_scope_engine=scope_eng)
+    with pytest.raises(DispatchSecurityError, match="not IN_SCOPE"):
+        planner.authorize_dispatch(plan, current_scope_engine=changed_scope)
+
+
+def test_dispatch_requires_real_scope_engine_even_with_in_scope_graph_label():
+    graph, path = _build_test_graph_and_path()
+    graph.get_node("FND-001").attributes["scope_reference"] = "IN_SCOPE"
+    planner = SafeChainValidationPlanner()
+    plan = planner.create_validation_plan(path, graph)
+    planner.submit_for_approval(plan)
+    planner.approve_plan(plan, approved_by="OPERATOR-1")
+
+    assert plan.scope_reference == "IN_SCOPE"
+    with pytest.raises(DispatchSecurityError, match="live ScopeEngine is required"):
+        planner.authorize_dispatch(plan)
+
+    class LaxScopeStub:
+        def is_in_scope(self, _target: str) -> bool:
+            return True
+
+    with pytest.raises(DispatchSecurityError, match="live ScopeEngine is required"):
+        planner.authorize_dispatch(plan, current_scope_engine=LaxScopeStub())
+
+
+def test_dispatch_scope_check_covers_every_asset_in_path():
+    graph, path = _build_test_graph_and_path()
+    outside_asset = AttackGraphNode(
+        node_id="ASSET-OUTSIDE",
+        node_type=NodeType.ASSET,
+        label="outside.invalid",
+        attributes={"asset": "outside.invalid"},
+        scope_status="IN_SCOPE",
+    )
+    graph.add_node(outside_asset)
+    graph.add_edge(AttackGraphEdge(
+        edge_id="EDGE-OMITTED-ASSET",
+        source_id="EP-002",
+        destination_id=outside_asset.node_id,
+        edge_type=EdgeType.HOSTED_ON,
+        state=RelationshipState.THEORETICAL,
+    ))
+    path.edge_ids.append("EDGE-OMITTED-ASSET")
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
+    plan = planner.create_validation_plan(path, graph)
+    planner.submit_for_approval(plan)
+    planner.approve_plan(plan, approved_by="OPERATOR-1")
+
+    assert "outside.invalid" in plan.scope_targets
+    with pytest.raises(DispatchSecurityError, match="outside.invalid.*not IN_SCOPE"):
+        planner.authorize_dispatch(plan)
+
+
+def test_scope_is_rechecked_at_execution_after_dispatch_authorization():
+    graph, path = _build_test_graph_and_path()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
+    plan = planner.create_validation_plan(path, graph)
+    planner.submit_for_approval(plan)
+    planner.approve_plan(plan, approved_by="OPERATOR-1")
+    planner.authorize_dispatch(plan)
+
+    called = False
+
+    def executor(_plan):
+        nonlocal called
+        called = True
+        raise AssertionError("executor must not run after scope contraction")
+
+    contracted_scope = _scope_engine(["api.example.com"], ["api.example.com"])
+    with pytest.raises(DispatchSecurityError, match="not IN_SCOPE"):
+        planner.execute_dispatched_plan(plan, executor_func=executor, current_scope_engine=contracted_scope)
+    assert called is False
+
+
+def test_status_forgery_cannot_create_dispatch_authorization():
+    graph, path = _build_test_graph_and_path()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
+    plan = planner.create_validation_plan(path, graph)
+    planner.submit_for_approval(plan)
+    planner.approve_plan(plan, approved_by="OPERATOR-1")
+    plan.status = ValidationPlanStatus.DISPATCHED
+
+    with pytest.raises(DispatchSecurityError, match="no matching live dispatch authorization"):
+        planner.execute_dispatched_plan(plan)
+
+
+def test_execution_result_cannot_be_reused_across_plans():
+    graph, path = _build_test_graph_and_path()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
+    plan1 = planner.create_validation_plan(path, graph)
+    plan2 = planner.create_validation_plan(path, graph)
+    for plan in (plan1, plan2):
+        planner.submit_for_approval(plan)
+        planner.approve_plan(plan, approved_by="OPERATOR-1")
+        planner.authorize_dispatch(plan)
+
+    result1 = planner.execute_dispatched_plan(plan1)
+    result2 = planner.execute_dispatched_plan(plan2)
+    with pytest.raises(EvidenceVerificationError, match="not bound to this live plan"):
+        planner.verify_evidence_and_promote(plan2, result1, graph)
+
+    ok, edge_ids = planner.verify_evidence_and_promote(plan2, result2, graph)
+    assert ok is False
+    assert "remain hypotheses" in edge_ids[0]
+    assert all(graph.get_edge(eid).state == RelationshipState.THEORETICAL for eid in path.edge_ids)
 
 
 def test_ac_22_3_11_target_endpoint_and_asset_revalidation():
     """AC-22.3-11: Target mismatch between plan and approval is blocked at dispatch gate."""
     graph, path = _build_test_graph_and_path()
-    planner = SafeChainValidationPlanner()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
     plan = planner.create_validation_plan(path, graph)
     planner.submit_for_approval(plan)
     planner.approve_plan(plan, approved_by="OPERATOR-1")
@@ -402,7 +504,7 @@ def test_ac_22_3_11_target_endpoint_and_asset_revalidation():
 def test_ac_22_3_12_cross_tenant_validation_rejection():
     """AC-22.3-12: Tenant ID mismatch between plan and approval is blocked at dispatch gate."""
     graph, path = _build_test_graph_and_path()
-    planner = SafeChainValidationPlanner()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
     plan = planner.create_validation_plan(path, graph)
     plan.tenant_id = "tenant-10"
     planner.submit_for_approval(plan)
@@ -482,9 +584,9 @@ def test_ac_22_3_15_destructive_validation_method_rejection():
 
 
 def test_ac_22_3_16_evidence_provenance_preservation():
-    """AC-22.3-16: Simulated execution results are marked SIMULATED and never silently promoted to OBSERVED."""
+    """AC-22.3-16: Simulated execution remains a hypothesis and cannot validate graph edges."""
     graph, path = _build_test_graph_and_path()
-    planner = SafeChainValidationPlanner()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
     plan = planner.create_validation_plan(path, graph)
     planner.submit_for_approval(plan)
     planner.approve_plan(plan, approved_by="OPERATOR-1")
@@ -493,23 +595,30 @@ def test_ac_22_3_16_evidence_provenance_preservation():
     exec_res = planner.execute_dispatched_plan(plan)
     assert exec_res.is_simulated is True
     assert exec_res.status == ValidationPlanStatus.COMPLETED
+    assert exec_res.evidence_ref is None
+    assert exec_res.evidence_sha256 is None
+    assert exec_res.observed_delta_digest is None
 
     ok, edge_ids = planner.verify_evidence_and_promote(plan, exec_res, graph)
-    assert ok is True
-    for eid in edge_ids:
+    assert ok is False
+    assert "remain hypotheses" in edge_ids[0]
+    assert "remain hypotheses" in planner.get_audit_log()[-1].sanitized_reason
+    assert plan.status == ValidationPlanStatus.COMPLETED
+    assert path.state == ChainState.HYPOTHESIS
+    for eid in plan.relationship_ids:
         edge = graph.get_edge(eid)
-        assert edge.state == RelationshipState.LINK_VALIDATED
-        assert edge.provenance.authenticity_class == "SIMULATED_VERIFICATION"
+        assert edge.state == RelationshipState.THEORETICAL
+        assert edge.provenance is None
 
 
 def test_ac_22_3_17_evidence_digest_verification():
-    """AC-22.3-17: Evidence digest mismatch in EvidenceStore triggers EvidenceVerificationError."""
+    """AC-22.3-17: Caller-created evidence digests cannot authenticate an execution result."""
     graph, path = _build_test_graph_and_path()
     ev_store = MockEvidenceStore()
     ref = "EV-CORRECT"
-    correct_digest = ev_store.add_evidence(ref, b"Valid HTTP response evidence body")
+    ev_store.add_evidence(ref, b"Valid HTTP response evidence body")
 
-    planner = SafeChainValidationPlanner()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
     plan = planner.create_validation_plan(path, graph)
     planner.submit_for_approval(plan)
     planner.approve_plan(plan, approved_by="OPERATOR-1")
@@ -527,15 +636,15 @@ def test_ac_22_3_17_evidence_digest_verification():
         is_simulated=False,
     )
 
-    with pytest.raises(EvidenceVerificationError, match="Evidence digest mismatch"):
+    with pytest.raises(EvidenceVerificationError, match="not bound to this live plan"):
         planner.verify_evidence_and_promote(plan, falsified_result, graph, evidence_store=ev_store)
 
 
 def test_ac_22_3_18_stale_evidence_rejection():
-    """AC-22.3-18: Evidence with missing store reference is rejected."""
+    """AC-22.3-18: A caller-created stale evidence reference cannot bind to a live dispatch."""
     graph, path = _build_test_graph_and_path()
     ev_store = MockEvidenceStore()
-    planner = SafeChainValidationPlanner()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
     plan = planner.create_validation_plan(path, graph)
     planner.submit_for_approval(plan)
     planner.approve_plan(plan, approved_by="OPERATOR-1")
@@ -552,14 +661,14 @@ def test_ac_22_3_18_stale_evidence_rejection():
         is_simulated=False,
     )
 
-    with pytest.raises(EvidenceVerificationError, match="not found in EvidenceStore"):
+    with pytest.raises(EvidenceVerificationError, match="not bound to this live plan"):
         planner.verify_evidence_and_promote(plan, missing_result, graph, evidence_store=ev_store)
 
 
 def test_ac_22_3_19_partial_execution_handling():
     """AC-22.3-19: Rule 8 - Partial execution is never promoted to validated."""
     graph, path = _build_test_graph_and_path()
-    planner = SafeChainValidationPlanner()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
     plan = planner.create_validation_plan(path, graph)
     planner.submit_for_approval(plan)
     planner.approve_plan(plan, approved_by="OPERATOR-1")
@@ -588,7 +697,7 @@ def test_ac_22_3_19_partial_execution_handling():
 def test_ac_22_3_20_duplicate_dispatch_prevention():
     """AC-22.3-20: Dispatched plan cannot be dispatched a second time."""
     graph, path = _build_test_graph_and_path()
-    planner = SafeChainValidationPlanner()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
     plan = planner.create_validation_plan(path, graph)
     planner.submit_for_approval(plan)
     planner.approve_plan(plan, approved_by="OPERATOR-1")
@@ -672,11 +781,11 @@ def test_ac_22_3_23_state_persistence_and_audit_log_fidelity(temp_workspace):
 
 
 def test_ac_22_3_24_end_to_end_correlation_to_validation_pipeline():
-    """AC-22.3-24: Full end-to-end integration from correlator candidate path to validated chain."""
+    """AC-22.3-24: Simulated pipeline completion does not empirically validate a chain."""
     graph, path = _build_test_graph_and_path()
     all_paths = {path.path_id: path}
 
-    planner = SafeChainValidationPlanner()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
     plan = planner.create_validation_plan(path, graph)
     planner.submit_for_approval(plan)
     planner.approve_plan(plan, approved_by="SECURITY_LEAD")
@@ -688,18 +797,19 @@ def test_ac_22_3_24_end_to_end_correlation_to_validation_pipeline():
     ok, edge_ids = planner.verify_evidence_and_promote(
         plan, exec_result, graph, all_paths=all_paths
     )
-    assert ok is True
-    assert set(edge_ids) == set(plan.relationship_ids)
-    assert plan.status == ValidationPlanStatus.CHAIN_VALIDATED
-    assert path.state == ChainState.FULLY_VALIDATED
+    assert ok is False
+    assert "remain hypotheses" in edge_ids[0]
+    assert plan.status == ValidationPlanStatus.COMPLETED
+    assert path.state == ChainState.HYPOTHESIS
+    assert all(graph.get_edge(eid).state == RelationshipState.THEORETICAL for eid in path.edge_ids)
 
 
 def test_ac_22_3_25_multi_edge_partial_vs_full_chain_promotion():
-    """AC-22.3-25: Multi-edge path only reaches FULLY_VALIDATED when ALL edges are validated."""
+    """AC-22.3-25: Simulations never promote individual or complete multi-edge paths."""
     graph, path = _build_test_graph_and_path()
     all_paths = {path.path_id: path}
 
-    planner = SafeChainValidationPlanner()
+    planner = SafeChainValidationPlanner(scope_engine=_scope_engine())
     # Plan 1: Only validates edge 1
     plan1 = planner.create_validation_plan(path, graph)
     plan1.relationship_ids = ["EDGE-F1-C1"]
@@ -711,11 +821,11 @@ def test_ac_22_3_25_multi_edge_partial_vs_full_chain_promotion():
     res1 = planner.execute_dispatched_plan(plan1)
 
     ok1, edges1 = planner.verify_evidence_and_promote(plan1, res1, graph, all_paths=all_paths)
-    assert ok1 is True
-    assert edges1 == ["EDGE-F1-C1"]
-    # Path should only be PARTIALLY_VALIDATED, plan is RELATIONSHIP_VALIDATED
-    assert path.state == ChainState.PARTIALLY_VALIDATED
-    assert plan1.status == ValidationPlanStatus.RELATIONSHIP_VALIDATED
+    assert ok1 is False
+    assert "remain hypotheses" in edges1[0]
+    assert path.state == ChainState.HYPOTHESIS
+    assert plan1.status == ValidationPlanStatus.COMPLETED
+    assert graph.get_edge("EDGE-F1-C1").state == RelationshipState.THEORETICAL
 
     # Plan 2: Validates edge 2
     plan2 = planner.create_validation_plan(path, graph)
@@ -728,8 +838,8 @@ def test_ac_22_3_25_multi_edge_partial_vs_full_chain_promotion():
     res2 = planner.execute_dispatched_plan(plan2)
 
     ok2, edges2 = planner.verify_evidence_and_promote(plan2, res2, graph, all_paths=all_paths)
-    assert ok2 is True
-    assert edges2 == ["EDGE-C1-EP2"]
-    # Now all edges are validated -> path is FULLY_VALIDATED and plan is CHAIN_VALIDATED
-    assert path.state == ChainState.FULLY_VALIDATED
-    assert plan2.status == ValidationPlanStatus.CHAIN_VALIDATED
+    assert ok2 is False
+    assert "remain hypotheses" in edges2[0]
+    assert path.state == ChainState.HYPOTHESIS
+    assert plan2.status == ValidationPlanStatus.COMPLETED
+    assert all(graph.get_edge(eid).state == RelationshipState.THEORETICAL for eid in path.edge_ids)

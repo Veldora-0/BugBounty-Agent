@@ -500,11 +500,17 @@ def cmd_validate(args: argparse.Namespace, state_mgr: AttackPathStateManager) ->
         planner.authorize_dispatch(plan, current_scope_engine=scope_eng)
 
         print(f"[*] Executing non-destructive validation probe...")
-        exec_res = planner.execute_dispatched_plan(plan)
+        execution_scope = resolve_scope_engine(state_mgr.program_dir)
+        if execution_scope is None:
+            raise DispatchSecurityError("A valid current program scope file is required at execution time")
+        exec_res = planner.execute_dispatched_plan(plan, current_scope_engine=execution_scope)
 
         print(f"[*] Verifying evidence and provenance...")
         graph = state_mgr.load_graph()
         ok, edge_ids = planner.verify_evidence_and_promote(plan, exec_res, graph)
+        if not ok:
+            for reason in edge_ids:
+                print(f"[!] Not empirically validated: {reason}")
 
         # Persist updated graph and plans
         state_mgr.save_graph(graph)
@@ -517,8 +523,9 @@ def cmd_validate(args: argparse.Namespace, state_mgr: AttackPathStateManager) ->
         print(f" Plan ID:           {plan.plan_id}")
         print(f" Plan Status:       {plan.status.value}")
         print(f" Execution Status:  {exec_res.status.value}")
+        print(f" Execution Mode:    {'SIMULATED FIXTURE (no target request)' if exec_res.is_simulated else 'EMPIRICAL'}")
         print(f" Evidence Ref:      {exec_res.evidence_ref}")
-        print(f" Promoted Edges:    {', '.join(edge_ids) if edge_ids else 'None'}")
+        print(f" Promoted Edges:    {', '.join(edge_ids) if ok and edge_ids else 'None'}")
         print(f" Outcome:           {'VALIDATED' if ok else 'UNVALIDATED / PARTIAL'}")
         print("=" * 78)
         return 0 if ok else 1

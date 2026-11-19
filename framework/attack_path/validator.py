@@ -1,16 +1,15 @@
 """
 Phase 22.3: Safe Validation Planning & Approval Gates.
 
-Provides the trusted planning, approval, authorization gate, and evidence-driven
-promotion boundary for candidate attack-path hypotheses.
+Provides the trusted planning, approval, authorization gate, and simulation boundary
+for candidate attack-path hypotheses.
 
 Core Principles:
 1. Strict separation of correlation, planning, human approval, dispatch, and validation.
 2. Default-deny posture: zero active validation without explicit, unexpired, unrevoked human approval.
 3. Anti-TOCTOU validation: dynamic scope, authorization, tenant, and integrity re-verification at dispatch time.
 4. Cryptographic plan integrity: deterministic plan hashes covering all security-critical parameters.
-5. Evidence verification: relationship promotion requires proven causality and byte integrity;
-   simulated or inferred evidence never silently becomes observed evidence.
+5. Simulation separation: Phase 22 fixture results never become empirical relationship proof.
 6. Zero secrets: strictly no credentials, tokens, cookies, or raw authorization headers stored in plans.
 """
 
@@ -33,14 +32,13 @@ from framework.attack_path.model import (
     AttackGraphNode,
     AttackPath,
     CapabilityType,
-    CausalityProofType,
     ChainState,
     EdgeType,
     NodeType,
-    RelationshipProvenance,
     RelationshipState,
     assert_no_raw_secrets,
 )
+from framework.scope.engine import ScopeEngine, ScopeStatus
 
 
 # ==============================================================================
@@ -614,6 +612,7 @@ class ChainValidationPlan:
     expected_evidence: str
     scope_reference: str
     scope_snapshot_hash: str
+    scope_targets: List[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     expires_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     tenant_id: Optional[str] = None
@@ -671,6 +670,9 @@ class ChainValidationPlan:
             "scope_snapshot_hash": self.scope_snapshot_hash,
             "version": self.version,
         }
+        # Preserve hashes for legacy plans that did not carry the explicit path targets.
+        if self.scope_targets:
+            canonical["scope_targets"] = sorted(set(self.scope_targets))
         encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
@@ -700,6 +702,7 @@ class ChainValidationPlan:
             "is_destructive": self.is_destructive,
             "scope_reference": self.scope_reference,
             "scope_snapshot_hash": self.scope_snapshot_hash,
+            "scope_targets": list(self.scope_targets),
             "created_at": self.created_at,
             "expires_at": self.expires_at,
             "version": self.version,
@@ -748,6 +751,7 @@ class ChainValidationPlan:
             expected_evidence=data.get("expected_evidence", ""),
             scope_reference=data.get("scope_reference", ""),
             scope_snapshot_hash=data.get("scope_snapshot_hash", ""),
+            scope_targets=list(data.get("scope_targets", [])),
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
             expires_at=data.get("expires_at", datetime.now(timezone.utc).isoformat()),
             tenant_id=data.get("tenant_id"),
@@ -782,7 +786,7 @@ class SafeChainValidationPlanner:
     2. Approval Gates: Enforces explicit human approval, revocation, and expiration.
     3. Dispatch Authorization: Enforces dynamic anti-TOCTOU scope, tenant, and integrity checks.
     4. Execution Boundary: Executes safe, isolated non-destructive validations.
-    5. Evidence Verification: Verifies empirical provenance and promotes graph edges/chains.
+    5. Evidence Boundary: Keeps simulation results separate from empirically validated graph edges.
     """
 
     def __init__(
@@ -796,6 +800,10 @@ class SafeChainValidationPlanner:
         self.state_manager = state_manager
         self._audit_log: List[ValidationAuditEvent] = []
         self._plans: Dict[str, ChainValidationPlan] = {}
+        # In-memory capabilities prevent a deserialized or status-forged plan from
+        # crossing the dispatch boundary in a different planner instance.
+        self._dispatch_authorizations: Dict[str, Tuple[str, str, ScopeEngine]] = {}
+        self._issued_execution_results: Dict[str, Tuple[ValidationExecutionResult, str, str, str]] = {}
 
     def _record_audit_event(
         self,
@@ -862,7 +870,12 @@ class SafeChainValidationPlanner:
         target_method = "GET"
         tenant_id = None
         principal_id = None
-        scope_ref = "IN_SCOPE"
+        scope_ref = ""
+        scope_targets: List[str] = []
+
+        def add_scope_target(value: Any) -> None:
+            if isinstance(value, str) and value.strip() and value.strip() not in scope_targets:
+                scope_targets.append(value.strip())
 
         for nid in path.node_ids:
             node = graph.get_node(nid)
@@ -875,13 +888,16 @@ class SafeChainValidationPlanner:
                 else:
                     target_finding_ids.append(f_id)
             elif node.node_type == NodeType.ENDPOINT:
-                target_endpoint = node.attributes.get("path", node.label)
+                target_endpoint = node.attributes.get("path") or node.attributes.get("url") or node.label
                 target_method = node.attributes.get("method", "GET")
                 if not target_asset and node.attributes.get("asset"):
                     target_asset = str(node.attributes["asset"])
+                add_scope_target(node.attributes.get("asset"))
+                add_scope_target(node.attributes.get("url"))
             elif node.node_type == NodeType.ASSET:
                 if not target_asset:
                     target_asset = node.attributes.get("asset", node.label)
+                add_scope_target(node.attributes.get("asset") or node.label)
             elif node.node_type == NodeType.PRINCIPAL:
                 principal_id = node.attributes.get("principal_id", node.label)
                 if not tenant_id and node.attributes.get("tenant_id"):
@@ -893,11 +909,30 @@ class SafeChainValidationPlanner:
                 principal_id = str(node.attributes["principal_id"])
             if node.attributes.get("scope_reference"):
                 scope_ref = str(node.attributes["scope_reference"])
+            add_scope_target(node.attributes.get("asset"))
+            add_scope_target(node.attributes.get("target_asset"))
+
+        # Edge endpoints are also authoritative targets, even if a malformed or
+        # legacy path omitted one of their nodes from node_ids.
+        for edge_id in path.edge_ids:
+            edge = graph.get_edge(edge_id)
+            if not edge:
+                continue
+            for node_id in (edge.source_id, edge.destination_id):
+                endpoint_node = graph.get_node(node_id)
+                if not endpoint_node:
+                    continue
+                add_scope_target(endpoint_node.attributes.get("asset"))
+                add_scope_target(endpoint_node.attributes.get("target_asset"))
+                add_scope_target(endpoint_node.attributes.get("url"))
+                if endpoint_node.node_type == NodeType.ASSET:
+                    add_scope_target(endpoint_node.label)
 
         if not target_asset and source_finding_ids:
             first_node = graph.get_node(source_finding_ids[0])
             if first_node and first_node.attributes.get("asset"):
                 target_asset = str(first_node.attributes["asset"])
+        add_scope_target(target_asset)
 
         # Compute deterministic plan ID
         plan_seed = f"{path.path_id}:{validation_method}:{target_asset}:{target_endpoint}:{time.time()}"
@@ -931,6 +966,7 @@ class SafeChainValidationPlanner:
             is_destructive=False,
             scope_reference=scope_ref,
             scope_snapshot_hash=scope_snapshot_hash,
+            scope_targets=scope_targets,
             created_at=now.isoformat(),
             expires_at=expires_at,
             version=1,
@@ -1086,6 +1122,33 @@ class SafeChainValidationPlanner:
             sanitized_reason=f"Revocation enforced: {reason}",
         )
 
+    def _revalidate_scope(self, plan: ChainValidationPlan, scope_engine: Optional[Any]) -> ScopeEngine:
+        """Rechecks every bound path target using the real scope evaluator."""
+        if not isinstance(scope_engine, ScopeEngine):
+            raise DispatchSecurityError("Dispatch denied: a live ScopeEngine is required")
+        if not plan.scope_targets:
+            raise DispatchSecurityError("Dispatch denied: validation plan has no bound path scope targets")
+
+        targets = list(dict.fromkeys([*plan.scope_targets, plan.target_asset]))
+        if plan.target_endpoint.startswith(("http://", "https://")):
+            targets.append(plan.target_endpoint)
+        targets = list(dict.fromkeys(t for t in targets if isinstance(t, str) and t.strip()))
+        if not targets:
+            raise DispatchSecurityError("Dispatch denied: validation plan has no bound scope targets")
+
+        for target in targets:
+            try:
+                decision = scope_engine.check(target)
+            except Exception as exc:
+                raise DispatchSecurityError(
+                    f"Dispatch denied: scope evaluation failed for a bound target ({type(exc).__name__})"
+                ) from exc
+            if getattr(getattr(decision, "status", None), "value", None) != ScopeStatus.IN_SCOPE.value:
+                raise DispatchSecurityError(
+                    f"Dispatch denied: target '{target}' is not IN_SCOPE under current scope rules"
+                )
+        return scope_engine
+
     def authorize_dispatch(
         self,
         plan: ChainValidationPlan,
@@ -1182,39 +1245,18 @@ class SafeChainValidationPlanner:
             )
             raise DispatchSecurityError(f"Dispatch denied: {reason}")
 
-        # Gate 8: Dynamic scope recheck (anti-TOCTOU)
+        # Gate 8: Dynamic scope recheck (anti-TOCTOU). A prose scope reference or
+        # status copied from graph nodes is never authorization evidence.
         scope_eng = current_scope_engine or self.scope_engine
-        if scope_eng and hasattr(scope_eng, "is_in_scope"):
-            is_valid = scope_eng.is_in_scope(plan.target_asset)
-            if not is_valid:
-                reason = f"Target asset '{plan.target_asset}' is no longer IN_SCOPE under current scope rules"
-                self._record_audit_event(
-                    ValidationAuditEventType.DISPATCH_DENIED, plan.plan_id, plan.version, plan.plan_hash,
-                    actor, "DENY", "BLOCKED", reason
-                )
-                raise DispatchSecurityError(f"Dispatch denied: {reason}")
-        elif scope_eng and hasattr(scope_eng, "check"):
-            decision = scope_eng.check(plan.target_asset)
-            status_val = getattr(decision, "status", None)
-            is_valid = (
-                status_val == "IN_SCOPE"
-                or str(status_val) in ("ScopeStatus.IN_SCOPE", "IN_SCOPE")
-                or getattr(status_val, "value", "") == "IN_SCOPE"
-            )
-            if not is_valid:
-                reason = f"Target asset '{plan.target_asset}' is not IN_SCOPE under current scope rules"
-                self._record_audit_event(
-                    ValidationAuditEventType.DISPATCH_DENIED, plan.plan_id, plan.version, plan.plan_hash,
-                    actor, "DENY", "BLOCKED", reason
-                )
-                raise DispatchSecurityError(f"Dispatch denied: {reason}")
-        elif plan.scope_reference != "IN_SCOPE":
-            reason = f"Target scope reference is '{plan.scope_reference}', requires 'IN_SCOPE'"
+        try:
+            scope_eng = self._revalidate_scope(plan, scope_eng)
+        except DispatchSecurityError as exc:
+            reason = str(exc).removeprefix("Dispatch denied: ")
             self._record_audit_event(
                 ValidationAuditEventType.DISPATCH_DENIED, plan.plan_id, plan.version, plan.plan_hash,
                 actor, "DENY", "BLOCKED", reason
             )
-            raise DispatchSecurityError(f"Dispatch denied: {reason}")
+            raise
 
         # Gate 9: Tenant & Principal consistency
         if plan.tenant_id != plan.approval.tenant_id:
@@ -1228,6 +1270,11 @@ class SafeChainValidationPlanner:
         # All 9 gates passed: Transition to DISPATCHED
         validate_state_transition(plan.status, ValidationPlanStatus.DISPATCHED)
         plan.status = ValidationPlanStatus.DISPATCHED
+        self._dispatch_authorizations[plan.plan_id] = (
+            plan.plan_hash,
+            plan.approval.approval_id,
+            scope_eng,
+        )
         self._record_audit_event(
             event_type=ValidationAuditEventType.DISPATCH_AUTHORIZED,
             plan_id=plan.plan_id,
@@ -1244,6 +1291,7 @@ class SafeChainValidationPlanner:
         self,
         plan: ChainValidationPlan,
         executor_func: Optional[Any] = None,
+        current_scope_engine: Optional[Any] = None,
     ) -> ValidationExecutionResult:
         """
         Executes an authorized plan through a safe, isolated validation fixture.
@@ -1254,6 +1302,24 @@ class SafeChainValidationPlanner:
                 f"Cannot execute plan '{plan.plan_id}': status is '{plan.status.value}', expected 'DISPATCHED'"
             )
 
+        authorization = self._dispatch_authorizations.get(plan.plan_id)
+        if (
+            authorization is None
+            or not plan.approval
+            or authorization[0] != plan.plan_hash
+            or authorization[1] != plan.approval.approval_id
+        ):
+            raise DispatchSecurityError("Cannot execute plan: no matching live dispatch authorization")
+        if plan.is_plan_tampered() or plan.approval.plan_hash != plan.plan_hash or plan.approval.revoked:
+            raise DispatchSecurityError("Cannot execute plan: approval is revoked or plan integrity changed")
+        if plan.approval.is_expired():
+            plan.status = ValidationPlanStatus.EXPIRED
+            raise DispatchSecurityError("Cannot execute plan: approval expired before execution")
+        # Scope can contract after authorization. Evaluate again at the execution boundary.
+        scope_engine = current_scope_engine or self.scope_engine or authorization[2]
+        self._revalidate_scope(plan, scope_engine)
+        self._dispatch_authorizations.pop(plan.plan_id, None)
+
         now = datetime.now(timezone.utc)
         dispatched_at = now.isoformat()
 
@@ -1262,6 +1328,10 @@ class SafeChainValidationPlanner:
                 res = executor_func(plan)
                 if not isinstance(res, ValidationExecutionResult):
                     raise ValueError("Executor function must return ValidationExecutionResult")
+                if res.plan_id != plan.plan_id:
+                    raise ValueError("Executor result plan_id does not match authorized plan")
+                if not res.is_simulated:
+                    raise ValueError("Phase 22 executor accepts simulated fixtures only")
                 result = res
             except Exception as exc:
                 result = ValidationExecutionResult(
@@ -1276,20 +1346,13 @@ class SafeChainValidationPlanner:
         else:
             # Deterministic, non-destructive simulation fixture
             exec_id = f"EXEC-{hashlib.sha256(f'{plan.plan_id}:{dispatched_at}'.encode()).hexdigest()[:16]}"
-            evidence_body = f"EVIDENCE_RECORD:{plan.plan_id}:{plan.validation_method}:{plan.target_asset}"
-            ev_digest = hashlib.sha256(evidence_body.encode("utf-8")).hexdigest()
-            delta_digest = hashlib.sha256(f"DELTA:{ev_digest}".encode("utf-8")).hexdigest()
-
             result = ValidationExecutionResult(
                 execution_id=exec_id,
                 plan_id=plan.plan_id,
                 dispatched_at=dispatched_at,
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 status=ValidationPlanStatus.COMPLETED,
-                evidence_ref=f"EV-{exec_id}",
-                evidence_sha256=ev_digest,
-                observed_delta_digest=delta_digest,
-                sanitized_output="Validation completed successfully. Output sanitized.",
+                sanitized_output="Simulated fixture completed; no target request was sent.",
                 is_simulated=True,
             )
 
@@ -1315,6 +1378,12 @@ class SafeChainValidationPlanner:
             sanitized_reason=result.error_message or "Execution finished",
             evidence_ref=result.evidence_ref,
         )
+        self._issued_execution_results[result.execution_id] = (
+            result,
+            plan.plan_id,
+            plan.plan_hash,
+            plan.approval.approval_id if plan.approval else "",
+        )
         return result
 
     def verify_evidence_and_promote(
@@ -1326,11 +1395,12 @@ class SafeChainValidationPlanner:
         all_paths: Optional[Dict[str, AttackPath]] = None,
     ) -> Tuple[bool, List[str]]:
         """
-        Independently verifies evidence integrity and provenance.
-        If valid:
-        - Promotes constituent edges to LINK_VALIDATED with RelationshipProvenance.
-        - If and only if ALL edges in the chain are validated, promotes the attack path to FULLY_VALIDATED.
-        - Preserves anti-inflation guarantees: finding and path severities remain untouched.
+        Keeps Phase 22's simulation fixture separate from empirical relationship validation.
+
+        This phase has no authenticated live-dispatch receipt boundary, so it must never
+        promote a graph edge or path from a fixture result or a caller-constructed result.
+        The EvidenceStore argument remains accepted for API compatibility, but cannot turn
+        a simulated result into empirical proof.
         """
         actor = "EVIDENCE_VERIFIER"
 
@@ -1351,121 +1421,44 @@ class SafeChainValidationPlanner:
             )
             return False, [reason]
 
-        # Rule 9 & 10: Dispatch success alone does not prove relationship; independent verification
-        if not execution_result.evidence_ref or not execution_result.evidence_sha256:
-            reason = "Execution result lacks mandatory evidence reference or SHA-256 digest"
+        issued = self._issued_execution_results.get(execution_result.execution_id)
+        if (
+            issued is None
+            or issued[0] is not execution_result
+            or issued[1] != plan.plan_id
+            or issued[2] != plan.plan_hash
+            or not plan.approval
+            or issued[3] != plan.approval.approval_id
+            or execution_result.plan_id != plan.plan_id
+            or plan.execution_result is not execution_result
+            or plan.status != ValidationPlanStatus.COMPLETED
+        ):
+            reason = "Execution result is not bound to this live plan and authorized dispatch"
             self._record_audit_event(
                 ValidationAuditEventType.EVIDENCE_REJECTED, plan.plan_id, plan.version, plan.plan_hash,
                 actor, "DENY", "BLOCKED", reason
             )
             raise EvidenceVerificationError(reason)
 
-        # Verify evidence in EvidenceStore if provided
-        if evidence_store and hasattr(evidence_store, "get_evidence"):
-            record = evidence_store.get_evidence(execution_result.evidence_ref)
-            if not record:
-                reason = f"Evidence reference '{execution_result.evidence_ref}' not found in EvidenceStore"
-                self._record_audit_event(
-                    ValidationAuditEventType.EVIDENCE_REJECTED, plan.plan_id, plan.version, plan.plan_hash,
-                    actor, "DENY", "BLOCKED", reason
-                )
-                raise EvidenceVerificationError(reason)
-
-            # Check digest integrity
-            expected_digest = getattr(record, "sha256", None) or getattr(record, "digest", None)
-            if expected_digest and expected_digest != execution_result.evidence_sha256:
-                reason = f"Evidence digest mismatch: expected '{expected_digest}', got '{execution_result.evidence_sha256}'"
-                self._record_audit_event(
-                    ValidationAuditEventType.EVIDENCE_REJECTED, plan.plan_id, plan.version, plan.plan_hash,
-                    actor, "DENY", "BLOCKED", reason
-                )
-                raise EvidenceVerificationError(reason)
-
-        # Transition plan to EVIDENCE_VERIFIED
-        validate_state_transition(plan.status, ValidationPlanStatus.EVIDENCE_VERIFIED)
-        plan.status = ValidationPlanStatus.EVIDENCE_VERIFIED
-        self._record_audit_event(
-            event_type=ValidationAuditEventType.EVIDENCE_VERIFIED,
-            plan_id=plan.plan_id,
-            plan_version=plan.version,
-            plan_hash=plan.plan_hash,
-            actor_id=actor,
-            decision="ALLOW",
-            outcome="SUCCESS",
-            sanitized_reason="Evidence digest and provenance verified",
-            evidence_ref=execution_result.evidence_ref,
-        )
-
-        # Promote constituent relationship edges in graph
-        promoted_edge_ids: List[str] = []
-        for eid in plan.relationship_ids:
-            edge = graph.get_edge(eid)
-            if not edge:
-                continue
-
-            # Provenance binding
-            src_f = plan.source_finding_ids[0] if plan.source_finding_ids else edge.source_id
-            tgt_f = plan.target_finding_ids[0] if plan.target_finding_ids else edge.destination_id
-
-            provenance = RelationshipProvenance(
-                source_finding_id=src_f,
-                target_finding_id=tgt_f,
-                source_evidence_ref=edge.provenance.source_evidence_ref if edge.provenance else "EV-SRC",
-                target_evidence_ref=edge.provenance.target_evidence_ref if edge.provenance else "EV-TGT",
-                transition_evidence_ref=execution_result.evidence_ref,
-                authenticity_class="CONTROLLED_DISPATCH_RECEIPT" if not execution_result.is_simulated else "SIMULATED_VERIFICATION",
-                causality_proof_type=CausalityProofType.DIFFERENTIAL_BASELINE_PROVEN,
-                canary_response_digest=execution_result.observed_delta_digest,
-                verified_at=datetime.now(timezone.utc).isoformat(),
-            )
-            edge.state = RelationshipState.LINK_VALIDATED
-            edge.provenance = provenance
-            promoted_edge_ids.append(eid)
-
+        self._issued_execution_results.pop(execution_result.execution_id, None)
+        if execution_result.is_simulated:
+            reason = "Simulated execution completed; relationship and chain remain hypotheses pending empirical proof"
             self._record_audit_event(
-                event_type=ValidationAuditEventType.RELATIONSHIP_PROMOTED,
-                plan_id=plan.plan_id,
-                plan_version=plan.version,
-                plan_hash=plan.plan_hash,
-                actor_id=actor,
-                decision="ALLOW",
-                outcome="SUCCESS",
-                sanitized_reason=f"Edge '{eid}' promoted to LINK_VALIDATED",
+                ValidationAuditEventType.EVIDENCE_REJECTED, plan.plan_id, plan.version, plan.plan_hash,
+                actor, "DENY", "SIMULATION_ONLY", reason,
                 evidence_ref=execution_result.evidence_ref,
             )
+            return False, [reason]
 
-        validate_state_transition(plan.status, ValidationPlanStatus.RELATIONSHIP_VALIDATED)
-        plan.status = ValidationPlanStatus.RELATIONSHIP_VALIDATED
-
-        # Rule 11: A chain is promoted if and only if EVERY edge is LINK_VALIDATED
-        if all_paths and plan.path_id in all_paths:
-            path = all_paths[plan.path_id]
-            all_edges_validated = True
-            for eid in path.edge_ids:
-                e = graph.get_edge(eid)
-                if not e or e.state != RelationshipState.LINK_VALIDATED:
-                    all_edges_validated = False
-                    break
-
-            if all_edges_validated:
-                path.state = ChainState.FULLY_VALIDATED
-                validate_state_transition(plan.status, ValidationPlanStatus.CHAIN_VALIDATED)
-                plan.status = ValidationPlanStatus.CHAIN_VALIDATED
-                self._record_audit_event(
-                    event_type=ValidationAuditEventType.CHAIN_PROMOTED,
-                    plan_id=plan.plan_id,
-                    plan_version=plan.version,
-                    plan_hash=plan.plan_hash,
-                    actor_id=actor,
-                    decision="ALLOW",
-                    outcome="SUCCESS",
-                    sanitized_reason=f"All edges validated; chain '{path.path_id}' promoted to FULLY_VALIDATED",
-                    evidence_ref=execution_result.evidence_ref,
-                )
-            else:
-                path.state = ChainState.PARTIALLY_VALIDATED
-
-        return True, promoted_edge_ids
+        # Phase 22 has no trusted empirical dispatch integration. A boolean flag, even
+        # combined with a caller-selected evidence store, is not an authenticity proof.
+        reason = "Empirical chain promotion requires an authenticated dispatcher receipt not provided by Phase 22"
+        self._record_audit_event(
+            ValidationAuditEventType.EVIDENCE_REJECTED, plan.plan_id, plan.version, plan.plan_hash,
+            actor, "DENY", "BLOCKED", reason,
+            evidence_ref=execution_result.evidence_ref,
+        )
+        raise EvidenceVerificationError(reason)
 
     def get_audit_log(self) -> List[ValidationAuditEvent]:
         """Returns the chronological audit log of validation events."""
