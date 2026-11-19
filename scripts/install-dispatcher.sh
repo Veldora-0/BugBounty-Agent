@@ -19,6 +19,7 @@ fi
 
 DISPATCHER_USER="_bbdispatcher"
 DISPATCHER_GROUP="bbgroup"
+DISPATCHER_KEY_GROUP="bbdispatcher-keys"
 INSTALL_DIR="/opt/BugBounty-Agent"
 
 echo "[*] 1. Creating dedicated service group: ${DISPATCHER_GROUP}..."
@@ -29,6 +30,14 @@ else
     echo "[+] Group '${DISPATCHER_GROUP}' already exists."
 fi
 
+echo "[*] Creating dispatcher-only secret group: ${DISPATCHER_KEY_GROUP}..."
+if ! getent group "${DISPATCHER_KEY_GROUP}" >/dev/null; then
+    groupadd --system "${DISPATCHER_KEY_GROUP}"
+    echo "[+] Group '${DISPATCHER_KEY_GROUP}' created."
+else
+    echo "[+] Group '${DISPATCHER_KEY_GROUP}' already exists."
+fi
+
 echo "[*] 2. Creating dedicated unprivileged service account: ${DISPATCHER_USER}..."
 if ! id -u "${DISPATCHER_USER}" >/dev/null 2>&1; then
     useradd --system --gid "${DISPATCHER_GROUP}" --no-create-home --shell /usr/sbin/nologin "${DISPATCHER_USER}"
@@ -36,6 +45,8 @@ if ! id -u "${DISPATCHER_USER}" >/dev/null 2>&1; then
 else
     echo "[+] User '${DISPATCHER_USER}' already exists."
 fi
+usermod -aG "${DISPATCHER_KEY_GROUP}" "${DISPATCHER_USER}"
+echo "[+] User '${DISPATCHER_USER}' added to '${DISPATCHER_KEY_GROUP}'."
 
 if [[ -n "$AGENT_USER" ]]; then
     echo "[*] Adding agent user '${AGENT_USER}' to '${DISPATCHER_GROUP}'..."

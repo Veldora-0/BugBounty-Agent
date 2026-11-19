@@ -23,6 +23,11 @@ if [[ ! -f "$UNIT_FILE" ]] || ! grep -Fq 'EnvironmentFile=-/etc/bugbounty/dispat
     echo "[!] Install the current dispatcher unit first: sudo bash scripts/install-dispatcher.sh" >&2
     exit 1
 fi
+if ! getent group bbdispatcher-keys >/dev/null \
+    || ! id -nG _bbdispatcher | tr ' ' '\n' | grep -Fxq bbdispatcher-keys; then
+    echo "[!] The dispatcher-only key group is missing. Reinstall with sudo bash scripts/install-dispatcher.sh first." >&2
+    exit 1
+fi
 
 if [[ ! "$PROGRAM_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
     echo "[!] Program ID must be 1-64 safe ASCII letters, digits, dots, underscores, or hyphens." >&2
@@ -62,14 +67,14 @@ cleanup() {
 trap cleanup EXIT
 
 install -o root -g bbgroup -m 0640 -- "$SCOPE_SOURCE" "$scope_tmp"
-install -o root -g bbgroup -m 0640 -- "$APPROVAL_KEY_SOURCE" "$key_tmp"
+install -o root -g bbdispatcher-keys -m 0640 -- "$APPROVAL_KEY_SOURCE" "$key_tmp"
 cat > "$env_tmp" <<EOF
 BUGBOUNTY_DISPATCHER_PROGRAM_ID=${PROGRAM_ID}
 BUGBOUNTY_DISPATCHER_SCOPE_FILE=/etc/bugbounty/scopes/${PROGRAM_ID}.yaml
 BUGBOUNTY_DISPATCHER_APPROVAL_KEY_FILE=/etc/bugbounty/operator_approval.key
 EOF
-chown root:bbgroup "$env_tmp"
-chmod 0640 "$env_tmp"
+chown root:root "$env_tmp"
+chmod 0600 "$env_tmp"
 
 mv -f -- "$scope_tmp" "/etc/bugbounty/scopes/${PROGRAM_ID}.yaml"
 mv -f -- "$key_tmp" /etc/bugbounty/operator_approval.key

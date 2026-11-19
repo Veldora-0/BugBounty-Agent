@@ -9,6 +9,7 @@ StartLimitBurst=3
 Type=simple
 User=_bbdispatcher
 Group=bbgroup
+SupplementaryGroups=bbdispatcher-keys
 UMask=0027
 
 # Runtime socket directory (/run/bugbounty)

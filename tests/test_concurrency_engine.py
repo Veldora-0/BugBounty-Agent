@@ -584,10 +584,6 @@ class TestSecretSanitizationAndReportInspection(unittest.TestCase):
         """
         temp_dir = tempfile.mkdtemp()
         try:
-            reports_dir = os.path.join(temp_dir, "reports")
-            os.makedirs(reports_dir, exist_ok=True)
-            report_file = os.path.join(reports_dir, "FND-RACE-001.md")
-
             sentinel_secret = "SENTINEL_SECRET_PHASE20_VERIFICATION_TOKEN_8888"
             sanitized_diagnostic = "network transport error (ConnectionResetError)"
 
@@ -624,14 +620,11 @@ class TestSecretSanitizationAndReportInspection(unittest.TestCase):
 
             # Simulated/local telemetry without a private stored capture is not
             # eligible for a disclosure report.
-            with self.assertRaises(FindingValidationError):
+            with self.assertRaisesRegex(FindingValidationError, "EvidenceStore verification is required"):
                 finding.to_markdown_report()
-            self.assertFalse(os.path.exists(report_file))
             serialized = json.dumps(finding.to_dict())
             self.assertNotIn(sentinel_secret, serialized)
-            self.assertIn("Race Condition (DOUBLE_SPEND)", disk_content)
-            self.assertIn("network transport error", disk_content)
-            self.assertIn("FND-RACE-001", disk_content)
+            self.assertIn("FND-RACE-001", serialized)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

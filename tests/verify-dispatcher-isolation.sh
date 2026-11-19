@@ -18,6 +18,8 @@ KEY=/var/lib/bugbounty/keys/dispatcher_signing_key.bin
 PUBLIC_KEY=/etc/bugbounty/dispatcher.pub
 STATE=/var/lib/bugbounty/state
 EVIDENCE=/var/lib/bugbounty/evidence
+APPROVAL_KEY=/etc/bugbounty/operator_approval.key
+KEY_GROUP=bbdispatcher-keys
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 tree_fingerprint() {
@@ -31,11 +33,19 @@ tree_fingerprint() {
 [[ "$(systemctl is-active "$SERVICE")" == active ]] || { echo "Dispatcher service is not active." >&2; exit 1; }
 [[ "$(systemctl show -p User --value "$SERVICE")" == _bbdispatcher ]] || { echo "Unexpected dispatcher service user." >&2; exit 1; }
 [[ "$(systemctl show -p Group --value "$SERVICE")" == bbgroup ]] || { echo "Unexpected dispatcher service group." >&2; exit 1; }
+KEY_GROUP_GID="$(getent group "$KEY_GROUP" | cut -d: -f3)"
+[[ -n "$KEY_GROUP_GID" ]] || { echo "Dispatcher-only key group is missing." >&2; exit 1; }
+if id -G "$AGENT_USER" | tr ' ' '\n' | grep -Fxq "$KEY_GROUP_GID"; then
+    echo "Agent user is a member of the dispatcher-only key group." >&2
+    exit 1
+fi
 
 PID="$(systemctl show -p MainPID --value "$SERVICE")"
 [[ "$PID" =~ ^[1-9][0-9]*$ ]] || { echo "Dispatcher has no live MainPID." >&2; exit 1; }
 [[ "$(ps -o euid= -p "$PID" | xargs)" == "$(id -u _bbdispatcher)" ]] || { echo "Dispatcher process effective UID mismatch." >&2; exit 1; }
 [[ "$(ps -o egid= -p "$PID" | xargs)" == "$(getent group bbgroup | cut -d: -f3)" ]] || { echo "Dispatcher process effective GID mismatch." >&2; exit 1; }
+PROCESS_GROUPS="$(awk '/^Groups:/ { for (i = 2; i <= NF; i++) printf "%s ", $i }' "/proc/${PID}/status")"
+grep -qw "$KEY_GROUP_GID" <<<"$PROCESS_GROUPS" || { echo "Dispatcher process lacks its key-reading supplementary group." >&2; exit 1; }
 
 [[ -S "$SOCKET" ]] || { echo "Dispatcher socket is missing." >&2; exit 1; }
 [[ "$(stat -c '%U:%G:%a' "$SOCKET")" == "_bbdispatcher:bbgroup:660" ]] || { echo "Unexpected dispatcher socket owner or mode." >&2; exit 1; }
@@ -45,6 +55,20 @@ PID="$(systemctl show -p MainPID --value "$SERVICE")"
 if runuser -u "$AGENT_USER" -- test -r "$KEY"; then
     echo "Agent can read the dispatcher private signing key." >&2
     exit 1
+fi
+if [[ -e "$APPROVAL_KEY" ]]; then
+    [[ "$(stat -c '%U:%G:%a' "$APPROVAL_KEY")" == "root:${KEY_GROUP}:640" ]] || {
+        echo "Unexpected operator approval key ownership or mode." >&2
+        exit 1
+    }
+    if runuser -u "$AGENT_USER" -- test -r "$APPROVAL_KEY"; then
+        echo "Agent can read the dispatcher operator approval key." >&2
+        exit 1
+    fi
+    runuser -u _bbdispatcher -- test -r "$APPROVAL_KEY" || {
+        echo "Dispatcher service account cannot read the operator approval key." >&2
+        exit 1
+    }
 fi
 for protected in "$STATE" "$EVIDENCE"; do
     if runuser -u "$AGENT_USER" -- test -w "$protected"; then
@@ -63,4 +87,4 @@ runuser -u "$AGENT_USER" -- /usr/bin/python3 "$REPO_DIR/tests/dispatcher_ipc_pro
 [[ "$(tree_fingerprint "$STATE")" == "$STATE_BEFORE" ]] || { echo "Invalid approval changed dispatcher state." >&2; exit 1; }
 [[ "$(tree_fingerprint "$EVIDENCE")" == "$EVIDENCE_BEFORE" ]] || { echo "Invalid approval created or changed evidence." >&2; exit 1; }
 
-echo "PASS: dispatcher identity, key and data isolation, agent IPC, and cross-process invalid-approval rejection verified."
+echo "PASS: dispatcher identity, service-only approval key, signing-key and data isolation, agent IPC, and cross-process invalid-approval rejection verified."

@@ -47,6 +47,7 @@ from framework.findings.lifecycle import (
     InvalidLifecycleTransition,
 )
 from framework.findings.schema import Finding
+from framework.common.evidence import EvidenceStore
 from framework.scope.engine import ScopeEngine
 from framework.validation.engine import (
     SafeRedirectHandler,
@@ -411,10 +412,14 @@ def test_simulated_results_cannot_transition_to_validated_or_report_ready():
 # ------------------------------------------------------------------------------
 # Test 9: Real observations via local fixtures can progress to VALIDATED
 # ------------------------------------------------------------------------------
-def test_real_observations_progress_to_validated_and_report_ready():
+def test_real_observations_progress_to_validated_and_report_ready(tmp_path):
     """Verifies legitimate observed findings with cryptographic evidence progress to VALIDATED."""
     evidence_content = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body>Reflected <xss-marker></body></html>"
-    evidence_hash = hashlib.sha256(evidence_content.encode("utf-8")).hexdigest()
+    evidence_store = EvidenceStore(str(tmp_path / "evidence"))
+    capture = evidence_store.save_http_capture(
+        request_text="GET /search?q=xss-marker HTTP/1.1\nHost: authorized.example.com",
+        response_text=evidence_content,
+    )
 
     finding = Finding(
         title="Reflected Cross-Site Scripting in Search Query",
@@ -439,20 +444,22 @@ def test_real_observations_progress_to_validated_and_report_ready():
         lifecycle_state=FindingLifecycle.OBSERVED,
         evidence=[{
             "content": evidence_content,
-            "metadata": {"sha256": evidence_hash},
+            "metadata": {"evidence_id": capture["evidence_id"], "sha256": capture["sha256"]},
         }],
     )
 
     finding.transition_to(
         FindingLifecycle.VALIDATED,
         notes="Differential baseline comparison confirmed verbatim reflection violating output-encoding invariant.",
+        evidence_store=evidence_store,
     )
 
     assert finding.lifecycle_state == FindingLifecycle.VALIDATED
 
-    ready, reason = finding.is_report_ready()
+    ready, reason = finding.is_report_ready(evidence_store=evidence_store)
     assert ready is True
     assert reason == "Finding is report-ready."
+    assert "Reflected Cross-Site Scripting" in finding.to_markdown_report(evidence_store=evidence_store)
 
 
 # ------------------------------------------------------------------------------

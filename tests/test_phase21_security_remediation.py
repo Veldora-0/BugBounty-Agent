@@ -826,9 +826,26 @@ def test_20_linux_systemd_service_configuration():
 
     assert "User=_bbdispatcher" in content
     assert "Group=bbgroup" in content
+    assert "SupplementaryGroups=bbdispatcher-keys" in content
     assert "RuntimeDirectory=bugbounty" in content
     assert "RuntimeDirectoryMode=0750" in content
     assert "StateDirectoryMode=0700" in content
     assert "EnvironmentFile=-/etc/bugbounty/dispatcher.env" in content
     assert "NoNewPrivileges=yes" in content
     assert "ProtectSystem=strict" in content
+
+
+def test_21_dispatcher_approval_key_group_is_service_only():
+    """The agent IPC group must not also grant access to the dispatcher HMAC key."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    installer = os.path.join(repo_root, "scripts", "install-dispatcher.sh")
+    provisioner = os.path.join(repo_root, "scripts", "configure-dispatcher-program.sh")
+    with open(installer, "r", encoding="utf-8") as f:
+        installer_content = f.read()
+    with open(provisioner, "r", encoding="utf-8") as f:
+        provisioner_content = f.read()
+
+    assert 'DISPATCHER_KEY_GROUP="bbdispatcher-keys"' in installer_content
+    assert 'usermod -aG "${DISPATCHER_KEY_GROUP}" "${DISPATCHER_USER}"' in installer_content
+    assert 'install -o root -g bbdispatcher-keys -m 0640 -- "$APPROVAL_KEY_SOURCE"' in provisioner_content
+    assert 'install -o root -g bbgroup -m 0640 -- "$APPROVAL_KEY_SOURCE"' not in provisioner_content

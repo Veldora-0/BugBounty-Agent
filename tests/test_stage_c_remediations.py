@@ -275,7 +275,9 @@ def test_sec01_recon_engine_hook_isolation_and_network_gating():
 
         engine_live.probe_ports("api.authorized.com", [80])
         assert len(socket_connect_calls) == 1
-        assert socket_connect_calls[0][0] == ("api.authorized.com", 80)
+        # The active probe pins the socket to the resolved public IP to prevent
+        # a second DNS lookup from rebinding the authorized hostname.
+        assert socket_connect_calls[0][0] == ("93.184.216.34", 80)
 
         # Scenario 14: Offline deterministic hook behavior suppresses live network even for in-scope
         engine_mocked_in_scope = ReconnaissanceEngine(scope_engine=se)
