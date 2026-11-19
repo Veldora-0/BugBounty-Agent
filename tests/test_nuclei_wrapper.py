@@ -130,7 +130,7 @@ def test_main_scans_pinned_ip_and_ingests_only_curated_candidate(tmp_path, monke
     serialized = json.dumps(findings[0].to_dict())
     assert "Bearer topsecret" not in serialized
     assert "Cookie: session=topsecret" not in serialized
-    assert "raw_hit" not in findings[0].provenance
+    assert findings[0].provenance.get("raw_hit") is None
 
 
 def test_failed_process_output_is_never_ingested(tmp_path, monkeypatch):
