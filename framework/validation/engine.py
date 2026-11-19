@@ -642,7 +642,10 @@ class SecurityValidationEngine:
                 candidate_finding.add_evidence(
                     evidence_type="HTTP_TRANSACTION",
                     content=res_text[:self.policy.max_evidence_size],
-                    metadata={"evidence_id": evid_meta.get("evidence_id"), "sha256": evid_meta.get("sha256")},
+                    metadata={
+                        "evidence_id": evid_meta.get("evidence_id"),
+                        "sha256": evid_meta.get("sha256"),
+                    },
                 )
 
         return val_result, candidate_finding

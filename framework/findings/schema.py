@@ -8,6 +8,7 @@ Never exaggerates severity or impact.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -122,7 +123,7 @@ class Finding:
         if not self.scope_reference or not self.scope_reference.strip():
             raise FindingValidationError("Scope reference is required.")
 
-    def is_report_ready(self) -> Tuple[bool, str]:
+    def is_report_ready(self, evidence_store: Optional[Any] = None) -> Tuple[bool, str]:
         """
         Evaluates whether finding satisfies all requirements for formal disclosure reporting.
         Returns (is_ready, diagnostic_reason).
@@ -138,17 +139,18 @@ class Finding:
         if not self.evidence or len(self.evidence) == 0:
             return False, "Finding has no attached evidence items; cryptographic evidence is required for disclosure."
 
+        if evidence_store is None:
+            return False, "EvidenceStore verification is required before disclosure reporting."
+
         for idx, item in enumerate(self.evidence, 1):
             if not isinstance(item, dict):
                 return False, f"Evidence item {idx} is not a valid structured dictionary."
             content = item.get("content", "")
             if not content or not str(content).strip():
                 return False, f"Evidence item {idx} contains empty content."
-            meta = item.get("metadata", {})
-            if isinstance(meta, dict) and "sha256" in meta and meta["sha256"]:
-                digest = str(meta["sha256"]).strip()
-                if not re.match(r"^[0-9a-fA-F]{64}$", digest):
-                    return False, f"Evidence item {idx} contains invalid SHA-256 integrity hash: '{digest}'."
+            verified, reason = evidence_store.verify_finding_evidence(item)
+            if not verified:
+                return False, f"Evidence item {idx} failed verification: {reason}."
 
         if not self.reproduction_steps or len(self.reproduction_steps) == 0:
             return False, "Reproduction steps must be a non-empty list."
@@ -183,7 +185,12 @@ class Finding:
 
         return True, "Finding is report-ready."
 
-    def transition_to(self, new_state: FindingLifecycle, notes: Optional[str] = None) -> None:
+    def transition_to(
+        self,
+        new_state: FindingLifecycle,
+        notes: Optional[str] = None,
+        evidence_store: Optional[Any] = None,
+    ) -> None:
         """Transitions finding lifecycle state."""
         validate_transition(self.lifecycle_state, new_state)
         if new_state == FindingLifecycle.VALIDATED:
@@ -235,6 +242,16 @@ class Finding:
                 raise InvalidLifecycleTransition(
                     f"Cannot transition finding '{self.finding_id}' to VALIDATED: observed result cannot match expected result."
                 )
+            if evidence_store is None:
+                raise InvalidLifecycleTransition(
+                    f"Cannot transition finding '{self.finding_id}' to VALIDATED: EvidenceStore verification is required."
+                )
+            for idx, item in enumerate(self.evidence, 1):
+                verified, reason = evidence_store.verify_finding_evidence(item)
+                if not verified:
+                    raise InvalidLifecycleTransition(
+                        f"Cannot transition finding '{self.finding_id}' to VALIDATED: evidence item {idx} failed verification: {reason}."
+                    )
 
         self.lifecycle_state = new_state
         if notes:
@@ -244,10 +261,15 @@ class Finding:
     def add_evidence(self, evidence_type: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Appends verified evidence item with sensitive data sanitized."""
         sanitized_content = sanitize_sensitive_data(str(content))
+        evidence_metadata = dict(metadata or {})
+        evidence_metadata.setdefault(
+            "content_sha256",
+            hashlib.sha256(sanitized_content.encode("utf-8")).hexdigest(),
+        )
         item = {
             "type": evidence_type,
             "content": sanitized_content,
-            "metadata": metadata or {},
+            "metadata": evidence_metadata,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         self.evidence.append(item)
@@ -355,13 +377,13 @@ class Finding:
         """Returns JSON representation."""
         return json.dumps(self.to_dict(), indent=indent)
 
-    def to_markdown_report(self) -> str:
+    def to_markdown_report(self, evidence_store: Optional[Any] = None) -> str:
         """
         Renders the finding into a professional markdown report conforming
         to the 17 standard bug bounty disclosure sections.
         Fails closed with FindingValidationError if finding is not report-ready.
         """
-        ready, reason = self.is_report_ready()
+        ready, reason = self.is_report_ready(evidence_store=evidence_store)
         if not ready:
             raise FindingValidationError(f"Finding '{self.finding_id}' is not report-ready: {reason}")
 

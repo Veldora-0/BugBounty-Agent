@@ -15,7 +15,7 @@ import os
 import re
 import secrets
 import stat
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 
 # Regex patterns to sanitize sensitive tokens
@@ -383,6 +383,46 @@ class EvidenceStore:
         except Exception:
             return None
         return None
+
+    def verify_finding_evidence(self, item: Dict[str, Any]) -> Tuple[bool, str]:
+        """Verify that a finding item matches a private, intact capture in this store."""
+        if not isinstance(item, dict):
+            return False, "Evidence item is not a structured object"
+        content = item.get("content")
+        metadata = item.get("metadata")
+        if not isinstance(content, str) or not content.strip() or not isinstance(metadata, dict):
+            return False, "Evidence content or metadata is missing"
+        evidence_id = metadata.get("evidence_id")
+        expected_store_hash = metadata.get("sha256")
+        expected_content_hash = metadata.get("content_sha256")
+        if not isinstance(evidence_id, str) or not evidence_id.startswith("EVID-"):
+            return False, "Evidence item has no trusted EvidenceStore identifier"
+        if not isinstance(expected_store_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_store_hash):
+            return False, "Evidence item has no valid EvidenceStore SHA-256 digest"
+        if not isinstance(expected_content_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_content_hash):
+            return False, "Evidence item has no valid content SHA-256 digest"
+
+        clean_content = sanitize_sensitive_data(content)
+        actual_content_hash = hashlib.sha256(clean_content.encode("utf-8")).hexdigest()
+        if actual_content_hash.lower() != expected_content_hash.lower():
+            return False, "Evidence content does not match its SHA-256 digest"
+
+        descriptor = self.get_evidence(evidence_id)
+        if not descriptor or descriptor.get("sha256", "").lower() != expected_store_hash.lower():
+            return False, "EvidenceStore capture is missing, altered, or has a mismatched digest"
+        capture_path = descriptor.get("capture_path")
+        try:
+            with open(capture_path, "r", encoding="utf-8", errors="replace") as stream:
+                capture_text = stream.read()
+        except (OSError, TypeError):
+            return False, "EvidenceStore capture could not be read"
+        parts = capture_text.split("\n\n--- RESPONSE ---\n", 1)
+        if len(parts) != 2 or not parts[0].startswith("--- REQUEST ---\n"):
+            return False, "EvidenceStore capture has an invalid request/response format"
+        response_text = parts[1].removesuffix("\n")
+        if not sanitize_sensitive_data(response_text).startswith(clean_content):
+            return False, "Finding evidence content does not match the stored response"
+        return True, "EvidenceStore capture and finding content verified"
 
     def save_invalidation_attestation(self, attestation_record: Dict[str, Any]) -> str:
         """

@@ -228,17 +228,21 @@ def test_end_to_end_local_discovery_to_report_workflow(temp_workspace):
     assert finding.lifecycle_state == FindingLifecycle.OBSERVED
 
     # An OBSERVED finding cannot be reported (fail-closed)
-    ready, reason = finding.is_report_ready()
+    ready, reason = finding.is_report_ready(evidence_store=engine.evidence_store)
     assert ready is False
     assert "only VALIDATED findings can be reported" in reason
 
     # Transition to VALIDATED with differential validation notes
     val_note = "Confirmed unescaped reflection of arithmetic marker violating HTML encoding invariant."
-    finding.transition_to(FindingLifecycle.VALIDATED, notes=val_note)
+    finding.transition_to(
+        FindingLifecycle.VALIDATED,
+        notes=val_note,
+        evidence_store=engine.evidence_store,
+    )
     assert finding.lifecycle_state == FindingLifecycle.VALIDATED
 
     # Now finding is report-ready
-    ready, reason = finding.is_report_ready()
+    ready, reason = finding.is_report_ready(evidence_store=engine.evidence_store)
     assert ready is True
     assert reason == "Finding is report-ready."
 
@@ -290,7 +294,7 @@ def test_end_to_end_local_discovery_to_report_workflow(temp_workspace):
     report_file = os.path.join(reports_dir, f"{bb_report_cli.sanitize_finding_id_to_filename(finding.finding_id)}.md")
 
     # Generate markdown report
-    report_md = finding.to_markdown_report()
+    report_md = finding.to_markdown_report(evidence_store=engine.evidence_store)
     assert f"# {finding.title}" in report_md
     assert "## Summary" in report_md
     assert "## Asset Details" in report_md

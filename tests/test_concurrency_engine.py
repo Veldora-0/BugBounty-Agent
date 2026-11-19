@@ -51,7 +51,7 @@ from framework.concurrency.policy import ConcurrencySafetyPolicy
 from framework.concurrency.state import ConcurrencyStateManager
 from framework.concurrency.synchronization import BarrierSynchronizer
 from framework.findings.lifecycle import FindingLifecycle
-from framework.findings.schema import Finding
+from framework.findings.schema import Finding, FindingValidationError
 from framework.scope.engine import ScopeEngine, ScopeStatus
 from framework.tools.doctor import SystemDoctor
 from framework.validation.engine import ScopeViolationError
@@ -577,7 +577,7 @@ class TestSecretSanitizationAndReportInspection(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def test_generated_markdown_report_disk_inspection_no_sentinel_secret(self):
+    def test_unverified_local_telemetry_cannot_be_reported(self):
         """
         Explicitly generates and inspects an actual Markdown report on disk,
         asserting that sentinel secrets from Phase 19/20 testing never appear in report artifacts.
@@ -622,17 +622,13 @@ class TestSecretSanitizationAndReportInspection(unittest.TestCase):
                 validation_notes=f"Telemetry confirmed invariant breach. Diagnostic: {sanitized_diagnostic}",
             )
 
-            # Render markdown report and write to disk
-            report_content = finding.to_markdown_report()
-            with open(report_file, "w", encoding="utf-8") as f:
-                f.write(report_content)
-
-            # Inspect actual file on disk
-            self.assertTrue(os.path.exists(report_file))
-            with open(report_file, "r", encoding="utf-8") as f:
-                disk_content = f.read()
-
-            self.assertNotIn(sentinel_secret, disk_content)
+            # Simulated/local telemetry without a private stored capture is not
+            # eligible for a disclosure report.
+            with self.assertRaises(FindingValidationError):
+                finding.to_markdown_report()
+            self.assertFalse(os.path.exists(report_file))
+            serialized = json.dumps(finding.to_dict())
+            self.assertNotIn(sentinel_secret, serialized)
             self.assertIn("Race Condition (DOUBLE_SPEND)", disk_content)
             self.assertIn("network transport error", disk_content)
             self.assertIn("FND-RACE-001", disk_content)

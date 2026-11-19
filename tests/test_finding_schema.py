@@ -3,6 +3,7 @@ Tests for Finding Schema, Lifecycle Transitions, and Report Generation.
 """
 
 import pytest
+from framework.common.evidence import EvidenceStore
 
 from framework.findings.lifecycle import (
     FindingLifecycle,
@@ -15,7 +16,7 @@ from framework.findings.schema import (
 )
 
 
-def test_finding_valid_creation():
+def test_finding_valid_creation(tmp_path):
     finding = Finding(
         title="BOLA on /api/v1/users/{id} Exposing PII",
         summary="User profile endpoint does not check authorization token against requested resource ID.",
@@ -49,19 +50,29 @@ def test_finding_valid_creation():
         finding.to_markdown_report()
 
     # Add evidence and validation notes, then transition to VALIDATED
+    store = EvidenceStore(str(tmp_path / "evidence"))
+    content = "HTTP/1.1 200 OK\n{\"email\": \"victim@example.com\"}"
+    record = store.save_http_capture(
+        request_text="GET /api/v1/users/102 HTTP/1.1\nHost: api.example.com",
+        response_text=content,
+    )
     finding.add_evidence(
         evidence_type="HTTP_INTERACTION",
-        content="GET /api/v1/users/102 HTTP/1.1\nHost: api.example.com\n\nHTTP/1.1 200 OK\n{\"email\": \"victim@example.com\"}",
-        metadata={"sha256": "a" * 64},
+        content=content,
+        metadata={"evidence_id": record["evidence_id"], "sha256": record["sha256"]},
     )
-    finding.transition_to(FindingLifecycle.VALIDATED, notes="Demonstrated tenant boundary violation on user record.")
+    finding.transition_to(
+        FindingLifecycle.VALIDATED,
+        notes="Demonstrated tenant boundary violation on user record.",
+        evidence_store=store,
+    )
 
     assert finding.lifecycle_state == FindingLifecycle.VALIDATED
-    is_ready, _ = finding.is_report_ready()
+    is_ready, _ = finding.is_report_ready(evidence_store=store)
     assert is_ready is True
 
     # Test report generation on validated finding
-    report_md = finding.to_markdown_report()
+    report_md = finding.to_markdown_report(evidence_store=store)
     assert "## Summary" in report_md
     assert "## Reproduction Steps" in report_md
     assert "## Security Impact" in report_md

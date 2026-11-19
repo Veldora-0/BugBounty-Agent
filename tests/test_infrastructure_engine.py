@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 from framework.common.evidence import sanitize_sensitive_data
 from framework.findings.lifecycle import FindingLifecycle
-from framework.findings.schema import Finding
+from framework.findings.schema import Finding, FindingValidationError
 from framework.infrastructure.differential import (
     DifferentialComparisonResult,
     DifferentialSoft404Engine,
@@ -401,12 +401,12 @@ class TestLocalInfrastructureLabScenarios(unittest.TestCase):
         self.assertNotIn(sentinel_pass, finding_json_str)
         self.assertNotIn(sentinel_key, finding_json_str)
 
-        # 3. Rendered report check (when promoted to VALIDATED for disclosure report)
+        # 3. Local lab output is not EvidenceStore-backed and cannot become a disclosure report.
         finding.lifecycle_state = FindingLifecycle.VALIDATED
-        report_md = finding.to_markdown_report()
-        self.assertNotIn(sentinel_pass, report_md)
-        self.assertNotIn(sentinel_key, report_md)
-        self.assertIn("[REDACTED_BY_BB_AGENT]", report_md)
+        with self.assertRaises(FindingValidationError):
+            finding.to_markdown_report()
+        self.assertNotIn(sentinel_pass, json.dumps(finding.to_dict()))
+        self.assertNotIn(sentinel_key, json.dumps(finding.to_dict()))
 
         # 4. Fingerprint authenticity definition: authenticates sanitized representation
         clean_excerpt = res.sanitized_excerpt
@@ -641,9 +641,8 @@ class TestExceptionAndHttp403Hardening(unittest.TestCase):
             self.assertIn("Request failed: network transport error", saved_cand["notes"])
             self.assertNotIn(sentinel_secret, saved_cand["notes"])
 
-            # 3. Explicit disk Markdown report inspection for Phase 19 sentinel secret
-            # Even if an operator or automated flow attempts to generate a report from candidate/evaluation notes,
-            # verify that a generated Markdown report written to disk has zero sentinel leakage.
+            # 3. Diagnostic-only data has no EvidenceStore capture and must not
+            # pass the disclosure report gate.
             reports_dir = os.path.join(temp_dir, "reports")
             os.makedirs(reports_dir, exist_ok=True)
             report_file = os.path.join(reports_dir, "report-cand-exc-sentinel.md")
@@ -675,14 +674,12 @@ class TestExceptionAndHttp403Hardening(unittest.TestCase):
                     "timestamp": "2026-10-23T12:00:00Z",
                 }],
             )
-            with open(report_file, "w", encoding="utf-8") as rf:
-                rf.write(finding_with_diag.to_markdown_report())
-
-            self.assertTrue(os.path.exists(report_file))
-            with open(report_file, "r", encoding="utf-8") as rf:
-                disk_report_content = rf.read()
-            self.assertNotIn(sentinel_secret, disk_report_content)
-            self.assertIn("network transport error", disk_report_content)
+            with self.assertRaises(FindingValidationError):
+                finding_with_diag.to_markdown_report()
+            self.assertFalse(os.path.exists(report_file))
+            serialized = json.dumps(finding_with_diag.to_dict())
+            self.assertNotIn(sentinel_secret, serialized)
+            self.assertIn("network transport error", serialized)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

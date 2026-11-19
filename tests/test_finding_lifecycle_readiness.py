@@ -27,6 +27,7 @@ from framework.findings.schema import (
     Finding,
     FindingValidationError,
 )
+from framework.common.evidence import EvidenceStore, sanitize_sensitive_data
 
 
 def _build_test_candidate() -> Finding:
@@ -53,6 +54,20 @@ def _build_test_candidate() -> Finding:
         confidence="HIGH",
         lifecycle_state=FindingLifecycle.CANDIDATE,
     )
+
+
+def _attach_verified_capture(finding: Finding, tmp_path, response_text: str):
+    store = EvidenceStore(str(tmp_path / "evidence"))
+    record = store.save_http_capture(
+        request_text="GET /api/v1/search HTTP/1.1\nHost: api.example.com",
+        response_text=response_text,
+    )
+    finding.add_evidence(
+        evidence_type="HTTP_CAPTURE",
+        content=sanitize_sensitive_data(response_text),
+        metadata={"evidence_id": record["evidence_id"], "sha256": record["sha256"]},
+    )
+    return store
 
 
 def test_transition_to_validated_fails_without_evidence():
@@ -104,21 +119,22 @@ def test_transition_to_validated_fails_with_missing_repro_steps():
         finding.transition_to(FindingLifecycle.VALIDATED, notes="Rationale provided.")
 
 
-def test_successful_transition_to_validated_with_proof():
+def test_successful_transition_to_validated_with_proof(tmp_path):
     """Verifies that transition succeeds when all proof requirements are satisfied."""
     finding = _build_test_candidate()
-    finding.add_evidence(
-        evidence_type="HTTP_CAPTURE",
-        content="GET /api/v1/search?query=test' HTTP/1.1\nHost: api.example.com\n\nHTTP/1.1 500 Internal Error\nSyntax error at line 1",
-        metadata={"sha256": "c" * 64},
+    store = _attach_verified_capture(
+        finding,
+        tmp_path,
+        "HTTP/1.1 500 Internal Error\n\nSyntax error at line 1",
     )
     finding.transition_to(
         FindingLifecycle.VALIDATED,
         notes="Empirical differential confirmed: baseline returned 200, single quote returned syntax error.",
+        evidence_store=store,
     )
 
     assert finding.lifecycle_state == FindingLifecycle.VALIDATED
-    ready, reason = finding.is_report_ready()
+    ready, reason = finding.is_report_ready(evidence_store=store)
     assert ready is True
     assert "report-ready" in reason
 
@@ -149,7 +165,7 @@ def test_report_generation_rejection_for_non_validated_states():
         finding.to_markdown_report()
 
 
-def test_secret_redaction_in_rendered_markdown_report():
+def test_secret_redaction_in_rendered_markdown_report(tmp_path):
     """Verifies that sensitive authorization headers, bearer tokens, and session cookies are redacted in rendered markdown."""
     finding = _build_test_candidate()
     raw_sensitive_evidence = (
@@ -161,17 +177,14 @@ def test_secret_redaction_in_rendered_markdown_report():
         "Set-Cookie: session=secret_admin_token\n"
     )
 
-    finding.add_evidence(
-        evidence_type="RAW_HTTP",
-        content=raw_sensitive_evidence,
-        metadata={"sha256": "b" * 64},
-    )
+    store = _attach_verified_capture(finding, tmp_path, raw_sensitive_evidence)
     finding.transition_to(
         FindingLifecycle.VALIDATED,
         notes="Demonstrated differential SQL injection error disclosure.",
+        evidence_store=store,
     )
 
-    report_md = finding.to_markdown_report()
+    report_md = finding.to_markdown_report(evidence_store=store)
     assert "secret_live_jwt_token_1234567890" not in report_md
     assert "secret_session_cookie_abc123" not in report_md
     assert "secret_admin_token" not in report_md
@@ -293,15 +306,16 @@ def test_comprehensive_credential_and_private_key_redaction(tmp_path):
     finding = _build_test_candidate()
     finding.add_evidence(
         evidence_type="HTTP_CAPTURE",
-        content=saved_evidence,
-        metadata={"sha256": record["sha256"]},
+        content=sanitize_sensitive_data(raw_response),
+        metadata={"evidence_id": record["evidence_id"], "sha256": record["sha256"]},
     )
     finding.transition_to(
         FindingLifecycle.VALIDATED,
         notes="Validated credentials handling and redaction integrity.",
+        evidence_store=store,
     )
 
-    report_md = finding.to_markdown_report()
+    report_md = finding.to_markdown_report(evidence_store=store)
     for secret in all_raw_secrets:
         assert secret not in report_md, f"Leaked raw secret: {secret} in generated markdown report!"
 

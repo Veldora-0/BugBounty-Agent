@@ -35,6 +35,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from framework.common.config import get_program_dir, ensure_private_directory, write_private_text_file
+from framework.common.evidence import EvidenceStore
 from framework.findings.lifecycle import FindingLifecycle
 from framework.findings.schema import Finding, FindingValidationError
 from framework.state.manager import StateManager
@@ -144,6 +145,11 @@ def main() -> int:
         return 1
 
     state_mgr = StateManager(prog_dir)
+    try:
+        evidence_store = EvidenceStore(os.path.join(prog_dir, "evidence"))
+    except Exception as e:
+        print(f"[!] Error opening private evidence store: {e}", file=sys.stderr)
+        return 1
 
     if args.sync:
         synced_count = state_mgr.sync_all_engine_findings()
@@ -159,7 +165,7 @@ def main() -> int:
     if is_list:
         summary_items: List[Dict[str, Any]] = []
         for f in all_findings:
-            ready, reason = f.is_report_ready()
+            ready, reason = f.is_report_ready(evidence_store=evidence_store)
             summary_items.append({
                 "finding_id": f.finding_id,
                 "title": f.title,
@@ -192,7 +198,7 @@ def main() -> int:
             print(f"[!] Finding '{args.finding_id}' not found in program '{args.program}'.", file=sys.stderr)
             return 1
 
-        ready, reason = finding.is_report_ready()
+        ready, reason = finding.is_report_ready(evidence_store=evidence_store)
         if not ready:
             print(f"[!] Finding '{args.finding_id}' is NOT report-ready (fail-closed): {reason}", file=sys.stderr)
             return 1
@@ -208,7 +214,7 @@ def main() -> int:
             return 1
 
         try:
-            report_md = finding.to_markdown_report()
+            report_md = finding.to_markdown_report(evidence_store=evidence_store)
             write_private_text_file(target_path, report_md)
         except Exception as e:
             print(f"[!] Error rendering report: {e}", file=sys.stderr)
@@ -227,7 +233,7 @@ def main() -> int:
         return 0
 
     if args.all:
-        ready_findings = [f for f in all_findings if f.is_report_ready()[0]]
+        ready_findings = [f for f in all_findings if f.is_report_ready(evidence_store=evidence_store)[0]]
         if not ready_findings:
             if args.json:
                 print(json.dumps({"status": "no_ready_findings", "count": 0, "reports": []}, indent=2))
@@ -252,7 +258,7 @@ def main() -> int:
                 continue
 
             try:
-                report_md = f.to_markdown_report()
+                report_md = f.to_markdown_report(evidence_store=evidence_store)
                 write_private_text_file(target_path, report_md)
                 generated_reports.append({
                     "finding_id": f.finding_id,
