@@ -88,7 +88,7 @@ The workflow grants only `contents: read` and pins its GitHub-maintained actions
 
 | Acceptance area | Required evidence | Current state |
 |---|---|---|
-| Environment support | Full-suite evidence for every claimed environment; unsupported hosts clearly named | Kali Linux full suite passed. Hosted Ubuntu Python 3.10/3.14 and Windows Server 2025 Python 3.14 jobs all passed on commit `9361df3`; macOS remains unverified and Windows production dispatcher isolation is unsupported. |
+| Environment support | Full-suite evidence for every claimed environment; unsupported hosts clearly named | The later full-suite run at `48d1f7e` passed on Kali and hosted Ubuntu Python 3.10/3.14 and Windows Server 2025 Python 3.14 (see post-audit record). The deployment/rollback evidence below is from `9361df3`; macOS remains unverified and Windows production dispatcher isolation is unsupported. |
 | Deployment lifecycle | Install, idempotent update, collision refusal, modified-file preservation, config restore, uninstall, rollback | Isolated Kali runs passed for copy and symlink modes, status, repeat deployment, uninstall, and byte-for-byte restoration of a pre-existing synthetic config. Detached-checkout rollback and forward redeploy passed in both modes without creating a branch or touching user state. Unit tests cover collision and modified-file preservation. |
 | Workspace safety | Framework update and removal must preserve program data | Deployment was exercised with isolated temporary config/bin directories, and the implementation does not target program workspace paths. Workspace backup and migration remain separate future work. |
 | Diagnostics | Required packages separated from optional tools and integrations; bounded runtime | Doctor and registry focused suite passed. Optional version checks now use a bounded worker pool; `bb-doctor` full diagnosis completed in under nine seconds in the latest full Kali suite. |
@@ -115,10 +115,24 @@ No live bounty target was contacted. Unit and local integration tests demonstrat
 
 ## Boundaries that remain after Phase 24 acceptance
 
-1. Keep the project beta until open issues `AUD-04`, `AUD-06`, `AUD-07`, and `AUD-08` are resolved or deliberately accepted with the relevant capability limits visible to users. These cover live OOB callback confirmation, asset discovery wiring, external reconnaissance tool execution, and live dispatcher mutation evidence.
+1. Keep the project beta until open issues `AUD-04`, `AUD-06`, `AUD-07`, `AUD-08`, and `AUD-09` are resolved or deliberately accepted with the relevant capability limits visible to users. These cover live OOB callback confirmation, asset discovery wiring, external reconnaissance tool execution, live dispatcher mutation evidence, and empirical Phase 22 chain validation.
 2. Treat macOS as unverified and Windows as development/CI only. The Linux systemd dispatcher is the only production service boundary currently implemented.
 3. Before a stable tagged release, review dependency provenance and decide on a lockfile, automated advisory scanning, an SBOM, and signed release artifacts. The release checklist remains a stop gate.
 4. Run the release checklist again for each release candidate; these results describe commit `9361df3`, not future source changes.
+
+## Post-audit regression verification
+
+This section records the audit of the Phase 22 evidence-promotion and scope-enforcement boundaries, plus regression coverage for neighboring phases. It supplements the Phase 24 implementation record above; the isolated deployment/rollback runs remain specifically tied to commit `9361df3`.
+
+| Environment | Code commit | Command or workflow | Result |
+|---|---|---|---|
+| Kali Linux x86-64, Linux `7.2.15+kali-amd64`, Python 3.14.10 | `48d1f7e` | `python3 -m pytest tests/test_phase22_*.py tests/test_scope_fail_closed_validation.py -ra` | **125 passed** in 36.62 seconds. |
+| Kali Linux neighbor-phase regression | `48d1f7e` | Phase 8, 14, 18, 21, 22, 23, deployment and installer test selection; exact command is recorded in the [issue register](../PROJECT-AUDIT-ISSUES.md#post-audit-regression-verification-at-48d1f7e-2026-11-19). | **423 passed, 2 Windows-only tests skipped** in 163.21 seconds. |
+| Kali Linux x86-64, Python 3.14.10 | `48d1f7e` | `python3 -m pytest tests/ -ra --durations=10` | **1,277 passed, 2 skipped** in 393.52 seconds; 1,279 collected tests across 72 modules. |
+| GitHub Ubuntu, Python 3.10 and 3.14 | `48d1f7e` | `Tests` workflow, `python -m pytest tests/ -ra` | Both full-suite jobs passed. |
+| GitHub Windows Server 2025, Python 3.14 | `48d1f7e` | `Tests` workflow, `python -m pytest tests/ -ra` | Full-suite job passed, including native Windows path and DACL tests. |
+
+The hosted jobs are recorded in [GitHub Actions run 44494335350](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44494335350). The audit confirmed and fixed two Phase 22 defects: simulation could previously manufacture evidence-shaped data for promotion, and scope authorization could rely on a prose marker while omitting other path assets. The current code emits no simulated evidence, requires a real `ScopeEngine`, binds every path target into the plan hash, and rechecks current scope before authorization and execution. Because no trusted empirical receipt integration exists yet, Phase 22 remains unable to empirically validate or promote links; this is tracked as AUD-09. No bounty target was contacted. These results establish regression behavior on tests and hosted operating systems, not live vulnerability-discovery effectiveness.
 
 ## Starting points
 

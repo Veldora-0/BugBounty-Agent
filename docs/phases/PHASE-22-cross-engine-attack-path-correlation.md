@@ -1,6 +1,6 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** Implemented; focused Kali acceptance and the full hosted Windows test suite are verified. Attack-path confidence remains bounded by evidence and scope; live-target effectiveness is not implied.
+**Status:** Candidate graph, correlation, reporting, and approval planning are implemented. Regression tests passed on Kali and the hosted Linux/Windows matrix. The `validate` CLI is simulation-only: it cannot send a target request or empirically promote a graph link. Trusted empirical chain validation remains open as AUD-09.
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
 **Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
@@ -14,8 +14,8 @@ Phase 22 is organized into four sequential top-level milestones:
    - **22.2.2**: Core Implementation — Candidate Relationship Discovery & Bounded Traversal (Completed).
    - **22.2.3**: Attack Path Correlator & Feasibility Evaluation Engine (Completed).
    - **22.2.4**: Milestone 22.2 Integration Hardening, Edge-Case Auditing & State Persistence Validation (Completed & Hardened).
-3. **Milestone 22.3**: Safe Validation Planning & Approval Gates (`framework/attack_path/validator.py`) (Completed & Hardened).
-4. **Milestone 22.4**: CLI, Reporting & Dual-Environment Acceptance (`scripts/bb-chain`, `framework/attack_path/reporter.py`, full verification) (Completed & Hardened).
+3. **Milestone 22.3**: Safe Validation Planning & Approval Gates (`framework/attack_path/validator.py`) (Planning and scope gates implemented; empirical evidence integration remains open).
+4. **Milestone 22.4**: CLI and Reporting (`scripts/bb-chain`, `framework/attack_path/reporter.py`) (Implemented; validation command runs a deterministic simulation only).
 
 ---
 
@@ -90,13 +90,13 @@ Milestone 22.2 implements cross-engine path correlation, bounded traversal, and 
 
 ---
 
-## Milestone 22.3 — Safe Validation Planning & Approval Gates (Completed & Hardened)
+## Milestone 22.3 — Safe Validation Planning & Approval Gates (Planning and Scope Gates Implemented)
 
-Milestone 22.3 establishes the controlled validation planning, human approval, anti-TOCTOU dispatch authorization, and evidence-driven graph promotion boundary:
+Milestone 22.3 establishes controlled validation planning, human approval, and anti-TOCTOU scope authorization. Its current simulation path deliberately cannot promote graph relationships. Empirical promotion awaits a trusted Phase 21 receipt and disk-backed EvidenceStore integration (AUD-09):
 - **Validation Plan Architecture (`framework/attack_path/validator.py`)**:
   - Implemented `SafeChainValidationPlanner`, generating non-destructive `ChainValidationPlan` instances from correlated attack paths (`AttackPath`).
   - Strict separation of concern across discovery, planning, human approval, dispatch, execution, evidence verification, and chain promotion.
-  - Deterministic cryptographic binding: `compute_plan_hash()` generates a SHA-256 digest covering all canonical parameters (plan ID, path ID, source/target findings, edges, target asset/endpoint/method, tenant, principal, objective, validation method, permissions, risk, scope reference, and version). Any field mutation invalidates approval.
+  - Deterministic cryptographic binding: `compute_plan_hash()` generates a SHA-256 digest covering all canonical parameters, including every `scope_targets` entry derived from path assets, edge endpoints, and endpoint URLs. Any field mutation invalidates approval. Older saved plans without bound scope targets remain inspectable but cannot be dispatched; recreate and approve a fresh plan.
 - **Explicit Validation Lifecycle & State Machine**:
   - Guarded state transitions across 15 states: `HYPOTHESIS`, `PLANNED`, `PENDING_APPROVAL`, `APPROVED`, `REJECTED`, `EXPIRED`, `REVOKED`, `DISPATCHED`, `PARTIALLY_COMPLETED`, `COMPLETED`, `FAILED`, `EVIDENCE_PENDING`, `EVIDENCE_VERIFIED`, `RELATIONSHIP_VALIDATED`, `CHAIN_VALIDATED`.
   - Transitions strictly enforced via `validate_state_transition()`; illegal or backward jumps raise `InvalidStateTransitionError`.
@@ -105,7 +105,7 @@ Milestone 22.3 establishes the controlled validation planning, human approval, a
   - Revocation (`revoke_approval`) immediately sets the `revoked` flag and moves the plan to terminal `REVOKED` status.
   - Expiration (`is_expired`) dynamically recalculates freshness against clock timestamps with skew tolerance.
 - **Anti-TOCTOU Dispatch Authorization Gate (`authorize_dispatch`)**:
-  - Evaluates 9 mandatory security gates immediately before execution:
+  - Evaluates mandatory security gates before execution:
     1. Plan status gate (`status == APPROVED`).
     2. Approval metadata existence gate.
     3. Revocation gate (`revoked is False`).
@@ -113,31 +113,30 @@ Milestone 22.3 establishes the controlled validation planning, human approval, a
     5. Plan integrity & version gate (`compute_plan_hash() == approval.plan_hash` and version match).
     6. Validation method allowlist & permission match.
     7. Target asset and endpoint identity match.
-    8. Dynamic scope recheck via `ScopeEngine.is_in_scope()` (blocks stale snapshot bypass).
+    8. Scope gate: a real `ScopeEngine` instance is required; missing or malformed scope never falls back to a plan label or default `IN_SCOPE` value. Every plan-bound asset and URL is checked against current scope, exclusions included, and checked again immediately before the execution callback to block a scope change after authorization.
     9. Tenant and principal consistency.
   - Fails closed with `DispatchSecurityError` and records sanitized audit log on any failure.
 - **Safe Validation Method Registry (`ValidationMethodRegistry`)**:
   - Registered standard read-only, non-destructive validation methods: `PREREQUISITE_SATISFACTION_CHECK`, `PASSIVE_RESOURCE_METADATA_VERIFY`, `NON_DESTRUCTIVE_REDIRECT_CHECK`, `CONTROLLED_AUTH_BOUNDARY_PROBE`, `HISTORICAL_ARTIFACT_REVALIDATE`, `EVIDENCE_PROVENANCE_REVERIFY`.
   - Prohibits registering or executing destructive or unverified state-modifying actions.
-- **Evidence Verification & Chain Promotion (`verify_evidence_and_promote`)**:
-  - Rule 8: Partial executions (`PARTIALLY_COMPLETED`) are rejected from promoting relationships.
-  - Rules 9 & 10: Dispatch success alone does not prove relationships; requires independent verification of evidence reference, digest integrity, and provenance.
-  - Provenance status preserved: `SIMULATED` or `INFERRED` evidence is never silently upgraded to `OBSERVED`.
-  - Multi-edge chain discipline (Rule 11): An attack path transitions to `FULLY_VALIDATED` if and only if EVERY constituent edge in the path is `LINK_VALIDATED`. If partial edges are validated, the path transitions to `PARTIALLY_VALIDATED` and the plan to `RELATIONSHIP_VALIDATED`.
-  - Anti-inflation invariant: finding severities and path impact ratings are never inflated.
+- **Evidence and promotion boundary (`verify_evidence_and_promote`)**:
+  - The default `execute_dispatched_plan` path returns an explicitly simulated fixture result. It sends no target request and contains no fabricated evidence ID, digest, or observed impact.
+  - Simulated results cannot promote edges or chains. A result assembled by a caller is also rejected unless it carries the in-memory provenance from the same live planner, plan, and authorization; serialized status fields and a supplied EvidenceStore cannot create that provenance.
+  - The current Phase 22 CLI therefore reports “not empirically validated” and leaves paths as hypotheses. It does not yet connect the Phase 21 signed dispatch receipt and verified disk evidence to this promotion boundary. This is an open capability, not a successful evidence verification feature.
+  - When empirical promotion is integrated, partial chains must remain partial and a chain may become fully validated only after every impact-relevant edge has bound, fresh evidence. Finding severities and path impact ratings must never be inflated by inference.
 - **Audit Logging & State Persistence (`AttackPathStateManager`)**:
   - Records immutable `ValidationAuditEvent` entries to `state/validation_audit.jsonl`.
   - Atomically persists validation plans to `state/validation_plans.json` with DACL / POSIX 0600 permissions and zero-secret assertions.
 - **Milestone 22.3 Acceptance Test Suite (`tests/test_phase22_validator.py`)**:
-  - 25 comprehensive tests validating criteria AC-22.3-01 through AC-22.3-25 with 100% pass rate.
+  - 30 tests cover plan lifecycle, approval, scope binding, dispatch provenance, simulation non-promotion, and adversarial attempts to forge or replay results. These tests verify the present fail-closed boundary; they do not demonstrate empirical chain validation.
 
 ---
 
-## Milestone 22.4 — CLI, Reporting & Dual-Environment Acceptance (Completed & Hardened)
+## Milestone 22.4 — CLI, Reporting & Regression Acceptance
 
 Milestone 22.4 delivers the final operational CLI commands, reporting engine, and cross-environment verification:
 - **CLI Subsystem (`scripts/bb-chain`, `scripts/bb-attack-path`)**:
-  - Implemented unified command-line tool exposing full Phase 22 capabilities without bypassing safety gates.
+  - Implemented unified command-line tools for graph inspection, correlation, plan creation, approval management, reporting, and simulated validation. The CLI does not provide empirical chain confirmation.
   - Subcommands:
     - `status`: Displays authoritative aggregate statistics (nodes, edges, candidate paths, hypotheses, validated chains, and validation plans).
     - `list`: Lists discovered attack paths with optional `--state` filter (`HYPOTHESIS`, `PARTIALLY_VALIDATED`, `FULLY_VALIDATED`) and `--json`.
@@ -149,7 +148,7 @@ Milestone 22.4 delivers the final operational CLI commands, reporting engine, an
     - `approve <plan_id> --operator <name>`: Binds human operator approval to exact plan parameters.
     - `reject <plan_id> --operator <name> --reason <text>`: Rejects a plan with recorded rationale.
     - `revoke <plan_id> --operator <name> --reason <text>`: Revokes an approved plan, permanently blocking dispatch.
-    - `validate <plan_id>`: Executes authorized validation through the Phase 22.3 dispatch boundary, updating graph edges and chain state.
+    - `validate <plan_id>`: Exercises the approved plan through the deterministic fixture path; sends no target request, creates no evidence, and leaves edges and chains unvalidated. The CLI exits non-zero and labels the result as a simulation.
     - `report`: Generates multi-format reports (`markdown`, `json`, `terminal`).
   - Strict input sanitization: regex validation for `path_id`, `plan_id`, and `operator` identifiers; clear non-zero exit codes.
   - Prohibits `--force` or `--yes` authorization bypass flags.
@@ -161,15 +160,15 @@ Milestone 22.4 delivers the final operational CLI commands, reporting engine, an
     - **Zero-Secret Compliance**: Validated with `assert_no_raw_secrets` before output or write.
 - **Milestone 22.4 Acceptance Test Suite (`tests/test_phase22_cli_reporting.py`)**:
   - 25 comprehensive unit, adversarial, concurrency, and integration tests validating criteria AC-22.4-01 through AC-22.4-25 with 100% pass rate.
-  - **Phase 22 focused Linux evidence**: 102 tests passed across the Phase 22 suite on Kali Linux. The full hosted Windows Server 2025 / Python 3.14 suite also passed on commit `9361df3` in [GitHub Actions run 44381364848](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44381364848), including the native Windows DACL test path.
+  - **Current regression evidence**: the Phase 22 and scope fail-closed suites passed **125 tests** on Kali Linux at code commit `48d1f7e`. The full Kali suite passed 1,277 tests with two Windows-only skips; hosted Ubuntu Python 3.10/3.14 and Windows Server 2025 Python 3.14 full-suite jobs passed in [GitHub Actions run 44494335350](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44494335350). Exact commands and results are in the [Phase 24 verification record](PHASE-24-final-integration-production-readiness.md#post-audit-regression-verification).
 
 ---
 
 ## Purpose and bounty value
 
-Real bounty impact can depend on a sequence of weaknesses. For example, an exposed low-privilege resource may reveal an identifier that makes a separate authorization flaw exploitable, or a weak access boundary may expose a sensitive workflow. Phase 22 connects evidence across engines and identifies credible paths from a confirmed issue to a greater demonstrated impact.
+Real bounty impact can depend on a sequence of weaknesses. For example, an exposed low-privilege resource may reveal an identifier that makes a separate authorization flaw exploitable, or a weak access boundary may expose a sensitive workflow. Phase 22 correlates evidence already in the workspace to identify candidate paths and propose a safe follow-up. Its current CLI cannot itself prove that a path works against a target.
 
-The integrated engine is implemented in `framework/attack_path/` and exposed through `scripts/bb-chain` and `scripts/bb-attack-path`. Candidate chains remain hypotheses until their impact-relevant links are verified; the engine does not raise component finding severity based on theoretical paths.
+The integrated engine is implemented in `framework/attack_path/` and exposed through `scripts/bb-chain` and `scripts/bb-attack-path`. Candidate chains remain hypotheses until their impact-relevant links are verified through trusted empirical evidence. Current Phase 22 simulation does not provide that evidence; the engine does not raise component finding severity based on theoretical paths.
 
 ## Required researcher workflow
 
@@ -177,7 +176,7 @@ The integrated engine is implemented in `framework/attack_path/` and exposed thr
 2. Search existing in-scope assets, endpoints, identities, findings and observations for relationships that could make one weakness enable or amplify another.
 3. Build an explainable candidate chain: ordered steps, preconditions, trust-boundary transitions, supporting evidence, missing evidence, likely impact, confidence and safe validation plan.
 4. Separate established facts from inferred links. A chain remains a **hypothesis** until every impact-relevant edge is supported by evidence.
-5. Recommend the smallest non-destructive follow-up that can prove or reject the chain. Require explicit operator approval before any active request; re-check scope and budgets for every step.
+5. Recommend the smallest non-destructive follow-up that could prove or reject the chain. Require explicit operator approval before any active request; re-check every bound asset against current scope at authorization and immediately before execution. The current CLI only simulates this step.
 6. If confirmed, produce a report-ready narrative showing the individual vulnerabilities, how they combine, the demonstrated end impact and exact reproduction steps. Keep component finding severities distinct from the chain-level impact assessment.
 
 ## Graph and chain model requirements
@@ -207,9 +206,11 @@ The integrated engine is implemented in `framework/attack_path/` and exposed thr
 
 ## Acceptance status and verification limits
 
-The implementation, CLI, reporting, and safety-gate acceptance criteria above are present. The recorded focused Kali run, `python3 -m pytest tests/test_phase22_*.py -ra`, passed 102 tests before the current scope-resolution regression cases were added; both CLI entry points returned help successfully. The full Kali and hosted Windows results for the current repository are recorded in the [Phase 24 verification table](PHASE-24-final-integration-production-readiness.md#verification-record). These results verify local implementation and fixtures, not vulnerability discovery effectiveness against live targets.
+Candidate correlation, bounded traversal, graph reporting, plan creation, human approval, and fail-closed scope gates are implemented. At code commit `48d1f7e`, `python3 -m pytest tests/test_phase22_*.py tests/test_scope_fail_closed_validation.py -ra` passed **125 tests** on Kali. The full Kali suite passed **1,277 tests with 2 Windows-only skips**; hosted Ubuntu and Windows full-suite jobs passed in [GitHub Actions run 44494335350](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44494335350). This verifies code paths and fixtures, not real bounty findings.
 
-An earlier Windows sandbox run could not start `icacls` subprocesses (`OSError: [WinError 6] The handle is invalid`). The hosted Windows full-suite run now passes the native Windows test path, so that sandbox limitation is no longer the current acceptance status. Windows production dispatcher isolation is still unsupported under Phase 21. The CLI loads the canonical scope path and refuses dispatch when scope is missing or invalid; tests cover both. Remaining system limits are tracked in [Future Improvements](../FUTURE-IMPROVEMENTS.md) and the [issue register](../PROJECT-AUDIT-ISSUES.md).
+The two reproduced audit defects are fixed: Phase 22 no longer manufactures evidence-shaped values from simulation, and dispatch requires a real scope engine that checks every path-bound target at authorization and again before execution. However, the current `validate` command is a deterministic simulation only. No target request is sent, no evidence is created, and no graph relationship is promoted. A trusted Phase 21 receipt plus verified disk evidence is not yet integrated; empirical chain validation remains open under AUD-09. Older saved plans without bound `scope_targets` cannot be dispatched and must be regenerated and approved.
+
+Hosted Windows testing covers repository behavior but does not mean Windows production dispatcher isolation is supported; that remains unsupported under Phase 21. The CLI refuses dispatch when scope is missing or invalid. Remaining system limits are tracked in [Future Improvements](../FUTURE-IMPROVEMENTS.md) and the [issue register](../PROJECT-AUDIT-ISSUES.md).
 
 ## Source references
 

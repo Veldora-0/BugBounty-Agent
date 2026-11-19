@@ -13,7 +13,7 @@ BugBounty-Agent is an orchestrated security research system designed to operate 
 
 This project is intended to find and document vulnerabilities on **explicitly authorized bug bounty targets**. Start with the [Project Handbook](docs/PROJECT-HANDBOOK.md) for a newcomer-oriented overview and operating workflow. The [24-Phase Roadmap](docs/ROADMAP-24-PHASES.md) links to one detailed guide per phase; unresolved risks and blockers are maintained in the [Project Audit Issues](docs/PROJECT-AUDIT-ISSUES.md), candidate work is listed in [Future Improvements](docs/FUTURE-IMPROVEMENTS.md), and optional Kali-oriented tools are discussed in [Tooling Recommendations](docs/TOOLING-RECOMMENDATIONS.md). Phase 24 adds the [support matrix](docs/supported-environments.md), [threat model](docs/THREAT-MODEL.md), and [release checklist](docs/release-checklist.md).
 
-**Current status:** Phase 24's deployment, recovery, diagnostics, and cross-platform test gates have been implemented and verified on Kali Linux and hosted Linux/Windows CI. The project remains beta: unresolved capability and live-service limits are listed in the [issue register](docs/PROJECT-AUDIT-ISSUES.md), and no test result establishes live-target effectiveness or authorization.
+**Current status:** Phase 24's documented beta gates are implemented. The latest code audit at `48d1f7e` passed the full Kali suite and hosted Ubuntu/Windows CI; its verification record and the limits of those results are in the [Phase 24 guide](docs/phases/PHASE-24-final-integration-production-readiness.md#post-audit-regression-verification). Phase 22 can correlate candidate chains and prepare reviewable plans, but its validation command is simulation-only and cannot empirically confirm chain links. The project remains beta: unresolved capability and live-service limits are listed in the [issue register](docs/PROJECT-AUDIT-ISSUES.md), and no repository test establishes live-target effectiveness or authorization.
 
 Run `scripts/bb-deploy` to install the single global `Bug-Bounty` agent, its 18 skills, CLI tools, and the `/Arise` command. OpenCode discovers project slash commands from `.opencode/commands/` and global commands from `~/.config/opencode/commands/` ([command documentation](https://opencode.ai/docs/commands)).
 
@@ -136,7 +136,7 @@ BugBounty-Agent/
 │   ├── report.md              # 17-section markdown report template
 │   └── config.example.yaml    # Global framework configuration template
 │
-├── tests/                     # Automated regression test suite (56 test modules; 1079 tests under pytest)
+├── tests/                     # Automated regression suite (72 test modules; 1,279 tests collected at 48d1f7e)
 │   ├── test_scope.py          # Scope boundaries and DNS resolution tests
 │   ├── test_asset_engine.py   # Asset graph and subdomain intelligence tests
 │   ├── test_api_engine.py     # OpenAPI, GraphQL, and streaming byte budget tests
@@ -511,7 +511,7 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 
 ### 3. Environment & Runtime Status
 * **Development & Evaluation Environments**: Validated and synchronized across Windows 11 x86_64 and Kali/Debian Linux workstations with Python 3.10+.
-* **Cross-Platform Test Coverage**: 58 test modules with 1108 tests collected under pytest (1085 passed, 3 skipped on Windows 11; 1087 passed, 1 skipped on Kali Linux; 0 failures; 166 Phase 21 tests with 162 passed, 4 skipped on Windows 11 and 165 passed, 1 skipped on Kali Linux).
+* **Current regression evidence (code commit `48d1f7e`)**: 72 test modules; 1,279 tests collected. Kali Linux x86-64 / Python 3.14.10: 1,277 passed and 2 Windows-only tests skipped in 393.52 seconds. Hosted Ubuntu Python 3.10 and 3.14, and Windows Server 2025 Python 3.14, passed the full test workflow in [GitHub Actions run 44494335350](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44494335350). These are code and fixture results; no bounty target was contacted and they do not establish live-target detection effectiveness.
 * **Target Runtime**: Kali/Debian Linux with OpenCode installed, deploying `Bug-Bounty` globally via `bb-deploy`.
 
 ---

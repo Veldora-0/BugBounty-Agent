@@ -2,7 +2,7 @@
 
 This is the canonical status index. Detailed plans, implementation paths, safety boundaries and completion criteria live in [the per-phase guides](phases/) and [project handbook](PROJECT-HANDBOOK.md). Status describes the code and documentation currently present; historic test success does not establish live-target effectiveness.
 
-**Current status:** Phase 24 implementation and its documented beta acceptance gates are complete. Kali Linux full-suite, hosted Ubuntu Python 3.10/3.14, hosted Windows Python 3.14, isolated deployment/rollback, and diagnostic performance checks are recorded in the [Phase 24 guide](phases/PHASE-24-final-integration-production-readiness.md). The repository remains beta with the capability and live-service limits listed in the [issue register](PROJECT-AUDIT-ISSUES.md); this status does not claim production-ready live bounty coverage.
+**Current status:** Phase 24's documented beta acceptance gates are implemented. At code commit `48d1f7e`, the full Kali suite and hosted Ubuntu Python 3.10/3.14 and Windows Python 3.14 CI jobs passed; isolated deployment/rollback evidence remains tied to its earlier recorded commit. See the [Phase 24 guide](phases/PHASE-24-final-integration-production-readiness.md). Phase 22 candidate correlation and planning are implemented, but empirical chain validation remains open. The repository remains beta with the capability and live-service limits listed in the [issue register](PROJECT-AUDIT-ISSUES.md); this does not claim production-ready live bounty coverage.
 
 | Phase | Name | Current status |
 |---:|---|---|
@@ -27,7 +27,7 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 19 | Infrastructure & Configuration Exposure | Implemented; read-only and size bounded |
 | 20 | Race Conditions & Distributed Workflows | Implemented with low-volume bounds |
 | 21 | Authentication & Authorization Correlation | Implemented; Accepted with Documented Limitations (Windows service isolation unsupported; live Linux systemd mutation unverified) |
-| 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Implemented; Kali focused suite passed; full hosted Windows suite passed; attack-path and live-target limits remain documented |
+| 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Candidate graph, correlation, reporting, and approval planning implemented; CLI validation is simulation-only and empirical link promotion remains open (AUD-09) |
 | 23 | Autonomous Research Planning & Coverage Intelligence | Implemented; Linux and hosted Windows full-suite acceptance passed; public-source discovery requires an available read-only research capability |
 | 24 | Final Integration & Production Readiness | Implemented and verified for the documented beta support boundary; project-wide capability and live-service issues remain open |
 
