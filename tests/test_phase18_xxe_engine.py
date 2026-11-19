@@ -351,17 +351,26 @@ class TestXxeActiveValidation:
 class TestOobProviderAvailabilityTruthfulness:
     """Verifies that OOB providers report operational status truthfully without overclaiming."""
 
-    def test_interactsh_unconfigured_reports_config_required(self):
+    def test_interactsh_public_server_does_not_require_token(self, monkeypatch):
+        monkeypatch.setattr("framework.ssrf.provider.shutil.which", lambda _name: None)
         prov = InteractshOobProvider(token="")
         prov.token = None
-        assert prov.registration_status() == OobProviderStatus.CONFIG_REQUIRED
+        prov._client_path = None
+        assert prov.registration_status() == OobProviderStatus.UNAVAILABLE
 
-    def test_interactsh_configured_token_truthfully_reports_unavailable(self):
+    def test_interactsh_public_server_is_available_without_token_when_client_exists(self, monkeypatch):
+        monkeypatch.setattr("framework.ssrf.provider.shutil.which", lambda _name: "/fake/interactsh-client")
+        prov = InteractshOobProvider(server_url="oast.pro", token="")
+        prov.token = None
+        assert prov.registration_status() == OobProviderStatus.AVAILABLE
+
+    def test_interactsh_configured_token_without_client_reports_unavailable(self, monkeypatch):
         """
-        A configured token or hostname alone must not establish that live polling is operational.
-        Since live network polling is not implemented, the provider reports UNAVAILABLE.
+        A configured token alone must not imply that the CLI client is installed.
         """
+        monkeypatch.setattr("framework.ssrf.provider.shutil.which", lambda _name: None)
         prov = InteractshOobProvider(server_url="oast.pro", token="fake_pdcp_token_123")
+        prov._client_path = None
         assert prov.registration_status() == OobProviderStatus.UNAVAILABLE
         assert prov.registration_status() != OobProviderStatus.AVAILABLE
 
@@ -561,7 +570,7 @@ class TestXxeOobDispatchBoundary:
         assert "Prohibited IP address" in cand_res.notes
         assert len(dispatched_requests) == 0
 
-    def test_oob_dispatch_halts_safely_when_provider_unavailable(self):
+    def test_oob_dispatch_halts_safely_when_provider_unavailable(self, monkeypatch):
         """
         When provider is UNAVAILABLE (e.g. Interactsh adapter without live polling),
         engine halts safely with TESTED status, emits no finding, and dispatches zero requests.
@@ -570,7 +579,9 @@ class TestXxeOobDispatchBoundary:
         scope = make_scope()
         policy = SecurityTestPolicy(allowed_methods={"GET", "HEAD", "OPTIONS", "POST"}, block_destructive_actions=False)
 
+        monkeypatch.setattr("framework.ssrf.provider.shutil.which", lambda _name: None)
         interactsh_provider = InteractshOobProvider(server_url="oast.pro", token="tok123")
+        interactsh_provider._client_path = None
         assert interactsh_provider.registration_status() == OobProviderStatus.UNAVAILABLE
 
         dispatched_requests: List[ControlledRequest] = []

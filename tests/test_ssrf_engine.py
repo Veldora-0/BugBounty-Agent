@@ -206,11 +206,12 @@ def test_mock_oob_provider():
     assert len(provider.poll(token)) == 0
 
 
-def test_provider_factory_and_fallbacks():
+def test_provider_factory_and_fallbacks(monkeypatch):
+    monkeypatch.setattr("framework.ssrf.provider.shutil.which", lambda _name: None)
     p_mock = OobProviderFactory.get_provider("mock")
     assert isinstance(p_mock, MockOobProvider)
 
-    # When interactsh token is missing, factory falls back to MockOobProvider
+    # When the optional client binary is missing, factory preserves the offline mock fallback.
     p_inter = OobProviderFactory.get_provider("interactsh")
     assert isinstance(p_inter, MockOobProvider)
 
@@ -496,7 +497,7 @@ def test_ssrf_engine_live_provider_validation(temp_program_dir):
     assert finding_res.confidence == "HIGH"
 
 
-def test_ssrf_engine_unavailable_provider_fails_closed_zero_dispatch(temp_program_dir):
+def test_ssrf_engine_unavailable_provider_fails_closed_zero_dispatch(temp_program_dir, monkeypatch):
     """
     When provider reports UNAVAILABLE (e.g. configured Interactsh adapter without live polling),
     engine must fail closed before canary issuance or any baseline/probe dispatch.
@@ -506,7 +507,9 @@ def test_ssrf_engine_unavailable_provider_fails_closed_zero_dispatch(temp_progra
         "targets": {"domains": ["api.local"], "recursive_subdomains": {"enabled": True}},
     })
 
+    monkeypatch.setattr("framework.ssrf.provider.shutil.which", lambda _name: None)
     interactsh_prov = InteractshOobProvider(server_url="oast.pro", token="fake_pdcp_token_123")
+    interactsh_prov._client_path = None
     assert interactsh_prov.registration_status() == OobProviderStatus.UNAVAILABLE
 
     dispatched: List[ControlledRequest] = []
