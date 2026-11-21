@@ -1,6 +1,6 @@
 # Project Audit Issues and Known Problems
 
-This register lists material unresolved problems and accepted capability boundaries. When an issue is fixed and verified, remove it here; its implementation and tests remain traceable in Git history and the test suite. Earlier audit snapshots below are historical. The latest audit began from `99e2b61` on `main`; later code checkpoints include `48d1f7e`, `b6308e8`, and `6ddbe49`. The current verification and issue classifications appear before the historical records. Findings are based on repository inspection, tests, and the Kali service check; no bounty target was contacted.
+This register lists material unresolved problems and accepted capability boundaries. When an issue is fixed and verified, remove it here; its implementation and tests remain traceable in Git history and the test suite. Earlier audit snapshots below are historical. The latest audit began from `99e2b61` on `main`; later code checkpoints include `48d1f7e`, `b6308e8`, `6ddbe49`, and `7ac24ee`. Current verification and issue classifications appear before the historical records. The latest target work used CleanShot's published scope for offline scope-engine checks; only public policy/marketing pages were fetched, with no vulnerability probes or authenticated tests.
 
 ## Open issues
 
@@ -65,6 +65,16 @@ This register records repository review and current audit-run evidence, not a li
 | AUD-09 | Separate Phase 22 empirical-chain validation blocker | Integrate authenticated single-use receipts with disk-backed evidence bound to the plan, target, scope, and each edge; retain simulation fail-closed behavior. |
 
 AUD-04, AUD-06, AUD-07, and AUD-09 do not invalidate the passing code tests or Linux dispatcher isolation check. They remain visible limits or separate follow-ups. AUD-08 remains open because the production service has only been tested for readiness and rejection; a successful approved dispatch has not been demonstrated.
+
+## Scope-boundary fix at `7ac24ee` (2026-11-21)
+
+- **Finding:** While translating CleanShot's published scope into an offline fixture, `*.cleanshot.cloud` incorrectly authorized the bare `cleanshot.cloud` apex. Wildcard-only authorization should cover descendants; the apex requires a separate exact rule. The asset wildcard-DNS check also checked the apex rather than the exact generated probe names.
+- **Fix:** Wildcard rules no longer match their apex. Wildcard DNS detection authorizes each randomized hostname before resolving it, so an exact root may remain out of scope while allowed descendants are checked. Scope docs and the template now state the distinction.
+- **Kali verification:** `python3 -m pytest -q tests/test_scope.py tests/test_scope_fail_closed_validation.py` — **23 passed**. The full suite `python3 -m pytest tests/ -ra --durations=10` — **1,344 passed** in 180.71 seconds.
+- **Target-specific scope validation:** Offline scope evaluation accepted `cleanshot.com`, listed exact hosts, and wildcard descendants; rejected the wildcard-only apex, unlisted `random.cleanshot.com`, and excluded `docs.cleanshot.com`/`status.cleanshot.com`. No target vulnerability probes or authenticated tests were performed.
+- **GitHub Actions:** The exact commit is pushed on `main`; supplementary Ubuntu Python 3.10/3.14 CI jobs passed in [run 44891701876](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44891701876). Kali remains the primary acceptance platform; these jobs do not represent target testing.
+
+This fix closes a scope over-authorization defect. AUD-04, AUD-06, AUD-07, AUD-08, and AUD-09 remain open under their classifications above; the CleanShot public pages did not provide a researcher account or a safe endpoint for the live OOB and successful-dispatch checks.
 
 ## Historical verification (previous audit snapshot)
 
