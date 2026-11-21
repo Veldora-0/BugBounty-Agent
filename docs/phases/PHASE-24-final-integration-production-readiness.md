@@ -1,6 +1,6 @@
 # Phase 24 — Final Integration and Production Readiness
 
-**Status:** In progress. Operational hardening, documentation and historical hosted full-suite CI evidence are in place; the current automated workflow targets Linux only. The two native Windows-only cases and Windows CI matrix entry have been removed. The cross-platform service-status test is now Linux-only, preserving the Linux isolation assertion. Existing Linux-run mocked DACL failure cases remain. The current remediation working tree passed the complete Kali suite (**1,343 passed** in 163.11 seconds); hosted CI and updated installed-service acceptance are pending. A successful approved dispatch still requires a concrete authorized test target and operator configuration. The project remains beta, and this phase does not authorize a production release or close the capability limits listed in the audit register.
+**Status:** In progress. Code checkpoint `6ddbe49` passed the complete Kali suite (**1,343 passed** in 163.11 seconds), and both Linux GitHub Actions jobs passed. The two native Windows-only cases and Windows CI job have been removed; the current automated workflow targets Linux, and Linux-hosted mocked DACL failure cases remain. The updated Kali systemd dispatcher is installed; the root-run isolation verifier passed service identity, key/data isolation, agent IPC, and cross-process invalid-approval checks. A successful approved dispatch is still unverified because no test program or operator approval key is provisioned. The project remains beta; see the audit register for accepted boundaries and separate follow-ups. This phase does not authorize a production release or any bounty-target testing.
 **Main areas:** `framework/tools/`, `scripts/`, `.github/workflows/`, `docs/`, `tests/`, packaging and release configuration.
 
 ## Purpose
@@ -88,11 +88,12 @@ The workflow grants only `contents: read` and pins its GitHub-maintained actions
 
 | Acceptance area | Required evidence | Current state |
 |---|---|---|
-| Environment support | Full-suite evidence for every claimed environment; unsupported hosts clearly named | The later full-suite run at `48d1f7e` passed on Kali and hosted Ubuntu Python 3.10/3.14 and Windows Server 2025 Python 3.14 (see post-audit record). The deployment/rollback evidence below is from `9361df3`; macOS remains unverified and Windows production dispatcher isolation is unsupported. |
+| Environment support | Full-suite evidence for every claimed environment; unsupported hosts clearly named | At `6ddbe49`, the full Kali suite and hosted Ubuntu Python 3.10/3.14 jobs passed. Earlier Windows jobs are historical only. macOS remains unverified and Windows production dispatcher isolation is unsupported. |
 | Deployment lifecycle | Install, idempotent update, collision refusal, modified-file preservation, config restore, uninstall, rollback | Isolated Kali runs passed for copy and symlink modes, status, repeat deployment, uninstall, and byte-for-byte restoration of a pre-existing synthetic config. Detached-checkout rollback and forward redeploy passed in both modes without creating a branch or touching user state. Unit tests cover collision and modified-file preservation. |
 | Workspace safety | Framework update and removal must preserve program data | Deployment was exercised with isolated temporary config/bin directories, and the implementation does not target program workspace paths. Workspace backup and migration remain separate future work. |
 | Diagnostics | Required packages separated from optional tools and integrations; bounded runtime | Doctor and registry focused suite passed. Optional version checks now use a bounded worker pool; `bb-doctor` full diagnosis completed in under nine seconds in the latest full Kali suite. |
 | Threat and release review | Versioned threat model, release gate, commit-linked evidence | Threat model, release checklist, and pinned-action CI workflow are present. Dependency advisory scanning, SBOM generation, and signed release artifacts are not implemented; stable release tagging remains subject to the checklist. |
+| Installed dispatcher boundary | Updated systemd service identity and groups, key/data isolation, IPC, invalid approval and replay rejection; approved success path | Kali installation and `tests/verify-dispatcher-isolation.sh veldora` passed at code `6ddbe49`. The service uses `bbdispatcher-keys`; invalid approval was rejected before execution. No operator key or local acceptance program is configured, so successful approved dispatch and its receipt/evidence path remain unverified. |
 | Scope and live boundaries | Scope tests and honest separation of fixture/service evidence from live targets | Phase-specific tests and limits remain authoritative. No bounty target was contacted for Phase 24; repository tests do not establish detection effectiveness or bounty eligibility. |
 
 ## Verification record
@@ -136,7 +137,7 @@ The hosted jobs are recorded in [GitHub Actions run 44494335350](https://github.
 
 ## Historical code verification at `b6308e8` (2026-11-20)
 
-The full hosted matrix and Kali full-suite passed for code commit `b6308e8`, before the Windows-only test cases and Windows CI entry were removed. These results remain historical; they do not verify the current Linux-only test-policy edits, which have not been rerun.
+The full hosted matrix and Kali full-suite passed for code commit `b6308e8`, before the Windows-only test cases and Windows CI entry were removed. These results are historical. The current Linux-only test-policy edits were later verified at `6ddbe49`, as recorded below.
 
 | Environment | Code commit | Command or workflow | Result |
 |---|---|---|---|
@@ -145,7 +146,25 @@ The full hosted matrix and Kali full-suite passed for code commit `b6308e8`, bef
 | GitHub Ubuntu, Python 3.14 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed. |
 | GitHub Windows Server 2025, Python 3.14 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed, including Windows path and DACL checks. |
 
-The hosted jobs are recorded in [GitHub Actions run 44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317). The focused Kali selection covered dispatcher configuration, Interactsh adapter behavior, Nuclei and Subfinder integration, and Phase 21 security tests. The full test run did not contact a bounty target or prove live OOB reachability. The Kali host is still running the older installed dispatcher unit; its updated service-only approval-key group and a successful approved mutation require privileged installation and verification. Open issue classifications and required next evidence are maintained in the [audit register](../PROJECT-AUDIT-ISSUES.md#historical-checkpoint-verification-at-b6308e8-2026-11-20).
+The hosted jobs are recorded in [GitHub Actions run 44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317). The focused Kali selection covered dispatcher configuration, Interactsh adapter behavior, Nuclei and Subfinder integration, and Phase 21 security tests. The full test run did not contact a bounty target or prove live OOB reachability. At that historical checkpoint, the Kali host still ran the older dispatcher unit. The 2026-11-21 installation and verification are recorded in the current section below. Open issue classifications and required next evidence are maintained in the [audit register](../PROJECT-AUDIT-ISSUES.md#current-verification-and-classifications-at-6ddbe49-2026-11-21).
+
+## Current code verification at `6ddbe49` (2026-11-21)
+
+The tested source and test changes are committed at `6ddbe49c95e90806575dea59efc4c2877aba8cfe` on `main`. The exact commit is pushed to `origin/main`; GitHub Actions and Kali both report that commit. Documentation-only updates made after this checkpoint do not change the tested code.
+
+This checkpoint hardens three linked security properties. Dispatcher approval and nonce registries now validate persisted state and fail closed on malformed input. Nonces are durably reserved under a cross-process lock before approval consumption and target transport, preventing concurrent or restart-based replay; state writes use atomic replacement and filesystem flushes. Controlled dispatch now verifies that both receipt-referenced evidence records can be read back from the configured evidence store and that their identifiers and SHA-256 digests match. The asset, reconnaissance, API-reference, and OOB documentation was also corrected to describe implemented limits instead of implying unimplemented sources or broader live acceptance.
+
+| Environment | Commit | Command or workflow | Result |
+|---|---|---|---|
+| Kali Linux, Python 3.14.10 | `6ddbe49` | `python3 -m pytest tests/ -ra --durations=10` | **1,343 passed** in 163.11 seconds. |
+| Kali focused dispatcher/security regressions | `6ddbe49` | `python3 -m pytest -q tests/test_phase21_preflight_and_revocation.py::test_controlled_attestation_security_matrix_d1 tests/test_phase21_dispatcher_state_hardening.py` | **15 passed.** |
+| Kali dispatcher state/security remediation | `6ddbe49` | `python3 -m pytest -q tests/test_phase21_dispatcher_state_hardening.py tests/test_phase21_security_remediation.py` | **37 passed.** |
+| GitHub Actions, Ubuntu Python 3.10 and 3.14 | `6ddbe49` | `Tests` workflow, `python -m pytest tests/ -ra` | Both jobs passed in [run 44887074727](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44887074727). |
+| Kali installed dispatcher | `6ddbe49` | `sudo bash scripts/install-dispatcher.sh`; `sudo bash tests/verify-dispatcher-isolation.sh veldora` | Installer completed. Verifier passed service identity, service-only group, signing-key/data isolation, agent IPC, and cross-process invalid-approval rejection. |
+
+The installed service is active with `SupplementaryGroups=bbdispatcher-keys`; its socket is owned by `_bbdispatcher:bbgroup` with mode `660`, and the pinned public key is installed as `root:root` mode `644`. The verifier confirmed `MISSING_APPROVAL_KEY` rejection before execution and no state/evidence mutation. No operator approval key or test program was provisioned, so no approved mutation, real service receipt, or successful dispatch evidence was produced. No bounty target was contacted. These checks establish the local isolation and rejection properties only; they do not establish live vulnerability-discovery effectiveness or authorize testing.
+
+The remaining classifications are explicit: AUD-08 is a Phase 24 acceptance blocker for a successful approved local dispatch; AUD-04 depends on an externally reachable OOB provider and controlled callback endpoint; AUD-06 is an ASN coverage limitation; AUD-07 is a documented manual-tool boundary; and AUD-09 is a separate Phase 22 empirical-chain validation gap. Details and acceptance evidence are maintained in the [issue register](../PROJECT-AUDIT-ISSUES.md#current-verification-and-classifications-at-6ddbe49-2026-11-21).
 
 ## Starting points
 

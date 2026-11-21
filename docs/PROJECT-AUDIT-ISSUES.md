@@ -1,6 +1,6 @@
 # Project Audit Issues and Known Problems
 
-This register lists only material unresolved project problems. When an issue is fixed and verified, remove it here; its implementation and tests remain traceable in Git history and the test suite. The earlier audit snapshots below are historical. The latest audit began from `99e2b61` on `main`; subsequent code checkpoints include `48d1f7e` and `b6308e8`. Current verification is recorded at the end. Findings about implementation are based on repository inspection and tests, not on live bounty targets.
+This register lists material unresolved problems and accepted capability boundaries. When an issue is fixed and verified, remove it here; its implementation and tests remain traceable in Git history and the test suite. Earlier audit snapshots below are historical. The latest audit began from `99e2b61` on `main`; later code checkpoints include `48d1f7e`, `b6308e8`, and `6ddbe49`. The current verification and issue classifications appear before the historical records. Findings are based on repository inspection, tests, and the Kali service check; no bounty target was contacted.
 
 ## Open issues
 
@@ -31,9 +31,9 @@ This register lists only material unresolved project problems. When an issue is 
 ### AUD-08 — Phase 21 production acceptance remains platform-limited
 
 - **Severity:** Medium; affects deployment support and confidence in the installed dispatcher path.
-- **Evidence:** Earlier Kali checks verified the installed dispatcher identity, socket access, status/ping, and invalid-approval rejection. New code separates the operator HMAC key into a service-only `bbdispatcher-keys` group, but the currently inspected Kali systemd unit has not yet been upgraded to that configuration and no program approval key is provisioned there. A successful operator-approved mutation through the installed service has not been run. Windows production service isolation is unsupported; historical Windows tests covered state permissions and development IPC, not a dedicated production service.
+- **Evidence:** On 2026-11-21, the Kali installer deployed the updated systemd unit. The active service reports `SupplementaryGroups=bbdispatcher-keys`, and the socket and public verification key are present with expected ownership and modes. `sudo bash tests/verify-dispatcher-isolation.sh veldora` passed, checking service identity, service-only group, agent isolation from the private signing key and protected data, IPC access, and cross-process rejection of invalid approval before execution. No program scope or operator approval key is provisioned, so a successful approved mutation through the installed service has not been run. Windows production service isolation is unsupported.
 - **Impact:** The installed Linux service's successful authorized dispatch path lacks direct live-service acceptance evidence, and the Windows deployment boundary differs from Linux.
-- **Remediation:** Upgrade the Kali unit and run a controlled, reversible Linux integration test using a dedicated test program/action and provisioned test keys. Treat Windows production dispatcher service isolation as unsupported unless a separate design and acceptance effort is approved; keep readiness status explicit.
+- **Remediation:** The Kali unit upgrade and isolation check are complete. Run a controlled, reversible Linux integration test using a dedicated local acceptance program/action and disposable test keys; do not use a bounty target to test the local dispatcher. Treat Windows production dispatcher service isolation as unsupported unless a separate design and acceptance effort is approved; keep readiness status explicit.
 - **Acceptance gate:** A supported-platform matrix includes successful and rejected dispatch through the actual service boundary, proves receipt/evidence binding and replay rejection, and records platform-specific unsupported behavior without overstating parity.
 
 ### AUD-09 — Phase 22 cannot empirically validate attack-path links
@@ -47,6 +47,24 @@ This register lists only material unresolved project problems. When an issue is 
 ## Audit boundaries
 
 This register records repository review and current audit-run evidence, not a live-target security assessment. No bounty target was contacted. Review current program rules and scope before use.
+
+## Current verification and classifications at `6ddbe49` (2026-11-21)
+
+- **Kali Linux, Python 3.14.10:** `python3 -m pytest tests/ -ra --durations=10` — **1,343 passed** in 163.11 seconds. No Windows-only tests were run or added.
+- **Focused security regressions:** `python3 -m pytest -q tests/test_phase21_preflight_and_revocation.py::test_controlled_attestation_security_matrix_d1 tests/test_phase21_dispatcher_state_hardening.py` — **15 passed**. The dispatcher state and security-remediation selection also passed: `python3 -m pytest -q tests/test_phase21_dispatcher_state_hardening.py tests/test_phase21_security_remediation.py` — **37 passed**.
+- **GitHub Actions:** [run 44887074727](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44887074727) for exact code commit `6ddbe49c95e90806575dea59efc4c2877aba8cfe` completed successfully. The Ubuntu Python 3.10 and Python 3.14 jobs both passed.
+- **Installed Kali dispatcher:** `sudo bash scripts/install-dispatcher.sh` followed by `sudo bash tests/verify-dispatcher-isolation.sh veldora` completed. The verifier reported the dispatcher alive, invalid approval rejected with `MISSING_APPROVAL_KEY` before execution, and passed service identity, service-only group, signing-key/data isolation, agent IPC, and cross-process invalid-approval checks. The active unit reports `SupplementaryGroups=bbdispatcher-keys`. No operator key, program configuration, or successful approved mutation was provisioned or attempted.
+- **Live targets:** None contacted. These are local test, CI, and installed-service results; they do not show that the agent finds vulnerabilities on live bounty targets.
+
+| Issue | Current classification | Remaining acceptance action |
+|---|---|---|
+| AUD-04 | External provider dependency and separate Phase 9/18 live-acceptance gap | Use a researcher-controlled endpoint for an authorized canary callback; otherwise keep live OOB confirmation unsupported. Burp Collaborator polling is optional follow-up. |
+| AUD-06 | Separate follow-up; documented asset-coverage limitation | Keep ASN explicitly `UNKNOWN`, or implement and test an opt-in bounded provider. |
+| AUD-07 | Documented product boundary; optional integration follow-up | Add an explicit, tested invocation contract only for tools selected for integration. The current docs must not imply `bb-recon` launches them. |
+| AUD-08 | **Phase 24 acceptance blocker** for full installed-service dispatch; Windows production isolation is an accepted unsupported boundary | Verify a successful approved, reversible action using a dedicated local acceptance program and disposable key, plus rejection and replay checks. Do not use an unspecified bounty target. |
+| AUD-09 | Separate Phase 22 empirical-chain validation blocker | Integrate authenticated single-use receipts with disk-backed evidence bound to the plan, target, scope, and each edge; retain simulation fail-closed behavior. |
+
+AUD-04, AUD-06, AUD-07, and AUD-09 do not invalidate the passing code tests or Linux dispatcher isolation check. They remain visible limits or separate follow-ups. AUD-08 remains open because the production service has only been tested for readiness and rejection; a successful approved dispatch has not been demonstrated.
 
 ## Historical verification (previous audit snapshot)
 
@@ -88,7 +106,7 @@ This register records repository review and current audit-run evidence, not a li
 
 ## Historical checkpoint verification at `b6308e8` (2026-11-20)
 
-The results below predate the current Linux-only test-policy edits. The two native Windows-only cases and Windows CI job have since been removed. The cross-platform service-status test was narrowed to retain its Linux assertions only. No tests were rerun for these changes at the user's request.
+The results below predate the current Linux-only test-policy edits. At this historical checkpoint, the two native Windows-only cases and Windows CI job had been removed, the service-status test retained its Linux assertions, and those edits had not yet been rerun at the user's request. They were later verified at `6ddbe49` in the current verification section above.
 
 ### Closure classification
 

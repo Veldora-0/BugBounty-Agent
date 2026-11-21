@@ -1,6 +1,6 @@
 # Phase 21 — Authentication & Authorization Correlation
 
-**Status:** Partially implemented. The Linux dispatcher can be configured with one trusted program scope and operator key, and fails closed when configuration is absent. The updated service isolation and successful dispatch path are not yet live-verified on Kali; Windows production service isolation is unsupported.
+**Status:** Partially implemented. The updated Linux systemd service is installed on Kali and its identity, service-only key group, private-key/data isolation, agent IPC, and cross-process rejection of invalid approval were verified on 2026-11-21. A successful operator-approved dispatch remains unverified because no program approval key or authorized test program is provisioned. Windows production service isolation is unsupported.
 **Implementation:** framework/auth_correlation/, skills/authentication/, skills/authorization/, scripts/bb-auth-correlate
 
 ## What this phase is for
@@ -35,6 +35,12 @@ The provisioning command validates both input files before replacing configurati
 
 This boundary is distinct from application testing. It protects the local control channel; it does not prove that a target has a vulnerability, and it does not grant permission to test a target.
 
+### Replay protection and evidence integrity
+
+The dispatcher treats its approval and nonce files as security state. It validates their schema and every record before use; malformed, duplicate, or unsafe state is rejected rather than silently reset. A request nonce is durably reserved under a cross-process lock before approval is consumed and before the approved transport is called. The write uses an atomic replacement and flushes the file and parent directory. If the process stops after reservation, that nonce is burned: the same request cannot be replayed after restart. The registry does not discard old entries to make room, because that would reopen replay opportunities.
+
+After dispatch, a receipt's evidence identifiers are not accepted as proof by themselves. `ControlledDispatchWorkflow` requires an evidence store that can write and read persisted evidence, then independently retrieves both referenced records and checks their identifiers and SHA-256 digests against the receipt. Missing stores, unreadable or altered evidence, mismatched identifiers, and digest errors stop the workflow. These checks protect the local approval/evidence chain; they do not prove that the remote application behaved securely.
+
 ## Safety and scope gates
 - Explicit program authorization and the current scope rules are prerequisites; exclusions take precedence.
 - Prefer passive analysis. Active checks must be bounded, non-destructive, and use the approved transport and human approval gates required by the engine.
@@ -43,15 +49,15 @@ This boundary is distinct from application testing. It protects the local contro
 
 ## What is verified and what remains limited
 
-Before the latest configuration hardening, Kali checks verified the Linux dispatcher identity, socket access, signing-key/data permissions, pinned public key, and rejection of invalid approval. Unit and adversarial tests cover signed receipt verification, altered or missing receipts, replay, expiry, future timestamps, unauthorized evidence writes, program binding, and production-readiness status. The updated files add explicit service-only approval-key group checks. On 2026-11-20, the Kali checkout's installed systemd unit still had an empty `SupplementaryGroups`, no operator approval key was provisioned, and noninteractive `sudo` required a password. Therefore the revised installed-service permissions and a successful authorized mutation have not been verified live. Repository tests verify the configuration contract; they do not prove that the current host has been upgraded.
+Unit and adversarial tests cover signed receipt verification, altered or missing receipts, replay, expiry, future timestamps, unauthorized evidence writes, program binding, and production-readiness status. On 2026-11-21, the Kali installer updated the systemd service; `SupplementaryGroups=bbdispatcher-keys` was present and the service was active with its socket and public verification key installed. `sudo bash tests/verify-dispatcher-isolation.sh veldora` passed. The verifier checked service UID/GID and supplementary group, agent separation from the private signing key and protected data, socket/public-key permissions, agent IPC, and cross-process rejection of invalid approval without mutation. The operator approval key was not provisioned, so a successful approved dispatch was not attempted. These host checks do not establish live-target effectiveness or authorization.
 
 ## Remaining work and limitations
 Outstanding limitations:
 1. Windows production service isolation remains unsupported (Named Pipes are used for local development and testing; the production service boundary is Linux systemd).
-2. The updated Linux installation and program provisioning path still needs a privileged host upgrade and live isolation check. Kali's noninteractive `sudo` was unavailable during this audit, and the installed service had not yet been configured with a program scope or approval key.
+2. Provisioning a program scope and 32-byte operator approval key remains unverified on the installed host. Use a dedicated local acceptance program and disposable test key; do not use a bounty target to close this infrastructure test.
 3. A successful authorized mutation through the installed systemd service has not been run. Standalone isolated-process tests cover receipt creation and verification, but are not equivalent to the installed service boundary.
 
-These limits remain release gates. Linux production service isolation is implemented in code, but the updated approval-key group and program configuration have not been installed and checked on the current Kali host. Windows production dispatcher isolation remains unsupported. No successful authorized mutation has been run through the installed service. See the [issue register](../PROJECT-AUDIT-ISSUES.md), [Phase 24 verification record](PHASE-24-final-integration-production-readiness.md), and [roadmap](../ROADMAP-24-PHASES.md). Phase acceptance does not imply authorization to test any target.
+The installed Linux service isolation checks now pass, but program-key provisioning and successful approved dispatch remain release acceptance gaps. Windows production dispatcher isolation remains unsupported. No bounty target was contacted. See the [issue register](../PROJECT-AUDIT-ISSUES.md), [Phase 24 verification record](PHASE-24-final-integration-production-readiness.md), and [roadmap](../ROADMAP-24-PHASES.md). Phase acceptance does not imply authorization to test any target.
 
 ## Source references
 Relevant tests: `tests/test_phase21_*.py`, `tests/test_dispatcher*.py`, and the Kali isolation check `tests/verify-dispatcher-isolation.sh`. See the [project handbook](../PROJECT-HANDBOOK.md) and [24-phase roadmap](../ROADMAP-24-PHASES.md).
