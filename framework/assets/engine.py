@@ -175,16 +175,20 @@ class AssetIntelligenceEngine:
         if domain in self.wildcard_domains:
             return True, self.wildcard_domains[domain]
 
-        # SEC-01: Disallow live wildcard probes without an active scope engine or if domain is out of scope.
+        probe1 = f"_bb_probe_{uuid.uuid4().hex[:8]}.{domain}"
+        probe2 = f"_bb_probe_{uuid.uuid4().hex[:8]}.{domain}"
+
+        # Authorize the exact randomized names that will be resolved. A wildcard
+        # scope may authorize descendants while intentionally excluding its apex.
         # Preserve offline simulation when dns_resolver_hook is set.
         if not self.dns_resolver_hook:
             if not self.scope_engine:
                 return False, set()
-            if self.evaluate_scope(domain).status != ScopeStatus.IN_SCOPE:
+            if any(
+                self.evaluate_scope(probe).status != ScopeStatus.IN_SCOPE
+                for probe in (probe1, probe2)
+            ):
                 return False, set()
-
-        probe1 = f"_bb_probe_{uuid.uuid4().hex[:8]}.{domain}"
-        probe2 = f"_bb_probe_{uuid.uuid4().hex[:8]}.{domain}"
 
         res1 = self.resolve_dns(probe1)
         res2 = self.resolve_dns(probe2)

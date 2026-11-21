@@ -50,6 +50,26 @@ def test_scope_exact_domain(base_scope_config):
     assert res.root_domain == "example.com"
 
 
+def test_wildcard_domain_does_not_authorize_bare_apex():
+    engine = ScopeEngine({
+        "targets": {
+            "domains": ["*.cleanshot.cloud"],
+            "recursive_subdomains": {"enabled": False, "max_depth": 0},
+        },
+    })
+
+    assert engine.check("cleanshot.cloud").status == ScopeStatus.OUT_OF_SCOPE
+    assert engine.check("app.cleanshot.cloud").status == ScopeStatus.IN_SCOPE
+
+    explicit_apex = ScopeEngine({
+        "targets": {
+            "domains": ["cleanshot.cloud", "*.cleanshot.cloud"],
+            "recursive_subdomains": {"enabled": False, "max_depth": 0},
+        },
+    })
+    assert explicit_apex.check("cleanshot.cloud").status == ScopeStatus.IN_SCOPE
+
+
 def test_scope_recursive_subdomains(base_scope_config):
     engine = ScopeEngine(base_scope_config)
     

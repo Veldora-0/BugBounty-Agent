@@ -7,7 +7,7 @@ The Scope Engine is the primary authorization boundary of the BugBounty-Agent fr
 ## 1. Supported Target Types
 
 * **Exact Domains**: e.g., `example.com`, `auth.example.com`.
-* **Wildcard Domains**: e.g., `*.example.com`, `*.corp.example.org`.
+* **Wildcard Domains**: e.g., `*.example.com`, `*.corp.example.org`. A wildcard authorizes matching subdomains, not the bare apex; add `example.com` separately when the program includes it.
 * **Recursive Subdomains**: Arbitrary depth subdomains under authorized roots when `recursive_subdomains.enabled` is `true`.
 * **Exact URLs & URL Prefixes**: e.g., `https://service.example.net/api/v1/`.
 * **IP Addresses**: IPv4 and IPv6 addresses.

@@ -15,7 +15,8 @@ authorization:
 
 targets:
   # Included domains. Supports exact domains ('example.com') or wildcards ('*.example.com').
-  # Note: A bare root domain 'example.com' only includes subdomains if recursive_subdomains is enabled.
+  # A wildcard includes descendants, not its apex; list both forms when both are authorized.
+  # A bare root domain 'example.com' only includes subdomains if recursive_subdomains is enabled.
   domains:
     - "example.com"
     - "*.example.net"

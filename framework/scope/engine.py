@@ -505,7 +505,11 @@ class ScopeEngine:
                 depth, parent = calculate_subdomain_depth(clean_target, inc_clean)
 
                 if depth == 0:
-                    # Matches the root domain itself
+                    # A wildcard authorizes descendants, not its bare apex. The
+                    # apex needs a separate exact inclusion rule when in scope.
+                    if is_wildcard:
+                        continue
+
                     matched_candidates.append({
                         "root_domain": inc_clean,
                         "depth": 0,
