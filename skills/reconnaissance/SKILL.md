@@ -65,7 +65,7 @@ bb-recon --program <program-name> --json
 
 | Capability | Probing Method & Data Captured | Safety & Policy Rule |
 | :--- | :--- | :--- |
-| **`dns`** | A, AAAA, CNAME, MX, NS records; IPs enriched into `AssetGraph`. | Validated via `ScopeEngine`; passive DNS fallback available. |
+| **`dns`** | The live built-in resolver records A, AAAA and CNAME answers and links resolved IPs into `AssetGraph`. Test hooks can model additional record types, but they do not provide a live MX, NS or TXT resolver. | Active resolution requires an in-scope `ScopeEngine`. `--passive-only` performs no DNS lookup; no passive DNS provider is built in. |
 | **`tls`** | SAN names, issuer, validity period, TLS version, cipher. Discovered in-scope SANs become new graph nodes. | Port 443 handshake; strict scope filtering on all SAN names before graph insertion. |
 | **`http`** | URL, status code, title, server header, security headers, content length/type, redirect chain. | Rate-limited and bounded request ceilings (`--max-requests`). Default ports (80, 443). |
 | **`ports`** | Port number, protocol (TCP), identified service, reachability status. | Explicitly bounded port list; aggressive port sweeps strictly prohibited by default. |

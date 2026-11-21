@@ -35,8 +35,10 @@ from framework.auth_correlation.ipc.protocol import (
     ALLOWED_ACTION_TYPES,
     ALLOWED_DOSSIER_KEYS,
     ALLOWED_MUTATION_METHODS,
+    ACTION_ID_PATTERN,
     IPCProtocolError,
     IPCValidationError,
+    NONCE_PATTERN,
     pack_message,
     read_framed_message,
     validate_request_frame,
@@ -96,6 +98,14 @@ PROHIBITED_METADATA_HOSTS = frozenset({
     "100.100.100.200",
     "fd00:ec2::254",
 })
+
+
+class NonceReplayError(ValueError):
+    """Raised when an IPC request nonce has already been durably reserved."""
+
+
+class NonceRegistryError(ValueError):
+    """Raised when persisted nonce state is malformed or cannot be updated."""
 
 
 class IsolatedExecutionDispatcher:
@@ -225,6 +235,47 @@ class IsolatedExecutionDispatcher:
     def _get_consumed_lock_path(self) -> str:
         return os.path.join(self.state_dir, "consumed_approvals.lock")
 
+    @staticmethod
+    def _write_json_atomically(path: str, value: Dict[str, Any]) -> None:
+        """Durably replace a private JSON state file without exposing partial JSON."""
+        parent = os.path.dirname(os.path.abspath(path))
+        tmp_path = f"{path}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        fd = -1
+        try:
+            fd = os.open(tmp_path, flags, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as state_file:
+                json.dump(value, state_file, indent=2)
+                state_file.flush()
+                os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            if os.name == "nt":
+                _enforce_windows_file_dacl(tmp_path)
+            else:
+                os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, path)
+            if os.name != "nt":
+                dir_fd = os.open(parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+        except Exception:
+            if fd != -1:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
+
     def _validate_scope_and_destination(self, target_endpoint: str) -> None:
         """
         Validates target destination immediately before transport dispatch:
@@ -291,12 +342,28 @@ class IsolatedExecutionDispatcher:
 
         with self._consumed_lock, CrossProcessFileLock(lock_path):
             reg: Dict[str, Any] = {"version": 1, "consumed": {}}
-            if os.path.exists(consumed_path):
+            if os.path.lexists(consumed_path):
+                if os.path.islink(consumed_path):
+                    raise ValueError("Consumed approvals registry corrupted: state path is a symbolic link")
                 try:
                     with open(consumed_path, "r", encoding="utf-8") as f:
                         reg = json.load(f)
-                    if not isinstance(reg, dict) or "consumed" not in reg:
-                        reg = {"version": 1, "consumed": {}}
+                    if (
+                        not isinstance(reg, dict)
+                        or set(reg) != {"version", "consumed"}
+                        or type(reg.get("version")) is not int
+                        or reg.get("version") != 1
+                        or not isinstance(reg.get("consumed"), dict)
+                    ):
+                        raise ValueError("unsupported or malformed registry schema")
+                    for stored_action_id, stored_record in reg["consumed"].items():
+                        if (
+                            not isinstance(stored_action_id, str)
+                            or not ACTION_ID_PATTERN.fullmatch(stored_action_id)
+                            or not isinstance(stored_record, dict)
+                            or stored_record.get("action_id") != stored_action_id
+                        ):
+                            raise ValueError("malformed consumed approval record")
                 except Exception as e:
                     raise ValueError(f"Consumed approvals registry corrupted: {e}")
 
@@ -324,24 +391,9 @@ class IsolatedExecutionDispatcher:
                 from framework.auth_correlation.ledger import sign_consumption_receipt
                 rec["receipt_signature"] = sign_consumption_receipt(rec, self.approval_key)
             reg["consumed"][action_id] = rec
-
-            tmp_path = f"{consumed_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
-            flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
-            if hasattr(os, "O_BINARY"):
-                flags |= os.O_BINARY
-            fd = os.open(tmp_path, flags, 0o600)
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(reg, f, indent=2)
-                if os.name == "nt":
-                    _enforce_windows_file_dacl(tmp_path)
-                os.replace(tmp_path, consumed_path)
+                self._write_json_atomically(consumed_path, reg)
             except Exception as e:
-                if os.path.exists(tmp_path):
-                    try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
                 raise ValueError(f"Failed to record consumed approval: {e}")
 
         return consumption_token
@@ -352,53 +404,43 @@ class IsolatedExecutionDispatcher:
     def _get_nonces_lock_path(self) -> str:
         return os.path.join(self.state_dir, "consumed_nonces.lock")
 
-    def _is_nonce_consumed(self, nonce: str) -> bool:
-        nonces_path = self._get_nonces_path()
-        if not os.path.exists(nonces_path):
-            return False
-        try:
-            with open(nonces_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return nonce in data.get("nonces", [])
-        except Exception:
-            return False
-
-    def _atomically_consume_nonce(self, nonce: str) -> None:
+    def _reserve_nonce(self, nonce: str) -> None:
+        """Durably reserve a nonce before consuming approval or performing network work."""
+        if not isinstance(nonce, str) or not NONCE_PATTERN.fullmatch(nonce):
+            raise NonceRegistryError("nonce registry cannot reserve an invalid nonce")
         nonces_path = self._get_nonces_path()
         lock_path = self._get_nonces_lock_path()
         with self._consumed_lock, CrossProcessFileLock(lock_path):
             data: Dict[str, Any] = {"version": 1, "nonces": []}
-            if os.path.exists(nonces_path):
+            if os.path.lexists(nonces_path):
+                if os.path.islink(nonces_path):
+                    raise NonceRegistryError("nonce registry path is a symbolic link")
                 try:
                     with open(nonces_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    if not isinstance(data, dict) or "nonces" not in data:
-                        data = {"version": 1, "nonces": []}
-                except Exception:
-                    data = {"version": 1, "nonces": []}
-            if nonce in data.get("nonces", []):
-                raise ValueError("Nonce has already been consumed")
+                    if (
+                        not isinstance(data, dict)
+                        or set(data) != {"version", "nonces"}
+                        or type(data.get("version")) is not int
+                        or data.get("version") != 1
+                        or not isinstance(data.get("nonces"), list)
+                        or any(
+                            not isinstance(stored_nonce, str)
+                            or not NONCE_PATTERN.fullmatch(stored_nonce)
+                            for stored_nonce in data["nonces"]
+                        )
+                        or len(set(data["nonces"])) != len(data["nonces"])
+                    ):
+                        raise ValueError("unsupported or malformed registry schema")
+                except Exception as e:
+                    raise NonceRegistryError(f"nonce registry is corrupted: {e}") from e
+            if nonce in data["nonces"]:
+                raise NonceReplayError("Nonce has already been consumed")
             data["nonces"].append(nonce)
-            if len(data["nonces"]) > 10000:
-                data["nonces"] = data["nonces"][-10000:]
-            tmp_path = f"{nonces_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
-            flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
-            if hasattr(os, "O_BINARY"):
-                flags |= os.O_BINARY
-            fd = os.open(tmp_path, flags, 0o600)
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
-                if os.name == "nt":
-                    _enforce_windows_file_dacl(tmp_path)
-                os.replace(tmp_path, nonces_path)
-            except Exception:
-                if os.path.exists(tmp_path):
-                    try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
-                raise
+                self._write_json_atomically(nonces_path, data)
+            except Exception as e:
+                raise NonceRegistryError(f"nonce registry could not be durably updated: {e}") from e
 
     def _persist_evidence(
         self,
@@ -646,19 +688,6 @@ class IsolatedExecutionDispatcher:
                         "receipt": None,
                     }
 
-                # 0. Request Nonce Replay Check
-                if self._is_nonce_consumed(nonce):
-                    return {
-                        "version": PROTOCOL_VERSION,
-                        "request_id": req_id,
-                        "response_nonce": resp_nonce,
-                        "timestamp": now_iso,
-                        "status": "REJECTED",
-                        "error_code": "NONCE_REPLAY_DETECTED",
-                        "error_message": "Request nonce has already been consumed (replay rejected)",
-                        "receipt": None,
-                    }
-
                 # 1. Canonical dossier verification (Digest integrity)
                 canonical_copy = {k: dossier[k] for k in CANONICAL_ACTION_FIELDS if k in dossier}
                 canonical_str = json.dumps(canonical_copy, sort_keys=True)
@@ -770,7 +799,35 @@ class IsolatedExecutionDispatcher:
                         "receipt": None,
                     }
 
-                # 4. Atomic single-use approval consumption
+                # 4. Atomically reserve the request nonce before any approval
+                # consumption or target network activity. A process crash after
+                # this write burns the nonce, which is safe and fail-closed.
+                try:
+                    self._reserve_nonce(nonce)
+                except NonceReplayError as e:
+                    return {
+                        "version": PROTOCOL_VERSION,
+                        "request_id": req_id,
+                        "response_nonce": resp_nonce,
+                        "timestamp": now_iso,
+                        "status": "REJECTED",
+                        "error_code": "NONCE_REPLAY_DETECTED",
+                        "error_message": str(e),
+                        "receipt": None,
+                    }
+                except Exception as e:
+                    return {
+                        "version": PROTOCOL_VERSION,
+                        "request_id": req_id,
+                        "response_nonce": resp_nonce,
+                        "timestamp": now_iso,
+                        "status": "REJECTED",
+                        "error_code": "NONCE_RESERVATION_FAILED",
+                        "error_message": f"Request nonce could not be safely reserved: {e}",
+                        "receipt": None,
+                    }
+
+                # 5. Atomic single-use approval consumption
                 dispatch_op_id = f"DISP-OP-{secrets.token_hex(32).upper()}"
                 try:
                     c_token = self._atomically_consume_approval(action_id, dossier, sess_ctx, dispatch_op_id)
@@ -786,7 +843,7 @@ class IsolatedExecutionDispatcher:
                         "receipt": None,
                     }
 
-                # 5. Network transport execution
+                # 6. Network transport execution
                 try:
                     mut_req, mut_resp, probe_req, probe_resp, ver_method = self._execute_mutation_and_probe(
                         target_endpoint=target_endpoint,
@@ -807,7 +864,7 @@ class IsolatedExecutionDispatcher:
                         "receipt": None,
                     }
 
-                # 6. Evidence persistence
+                # 7. Evidence persistence
                 appr_id = dossier.get("unique_approval_id")
                 s_ref = sess_ctx.get("session_ref")
                 p_id = sess_ctx.get("principal_id")
@@ -834,7 +891,7 @@ class IsolatedExecutionDispatcher:
                         "receipt": None,
                     }
 
-                # 7. Generate Signed ExecutionReceipt
+                # 8. Generate Signed ExecutionReceipt
                 rcpt_id = f"RCPT-{secrets.token_hex(16).upper()}"
                 exec_id = f"EXEC-{secrets.token_hex(16).upper()}"
                 receipt_dict: Dict[str, Any] = {
@@ -877,9 +934,6 @@ class IsolatedExecutionDispatcher:
                 }
                 receipt_dict["signature"] = sign_execution_receipt(receipt_dict, self.signing_key)
                 receipt_dict["receipt_signature"] = receipt_dict["signature"]
-
-                # Record consumed nonce to prevent replay across sessions and reboots
-                self._atomically_consume_nonce(nonce)
 
                 return {
                     "version": PROTOCOL_VERSION,

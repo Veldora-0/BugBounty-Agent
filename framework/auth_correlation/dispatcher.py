@@ -267,11 +267,17 @@ class ControlledDispatchWorkflow:
                 "Mode B controlled invalidation is disabled: isolated execution provenance boundary is not implemented"
             )
 
-        # 0. EvidenceStore is MANDATORY and must be writable before any mutation dispatch
+        # 0. EvidenceStore is MANDATORY and must support independent retrieval
+        # before any mutation dispatch. A writable-only object would otherwise
+        # let receipt evidence lookup be silently skipped after execution.
         if self._evidence_store is None:
             raise ApprovalSecurityError("EvidenceStore is mandatory for Mode B controlled invalidation")
-        if not hasattr(self._evidence_store, "is_writable") or not self._evidence_store.is_writable():
+        if not callable(getattr(self._evidence_store, "is_writable", None)) or not self._evidence_store.is_writable():
             raise ApprovalSecurityError("EvidenceStore is not writable or evidence directory is insecure")
+        if not callable(getattr(self._evidence_store, "get_evidence", None)):
+            raise ApprovalSecurityError(
+                "EvidenceStore must implement get_evidence for independent receipt evidence verification"
+            )
 
         if not isinstance(action_id, str) or not action_id.startswith("ACT-") or len(action_id) != 68:
             raise ApprovalSecurityError("Invalid action approval identifier format: expected ACT-<64-hex>")
@@ -493,23 +499,35 @@ class ControlledDispatchWorkflow:
         if not mut_ev_id or not ver_ev_id:
             raise ApprovalSecurityError("Receipt evidence records missing evidence identifiers")
 
-        # 11. Independent Evidence Verification on disk (strictly verified; no placeholders)
-        if self._evidence_store is not None and hasattr(self._evidence_store, "get_evidence"):
-            mut_meta = self._evidence_store.get_evidence(mut_ev_id)
-            if mut_meta is None:
+        # 11. Independent Evidence Verification (strictly verified; no placeholders)
+        for label, descriptor, evidence_id in (
+            ("Mutation", mut_ev, mut_ev_id),
+            ("Verification", ver_ev, ver_ev_id),
+        ):
+            try:
+                evidence_meta = self._evidence_store.get_evidence(evidence_id)
+            except Exception as exc:
                 raise ApprovalSecurityError(
-                    f"Mutation evidence '{mut_ev_id}' not found or failed integrity checks in EvidenceStore"
-                )
-            ver_meta = self._evidence_store.get_evidence(ver_ev_id)
-            if ver_meta is None:
+                    f"{label} evidence retrieval failed in EvidenceStore: {exc}"
+                ) from exc
+            if not isinstance(evidence_meta, dict):
                 raise ApprovalSecurityError(
-                    f"Verification evidence '{ver_ev_id}' not found or failed integrity checks in EvidenceStore"
+                    f"{label} evidence '{evidence_id}' not found or failed integrity checks in EvidenceStore"
                 )
-
-            if mut_meta.get("request_sha256") != mut_ev.get("request_sha256") or mut_meta.get("response_sha256") != mut_ev.get("response_sha256"):
-                raise ApprovalSecurityError("Mutation evidence on-disk digests do not match receipt digests")
-            if ver_meta.get("request_sha256") != ver_ev.get("request_sha256") or ver_meta.get("response_sha256") != ver_ev.get("response_sha256"):
-                raise ApprovalSecurityError("Verification evidence on-disk digests do not match receipt digests")
+            if evidence_meta.get("evidence_id") != evidence_id:
+                raise ApprovalSecurityError(f"{label} evidence lookup returned a different evidence identifier")
+            for digest_name in ("request_sha256", "response_sha256"):
+                receipt_digest = descriptor.get(digest_name)
+                stored_digest = evidence_meta.get(digest_name)
+                if (
+                    not isinstance(receipt_digest, str)
+                    or len(receipt_digest) != 64
+                    or any(ch not in "0123456789abcdefABCDEF" for ch in receipt_digest)
+                    or stored_digest != receipt_digest
+                ):
+                    raise ApprovalSecurityError(
+                        f"{label} evidence on-disk digests do not match receipt digests"
+                    )
 
         # 11. Construct sealed genuine ControlledDispatchResult
         dispatch_result = ControlledDispatchResult(

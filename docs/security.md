@@ -81,7 +81,7 @@ The framework code enforces the following non-negotiable architectural boundarie
    * Explicit scope exclusions take strict precedence over fixture port allowances and target inclusions.
 3. **Bounded GraphQL & OpenAPI Reference Ingestion**:
    * Active GraphQL introspection is strictly opt-in (`allow_graphql_introspection=True`, default disabled) with depth and parameter bounds.
-   * OpenAPI reference resolution (`$ref`) is restricted to local/relative pointers up to depth 10 with circularity detection; external network references fail closed.
+   * OpenAPI reference resolution (`$ref`) is restricted to local fragment pointers up to depth 5 with circularity detection; relative path and external network references are not resolved.
 
 ---
 

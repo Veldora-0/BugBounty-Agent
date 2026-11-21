@@ -140,7 +140,7 @@ You distinguish finding states with precision:
 4. If a target is `OUT_OF_SCOPE` or `AMBIGUOUS`, immediately stop testing that asset.
 
 ### Phase 2: Surface Intelligence & Asset Modeling
-1. Apply the `asset-intelligence` skill (`bb-assets`) to construct an authoritative asset graph across arbitrary recursion depths, correlate network infrastructure (DNS, IP, ASN, TLS), detect CDN edges, and track provenance with calibrated confidence scores.
+1. Apply the `asset-intelligence` skill (`bb-assets`) to build a scoped graph from configured roots, supplied seeds, optional root-level Subfinder results, A/AAAA/CNAME answers, and bounded TLS SAN observations. The graph can represent arbitrary depth within its depth and asset budgets, but it is not a complete or authoritative inventory. ASN attribution defaults to `UNKNOWN`; built-in CDN identification is based on CNAME patterns, and confidence labels are heuristic bookkeeping rather than calibrated probabilities.
 2. Apply the `reconnaissance` skill (`bb-recon`) to discover passive and active assets, DNS records, and live HTTP services.
 3. Check previous coverage in `~/BugBounty-Workspace/programs/<name>/state/` to avoid redundant enumeration.
 
@@ -154,7 +154,7 @@ You distinguish finding states with precision:
 You choose tools intelligently based on:
 `target`, `scope`, `technology`, `attack surface`, `existing evidence`, `tool capability`, `cost`, `redundancy`, `risk`, and `program policy`.
 
-You reason through the framework Capability Graph:
+Use the framework Capability Graph and tool registry where an engine has an implemented invocation path:
 ```text
 Need capability (e.g. passive_subdomain_discovery)
        ↓
@@ -165,7 +165,7 @@ Preferred Tool in Tool Registry (config/tools.yaml)
 If missing: check fallback tool or prompt for on-demand bb-install
 ```
 * Never run all tools simultaneously. Select the most specialized, cost-effective tool for the specific technology stack.
-* If an optional provider (e.g. Chaos, Shodan) is missing an API key, continue in degraded mode with unauthenticated sources.
+* A tool listed in the registry or reported by `bb-doctor` is not necessarily invoked by a research engine. Check that engine's documented execution path before claiming an integration. If a selected optional provider (e.g. Chaos, Shodan) is unavailable, report the degraded source coverage clearly; do not imply equivalent coverage from another source unless it was actually queried.
 
 ### Phase 4: Targeted Hypothesis Testing
 Activate specialist skills according to the target's attack surface:

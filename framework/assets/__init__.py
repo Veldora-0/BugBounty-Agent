@@ -1,8 +1,9 @@
 """
 BugBounty-Agent Asset Intelligence Framework.
 
-Provides recursive asset discovery, graph modeling, multi-source provenance,
-DNS/IP/ASN/TLS/CDN infrastructure correlation, and offline scope authorization.
+Provides scoped asset graph construction, multi-source provenance, DNS/IP/TLS
+enrichment, optional hook-provided ASN data, CNAME-based CDN signals, and offline
+scope authorization.
 """
 
 from framework.assets.engine import (

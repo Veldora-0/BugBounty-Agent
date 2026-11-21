@@ -2,8 +2,9 @@
 """
 bb-assets — Asset Intelligence CLI for BugBounty-Agent.
 
-Executes arbitrary-depth recursive subdomain discovery, DNS/ASN correlation,
-TLS SAN extraction, CDN attribution, and strict scope boundary enforcement.
+Builds an arbitrary-depth scoped asset graph from roots, seeds, optional Subfinder
+results, DNS answers, bounded TLS SAN observations, and CNAME-based CDN signals.
+ASN attribution defaults to UNKNOWN unless an explicit resolver hook is supplied.
 Maintains persistent asset graph in local program state.
 """
 

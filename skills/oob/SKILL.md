@@ -27,7 +27,7 @@ The engine abstracts interaction servers through a modular interface:
 3. **Collaborator Provider (`CollaboratorOobProvider`)**: Burp Collaborator polling client adapter.
 
 > [!NOTE]
-> **Truthful Provider Availability (Phase 18)**: Unconfigured providers report `CONFIG_REQUIRED`. Configured external adapters report `UNAVAILABLE` because live wire polling over network protocols is not implemented (storage is local in-memory only). A configured token or hostname alone does not establish operational live polling. Before issuing canaries or dispatching probes, the engine checks provider availability; if `UNAVAILABLE`, `CONFIG_REQUIRED`, or `ERROR`, it fails closed immediately with zero network requests dispatched.
+> **Truthful Provider Availability (Phase 18)**: The Interactsh adapter has a bounded live `interactsh-client` path. It reports `AVAILABLE` only when the client binary is present and the server setting is syntactically valid; that status does not prove canary registration or callback reachability. Registration failure stops before target traffic. The Burp Collaborator adapter remains `UNAVAILABLE` because polling is not implemented. The Kali live self-check has not completed canary registration, so live callback acceptance is still open. If a provider reports `UNAVAILABLE`, `CONFIG_REQUIRED`, or `ERROR`, the engine fails closed before target requests.
 
 ---
 

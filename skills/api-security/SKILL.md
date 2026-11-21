@@ -52,7 +52,7 @@ Phase 5 operates as an intelligence and discovery engine. It correlates API endp
 
 ### A. OpenAPI / Swagger Parsing & Schema Resolution
 * **Supported Formats**: OpenAPI 2.0 (Swagger) and OpenAPI 3.x (JSON and YAML).
-* **Local Reference Resolution**: Recursively resolves RFC 6901 local `$ref` pointers (e.g. `#/components/schemas/User`) up to depth 5 with circular reference protection. Strictly forbids external network or file references.
+* **Local Reference Resolution**: Recursively resolves RFC 6901 fragment JSON pointers (e.g. `#/components/schemas/User`) up to depth 5 with circular reference protection. Relative path references and external network or file references are not fetched or resolved.
 * **Parameter Precedence**: Operation-level parameters override path-level parameters sharing the same `(name, location)` tuple while preserving distinct locations (e.g., path `id` vs query `id`).
 * **Extracted Entities**: Base URLs / servers, paths, HTTP methods, operation IDs, query/path/header/cookie/body parameters, request bodies, response schemas, security definitions (`basic`, `bearer`, `api-key`, `oauth2`, `openid-connect`).
 * **Safety Bounds**: Enforces maximum path caps, schema recursion limits (depth $\le 5$), and field count ceilings ($\le 100$) to prevent memory exhaustion from cyclic schemas.
@@ -148,6 +148,6 @@ API endpoints are prime targets for cross-origin trust failures, unkeyed cache p
 ## 6. Advanced API Security & Streaming Byte-Budget Accounting (Phase 17)
 
 Phase 17 introduces hard resource limits and local test harness controls:
-* **Deep Reference Resolution**: Resolves OpenAPI local and relative `$ref` pointers up to depth 10 with cycle detection, while remote network references fail closed.
+* **Bounded Reference Resolution**: Resolves local fragment `$ref` pointers up to depth 5 with cycle detection; relative path and remote network references are not resolved.
 * **Continuous Streaming Byte-Budget Accounting**: Network accounting tracks every consumed byte continuously (`total_bytes_transferred`), ensuring malformed, oversized, truncated, or error responses deplete the global budget (`max_bytes`).
 * **Fixture-Port Exact-Port Gating**: Testing against local loopback ports requires explicit unprivileged port registration (`1024-65535`) and scope authorization (`allow_fixture_port`); production targets strictly forbid loopback, private RFC 1918, or cloud metadata destinations. Explicit exclusions take precedence over fixture allowances.

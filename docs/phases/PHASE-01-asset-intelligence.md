@@ -18,7 +18,7 @@ You can seed the graph with a root domain and known hostnames from the program p
 
 ## How the phase works
 
-The CLI normalizes hostnames, creates root and seed nodes, associates children with their parent, and stores the resulting graph. When a configured scope is available, it checks candidate names before live DNS resolution. It can record DNS addresses and aliases, create relationships such as “resolves to,” and classify a candidate as in scope, out of scope, or ambiguous. A maximum-depth setting and asset-count budget put a ceiling on graph growth. Wildcard detection is an optional live DNS check intended to stop random names that all resolve to the same wildcard address from looking like real assets.
+The CLI normalizes hostnames, creates root and seed nodes, associates children with their parent, and stores the resulting graph. When a configured scope is available, it checks candidate names before live DNS resolution. It can record A/AAAA addresses and CNAME aliases, create relationships such as “resolves to,” and classify a candidate as in scope, out of scope, or ambiguous. A maximum-depth setting and asset-count budget put a ceiling on graph growth. Wildcard detection optionally queries two randomized names below the root and records a graph annotation when they share answers. That annotation does not currently suppress or remove candidate names.
 
 The CLI can optionally invoke Subfinder when `--subfinder` is supplied. Each in-scope root is queried once with Subfinder's passive mode, fixed rate and time limits, and JSON output. Results must be valid descendant hostnames and pass the local scope engine before they enter the graph. Each accepted asset stores the provider source names. Subfinder uses its own local provider configuration; BugBounty-Agent does not transfer values from `secrets.env` into that configuration. The output file is private and removed after parsing.
 
@@ -41,7 +41,7 @@ bb-assets --program <program-name> --subfinder --passive-only --tree
 # Limit the graph size and save machine-readable output for review.
 bb-assets --program <program-name> --budget 300 --json
 
-# Disable live wildcard checks and other active enrichment.
+# Disable active DNS/TLS enrichment.
 bb-assets --program <program-name> --passive-only --tree
 
 # Exercise the pipeline without saving its result to program state.

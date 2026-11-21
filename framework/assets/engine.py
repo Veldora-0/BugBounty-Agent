@@ -1,9 +1,10 @@
 """
 Asset Intelligence Engine for BugBounty-Agent.
 
-Executes arbitrary-depth recursive subdomain discovery, DNS resolution, IP/ASN
-attribution, wildcard DNS mitigation, TLS SAN extraction, CDN edge identification,
-and strict scope authorization boundary enforcement.
+Builds an arbitrary-depth scoped asset graph from configured roots, supplied seeds,
+optional discovery hooks, DNS answers, bounded TLS SAN observations, and CNAME-based
+CDN signals. ASN attribution is available only through a caller-provided resolver
+hook and defaults to UNKNOWN.
 """
 
 from __future__ import annotations
@@ -70,8 +71,9 @@ MAX_TLS_SAN_PROBES = 100
 
 class AssetIntelligenceEngine:
     """
-    Orchestrates recursive asset intelligence with multi-source provenance,
-    DNS/ASN/TLS/CDN enrichment, and offline scope authorization checks.
+    Orchestrates scoped asset graph construction with multi-source provenance,
+    DNS/IP/TLS enrichment, optional hook-provided ASN data, and CNAME-based CDN
+    signals. The default ASN resolver deliberately returns UNKNOWN.
     """
 
     def __init__(
@@ -200,8 +202,8 @@ class AssetIntelligenceEngine:
 
     def resolve_asn(self, ip: str) -> Dict[str, Any]:
         """
-        Resolves ASN, BGP prefix, and organization for an IP address.
-        Uses asn_resolver_hook if provided.
+        Uses an injected provider hook for ASN/BGP metadata when one is configured.
+        No provider is built in, so the default result leaves attribution UNKNOWN.
         """
         if self.asn_resolver_hook:
             return self.asn_resolver_hook(ip) or {}
@@ -217,7 +219,8 @@ class AssetIntelligenceEngine:
         self, hostname: str, ips: List[str], cnames: List[str]
     ) -> Tuple[Optional[str], CDNAttribution]:
         """
-        Identifies CDN edge infrastructure from CNAME chains and IP/ASN attribution.
+        Identifies CDN signals from known CNAME suffixes or an injected detector hook.
+        ASN-based decisions require an injected resolver hook; no provider is built in.
         """
         if self.cdn_detector_hook:
             return self.cdn_detector_hook(hostname, ips, cnames)
@@ -349,9 +352,10 @@ class AssetIntelligenceEngine:
         seed_subdomains: Optional[List[str]] = None,
     ) -> AssetGraph:
         """
-        Executes arbitrary-depth recursive asset graph construction.
-        Traverses seed subdomains and child discoveries, correlates DNS/IP/ASN/CDN,
-        and enforces scope authorization at every step.
+        Executes arbitrary-depth scoped asset graph construction.
+        Traverses configured roots, supplied seeds, and children from registered
+        discovery hooks; enriches scoped assets with DNS/IP/TLS and available CDN
+        metadata. ASN values remain UNKNOWN without an injected provider.
         """
         # Queue items: (hostname, root_domain, parent_hostname, depth, source_tool)
         queue: deque[Tuple[str, str, Optional[str], int, str]] = deque()
@@ -549,8 +553,8 @@ class AssetIntelligenceEngine:
 
     def _enrich_asset_infrastructure(self, asset: Asset) -> None:
         """
-        Enriches an asset with DNS records, resolved IPs, ASN info,
-        CNAME chains, and CDN edge classification.
+        Enriches an asset with built-in DNS answers, resolved IPs, optional
+        hook-provided ASN info, CNAME edges, and available CDN signals.
         """
         dns_records = self.resolve_dns(asset.normalized)
         a_records = dns_records.get("A", [])

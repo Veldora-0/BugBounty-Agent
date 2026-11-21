@@ -1908,12 +1908,21 @@ def test_controlled_attestation_security_matrix_d1(tmp_path, request):
 
     # 26. Evidence persistence failure
     class FailingStore:
+        evidence_dir = store.evidence_dir
+
         def is_writable(self):
             return True
+
+        def get_evidence(self, evidence_id):
+            return store.get_evidence(evidence_id)
+
         def save_http_capture(self, *a, **kw):
             raise OSError("Disk quota exceeded")
         def save_transport_dispatch_capture(self, *a, **kw):
             raise EvidencePersistenceError("Failed to persist controlled revocation evidence: Disk quota exceeded")
+
+        def save_invalidation_attestation(self, *a, **kw):
+            raise EvidencePersistenceError("Failed to persist controlled invalidation attestation: Disk quota exceeded")
     val_fail_store = PostRevocationResourceValidator(
         validation_engine=engine, evidence_store=FailingStore(), scope_engine=mock_scope,
         approval_key=appr_key, attestation_key=att_key, state_dir=state_dir, program_id="test_d1_program",
@@ -1931,7 +1940,7 @@ def test_controlled_attestation_security_matrix_d1(tmp_path, request):
         "unique_approval_id": "appr_d1_26",
     }, approval_key=appr_key)
     sess26 = CorrelatedSessionContext(session_ref="sess_00000000000000000000000000000026", principal_id="u1")
-    with pytest.raises(EvidencePersistenceError, match="Failed to record execution or issue attestation|Failed to persist controlled revocation evidence"):
+    with pytest.raises(EvidencePersistenceError, match="Failed to record execution or issue attestation|Failed to persist controlled revocation evidence|Failed to persist controlled invalidation attestation"):
         val_fail_store.execute_controlled_invalidation(sess26, dossier26["action_id"], dossier26)
 
     # 27. Fabricated execution ID in attestation (not found in ExecutionLedger)
