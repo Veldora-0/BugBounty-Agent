@@ -110,6 +110,12 @@ def get_workspace_root() -> str:
     return os.path.abspath(os.getcwd())
 
 
+def get_agent_knowledge_dir() -> str:
+    """Return persistent Bug-Bounty agent data under the global OpenCode config."""
+    config_dir = os.environ.get("OPENCODE_CONFIG_DIR", os.path.expanduser("~/.config/opencode"))
+    return os.path.abspath(os.path.join(config_dir, "bug-bounty-agent", "knowledge"))
+
+
 def get_program_dir(program_name: str, workspace_root: Optional[str] = None) -> str:
     """Returns the absolute directory path for a specific program."""
     base = workspace_root or get_workspace_root()

@@ -8,9 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Phase 23 — Research Planning & Coverage Intelligence
+* Updated `/Arise` to learn public methodology independently of a selected target. Compact source links and notes now persist under the global Bug-Bounty agent config and are reused across programs by vulnerability family; target technology or test coverage no longer prunes the shared library.
 * Added `framework/research_planning/` to build current-scope-filtered views of local assets, endpoints, technologies, tests, and validated findings without changing those source records.
 * Added deterministic budgeted recommendation ranking with explanations, stale/duplicate coverage checks, public-research references, explicit recommendation-only status, and pause/resume controls. Planning never dispatches target requests.
-* Added `bb-plan` and `bb-arise` Linux/Windows entry points. `/Arise` keeps bounded attributed public metadata, requires explicit public-disclosure status, rejects non-HTTPS/unapproved hosts, rechecks saved entries, records minimal pruning reasons, and retains entries when sources are unavailable or tests inconclusive.
+* Added `bb-plan` and `bb-arise` entry points. The initial `/Arise` design stored target-filtered metadata; its behavior was later replaced by the target-independent, global methodology library described in the Unreleased change above. Public HTTPS validation and bounded attributed notes remain.
 * Added the `.opencode/commands/Arise.md` slash command and global deployment/status/uninstall support. Integrated it into the existing `knowledge-research` skill. Updated the primary agent, handbook, roadmap, README, and Phase 23 guide. No additional skill or subagent was added.
 * Verified on Kali: 28 focused Phase 23/deployment tests passed; full suite passed 1,245 with one Windows-only DACL test skipped. The local voting-limit fixture's race window was widened to 500 ms and passed 10 consecutive isolated runs, reducing a scheduler-sensitive test failure without changing target request behavior.
 
@@ -869,3 +870,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * 17-section standard disclosure report generator.
 * **Automated Test Suite**:
   * Unit and integration test coverage across scope, recursive depth, normalization, deduplication, finding lifecycle, and runtime isolation.
+* Changed Phase 23 `/Arise` from target-filtered report collection to target-independent learning for the Bug-Bounty agent. Compact methodology notes and source links now live under the global OpenCode config and are reused across programs by `bb-plan` based on vulnerability family; source references are no longer pruned due to target tech or test coverage.

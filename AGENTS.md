@@ -118,7 +118,7 @@ flowchart TD
    * After a finding is validated, `Bug-Bounty` considers whether other **in-scope** weaknesses can be safely chained with it to demonstrate greater impact. Each proposed edge must cite evidence; inferred paths remain hypotheses. Follow-up requests require human approval, and theoretical chains must not inflate severity. Phase 22 implements graph correlation, candidate paths, and reviewable plans. Its `bb-chain validate` command is currently simulation-only and cannot empirically promote graph links; it must not be described as proof of chain impact. Scope is checked against every plan-bound path target at authorization and again before execution.
    * `deduplication` merges root-cause duplicates and flags existing coverage.
    * `reporting` renders standard 17-section Markdown disclosure reports in `reports/` for human review.
-   * Phase 23 `bb-plan` uses the current scoped inventory and prior test state to rank advisory hypotheses. `/Arise` may use public, disclosed research to add attributed methodology references. Planning never performs target requests; active follow-up remains approval-gated.
+   * Phase 23 `bb-plan` uses the current scoped inventory and prior test state to rank advisory hypotheses and attaches relevant saved methodology by vulnerability family. `/Arise` learns from public, disclosed research independent of the active target and stores only compact context and source links under the global Bug-Bounty agent data directory. Planning never performs target requests; active follow-up remains approval-gated.
 
 ---
 

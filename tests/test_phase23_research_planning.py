@@ -89,35 +89,35 @@ def test_recent_prior_test_is_reported_as_skipped_not_recommended(tmp_path):
     assert any(s["category"] == "api" for s in result["skipped"])
 
 
-def test_arise_keeps_relevant_public_metadata_and_marks_it_not_target_evidence(tmp_path):
+def test_arise_keeps_target_independent_methodology_and_plan_reuses_it(tmp_path):
     root = _workspace(tmp_path)
     index = CoverageIndex(root, _scope())
-    result = AriseResearchManager(root, index).refresh([_report()])
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
+    result = manager.refresh([_report()])
     assert result["added"] == 1
     record = result["reports"][0]
-    assert record["applicability"]["matched_in_scope_assets"] == ["api.example.com"]
-    assert record["applicability"]["is_target_evidence"] is False
+    assert "applicability" not in record
+    assert record["status"] == "METHODOLOGY_REFERENCE"
     assert len(record["technique_summary"]) < 601
-    recs = ResearchPlanner(index).recommend(budget=100, research_reports=result["reports"])["recommendations"]
+    assert manager.path.endswith(os.path.join("agent", "knowledge", "methodology.json"))
+    recs = ResearchPlanner(index).recommend(budget=100, research_reports=manager.load())["recommendations"]
     api_rec = next(row for row in recs if row["category"] == "api")
     assert record["report_id"] in api_rec["public_research_refs"]
     assert "public methodology match" in api_rec["rationale"]
 
 
-def test_arise_prunes_confirmed_mismatch_and_writes_minimal_audit(tmp_path):
-    root = _workspace(tmp_path)
-    manager = AriseResearchManager(root, CoverageIndex(root, _scope()))
-    result = manager.refresh([_report(technologies=["Unrelated Product"])], checked_sources=["hackerone.com"])
-    assert result["retained"] == 0
-    assert result["removed"][0]["reason"] == "No current in-scope asset has a matching technology."
-    audit = (tmp_path / "state" / "arise_pruning_audit.jsonl").read_text(encoding="utf-8")
-    assert "report_id" in audit and "removed_at" in audit
-    assert "technique_summary" not in audit
+def test_arise_keeps_methodology_across_unrelated_targets_and_coverage(tmp_path):
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
+    first = manager.refresh([_report(technologies=["Unrelated Product"])], checked_sources=["hackerone.com"])
+    assert first["retained"] == 1
+    result = manager.refresh(checked_sources=["hackerone.com"])
+    assert result["retained"] == 1
+    assert result["removed"] == []
+    assert result["reports"][0]["source_check_status"] == "CHECKED"
 
 
 def test_arise_does_not_prune_when_source_is_unavailable(tmp_path):
-    root = _workspace(tmp_path)
-    manager = AriseResearchManager(root, CoverageIndex(root, _scope()))
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
     manager.refresh([_report(technologies=["Old Product"])], unchecked_sources=["hackerone.com"])
     result = manager.refresh(unchecked_sources=["hackerone.com"])
     assert result["retained"] == 1
@@ -125,32 +125,27 @@ def test_arise_does_not_prune_when_source_is_unavailable(tmp_path):
     assert result["reports"][0]["source_check_status"] == "UNAVAILABLE"
 
 
-def test_inconclusive_test_does_not_prune_public_research(tmp_path):
-    root = _workspace(tmp_path)
-    manager = AriseResearchManager(root, CoverageIndex(root, _scope()))
-    report = _report()
-    manager.refresh([report], checked_sources=["hackerone.com"])
+def test_target_test_coverage_does_not_delete_agent_methodology(tmp_path):
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
+    manager.refresh([_report()], checked_sources=["hackerone.com"])
     current = datetime.now(timezone.utc).isoformat()
-    _write(str(tmp_path / "state" / "tests.json"), {"a": {
-        "target": "https://api.example.com/v1/users", "category": "api",
-        "timestamp": current, "result": "INCONCLUSIVE",
+    _write(str(tmp_path / "programs" / "other-target" / "state" / "tests.json"), {"a": {
+        "target": "https://different.example/v1/users", "category": "api",
+        "timestamp": current, "result": "REJECTED",
     }})
     result = manager.refresh(checked_sources=["hackerone.com"])
     assert result["retained"] == 1
     assert result["removed"] == []
 
 
-def test_conclusive_recent_coverage_prunes_same_category_on_matched_asset(tmp_path):
-    root = _workspace(tmp_path)
-    manager = AriseResearchManager(root, CoverageIndex(root, _scope()))
-    manager.refresh([_report()], checked_sources=["hackerone.com"])
-    _write(str(tmp_path / "state" / "tests.json"), {"a": {
-        "target": "api.example.com", "category": "api",
-        "timestamp": datetime.now(timezone.utc).isoformat(), "result": "REJECTED",
-    }})
-    result = AriseResearchManager(root, CoverageIndex(root, _scope())).refresh(checked_sources=["hackerone.com"])
-    assert result["retained"] == 0
-    assert "recent conclusive test" in result["removed"][0]["reason"]
+def test_saved_methodology_is_retrieved_by_category_even_for_other_technology(tmp_path):
+    root = _workspace(tmp_path, technologies={"api.example.com": ["Different Stack"]})
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
+    manager.refresh([_report(technologies=["Old Product"])])
+    recs = ResearchPlanner(CoverageIndex(root, _scope())).recommend(
+        budget=100, research_reports=manager.load())["recommendations"]
+    api_rec = next(row for row in recs if row["category"] == "api")
+    assert api_rec["public_research_refs"]
 
 
 @pytest.mark.parametrize("url", [
@@ -159,38 +154,41 @@ def test_conclusive_recent_coverage_prunes_same_category_on_matched_asset(tmp_pa
     "https://user:pass@hackerone.com/reports/1",
 ])
 def test_arise_rejects_untrusted_source_urls(tmp_path, url):
-    root = _workspace(tmp_path)
-    manager = AriseResearchManager(root, CoverageIndex(root, _scope()))
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
     with pytest.raises(PlanningInputError):
         manager.refresh([_report(source_url=url)])
 
 
 @pytest.mark.parametrize("status", ["PRIVATE", "UNDISCLOSED", ""])
 def test_arise_rejects_nonpublic_or_unconfirmed_reports(tmp_path, status):
-    root = _workspace(tmp_path)
-    manager = AriseResearchManager(root, CoverageIndex(root, _scope()))
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
     with pytest.raises(PlanningInputError):
         manager.refresh([_report(disclosure_status=status)])
 
 
 def test_arise_requires_public_source_attribution(tmp_path):
-    root = _workspace(tmp_path)
-    manager = AriseResearchManager(root, CoverageIndex(root, _scope()))
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
     with pytest.raises(PlanningInputError):
         manager.refresh([_report(author="", source_attribution="")])
 
 
+def test_arise_accepts_public_methodology_reference_not_labeled_as_disclosure(tmp_path):
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
+    record = _report(source_url="https://www.exploit-db.com/google-hacking-database/",
+                     disclosure_status="PUBLICLY_AVAILABLE", title="GHDB methodology reference")
+    result = manager.refresh([record])
+    assert result["reports"][0]["disclosure_status"] == "PUBLICLY_AVAILABLE"
+
+
 @pytest.mark.parametrize("host", ["com", "https://hackerone.com", "attacker.example"])
 def test_arise_source_check_requires_approved_dns_hostnames(tmp_path, host):
-    root = _workspace(tmp_path)
-    manager = AriseResearchManager(root, CoverageIndex(root, _scope()))
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
     with pytest.raises(PlanningInputError):
         manager.refresh([_report()], checked_sources=[host])
 
 
 def test_arise_redacts_secrets_and_rejects_report_body_sized_summaries(tmp_path):
-    root = _workspace(tmp_path)
-    manager = AriseResearchManager(root, CoverageIndex(root, _scope()))
+    manager = AriseResearchManager(str(tmp_path / "agent" / "knowledge"))
     result = manager.refresh([_report(technique_summary="Authorization: Bearer abcdefghijklmnop")])
     assert "abcdefghijklmnop" not in result["reports"][0]["technique_summary"]
     with pytest.raises(PlanningInputError):
@@ -206,7 +204,8 @@ def test_phase23_cli_end_to_end_and_pause_resume(tmp_path):
         "program:\n  name: fixture\ntargets:\n  domains: [example.com, '*.example.com']\n  urls: []\n  cidrs: []\n"
         "out_of_scope:\n  domains: [admin.example.com]\n  urls: []\n  cidrs: []\n", encoding="utf-8")
     _workspace(program)
-    env = dict(os.environ, BUGBOUNTY_AGENT_DIR=repo)
+    agent_config = tmp_path / "opencode-config"
+    env = dict(os.environ, BUGBOUNTY_AGENT_DIR=repo, OPENCODE_CONFIG_DIR=str(agent_config))
     base = [sys.executable, os.path.join(repo, "scripts", "bb-plan"), "--program", "fixture",
             "--workspace-root", str(tmp_path), "--json"]
     coverage = subprocess.run(base + ["--coverage-only"], capture_output=True, text=True, env=env)
@@ -221,12 +220,13 @@ def test_phase23_cli_end_to_end_and_pause_resume(tmp_path):
 
     discoveries = tmp_path / "public-research.json"
     discoveries.write_text(json.dumps([_report()]), encoding="utf-8")
-    arise = subprocess.run([sys.executable, os.path.join(repo, "scripts", "bb-arise"), "--program", "fixture",
-                            "--workspace-root", str(tmp_path), "--discoveries", str(discoveries),
+    arise = subprocess.run([sys.executable, os.path.join(repo, "scripts", "bb-arise"),
+                            "--discoveries", str(discoveries),
                             "--checked-source", "hackerone.com", "--json"],
                            capture_output=True, text=True, env=env)
     assert arise.returncode == 0, arise.stderr
     assert json.loads(arise.stdout)["added"] == 1
+    assert (agent_config / "bug-bounty-agent" / "knowledge" / "methodology.json").is_file()
     planned = subprocess.run(base + ["--budget", "20"], capture_output=True, text=True, env=env)
     assert planned.returncode == 0, planned.stderr
     assert any("hackerone.com/reports/12345" in ref["source_url"]
@@ -251,5 +251,5 @@ def test_arise_slash_command_uses_single_agent_and_forbids_target_execution():
         prompt = stream.read()
     assert "knowledge-research" in prompt
     assert "Do not create or delegate to a subagent" in prompt
-    assert "Do not send requests to target assets" in prompt
+    assert "Do not send requests to targets" in prompt
     assert "--checked-source" in prompt and "--unchecked-source" in prompt

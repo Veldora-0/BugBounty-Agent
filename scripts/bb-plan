@@ -13,7 +13,7 @@ ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.pat
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from framework.common.config import get_program_dir, resolve_program_scope_file
+from framework.common.config import get_agent_knowledge_dir, get_program_dir, resolve_program_scope_file
 from framework.research_planning import AriseResearchManager, CoverageIndex, ResearchPlanner
 from framework.scope.engine import ScopeEngine
 
@@ -59,11 +59,7 @@ def main() -> int:
             result = {"paused": True, "recommendations": [], "execution_performed": False,
                       "message": "Planning is paused. Resume explicitly to generate recommendations."}
         else:
-            arise_path = os.path.join(state_dir, "arise_reports.json")
-            reports = CoverageIndex._read(arise_path, [])
-            if not isinstance(reports, list):
-                raise ValueError("arise_reports.json is malformed")
-            reports = AriseResearchManager(program_dir, index).refresh()["reports"]
+            reports = AriseResearchManager(get_agent_knowledge_dir()).load()
             result = ResearchPlanner(index).recommend(args.budget, args.limit, reports)
             control.update({"paused": False, "last_generated_at": result["generated_at"],
                             "last_recommendation_count": len(result["recommendations"])})
@@ -129,6 +125,10 @@ def _display(data: dict) -> None:
     print("Recommendations (planning only; no target requests sent):")
     for item in data.get("recommendations", []):
         print(f"  {item['score']:>3}  {item['category']:<16} {item['target']} — {item['rationale']}")
+        for reference in item.get("public_research_sources", []):
+            print(f"      Methodology: {reference['title']} — {reference['attribution']}")
+            print(f"      Source: {reference['source_url']}")
+            print(f"      Context: {reference['technique_summary']}")
     print(f"Skipped: {len(data.get('skipped', []))}; approval required before active validation.")
 
 

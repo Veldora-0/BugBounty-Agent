@@ -8,7 +8,7 @@ import json
 import os
 import re
 import tempfile
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 from framework.common.evidence import sanitize_sensitive_data
@@ -162,9 +162,9 @@ class ResearchPlanner:
             endpoint_text = target.lower()
             for category, impact, confidence_base, cost, signals in VULNERABILITY_FAMILIES:
                 matched = [t for t in techs if any(s in t.lower() for s in signals)]
-                related_reports = [r for r in research_reports or []
-                                   if category in r.get("vulnerability_families", [])
-                                   and host in r.get("applicability", {}).get("matched_in_scope_assets", [])]
+                related_reports = sorted((r for r in research_reports or []
+                                          if _methodology_matches(r, category)),
+                                         key=lambda row: row.get("report_id", ""))
                 tests = [t for t in self.index.tests
                          if _norm(t.get("target", "")) in {_norm(target), _norm(host)}
                          and _category(t.get("category", "")) == category]
@@ -229,7 +229,8 @@ class ResearchPlanner:
                     "public_research_sources": [
                         {"report_id": r["report_id"], "title": r["title"],
                          "source_url": r["source_url"], "attribution": r["source_attribution"],
-                         "published_at": r["published_at"], "technique_summary": r["technique_summary"]}
+                         "published_at": r["published_at"], "disclosure_status": r["disclosure_status"],
+                         "technologies": r["technologies"], "technique_summary": r["technique_summary"]}
                         for r in related_reports
                     ],
                 })
@@ -256,21 +257,29 @@ class ResearchPlanner:
 
 
 class AriseResearchManager:
-    """Stores minimal public research metadata and re-evaluates it against current coverage."""
+    """Stores a target-independent, compact public methodology library for the agent."""
 
+    MAX_REFERENCES = 1000
     ALLOWED_HOSTS = ("hackerone.com", "bugcrowd.com", "google.com", "yeswehack.com",
-                     "intigriti.com", "microsoft.com", "github.com", "owasp.org", "cisa.gov")
+                     "intigriti.com", "microsoft.com", "github.com", "owasp.org", "cisa.gov",
+                     "exploit-db.com", "portswigger.net", "mitre.org", "nist.gov",
+                     "projectdiscovery.io")
 
-    def __init__(self, program_dir: str, index: CoverageIndex) -> None:
-        self.program_dir = os.path.abspath(program_dir)
-        self.index = index
-        self.state_dir = os.path.join(self.program_dir, "state")
-        self.path = os.path.join(self.state_dir, "arise_reports.json")
+    def __init__(self, knowledge_dir: str) -> None:
+        self.knowledge_dir = os.path.abspath(knowledge_dir)
+        self.path = os.path.join(self.knowledge_dir, "methodology.json")
 
     def refresh(self, discoveries: Optional[Sequence[Dict[str, Any]]] = None,
                 checked_sources: Optional[Sequence[str]] = None,
                 unchecked_sources: Optional[Sequence[str]] = None) -> Dict[str, Any]:
-        existing = _records(CoverageIndex._read(self.path, []), "arise_reports.json")
+        existing = _records(CoverageIndex._read(self.path, []), "methodology.json")
+        if len(existing) > self.MAX_REFERENCES:
+            raise PlanningInputError(f"methodology.json exceeds the {self.MAX_REFERENCES}-reference limit")
+        if not discoveries and not checked_sources and not unchecked_sources:
+            kept = [self._validate_report(item) for item in existing]
+            return {"added": 0, "retained": len(kept), "removed": [], "unchecked_sources": [],
+                    "checked_sources": [], "reports": kept, "checked_at": _now(),
+                    "target_requests_performed": 0}
         records: Dict[str, Dict[str, Any]] = {}
         for item in existing:
             clean = self._validate_report(item)
@@ -279,50 +288,47 @@ class AriseResearchManager:
         for item in discoveries or []:
             clean = self._validate_report(item)
             if clean["report_id"] not in records:
-                records[clean["report_id"]] = clean
                 added += 1
+            records[clean["report_id"]] = clean
+        if len(records) > self.MAX_REFERENCES:
+            raise PlanningInputError(f"Adding these references would exceed the {self.MAX_REFERENCES}-reference limit")
 
-        kept, removed = [], []
-        audit_rows = []
+        kept = []
         unavailable = [_source_domain(x) for x in (unchecked_sources or []) if str(x).strip()]
         checked = [_source_domain(x) for x in (checked_sources or []) if str(x).strip()]
         for report in records.values():
             source_state = _source_state(report["source_host"], checked, unavailable)
-            report["relevance_checked_at"] = _now()
+            report["source_check_evaluated_at"] = _now()
             if source_state == "UNAVAILABLE":
                 report["source_check_status"] = "UNAVAILABLE"
-                report["source_check_detail"] = "Source was unavailable; retained without inferring irrelevance."
-                reason = None
+                report["source_check_detail"] = "Source was unavailable; methodology retained for later review."
             elif source_state == "NOT_CHECKED":
                 report["source_check_status"] = "NOT_CHECKED"
-                report["source_check_detail"] = "Source was not rechecked; retained without inferring irrelevance."
-                reason = None
+                report["source_check_detail"] = "Source was not rechecked; methodology retained."
             else:
                 report["source_check_status"] = "CHECKED"
                 report["source_checked_at"] = _now()
                 report.pop("source_check_detail", None)
-                reason = self._irrelevance_reason(report)
-            if reason:
-                row = {"report_id": report["report_id"], "reason": reason}
-                removed.append(row)
-                audit_rows.append({**row, "removed_at": _now()})
-            else:
-                report["applicability"] = self._applicability(report)
-                report["status"] = "RETAINED"
-                kept.append(report)
+            report["status"] = "METHODOLOGY_REFERENCE"
+            kept.append(report)
         self._write(kept)
-        if audit_rows:
-            self._append_audit(audit_rows)
         return {
             "added": added,
             "retained": len(kept),
-            "removed": removed,
+            "removed": [],
             "unchecked_sources": unavailable,
             "checked_sources": checked,
             "reports": kept,
             "checked_at": _now(),
             "target_requests_performed": 0,
         }
+
+    def load(self) -> List[Dict[str, Any]]:
+        """Load and validate references for planning without checking sources or writing state."""
+        rows = _records(CoverageIndex._read(self.path, []), "methodology.json")
+        if len(rows) > self.MAX_REFERENCES:
+            raise PlanningInputError(f"methodology.json exceeds the {self.MAX_REFERENCES}-reference limit")
+        return [self._validate_report(row) for row in rows]
 
     def _validate_report(self, raw: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(raw, dict):
@@ -345,8 +351,12 @@ class AriseResearchManager:
         if len(url) > 500:
             raise PlanningInputError("Research source URL exceeds 500 characters")
         disclosure_status = str(raw.get("disclosure_status", "")).strip().upper().replace("-", "_")
-        if disclosure_status not in {"PUBLIC", "DISCLOSED", "PUBLICLY_DISCLOSED"}:
-            raise PlanningInputError("Research records must explicitly confirm publicly disclosed status")
+        if disclosure_status in {"DISCLOSED", "PUBLICLY_DISCLOSED"}:
+            normalized_public_status = "PUBLICLY_DISCLOSED"
+        elif disclosure_status in {"PUBLIC", "PUBLICLY_AVAILABLE", "OFFICIAL_REFERENCE"}:
+            normalized_public_status = "PUBLICLY_AVAILABLE"
+        else:
+            raise PlanningInputError("Research records must explicitly confirm public availability; private or undisclosed material is rejected")
         safe_url = urlunsplit(("https", host, parts.path[:300], "", ""))
         title = _clean_text(raw.get("title", ""), 200)
         technique = _clean_text(raw.get("technique_summary", ""), 600)
@@ -364,84 +374,30 @@ class AriseResearchManager:
             "report_id": report_id,
             "source_url": safe_url,
             "source_host": host,
-            "disclosure_status": "PUBLICLY_DISCLOSED",
+            "disclosure_status": normalized_public_status,
             "title": title,
             "author": author,
             "published_at": _clean_text(raw.get("published_at", ""), 40),
-            "source_checked_at": _clean_text(raw.get("source_checked_at", ""), 40),
             "technologies": technologies,
             "vulnerability_families": families,
             "technique_summary": technique,
             "source_attribution": attribution or author,
         }
 
-    def _matched_targets(self, report: Dict[str, Any]) -> List[str]:
-        tags = {x.lower() for x in report["technologies"]}
-        if not tags:
-            return []
-        matched = []
-        for host, techs in self.index.technologies.items():
-            if any(t.lower() in tags or any(tag in t.lower() or t.lower() in tag for tag in tags) for t in techs):
-                if any(_host(a["_target"]) == host for a in self.index.assets) or any(e.get("_host") == host for e in self.index.endpoints):
-                    matched.append(host)
-        return sorted(set(matched))
-
-    def _covered(self, report: Dict[str, Any], targets: Iterable[str]) -> bool:
-        categories = set(report["vulnerability_families"])
-        if not categories:
-            return False
-        hosts = set(targets)
-        now = datetime.now(timezone.utc)
-        for test in self.index.tests:
-            if _category(test.get("category", "")) not in categories:
-                continue
-            if _host(str(test.get("target", ""))) not in hosts:
-                continue
-            result = str(test.get("result", "")).upper()
-            if result in _INCONCLUSIVE or result not in _COVERED or not _fresh(test.get("timestamp"), now):
-                continue
-            return True
-        return False
-
-    def _irrelevance_reason(self, report: Dict[str, Any]) -> Optional[str]:
-        # Incomplete metadata cannot establish irrelevance, so retain as unchecked.
-        if not report["technologies"]:
-            return None
-        matched = self._matched_targets(report)
-        if not matched:
-            return "No current in-scope asset has a matching technology."
-        if self._covered(report, matched):
-            return "A recent conclusive test already covers this category on a matched in-scope asset."
-        return None
-
-    def _applicability(self, report: Dict[str, Any]) -> Dict[str, Any]:
-        matched = self._matched_targets(report)
-        return {
-            "matched_in_scope_assets": matched,
-            "matched_technologies": sorted(set(report["technologies"]), key=str.lower),
-            "vulnerability_families": report["vulnerability_families"],
-            "confidence": "MEDIUM" if report["vulnerability_families"] else "LOW",
-            "is_target_evidence": False,
-            "rationale": "Public methodology is relevant to matching local inventory; it does not establish a vulnerability on this program.",
-        }
-
     def _write(self, records: Sequence[Dict[str, Any]]) -> None:
-        if os.path.islink(self.program_dir) or os.path.islink(self.state_dir):
-            raise PlanningInputError("Program and state directories must not be symbolic links")
-        os.makedirs(self.state_dir, mode=0o700, exist_ok=True)
+        from framework.common.config import ensure_private_directory
+
+        agent_data_dir = os.path.dirname(self.knowledge_dir)
+        try:
+            ensure_private_directory(agent_data_dir)
+            ensure_private_directory(self.knowledge_dir)
+        except Exception as exc:
+            raise PlanningInputError(f"Cannot secure the Bug-Bounty agent knowledge directory: {exc}") from exc
         if os.path.islink(self.path):
-            raise PlanningInputError("arise_reports.json must not be a symbolic link")
-        if os.name != "nt":
-            os.chmod(self.state_dir, 0o700)
-        else:
-            try:
-                from framework.auth_correlation.state import _enforce_windows_directory_dacl
-                _enforce_windows_directory_dacl(self.state_dir)
-            except Exception as exc:
-                raise PlanningInputError(f"Cannot secure Phase 23 state directory: {exc}") from exc
+            raise PlanningInputError("methodology.json must not be a symbolic link")
         temp_name = None
         try:
-            with tempfile.NamedTemporaryFile("w", dir=self.state_dir, encoding="utf-8", delete=False) as stream:
+            with tempfile.NamedTemporaryFile("w", dir=self.knowledge_dir, encoding="utf-8", delete=False) as stream:
                 json.dump(list(records), stream, indent=2, sort_keys=True)
                 temp_name = stream.name
             if os.name != "nt":
@@ -451,15 +407,11 @@ class AriseResearchManager:
             if temp_name and os.path.exists(temp_name):
                 os.unlink(temp_name)
 
-    def _append_audit(self, rows: Sequence[Dict[str, Any]]) -> None:
-        audit_path = os.path.join(self.state_dir, "arise_pruning_audit.jsonl")
-        if os.path.islink(audit_path):
-            raise PlanningInputError("arise_pruning_audit.jsonl must not be a symbolic link")
-        with open(audit_path, "a", encoding="utf-8") as stream:
-            for row in rows:
-                stream.write(json.dumps(row, sort_keys=True) + "\n")
-        if os.name != "nt":
-            os.chmod(audit_path, 0o600)
+
+
+def _methodology_matches(report: Dict[str, Any], category: str) -> bool:
+    """Retrieve methodology across targets by vulnerability family, not target identity."""
+    return category in report.get("vulnerability_families", [])
 
 
 def _records(value: Any, filename: str) -> List[Dict[str, Any]]:

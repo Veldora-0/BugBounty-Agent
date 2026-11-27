@@ -21,7 +21,7 @@ This document captures candidate improvements for completing the roadmap and mak
 
 ### Phase 23 — Research planning and coverage intelligence
 
-Core offline coverage planning and `/Arise` metadata reconciliation are implemented. These are follow-on improvements:
+Core offline coverage planning and global `/Arise` methodology learning are implemented. These are follow-on improvements:
 
 - Add optional, narrowly scoped source adapters for feeds/APIs that permit public disclosure indexing; retain the explicit read-only search workflow when no adapter is available.
 - Improve exact-hypothesis matching by storing research fingerprints with test records; current deduplication is based on current target and vulnerability category.

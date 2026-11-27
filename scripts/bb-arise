@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bb-arise — reconcile public research metadata with local scope and coverage."""
+"""bb-arise — save target-independent public methodology for the Bug-Bounty agent."""
 
 from __future__ import annotations
 
@@ -12,16 +12,13 @@ ROOT = os.environ.get("BUGBOUNTY_AGENT_DIR", os.path.abspath(os.path.join(os.pat
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from framework.common.config import get_program_dir, resolve_program_scope_file
-from framework.research_planning import AriseResearchManager, CoverageIndex
-from framework.scope.engine import ScopeEngine
+from framework.common.config import get_agent_knowledge_dir
+from framework.research_planning import AriseResearchManager
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Recheck saved public-disclosure metadata against current local coverage; no target requests.")
-    parser.add_argument("--program", required=True, help="Program name in the local workspace")
-    parser.add_argument("--workspace-root", help="Explicitly override the current-directory workspace root")
-    parser.add_argument("--scope", help="Explicit scope file; missing/invalid scope fails closed")
+    parser = argparse.ArgumentParser(description="Save target-independent public security methodology for the Bug-Bounty agent.")
+    parser.add_argument("--knowledge-dir", help="Explicitly override the global agent knowledge directory")
     parser.add_argument("--discoveries", help="JSON array of newly researched public report metadata")
     parser.add_argument("--checked-source", action="append", default=[],
                         help="Public source host whose saved links were rechecked successfully")
@@ -30,19 +27,14 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     args = parser.parse_args()
     try:
-        program_dir = get_program_dir(args.program, args.workspace_root)
-        scope_path = resolve_program_scope_file(program_dir, args.scope)
-        if not scope_path:
-            raise ValueError("No valid scope file found; saved research cannot be evaluated without current scope")
-        scope = ScopeEngine.from_file(scope_path)
-        index = CoverageIndex(program_dir, scope)
+        knowledge_dir = os.path.abspath(args.knowledge_dir or get_agent_knowledge_dir())
         discoveries = []
         if args.discoveries:
             with open(args.discoveries, "r", encoding="utf-8") as stream:
                 discoveries = json.load(stream)
             if not isinstance(discoveries, list):
                 raise ValueError("--discoveries must point to a JSON array")
-        result = AriseResearchManager(program_dir, index).refresh(
+        result = AriseResearchManager(knowledge_dir).refresh(
             discoveries, checked_sources=args.checked_source, unchecked_sources=args.unchecked_source
         )
         if args.json:
@@ -53,6 +45,8 @@ def main() -> int:
                 print(f"  Removed {item['report_id']}: {item['reason']}")
             if result["unchecked_sources"]:
                 print("Sources not checked (existing metadata retained): " + ", ".join(result["unchecked_sources"]))
+            elif not result["checked_sources"]:
+                print("No public sources were checked during this invocation.")
             print("Public research is methodology only; it is not target evidence and does not authorize testing.")
         return 0
     except Exception as exc:
