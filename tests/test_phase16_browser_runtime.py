@@ -1108,7 +1108,7 @@ def test_confirm_candidate_navigates_when_policy_registration_succeeds():
     mock_sync_api.sync_playwright.return_value = mock_sync
     mock_playwright_mod.sync_api = mock_sync_api
 
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
 
     with patch.object(assistant, "is_available", return_value=True):
         with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]):
@@ -1353,7 +1353,7 @@ def test_engine_confirm_candidate_timeout_failure():
 
 def test_budget_deadline_expiration_before_initialization():
     """Deadline already expired before initialization must abort immediately with TIMEOUT."""
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
     budget = BrowserExecutionBudget(max_timeout_seconds=2.0)
 
     # Simulate monotonic clock advancing beyond deadline
@@ -1392,7 +1392,7 @@ def test_budget_deadline_expiration_during_navigation():
     mock_sync_api.sync_playwright.return_value = mock_sync
     mock_playwright_mod.sync_api = mock_sync_api
 
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
     budget = BrowserExecutionBudget(max_timeout_seconds=2.0)
 
     # Monotonic clock: 0.0 at start, 0.1 at check, 0.2 at launch, 2.5 during goto
