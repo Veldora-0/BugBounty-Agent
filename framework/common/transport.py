@@ -285,6 +285,11 @@ class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         check_hostname: Optional[bool] = None,
     ) -> None:
         super().__init__(debuglevel=debuglevel, context=context, check_hostname=check_hostname)
+        # urllib.request.HTTPSHandler does not expose _check_hostname on every
+        # supported Python version (notably Kali's Python 3.14). Keep its TLS
+        # context explicit; the context carries the hostname policy used by
+        # PinnedHTTPSConnection.wrap_socket().
+        self._context = getattr(self, "_context", None) or context or ssl.create_default_context()
         self.ip_map = ip_map
 
     def https_open(self, req: urllib.request.Request) -> Any:
@@ -303,7 +308,6 @@ class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
                 pinned_ip=pinned_ip,
                 pinned_ips=pinned_ips,
                 context=self._context,
-                check_hostname=self._check_hostname,
                 **kwargs,
             )
         return self.do_open(connection_factory, req)

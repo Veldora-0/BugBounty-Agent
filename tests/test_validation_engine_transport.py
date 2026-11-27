@@ -544,6 +544,32 @@ def test_sec03_default_https_context_strict_tls():
     assert conn.sock is not None
 
 
+def test_pinned_https_handler_preserves_tls_context_without_private_base_attribute():
+    """The pinned handler must not rely on HTTPSHandler's private attributes."""
+    from unittest.mock import patch
+    from framework.common.transport import PinnedHTTPSHandler
+
+    context = ssl.create_default_context()
+    handler = PinnedHTTPSHandler(
+        ip_map={"secure.example.com": ["203.0.113.10"]},
+        context=context,
+        check_hostname=True,
+    )
+    request = urllib.request.Request("https://secure.example.com/")
+
+    with patch.object(
+        handler,
+        "do_open",
+        side_effect=lambda connection_factory, _request: connection_factory(
+            "secure.example.com", timeout=1
+        ),
+    ):
+        connection = handler.https_open(request)
+
+    assert connection._context is context
+    assert connection._context.check_hostname is True
+
+
 def test_sec06_bounded_authentication_executor_handles_blocked_redirect():
     """SEC-06: Verifies that BoundedAuthenticationExecutor fails closed on blocked redirects."""
     from unittest.mock import MagicMock, patch
