@@ -1,6 +1,6 @@
 # Phase 24 — Final Integration and Production Readiness
 
-**Status:** In progress. Kali is the primary research and local acceptance platform. The full Linux-only suite passed on Kali at code checkpoint `628b4d2` (**1,357 passed** in 411.96 seconds). GitHub Actions uses Ubuntu Linux runners only for supplementary Python 3.10/3.14 CI checks; those jobs do not replace Kali acceptance. The two native Windows-only cases and Windows CI job have been removed; the current automated workflow targets Linux, and Linux-hosted mocked DACL failure cases remain. The updated Kali systemd dispatcher is installed; the root-run isolation verifier passed service identity, key/data isolation, agent IPC, and cross-process invalid-approval checks. A current read-only service status check reports that the scope engine and operator approval key are absent, so production dispatch is not ready and a successful approved action remains unverified. The Phase 1 IPv6 ASN query defect is fixed and covered by the full suite. This phase does not authorize a production release or any bounty-target testing.
+**Status:** In progress. Kali is the primary research and local acceptance platform. At code checkpoint `066e511`, the full Linux-only Kali suite passed (**1,363 passed** in 344.98 seconds; no skips or failures). A prior full run exposed and then verified the fix for Phase 21 metadata/provenance binding; exact evidence is in the [Phase 1–24 audit register](../PHASE-1-24-IMPLEMENTATION-AUDIT.md). GitHub Actions uses Ubuntu Linux runners only for supplementary Python 3.10/3.14 checks; they do not replace Kali acceptance. The installed systemd dispatcher passed service identity, key/data isolation, agent IPC, and invalid-approval checks, but current read-only status reports no configured scope or operator approval key. Production dispatch readiness and a successful approved service action therefore remain unverified and block Phase 24 closure. Windows-only tests and CI have been removed; Windows results are historical only. The Phase 1 IPv6 ASN query defect is fixed. No bounty target was contacted and this phase does not authorize a production release.
 **Main areas:** `framework/tools/`, `scripts/`, `.github/workflows/`, `docs/`, `tests/`, packaging and release configuration.
 
 ## Purpose
@@ -88,18 +88,32 @@ The workflow grants only `contents: read` and pins its GitHub-maintained actions
 
 | Acceptance area | Required evidence | Current state |
 |---|---|---|
-| Environment support | Full-suite evidence for every claimed environment; unsupported hosts clearly named | At `6ddbe49`, the full Kali suite and hosted Ubuntu Python 3.10/3.14 jobs passed. Earlier Windows jobs are historical only. macOS remains unverified and Windows production dispatcher isolation is unsupported. |
-| Deployment lifecycle | Install, idempotent update, collision refusal, modified-file preservation, config restore, uninstall, rollback | Isolated Kali runs passed for copy and symlink modes, status, repeat deployment, uninstall, and byte-for-byte restoration of a pre-existing synthetic config. Detached-checkout rollback and forward redeploy passed in both modes without creating a branch or touching user state. Unit tests cover collision and modified-file preservation. |
+| Environment support | Full-suite evidence for every claimed environment; unsupported hosts clearly named | At `066e511`, the Kali suite passed **1,363 tests**. Hosted Ubuntu workflow records exist for earlier commits; no current run is asserted here. macOS remains unverified and Windows production dispatcher isolation is unsupported. |
+| Deployment lifecycle | Install, idempotent update, collision refusal, modified-file preservation, config restore, uninstall, rollback | Earlier isolated Kali lifecycle runs passed for copy and symlink modes, status, repeat deployment, uninstall, exact config restoration, and detached-checkout rollback/redeploy. Unit tests cover collision and modified-file preservation. |
 | Workspace safety | Framework update and removal must preserve program data | Deployment was exercised with isolated temporary config/bin directories, and the implementation does not target program workspace paths. Workspace backup and migration remain separate future work. |
-| Diagnostics | Required packages separated from optional tools and integrations; bounded runtime | Doctor and registry focused suite passed. Optional version checks now use a bounded worker pool; `bb-doctor` full diagnosis completed in under nine seconds in the latest full Kali suite. |
+| Diagnostics | Required packages separated from optional tools and integrations; bounded runtime | Required dependencies are distinguished from optional tools; bounded parallel checks and current regression coverage passed as part of the full Kali suite at `066e511`. |
 | Threat and release review | Versioned threat model, release gate, commit-linked evidence | Threat model, release checklist, and pinned-action CI workflow are present. Dependency advisory scanning, SBOM generation, and signed release artifacts are not implemented; stable release tagging remains subject to the checklist. |
-| Installed dispatcher boundary | Updated systemd service identity and groups, key/data isolation, IPC, invalid approval and replay rejection; approved success path | Kali installation and `tests/verify-dispatcher-isolation.sh veldora` passed at code `6ddbe49`. The service uses `bbdispatcher-keys`; invalid approval was rejected before execution. No operator key or local acceptance program is configured, so successful approved dispatch and its receipt/evidence path remain unverified. |
-| Scope authorization correction | Wildcard apex exclusion and authorization of each generated wildcard-DNS probe | Fixed at `7ac24ee`; the full Kali suite passed **1,344 tests**. See the scope regression record below. |
+| Installed dispatcher boundary | Updated systemd service identity and groups, key/data isolation, IPC, invalid approval and replay rejection; approved success path | The installed Kali verifier passed identity, key/data isolation, IPC, and invalid-approval rejection. The current service has no operator key or scope configuration, so successful approved dispatch and its receipt/evidence path remain unverified (AUD-08). |
+| Scope authorization correction | Wildcard apex exclusion and authorization of each generated wildcard-DNS probe | Fixed at `7ac24ee`; subsequent full Kali suite at `066e511` passed **1,363 tests**. See the scope regression record below. |
 | Scope and live boundaries | Scope tests and honest separation of fixture/service evidence from live targets | Phase-specific tests and limits remain authoritative. No bounty target was contacted for Phase 24; repository tests do not establish detection effectiveness or bounty eligibility. |
 
 ## Verification record
 
-All implementation evidence below is tied to code commit `9361df3d773c69a36859ad5f1e562a0df21a887b`. The following documentation checkpoint does not change the tested code. Platform jobs ran the repository's full test suite; the linked workflow provides the job records.
+### Current Kali suite at `066e511` (2026-11-27)
+
+| Environment | Commit | Command | Result |
+|---|---|---|---|
+| Kali Linux, Python 3.14.10 | `066e511` | `python3 -m pytest tests/ -ra --durations=10` | **1,363 passed** in 344.98 seconds; zero skips and failures. |
+| Kali focused Phase 21 and evidence regression | `066e511` | `python3 -m pytest tests/test_phase21_execution_ledger.py tests/test_phase21_preflight_and_revocation.py tests/test_phase21_engine.py tests/test_finding_evidence_integrity.py -ra` | **93 passed** in 10.59 seconds. |
+| Kali shared-scope/browser/validation regression | `7fc0d5b` | `python3 -m pytest tests/test_validation_engine.py tests/test_phase16_browser_runtime.py tests/test_scope.py tests/test_scope_fail_closed_validation.py -ra` | **144 passed** in 79.04 seconds. This preceded `066e511`; the latter full suite also passed. |
+
+The full suite initially failed 25 Phase 21 ledger/revocation tests at `7fc0d5b`: evidence metadata sanitation redacted opaque `session_ref` values. The fix in `066e511` exempts only that exact correlation key and still redacts `session_token`; all affected tests and the complete suite then passed. No Windows tests were run. No live bounty target was contacted. These results demonstrate repository regression behavior only, not vulnerability-detection effectiveness.
+
+### Historical implementation verification at `9361df3`
+
+The records below are historical snapshots, not current-code verification. They include Windows results that do not define current platform support.
+
+All implementation evidence in the historical table is tied to code commit `9361df3d773c69a36859ad5f1e562a0df21a887b`. The following documentation checkpoint did not change that tested code.
 
 | Environment | Commit | Command | Result |
 |---|---|---|---|

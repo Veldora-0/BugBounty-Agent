@@ -1,0 +1,71 @@
+# Phase 1–24 Implementation Audit
+
+**Audit date:** 2026-11-27  
+**Repository branch:** `main`  
+**Code checkpoint reviewed:** `066e511` (`Preserve opaque session refs in evidence metadata`)  
+**Platform policy:** Kali Linux is the primary acceptance platform. Current automated test support is Linux-only. Windows test results below the current documentation are historical only.
+
+This register records a source-and-documentation review of every phase guide against its implementation and phase-specific tests. It is a status audit, not a claim that every planned capability is complete or that the agent detects every real-world vulnerability. The detailed guides in [`phases/`](phases/) explain operation and limitations; this page provides a traceable review index. Test files are named as verification targets; only commands/results in the verification section below are evidence that a test actually ran.
+
+## Phase-by-phase review
+
+| Phase | Implementation inspected | Verification target | Audit result and remaining boundary |
+|---|---|---|---|
+| 1 — Asset intelligence | `framework/assets/`, `framework/scope/`, `scripts/bb-assets` | `tests/test_asset_engine.py`, `tests/test_scope.py` | Core asset graph and scope checks are present. ASN attribution is unknown by default; optional enrichment is bounded. Broad external discovery is not implied. |
+| 2 — Reconnaissance | `framework/recon/`, `scripts/bb-recon`, shared safe HTTP transport | `tests/test_recon_engine.py`, `tests/test_scope_fail_closed_validation.py` | Bounded built-in recon is implemented. External tool catalog entries are not automatically invoked; see AUD-07. Missing or out-of-scope authorization is rejected before DNS/network activity by shared transport. |
+| 3 — Web application intelligence | `framework/webapp/`, shared safe HTTP transport | `tests/test_webapp_engine.py`, `tests/test_scope_fail_closed_validation.py` | Read-oriented mapping and bounded checks are implemented. Authenticated-session workflow and coverage remain limited; requests remain scope-gated. |
+| 4 — JavaScript intelligence | `framework/javascript/` | `tests/test_javascript_engine.py` | Static extraction and candidate analysis are implemented. Framework-specific route extraction and source-map coverage remain bounded. |
+| 5 — API intelligence | `framework/api/`, `scripts/bb-api` | `tests/test_api_engine.py`, `tests/test_scope_fail_closed_validation.py` | Offline correlation and bounded API mapping are implemented. This does not mean general fuzzing or complete authenticated schema discovery. |
+| 6 — Security validation foundation | `framework/validation/`, `framework/common/evidence.py` | `tests/test_validation_engine.py`, `tests/test_finding_evidence_integrity.py` | Shared validation and evidence handling are implemented. Metadata credential redaction was corrected in `0047dec`; hostname scope is checked before DNS, with literal metadata-address rejection preserved. Human review remains required. |
+| 7 — XSS intelligence | `framework/xss/` | `tests/test_xss_engine.py` | Candidate discovery and bounded validation exist. Browser confirmation is optional and does not replace contextual human verification. |
+| 8 — Authorization/BOLA/IDOR | `framework/authz/` | `tests/test_authz_engine.py` | Differential checks require operator-managed identities, scope, and explicit approval. Reliable coverage depends on correct account roles and comparable sessions. |
+| 9 — SSRF intelligence | `framework/ssrf/` | `tests/test_ssrf_engine.py`, `tests/test_interactsh_live_adapter.py` | Safety controls and an optional Interactsh adapter exist. End-to-end callback acceptance is open (AUD-04); Burp Collaborator polling is not implemented. |
+| 10 — Injection intelligence | `framework/injection/` | `tests/test_injection_engine.py` | Bounded candidate checks exist. Timing checks are opt-in, and proof quality and impact require human confirmation. |
+| 11 — HTTP trust/protocol security | `framework/http_trust/` | `tests/test_http_trust_engine.py` | Bounded header and protocol comparisons exist. They produce hypotheses that require application-specific interpretation. |
+| 12 — Business logic | `framework/business_logic/` | `tests/test_business_logic_engine.py` | Workflow modeling is implemented. CLI `--approve` without lab mode now refuses to send requests because production dispatch is unavailable; state-changing real-flow testing still needs a safe, approved canary. |
+| 13 — Cloud security | `framework/cloud_security/`, shared `SecurityValidationEngine` transport | `tests/test_cloud_security_engine.py` | Read-only, scope-bound checks and request caps are implemented. Provider breadth and attribution remain limited; unsafe or unscoped requests fail closed. |
+| 14 — Authentication/session/identity | `framework/authentication/` | `tests/test_authentication_engine.py` | Bounded flow checks are implemented. Sensitive transitions require approved, operator-managed identities and safe account fixtures. |
+| 15 — Upload/path traversal/local file exposure | `framework/file_security/` | `tests/test_phase15_file_security.py` | Controlled validators and local fixtures exist. Live upload or file-state changes require explicit authorization and canary handling. |
+| 16 — Browser runtime/client-side security | `framework/browser/`, `framework/validation/` | `tests/test_phase16_browser_runtime.py`, `tests/test_validation_engine.py` | Scope enforcement was corrected to require a valid scope authority before DNS/browser navigation. Optional browser binaries and versions vary; no scope means no navigation. |
+| 17 — Advanced API security | `framework/api/` and Phase 17 extensions | `tests/test_api_engine.py`, Phase 17 guide acceptance references | Advanced depth/safety controls extend API inventory; they are not general API fuzzing. Verify against the detailed guide before adding more active coverage. |
+| 18 — SSRF/XXE/server-side parsers | `framework/xxe/`, `framework/ssrf/` | `tests/test_phase18_xxe_engine.py`, `tests/test_phase18_xml_security.py`, `tests/test_phase18_ssrf_transport.py`, `tests/test_phase18_ssrf_mutation.py` | XML parser safety and bounded candidate validators are implemented. Live callback acceptance is still open (AUD-04); Burp polling remains unsupported. |
+| 19 — Infrastructure/configuration exposure | `framework/infrastructure/` | `tests/test_infrastructure_engine.py` | Read-only bounded discovery exists. Path coverage and context-specific baselines remain incomplete; findings need contextual review. |
+| 20 — Race conditions/distributed workflows | `framework/concurrency/` | `tests/test_concurrency_engine.py` | Bounded concurrency hypotheses and local simulation exist. Live race tests can affect state and need a disposable, target-approved canary and explicit operator review. |
+| 21 — Authentication/authorization correlation | `framework/auth_correlation/`, `framework/dispatcher/`, `scripts/install-dispatcher.sh` | `tests/test_phase21_*.py`, `tests/verify-dispatcher-isolation.sh` | Installed Linux service identity/isolation, agent IPC, and invalid-approval rejection were verified in prior Kali acceptance. Current service status has no configured scope or approval key; no successful approved service action has been accepted. This remains AUD-08 and blocks production dispatch readiness. |
+| 22 — Cross-engine attack-path correlation | `framework/attack_paths/`, `scripts/bb-chain` | `tests/test_phase22_*.py`, `tests/test_scope_fail_closed_validation.py` | Graph correlation and scope-bound review plans are implemented. `validate` is simulation-only and cannot prove or promote empirical links; AUD-09 remains open. Every plan target is checked at authorization and before execution. |
+| 23 — Autonomous research planning/coverage | `framework/research_planning/`, `scripts/bb-plan`, `.opencode/commands/Arise.md` | `tests/test_phase23_research_planning.py` | Offline advisory ranking and attributed public research are implemented. Planning does not send target requests; execution remains separately approval-gated. |
+| 24 — Final integration/production readiness | `framework/tools/`, `scripts/`, `.github/workflows/`, release/security docs | `tests/test_deploy.py`, `tests/test_doctor.py`, `tests/test_installer.py`, Linux full suite | Installation, diagnostics, deployment, and lifecycle controls are implemented and covered. The service-success acceptance gap AUD-08 remains an explicit Phase 24 blocker. This project is beta, not production-ready. |
+
+## Cross-phase security review
+
+- **Scope and authorization:** Active shared transports and relevant browser/cloud/validation paths require a scope authority and reject unauthorized hosts before DNS. Sensitive/state-changing checks require explicit approval or a lab fixture. Do not infer all phase entry points are production dispatch-capable; Phase 21 currently is not.
+- **Isolation and evidence:** Dispatcher isolation and invalid-approval rejection have passed the Kali verifier historically. Metadata redaction was fixed. A successful approved request through the installed dispatcher has not been demonstrated, and Phase 22 does not yet consume trusted receipts plus disk-backed evidence to promote chain edges.
+- **Fail-closed behavior:** Missing scope is rejected in the shared HTTP path. Prohibited literal metadata addresses are rejected before scope lookup, preserving the SSRF regression contract. The focused regression suite below specifically exercises these paths.
+- **Target safety:** No vulnerability probes were sent to a bounty target during this repository audit. State-changing phases require researcher-approved disposable fixtures. Automated tests and local simulations do not establish bounty-target effectiveness.
+- **Platform:** Current test policy is Linux-only, with Kali primary. No Windows-only tests were added or run. Ubuntu CI is supplementary, not a substitute for Kali service acceptance.
+
+## Open audit classifications
+
+| Issue | Classification | Current action/closure condition |
+|---|---|---|
+| AUD-04 | External dependency and Phase 9/18 live-acceptance gap | Adapter is present; controlled end-to-end callback acceptance is not recorded. Close only with a researcher-controlled callback test or maintain the explicit limitation. |
+| AUD-06 | Separate Phase 1 feature follow-up | ASN enrichment is optional and unknown by default. Keep documented, or implement and test a bounded provider. |
+| AUD-07 | Accepted manual-tool boundary or separate integration work | Recon does not invoke most optional catalog tools. Keep the boundary explicit or integrate individual tools with scoped arguments, timeout, output, and failure tests. |
+| AUD-08 | **Phase 24 acceptance blocker** | Provision a disposable local program/scope and test key on Kali, then verify an approved reversible action, invalid approval, replay rejection, and key separation through the installed service. |
+| AUD-09 | Phase 22 empirical-chain limitation | Integrate trusted single-use Phase 21 receipts and disk-backed evidence bound to plan, target, scope, and edge; add adversarial receipt/evidence tests. |
+
+## Verification record
+
+The focused Kali regression command is:
+
+```sh
+python3 -m pytest tests/test_validation_engine.py tests/test_phase16_browser_runtime.py tests/test_scope.py tests/test_scope_fail_closed_validation.py -ra
+```
+
+The full acceptance command `python3 -m pytest tests/ -ra --durations=10` ran on the Kali host at reviewed checkpoint `066e511`: **1,363 passed** in **344.98 seconds**, with no skips or failures. The focused command above passed **144 tests**. No Windows tests were run. A prior full-suite run at `7fc0d5b` exposed 25 Phase 21 evidence-ledger failures; the issue was that a broad metadata sanitizer also redacted opaque `session_ref` correlation identifiers. Commit `066e511` exempts that one identifier field while still redacting `session_token`; the Phase 21 ledger/revocation/evidence selection then passed **93 tests**, followed by the clean full-suite run recorded here.
+
+The Kali coverage-registry validation `python3 scripts/bb-coverage --validate --json` also completed with `registry_valid: true`, **39** registered vulnerability classes, and an empty `validation_errors` list. The registry reports **25 partial**, **10 manual-assisted**, **3 planned**, and **1 out-of-scope** classes. Its output explicitly reports `target_requests_sent: false`.
+
+## Documentation and naming review
+
+All 24 numbered phase guides exist under [`phases/`](phases/). The old `PHASE-1-20-STABLE-BASELINE.md` filename overstated current status, so it is renamed [`PHASE-1-20-HISTORICAL-BASELINE.md`](PHASE-1-20-HISTORICAL-BASELINE.md) and marked as a historical archive. Current support and acceptance status belongs in the phase guides, roadmap, issue register, and Phase 24 verification record.

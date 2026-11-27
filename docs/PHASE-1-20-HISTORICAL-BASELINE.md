@@ -1,17 +1,18 @@
-# BugBounty-Agent — Phase 1–20 Stable Technical Baseline
+# BugBounty-Agent — Historical Phase 1–20 Technical Baseline
 
-> **HISTORICAL BASELINE — PARTIALLY SUPERSEDED:** This baseline records an older implementation snapshot. Its test counts and blanket phase verdicts are not current acceptance evidence; later review found Phase 1 discovery and Phase 2 external-tool integration gaps, among other documented limits. Phase 21 has since gained independent receipt verification and has separate platform/live-service limitations. Use the [current roadmap](ROADMAP-24-PHASES.md), [per-phase guides](phases/), and [issue register](PROJECT-AUDIT-ISSUES.md) for current status.
-## Authoritative Architecture, Security, Quality, and Verification Assessment
+> **HISTORICAL ARCHIVE — NOT CURRENT ACCEPTANCE EVIDENCE:** This file preserves an old audit and test snapshot. Its Windows test results are historical only; current automated tests target Linux, with Kali as the primary acceptance platform. Later phase reviews corrected several earlier claims and identified capability limits. Use the [current roadmap](ROADMAP-24-PHASES.md), [per-phase guides](phases/), and [issue register](PROJECT-AUDIT-ISSUES.md) for present implementation and acceptance status.
+
+## Historical Architecture, Security, Quality, and Verification Assessment
 
 ---
 
 ## 1. Executive Summary & Baseline Verdict
 
-This document establishes the definitive, empirical technical baseline for Phases 1 through 20 of the **BugBounty-Agent** framework (`Veldora-0/BugBounty-Agent`), verified at Git commit `396ed0e5986f9f1e41bb0bec1201ee217011bc56` (implementation baseline) and reconciled at commit `e740666759c85637cefe20d171acadaa69b567f3` (planning baseline) on branch `main`.
+This document records a historical implementation snapshot for Phases 1 through 20 of the **BugBounty-Agent** framework (`Veldora-0/BugBounty-Agent`), at Git commit `396ed0e5986f9f1e41bb0bec1201ee217011bc56` (implementation baseline) and reconciled at commit `e740666759c85637cefe20d171acadaa69b567f3` (planning baseline) on branch `main`.
 
 ### Historical Baseline Verdict at the recorded snapshot: **BASELINE ACCEPTED WITH DOCUMENTED LIMITATIONS**
 
-The repository has successfully completed all Phase 1–20 milestones, verified through full cross-platform test execution on Windows 11 host and Kali Linux VM environments, complete static and structural architecture auditing, and rigorous security boundary reconciliation. All core architectural invariants are strictly preserved:
+At the time of this snapshot, the audit described Phases 1–20 as completed and recorded Windows 11 and Kali Linux test runs. Later repository review superseded those broad status claims. The following sections preserve what that historical audit asserted; they must not be used to infer current platform support, current phase completion, or present security guarantees:
 
 1. **Single-Agent Model**: Exactly one primary orchestrator (`Bug-Bounty`) operating with direct orchestration (`subagent_depth: 1`); separate subagent spawning is permanently disabled.
 2. **Modular Skills Catalog**: All 18 specialized bug bounty skills are present, discoverable, and bound to the primary orchestrator.
