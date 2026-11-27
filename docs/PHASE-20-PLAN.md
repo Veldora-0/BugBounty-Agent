@@ -1,6 +1,8 @@
 # BugBounty-Agent — Phase 20 Implementation Plan
 ## Race Conditions & Distributed Workflows Intelligence
 
+> **Historical implementation plan:** This file preserves the accepted design and work record. For current behavior, safety controls, and limits, use the [Phase 20 guide](phases/PHASE-20-race-conditions-distributed-workflows.md).
+
 **Implementation & Hardening Baseline**: `3ab5f7b657e8bcb9c66ffef5db665c7b1f90b121`
 **Final Acceptance Commit**: `3759f1ecb59168a6d4bb5ddaba7674d98afff24f`
 **Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 20)

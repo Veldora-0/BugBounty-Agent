@@ -1,6 +1,8 @@
 # BugBounty-Agent — Phase 16 Implementation Plan
 ## Browser Runtime & Client-Side Security
 
+> **Historical implementation plan:** This file preserves the accepted design and work record. For current behavior, safety controls, and limits, use the [Phase 16 guide](phases/PHASE-16-browser-runtime-client-side-security.md).
+
 **Accepted Baseline**: `d1f7df8f1f17811d9e49484c202cb950edfc582f`  
 **Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 16)  
 **Status**: Accepted (with documented limitations). Next planned phase: Phase 17 (Advanced API Security).

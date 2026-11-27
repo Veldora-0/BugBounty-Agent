@@ -1,6 +1,6 @@
 # BugBounty-Agent Vulnerability Coverage Expansion Roadmap
 
-**Status:** Phase 25 is in progress. A first static class-to-engine/tool registry and the offline `bb-coverage` CLI now exist. Registry validation and focused tests passed on Kali. Full mapping review and per-program coverage tracking remain. This document does not claim that planned capabilities exist or that implemented engines find every valid bug.
+**Status:** Proposed follow-on work. Partial groundwork already exists in the static class-to-engine/tool registry and offline `bb-coverage` CLI, but Phase 25 has not been accepted as complete. Full mapping review and per-program coverage tracking remain. This Phase 1–24 cleanup does not extend Phase 25 implementation. The registry is descriptive; it does not prove that a feature works against a target or that the agent finds every valid bug.
 
 **Scope:** Authorized public bug bounty and coordinated disclosure testing of web applications, APIs, browser clients, and explicitly in-scope cloud assets. Mobile applications and source-code review are optional tracks when the program explicitly includes them. Active Directory, wireless, social engineering, exploit development, and general red-team operations are out of scope for this roadmap.
 
@@ -112,7 +112,7 @@ These are proposed coverage phases after the current Phase 24 baseline. They ext
 
 ### Phase 25 — Coverage registry and workflow integration
 
-**Status:** In progress. `config/vulnerability-coverage.yaml`, `framework/coverage/registry.py`, and `scripts/bb-coverage` provide the initial static inventory. The `Bug-Bounty` agent now consults the map before claiming support and uses the actual finding lifecycle names. The registry labels several classes manual-assisted or planned and identifies registry-only and unregistered tools. Initial validation and focused tests passed on Kali. Remaining work is review of every mapping against its callable path, further machine-readable output acceptance, and a per-program view that does not confuse static support with performed tests.
+**Status:** Partial groundwork present; Phase 25 remains an unaccepted follow-on. `config/vulnerability-coverage.yaml`, `framework/coverage/registry.py`, and `scripts/bb-coverage` provide an initial static inventory. The `Bug-Bounty` agent consults the map before claiming support and uses the actual finding lifecycle names. The registry labels classes as partial, manual-assisted, planned, or out-of-scope and identifies registry-only and unregistered tools. Validation passes, but each mapping still needs review against its callable path, and per-program tracking must distinguish available support from tests actually performed.
 
 **Kali verification (2026-11-22):** `python3 scripts/bb-coverage --validate --json` reported `registry_valid: true`, zero validation errors, and 39 catalog entries. `python3 -m pytest tests/test_coverage_registry.py tests/test_tool_registry.py -rA` passed all 15 tests. This was focused validation, not a full-suite run.
 

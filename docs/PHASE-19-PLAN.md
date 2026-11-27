@@ -1,6 +1,8 @@
 # BugBounty-Agent — Phase 19 Implementation Plan
 ## Infrastructure & Configuration Exposure
 
+> **Historical implementation plan:** This file preserves the accepted design and scenario inventory used by the local lab. For current behavior, safety controls, and limits, use the [Phase 19 guide](phases/PHASE-19-infrastructure-configuration-exposure.md).
+
 **Planning Baseline**: `ca27208de5bd5789230f5c736f497c10a726748f`
 **Completion & Acceptance Commit**: `78f949a6d3b614ca60a82d7f776641787a6bebaa`
 **Reference Document**: `docs/ROADMAP-24-PHASES-TEMP.md` (Phase 19)
