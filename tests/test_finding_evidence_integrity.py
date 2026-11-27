@@ -133,6 +133,27 @@ def test_provenance_credentials_are_redacted_before_serialization():
         assert secret not in serialized
 
 
+def test_evidence_metadata_redacts_url_and_sensitive_key_values(tmp_path):
+    store = EvidenceStore(str(tmp_path / "evidence"))
+    record = store.save_http_capture(
+        request_text="GET / HTTP/1.1",
+        response_text="HTTP/1.1 200 OK",
+        metadata={
+            "target": "https://example.test/path?access_token=url_secret",
+            "credentials": {"password": "nested_secret"},
+            "labels": ["session=label_secret", "ordinary label"],
+        },
+    )
+
+    with open(record["meta_path"], encoding="utf-8") as stream:
+        serialized_metadata = json.load(stream)["metadata"]
+    serialized = json.dumps(serialized_metadata)
+
+    for secret in ("url_secret", "nested_secret", "label_secret"):
+        assert secret not in serialized
+    assert "ordinary label" in serialized
+
+
 def test_report_gate_requires_a_bound_content_digest(tmp_path):
     store = EvidenceStore(str(tmp_path / "evidence"))
     finding = _finding()

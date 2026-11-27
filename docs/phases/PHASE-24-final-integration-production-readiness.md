@@ -147,9 +147,9 @@ The full hosted matrix and Kali full-suite passed for code commit `b6308e8`, bef
 | GitHub Ubuntu, Python 3.14 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed. |
 | GitHub Windows Server 2025, Python 3.14 | `b6308e8` | `Tests` workflow, `python -m pytest tests/ -ra` | Passed, including Windows path and DACL checks. |
 
-The hosted jobs are recorded in [GitHub Actions run 44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317). The focused Kali selection covered dispatcher configuration, Interactsh adapter behavior, Nuclei and Subfinder integration, and Phase 21 security tests. The full test run did not contact a bounty target or prove live OOB reachability. At that historical checkpoint, the Kali host still ran the older dispatcher unit. The 2026-11-21 installation and verification are recorded in the current section below. Open issue classifications and required next evidence are maintained in the [audit register](../PROJECT-AUDIT-ISSUES.md#current-verification-and-classifications-at-6ddbe49-2026-11-21).
+The hosted jobs are recorded in [GitHub Actions run 44584566317](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44584566317). The focused Kali selection covered dispatcher configuration, Interactsh adapter behavior, Nuclei and Subfinder integration, and Phase 21 security tests. The full test run did not contact a bounty target or prove live OOB reachability. At that historical checkpoint, the Kali host still ran the older dispatcher unit. The later 2026-11-21 installation and verification are recorded in the next historical section. Current open issues and required next evidence are maintained in the [audit register](../PROJECT-AUDIT-ISSUES.md).
 
-## Current code verification at `6ddbe49` (2026-11-21)
+## Historical code verification at `6ddbe49` (2026-11-21)
 
 The tested source and test changes are committed at `6ddbe49c95e90806575dea59efc4c2877aba8cfe` on `main`. The exact commit is pushed to `origin/main`; GitHub Actions and Kali both report that commit. Documentation-only updates made after this checkpoint do not change the tested code.
 
@@ -165,7 +165,7 @@ This checkpoint hardens three linked security properties. Dispatcher approval an
 
 The installed service is active with `SupplementaryGroups=bbdispatcher-keys`; its socket is owned by `_bbdispatcher:bbgroup` with mode `660`, and the pinned public key is installed as `root:root` mode `644`. The verifier confirmed `MISSING_APPROVAL_KEY` rejection before execution and no state/evidence mutation. No operator approval key or test program was provisioned, so no approved mutation, real service receipt, or successful dispatch evidence was produced. No bounty target was contacted. These checks establish the local isolation and rejection properties only; they do not establish live vulnerability-discovery effectiveness or authorize testing.
 
-The remaining classifications are explicit: AUD-08 is a Phase 24 acceptance blocker for a successful approved local dispatch; AUD-04 depends on an externally reachable OOB provider and controlled callback endpoint; AUD-06 is an ASN coverage limitation; AUD-07 is a documented manual-tool boundary; and AUD-09 is a separate Phase 22 empirical-chain validation gap. Details and acceptance evidence are maintained in the [issue register](../PROJECT-AUDIT-ISSUES.md#current-verification-and-classifications-at-6ddbe49-2026-11-21).
+At that historical checkpoint, AUD-08 was a Phase 24 acceptance blocker for successful approved local dispatch; AUD-04 depended on an externally reachable OOB provider and controlled callback endpoint; AUD-06 tracked missing ASN enrichment; AUD-07 was a documented manual-tool boundary; and AUD-09 was a separate Phase 22 empirical-chain validation gap. Current status is in the [audit register](../PROJECT-AUDIT-ISSUES.md).
 
 ## Scope regression verification at `7ac24ee` (2026-11-21)
 

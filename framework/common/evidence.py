@@ -40,6 +40,26 @@ _SENSITIVE_PATTERNS = [
     (re.compile(r"-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9_-]+ )?PRIVATE KEY-----", re.IGNORECASE), "[REDACTED_PRIVATE_KEY_BY_BB_AGENT]"),
 ]
 
+_SENSITIVE_METADATA_KEY = re.compile(
+    r"(?:authorization|cookie|password|passwd|pwd|secret|token|api[_-]?key|credential|session|jwt)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_metadata(value: Any, key: str = "") -> Any:
+    """Redact secret-bearing metadata values before writing evidence descriptors."""
+    if key and _SENSITIVE_METADATA_KEY.search(key):
+        return "[REDACTED_BY_BB_AGENT]"
+    if isinstance(value, str):
+        return sanitize_sensitive_data(value)
+    if isinstance(value, dict):
+        return {str(k): _sanitize_metadata(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_metadata(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_metadata(item) for item in value]
+    return value
+
 SAFE_PREFIX_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _SENSITIVE_FIELD_NAME = re.compile(
     r"(?:password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|session|credential)",
@@ -185,7 +205,7 @@ class EvidenceStore:
             "request_sha256": req_digest,
             "response_sha256": res_digest,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "metadata": metadata or {},
+            "metadata": _sanitize_metadata(metadata or {}),
         }
         tmp_meta = f"{meta_path}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
         with open(tmp_meta, "w", encoding="utf-8") as f:

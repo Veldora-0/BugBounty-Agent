@@ -48,7 +48,7 @@ This register lists material unresolved problems and accepted capability boundar
 
 This register records repository review and current audit-run evidence, not a live-target security assessment. No bounty target was contacted. Review current program rules and scope before use.
 
-## Current verification and classifications at `6ddbe49` (2026-11-21)
+## Historical verification and classifications at `6ddbe49` (2026-11-21)
 
 - **Kali Linux, Python 3.14.10:** `python3 -m pytest tests/ -ra --durations=10` — **1,343 passed** in 163.11 seconds. No Windows-only tests were run or added.
 - **Focused security regressions:** `python3 -m pytest -q tests/test_phase21_preflight_and_revocation.py::test_controlled_attestation_security_matrix_d1 tests/test_phase21_dispatcher_state_hardening.py` — **15 passed**. The dispatcher state and security-remediation selection also passed: `python3 -m pytest -q tests/test_phase21_dispatcher_state_hardening.py tests/test_phase21_security_remediation.py` — **37 passed**.
