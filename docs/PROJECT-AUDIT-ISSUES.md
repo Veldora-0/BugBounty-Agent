@@ -8,7 +8,7 @@ This register lists material unresolved problems and accepted capability boundar
 
 - **Repository state at review start:** `main` was synchronized with `origin/main` at `eb6d174`; the working tree was clean. This section records the current findings; remediation checkpoints are identified by their commit IDs when completed.
 - **Kali Linux, Python 3.14.10:** The latest full-suite result recorded for the coverage/ASN code checkpoint `91792b7` is **1,352 passed** in 270.37 seconds. This is local code/fixture evidence, not live-target effectiveness. No Windows or WSL tests were run.
-- **Phase 1 defect found:** IPv6 Team Cymru query names are derived from compressed IPv6 text and are not valid full reverse-nibble query names. Existing provider tests do not exercise IPv6 lookup query construction. AUD-06 is reopened until fixed and regression-tested.
+- **Phase 1 remediation:** Commit `b212bff` now uses the expanded IPv6 address for nibble reversal. On Kali, `python3 -m pytest -q tests/test_asn_provider.py` passed (**5 passed**). Mocked tests verify query construction and prefix parsing; no live ASN lookup or target request was made. AUD-06 is closed for this code defect.
 - **Phase 2 boundary:** `bb-recon` uses bounded built-in probes and does not invoke catalog tools such as httpx/Nmap; this remains a disclosed integration limitation (AUD-07). Ubuntu appears only as a hosted Linux CI runner, not as the project's research-platform recommendation.
 - **Remaining acceptance limits:** AUD-04 needs a controlled live callback endpoint; AUD-08 needs a disposable local program/key and successful approved action through the installed Kali service; AUD-09 needs trusted, per-edge receipt/evidence binding. Current fail-closed behavior remains in place pending those concrete prerequisites.
 
@@ -19,14 +19,6 @@ This register lists material unresolved problems and accepted capability boundar
 - **Impact:** Blind findings remain unconfirmed if the external service is unreachable, not installed, or the target cannot make callbacks. Burp Collaborator remains unavailable.
 - **Remediation:** Verify one end-to-end callback using a researcher-owned test endpoint and an explicitly authorized, controlled test; implement Collaborator polling only if the project needs it.
 - **Acceptance gate:** The owned test endpoint produces an attributable callback with exact correlation and fresh evidence; mock providers remain simulation-only. Do not claim live acceptance from unit tests.
-
-### AUD-06 — Phase 1 ASN provider has an IPv6 query defect (open)
-
-- **Severity:** Low; affects IPv6 ASN enrichment, not scope enforcement or active-probe authorization.
-- **Evidence:** `framework/assets/asn.py` builds an IPv6 query by removing colons from `str(ip)`, which may be compressed, then reversing the remaining characters. Team Cymru IPv6 origin lookups require the reversed nibbles of the full expanded 128-bit address. Current tests cover IPv4 provider parsing and an IPv6 `UNKNOWN` fallback, but not IPv6 query construction or parsing.
-- **Impact:** IPv6 asset ownership metadata can remain unknown even when the optional provider is available. The provider is opt-in, and the code remains fail-closed for target scope decisions.
-- **Remediation:** Build the reverse name from `ip.exploded` (all 32 hexadecimal nibbles), validate the exact IPv6 query-name construction, and retain returned-prefix membership validation.
-- **Acceptance gate:** Add offline mocked IPv6 query and response tests, including a compressed address, non-global address rejection, budget behavior, malformed response, and returned-prefix mismatch. No live lookup is required for code acceptance; never use ASN metadata as scope authorization.
 
 ### AUD-07 — Phase 2 tool catalog is not an execution integration
 
@@ -67,12 +59,11 @@ This register records repository review and current audit-run evidence, not a li
 | Issue | Current classification | Remaining acceptance action |
 |---|---|---|
 | AUD-04 | External provider dependency and separate Phase 9/18 live-acceptance gap | Use a researcher-controlled endpoint for an authorized canary callback; otherwise keep live OOB confirmation unsupported. Burp Collaborator polling is optional follow-up. |
-| AUD-06 | Open Phase 1 IPv6 enrichment defect; IPv4 lookup is opt-in | Correct full-nibble IPv6 query construction and add offline regression coverage. Leave ASN `UNKNOWN` when lookup is unavailable or not approved. |
 | AUD-07 | Documented product boundary; optional integration follow-up | Add an explicit, tested invocation contract only for tools selected for integration. The current docs must not imply `bb-recon` launches them. |
 | AUD-08 | **Phase 24 acceptance blocker** for full installed-service dispatch; Windows production isolation is an accepted unsupported boundary | Verify a successful approved, reversible action using a dedicated local acceptance program and disposable key, plus rejection and replay checks. Do not use an unspecified bounty target. |
 | AUD-09 | Separate Phase 22 empirical-chain validation blocker | Integrate authenticated single-use receipts with disk-backed evidence bound to the plan, target, scope, and each edge; retain simulation fail-closed behavior. |
 
-AUD-04, AUD-06, AUD-07, and AUD-09 do not invalidate the passing code tests or Linux dispatcher isolation check, but each limits the corresponding capability. AUD-08 remains open because the production service has only been tested for readiness and rejection; a successful approved dispatch has not been demonstrated.
+AUD-04, AUD-07, and AUD-09 do not invalidate the passing code tests or Linux dispatcher isolation check, but each limits the corresponding capability. AUD-08 remains open because the production service has only been tested for readiness and rejection; a successful approved dispatch has not been demonstrated.
 
 ## Scope-boundary fix at `7ac24ee` (2026-11-21)
 
