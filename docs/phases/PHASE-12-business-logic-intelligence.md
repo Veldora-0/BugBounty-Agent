@@ -12,7 +12,7 @@ These problems are different from a malformed input bug: each request may be syn
 
 ## How the phase works
 
-The engine stores workflow steps and expected invariants, discovers candidate weaknesses, and asks for an explicit approval before an active hypothesis executes. It sends a baseline request and a carefully selected comparison request, then evaluates whether the expected invariant held. Scope is checked before active requests. The CLI has test, request, concurrency, and timeout bounds; local lab mode is available for deterministic simulation.
+The engine stores workflow steps and expected invariants and proposes candidate weaknesses. The CLI can inspect that state, build a dry-run plan, or run deterministic local lab scenarios. **Production request dispatch is not implemented in the current CLI.** The engine refuses to invent simulated HTTP responses when no dispatcher is supplied, and `--approve` without `--lab` now exits with a clear message before any request. The shared request policy is not yet integrated into a production workflow dispatcher, so the CLI's request/concurrency flags do not provide production dispatch controls.
 
 This phase has an important live-use limitation: approval and a request cap do not guarantee rollback. A request involving a real purchase, balance, subscription, account setting, or persistent record can create real state changes if the target accepts it. Do not run such a case on a live program unless the program specifically permits the test and provides a disposable canary workflow with a safe rollback plan. If a harmless proof is not possible, keep the case as a hypothesis.
 
@@ -28,11 +28,12 @@ bb-workflow --program <program-name> --application app.example.org --dry-run --j
 # Run the deterministic local lab.
 bb-workflow --program <program-name> --lab --json
 
-# A live check requires scope, an approved safe canary workflow, and explicit operator approval.
-bb-workflow --program <program-name> --endpoint https://app.example.org/checkout --approve --max-tests 1 --max-requests 2 --json
+# The current CLI does not send production business-logic requests.
+# --approve without --lab is rejected before any request.
+bb-workflow --program <program-name> --approve --json
 ~~~
 
-The endpoint option is a filter for a known workflow step. Use only options present in your installed CLI, and do not interpret command approval as permission from the bounty program.
+The endpoint option is a filter for a known workflow step. `--approve` is an operator gate for the local lab only; it is not permission from a bounty program. Keep live business-logic hypotheses as reviewed plans until a dedicated safe dispatcher supports a researcher-owned canary, transaction-specific limits, and rollback evidence.
 
 ## Reading the result
 

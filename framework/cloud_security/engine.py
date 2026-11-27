@@ -34,6 +34,8 @@ from framework.cloud_security.storage import CloudStateManager
 from framework.cloud_security.validators import SafeCloudValidator
 from framework.common.evidence import EvidenceStore
 from framework.scope.engine import ScopeEngine
+from framework.validation.engine import SecurityValidationEngine
+from framework.validation.policy import SecurityTestPolicy
 from framework.validation.request import ControlledRequest, ControlledResponse
 
 
@@ -55,6 +57,20 @@ class CloudSecurityEngine:
         self.policy = policy or CloudSecurityPolicy()
         self.state_mgr = CloudStateManager(self.program_dir)
         self.is_simulation = is_simulation
+        self.validation_engine = None
+        if request_hook is None:
+            self.validation_engine = SecurityValidationEngine(
+                program_dir=self.program_dir,
+                scope_engine=scope_engine,
+                policy=SecurityTestPolicy(
+                    allowed_methods=set(CloudSecurityPolicy.ALLOWED_METHODS),
+                    max_requests_per_endpoint=CloudSecurityPolicy.MAX_REQUESTS_PER_ASSET,
+                    max_requests_per_program=CloudSecurityPolicy.MAX_REQUESTS_PER_ASSET,
+                    timeout=CloudSecurityPolicy.REQUEST_TIMEOUT_SECONDS,
+                    max_response_bytes=CloudSecurityPolicy.MAX_RESPONSE_BYTES,
+                ),
+            )
+            request_hook = self.validation_engine.send_request
         self.request_hook = request_hook
         self.validator = SafeCloudValidator(self.request_hook, self.policy, is_simulation=is_simulation)
         self.evidence_store = evidence_store or EvidenceStore(os.path.join(self.program_dir, "evidence"))
@@ -140,6 +156,7 @@ class CloudSecurityEngine:
         Executes safe validation against hypotheses under ScopeEngine and Policy constraints.
         """
         results = []
+        requests_by_asset: Dict[str, int] = {}
 
         for hyp in hypotheses:
             fingerprint = hyp.compute_fingerprint()
@@ -164,6 +181,21 @@ class CloudSecurityEngine:
                 results.append((hyp, HypothesisValidationStatus.NEEDS_VALIDATION, None, f"[DRY-RUN] Planned probe for {hyp.hypothesis_type.value} against {target_url}"))
                 continue
 
+            needs_request = hyp.hypothesis_type in (
+                CloudHypothesisType.PUBLIC_OBJECT_LISTING,
+                CloudHypothesisType.PUBLIC_OBJECT_READ,
+                CloudHypothesisType.POTENTIAL_CLOUD_TAKEOVER,
+                CloudHypothesisType.UNAUTHENTICATED_ADMIN_ACCESS,
+            )
+            asset_key = hyp.asset.strip().lower()
+            if needs_request and requests_by_asset.get(asset_key, 0) >= CloudSecurityPolicy.MAX_REQUESTS_PER_ASSET:
+                reason = (
+                    f"Per-asset request ceiling reached "
+                    f"({CloudSecurityPolicy.MAX_REQUESTS_PER_ASSET}); remaining hypotheses were not dispatched."
+                )
+                results.append((hyp, HypothesisValidationStatus.NEEDS_VALIDATION, None, reason))
+                continue
+
             # 3. Policy Action Safety Check
             method = "HEAD" if hyp.hypothesis_type == CloudHypothesisType.PUBLIC_OBJECT_READ else "GET"
             safe, policy_reason = CloudSecurityPolicy.evaluate_action_safety(method, target_url)
@@ -176,6 +208,8 @@ class CloudSecurityEngine:
 
             # 4. Execute Validation Probe
             status, exposure_state, candidate, detail = self.validator.validate_hypothesis(hyp)
+            if needs_request:
+                requests_by_asset[asset_key] = requests_by_asset.get(asset_key, 0) + 1
             hyp.validation_status = status
             if status == HypothesisValidationStatus.REJECTED:
                 hyp.rejection_reason = detail

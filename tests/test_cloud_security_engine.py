@@ -45,6 +45,7 @@ from framework.cloud_security.validators import CloudFalsePositiveClassifier, Sa
 from framework.findings.lifecycle import FindingLifecycle
 from framework.scope.engine import ScopeEngine
 from framework.validation.request import ControlledRequest, ControlledResponse
+from framework.validation.engine import ScopeViolationError
 
 
 @pytest.fixture
@@ -301,6 +302,46 @@ def test_atomic_state_persistence_and_resume(temp_program_dir):
     new_mgr = CloudStateManager(temp_program_dir)
     assert new_mgr.is_fingerprint_tested(fp)
     assert new_mgr.get_summary()["total_assets"] == 1
+
+
+def test_default_cloud_transport_is_scope_bound_and_read_only(temp_program_dir):
+    engine = CloudSecurityEngine(temp_program_dir)
+
+    assert engine.request_hook == engine.validation_engine.send_request
+    assert engine.validation_engine.policy.allowed_methods == {"GET", "HEAD", "OPTIONS"}
+    with pytest.raises(ScopeViolationError, match="ScopeEngine"):
+        engine.request_hook(ControlledRequest(url="http://127.0.0.1:9/", method="GET"))
+
+
+def test_cloud_validation_enforces_per_asset_request_ceiling(temp_program_dir):
+    scope = ScopeEngine({"targets": {"domains": ["bucket.example.com"]}})
+    dispatched = []
+
+    def requester(request):
+        dispatched.append(request)
+        return ControlledResponse(status_code=403, body="AccessDenied")
+
+    engine = CloudSecurityEngine(temp_program_dir, scope_engine=scope, request_hook=requester)
+    hypotheses = [
+        CloudExposureHypothesis(
+            id=f"hyp-{index}",
+            asset="bucket.example.com",
+            provider=CloudProvider.AWS,
+            service=CloudServiceType.OBJECT_STORAGE,
+            hypothesis_type=CloudHypothesisType.PUBLIC_OBJECT_READ,
+            confidence=0.5,
+            severity_hint="MEDIUM",
+            rationale="bounded request ceiling regression",
+            endpoint="https://bucket.example.com/object",
+        )
+        for index in range(CloudSecurityPolicy.MAX_REQUESTS_PER_ASSET + 1)
+    ]
+
+    results = engine.validate_hypotheses(hypotheses)
+
+    assert len(dispatched) == CloudSecurityPolicy.MAX_REQUESTS_PER_ASSET
+    assert results[-1][1] == HypothesisValidationStatus.NEEDS_VALIDATION
+    assert "ceiling reached" in results[-1][3]
 
 
 # ==============================================================================

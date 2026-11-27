@@ -12,7 +12,7 @@ The phase is not a cloud account scanner. It must not log in to infrastructure, 
 
 ## How the phase works
 
-The engine reads assets and technology observations already collected for the program, applies provider fingerprints and creates exposure hypotheses. A passive run only models candidates. A dry run previews which checks would be considered. Active validation is an explicit mode; the cloud policy permits only GET, HEAD, and OPTIONS and caps requests and response size. It blocks metadata targets and destructive operations.
+The engine reads assets and technology observations already collected for the program, applies provider fingerprints and creates exposure hypotheses. A passive run only models candidates. A dry run previews which checks would be considered. Active validation is an explicit mode and uses the shared scope-checking, destination-pinned HTTP transport. The cloud policy permits only GET, HEAD, and OPTIONS; a run is capped at 15 dispatched requests per asset and at 512 KiB per response. It blocks metadata targets and never attempts writes or deletes. The same total program budget can stop a run before every asset reaches its per-asset ceiling.
 
 A public bucket or provider-looking hostname is not automatically a vulnerability. The researcher must determine whether the resource belongs to the in-scope program, whether the exposed content is intentionally public, and whether the evidence shows meaningful unauthorized access. State and reviewed findings are saved in **cloud.json**.
 
