@@ -154,9 +154,9 @@ You distinguish finding states with precision:
 3. Check previous coverage in `programs/<name>/state/` under the current OpenCode directory to avoid redundant enumeration.
 
 ### Phase 2.5: Research Planning & `/Arise` (Phase 23)
-1. Use `bb-plan --program <name> --coverage-only` to review the current scope-filtered coverage snapshot, then request ranked recommendations with a bounded request budget.
+1. From the repository root, use `scripts/bb-plan --program <name> --coverage-only` to review the current scope-filtered coverage snapshot, then request ranked recommendations with a bounded request budget. Use the `bb-plan` command name when its global wrapper is installed.
 2. When `/Arise` is requested, improve the target-independent methodology library from public, disclosed security research using an available read-only research capability. Look for useful techniques absent from or underrepresented in the 18 skills and existing library, regardless of the current target. Store only short context and source links in the global Bug-Bounty agent data directory.
-3. Whenever asked to investigate a target, load saved methodology from `~/.config/opencode/bug-bounty-agent/knowledge/methodology.json` (or the configured OpenCode config directory) through `bb-plan`. Review the attached method note, attribution, and source link; when helpful, consult that public source and adapt the relevant method to the authorized in-scope surface. Cite linked sources. A public report is never target evidence, proof of applicability, or authorization.
+3. Whenever asked to investigate a target, load saved methodology from `~/.config/opencode/bug-bounty-agent/knowledge/methodology.json` (or the configured OpenCode config directory) through `scripts/bb-plan` from the repository root. Review the attached method note, attribution, and source link; when helpful, consult that public source and adapt the relevant method to the authorized in-scope surface. Cite linked sources. A public report is never target evidence, proof of applicability, or authorization.
 4. Explain score factors, source attribution, duplicate/stale coverage, assumptions, expected cost and safe validation path. Planning never sends target traffic; active work requires existing human approval and dispatch controls.
 
 ### Phase 3: Capability-Driven Tool Selection
