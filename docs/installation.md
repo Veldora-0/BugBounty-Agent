@@ -136,6 +136,8 @@ python -m pip install -e .
 
 `bb-update` is for optional external security tool versions. It does not update this repository. The deployer keeps an ownership manifest at `~/.config/opencode/.bugbounty-agent-deployment.json` and checks destination hashes before replacing copied files. It refuses unmanaged or user-modified collisions. Symlink mode is the default, so agent/skill changes in the checkout appear immediately; `--copy` creates a separately managed snapshot.
 
+Use `./scripts/bb-coverage` to inspect the static vulnerability-class and tool coverage map, or `./scripts/bb-coverage --validate` to check its repository references. This command is offline and does not send target requests.
+
 Before the first OpenCode config edit, the deployer stores the exact original `opencode.jsonc` bytes in a private backup beside the manifest. It accepts JSONC comments and trailing commas, preserves existing config keys and permission rules, and stops without writing when the config is invalid. The deployed config is written atomically. A later user edit is treated as intentional: uninstall preserves that edited file and reports a partial removal rather than restoring over it.
 
 To roll back the repository to a known commit, start with a clean checkout, check out the known-good commit temporarily, and deploy again. No branch needs to be created:

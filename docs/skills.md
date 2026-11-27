@@ -2,6 +2,8 @@
 
 BugBounty-Agent equips the unified `Bug-Bounty` agent with 18 modular OpenCode skills maintained in the repository under `skills/` and deployed globally to `~/.config/opencode/skills/`. Each skill provides specialized methodology, decision trees, criteria, and safety constraints.
 
+The [vulnerability coverage registry](../config/vulnerability-coverage.yaml) is the authoritative class-to-engine status map. Use `bb-coverage` to inspect it. Skills provide methodology and do not by themselves prove that an automated detection workflow exists.
+
 ---
 
 ## 18 Modular Skills Directory

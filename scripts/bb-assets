@@ -31,6 +31,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from framework.assets.engine import AssetIntelligenceEngine
+from framework.assets.asn import TeamCymruAsnResolver
 from framework.assets.graph import AssetGraph
 from framework.assets.subfinder import run_subfinder
 from framework.common.config import get_program_dir, resolve_program_scope_file
@@ -71,6 +72,10 @@ Examples:
         "--subfinder",
         action="store_true",
         help="Opt in to bounded passive Subfinder discovery for each in-scope root domain",
+    )
+    parser.add_argument(
+        "--asn-lookup", action="store_true",
+        help="Opt in to bounded Team Cymru ASN lookups for public IPs (shares queried IPs with the provider)",
     )
     parser.add_argument(
         "--depth",
@@ -188,6 +193,8 @@ def main() -> int:
         passive_only=args.passive_only,
         detect_wildcards=not args.no_wildcards,
     )
+    if args.asn_lookup:
+        engine.asn_resolver_hook = TeamCymruAsnResolver(max_queries=25)
 
     subfinder_sources = {}
     subfinder_failures = []

@@ -9,7 +9,11 @@ import pytest
 from framework.tools.providers import ProviderManager, KNOWN_PROVIDERS
 
 
-def test_credential_detection_from_secrets_file():
+def test_credential_detection_from_secrets_file(monkeypatch):
+    # The provider manager intentionally prefers process environment values;
+    # isolate this file-backed fixture from real researcher credentials.
+    monkeypatch.delenv("SHODAN_API_KEY", raising=False)
+    monkeypatch.delenv("PDCP_API_KEY", raising=False)
     with tempfile.NamedTemporaryFile("w", delete=False) as tf:
         tf.write("# Test secrets\n")
         tf.write("SHODAN_API_KEY=mock_shodan_key_12345\n")

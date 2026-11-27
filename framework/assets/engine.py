@@ -216,7 +216,7 @@ class AssetIntelligenceEngine:
         return {
             "asn": "UNKNOWN",
             "org": "UNKNOWN",
-            "cidr": f"{ip}/32",
+            "cidr": f"{ip}/{32 if ipaddress.ip_address(ip).version == 4 else 128}",
         }
 
     def detect_cdn(

@@ -42,14 +42,14 @@ Phase 24 has implemented much of its operational hardening. Historical Linux and
 
 ### Phases 1–2 — Complete asset enrichment and clarify recon capabilities
 
-- Add an optional ASN attribution source with privacy, rate, output, and failure bounds plus local fixtures. Bounded TLS SAN enrichment is already wired into asset discovery; keep its scope checks, IP pinning, SNI and handshake budget covered by fixtures.
+- Consider additional ASN providers only if Team Cymru is insufficient. The opt-in Team Cymru resolver is bounded and fixture-tested; keep its public-IP restriction, query budget, timeout and network-prefix validation covered by fixtures. Bounded TLS SAN enrichment is already wired into asset discovery; keep its scope checks, IP pinning, SNI and handshake budget covered by fixtures.
 - Decide which external reconnaissance tools the project intends to execute. If enabled, add explicit per-tool configuration, binary verification, argument construction, timeout/output limits, and tests. Until then, describe them only as separately installable/manual tools and do not imply `bb-recon` invokes them.
 
 ## Cross-cutting improvements
 
 1. **Authorization-aware workspace UX:** Guided program setup that records source and date of scope rules, highlights exclusions, and requires an explicit operator confirmation before active work.
 2. **Evidence quality scoring:** Checklist for reproducibility, impact, affected principal, request/response context, redaction and confidence. Keep scores explainable and human-editable.
-3. **Coverage dashboard:** Show which asset classes, endpoints, vulnerability families and test accounts have been assessed, with last-tested time and exclusions.
+3. **Per-program coverage dashboard:** The static vulnerability-to-engine catalog is now tracked in `config/vulnerability-coverage.yaml` and inspected with `bb-coverage`. Still add a per-program view that joins it to scope-filtered assets, endpoint coverage, test accounts, last-tested time, confidence, and explicit exclusions without implying static support means a check was performed.
 4. **Program policy profiles:** Import policy text for rate limits and prohibited actions into a human-reviewed local profile; never infer authorization from a domain name alone.
 5. **Safe test fixtures:** Expand local vulnerable applications for regression testing of each engine, including negative, boundary, redirect, DNS rebinding, malformed response and budget exhaustion cases.
 6. **Dependency and supply-chain maintenance:** Pin or constrain dependencies deliberately, generate a software bill of materials, track supported versions, and review external tool updates before enabling them.

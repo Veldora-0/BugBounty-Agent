@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""bb-coverage — inspect the static vulnerability/tool coverage registry."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+ROOT = os.environ.get(
+    "BUGBOUNTY_AGENT_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")),
+)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from framework.coverage.registry import CoverageRegistry, CoverageRegistryError
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Show the repository's static vulnerability coverage; never sends target requests."
+    )
+    parser.add_argument("--area", help="Filter by coverage area")
+    parser.add_argument("--status", choices=["partial", "manual-assisted", "planned", "out-of-scope"])
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    parser.add_argument("--validate", action="store_true", help="Check registry IDs and engine/tool paths")
+    args = parser.parse_args()
+
+    try:
+        registry = CoverageRegistry(repo_root=ROOT)
+        errors = registry.validate()
+        if args.validate and errors:
+            for error in errors:
+                print(f"ERROR: {error}", file=sys.stderr)
+            return 2
+        result = registry.summary(area=args.area, status=args.status)
+        result["registry_valid"] = not errors
+        result["validation_errors"] = errors
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0 if not args.validate or not errors else 2
+        print("BUGBOUNTY-AGENT STATIC COVERAGE (no target requests sent)")
+        print(f"Classes: {result['class_count']} | Status counts: " + ", ".join(
+            f"{name}={count}" for name, count in result["status_counts"].items()
+        ))
+        for item in result["classes"]:
+            wiring = item.get("cli") or "manual/planned"
+            tool_names = ", ".join(item.get("tools", [])) or "none required"
+            print(f"[{item['status']}] {item['id']}: {item['title']}")
+            print(f"  Workflow: {wiring} | Tools: {tool_names} ({item['tool_status']})")
+            print(f"  Proof: {item['proof']}")
+            print(f"  Limits: {item['limits']}")
+        if errors:
+            print("Registry validation warnings:")
+            for error in errors:
+                print(f"  - {error}")
+        return 0 if not args.validate or not errors else 2
+    except CoverageRegistryError as exc:
+        print(f"[!] Coverage registry failed closed: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

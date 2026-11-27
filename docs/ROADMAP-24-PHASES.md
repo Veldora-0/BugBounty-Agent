@@ -2,11 +2,11 @@
 
 This is the canonical status index. Detailed plans, implementation paths, safety boundaries and completion criteria live in [the per-phase guides](phases/) and [project handbook](PROJECT-HANDBOOK.md). Status describes the code and documentation currently present; historic test success does not establish live-target effectiveness.
 
-**Current status:** Phase 24 closure is in progress. Kali is the primary research and local acceptance platform; code checkpoint `7ac24ee` passed the full Kali suite (**1,344 passed** in 180.71 seconds). GitHub Actions runs supplementary checks on Ubuntu Python 3.10/3.14; both passed in [run 44891701876](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44891701876), but they do not replace Kali acceptance. The updated Kali dispatcher installation and isolation verifier passed; successful approved dispatch remains unverified because no local test program or operator key is provisioned. Windows-only tests and CI have been removed. A CleanShot scope review found and fixed wildcard-apex over-authorization and added a regression for generated DNS probes. Phase 1 still lacks ASN attribution, and Phase 22 empirical chain validation remains open. See the [Phase 24 guide](phases/PHASE-24-final-integration-production-readiness.md) and [issue register](PROJECT-AUDIT-ISSUES.md); repository test results do not establish live bounty coverage.
+**Current status:** Phase 24 closure is in progress. Kali is the primary research and local acceptance platform; the 2026-11-22 working tree passed the full Kali suite (**1,352 passed** in 270.37 seconds). The updated Kali dispatcher installation and isolation verifier passed; successful approved dispatch remains unverified because no local test program or operator key is provisioned. No Windows or WSL tests were run. A CleanShot scope review found and fixed wildcard-apex over-authorization and added a regression for generated DNS probes. Phase 1 now has opt-in, bounded Team Cymru ASN attribution; Phase 22 empirical chain validation remains open. See the [Phase 24 guide](phases/PHASE-24-final-integration-production-readiness.md) and [issue register](PROJECT-AUDIT-ISSUES.md); repository test results do not establish live bounty coverage.
 
 | Phase | Name | Current status |
 |---:|---|---|
-| 1 | Asset Intelligence | Partial: opt-in bounded passive Subfinder and scope-checked TLS SAN enrichment are wired; ASN attribution remains unavailable |
+| 1 | Asset Intelligence | Partial: opt-in bounded passive Subfinder, scope-checked TLS SAN enrichment, and opt-in bounded Team Cymru ASN attribution are wired |
 | 2 | Reconnaissance | Partial: bounded built-in probes work; the external scanner catalog is not invoked by `bb-recon` |
 | 3 | Web Application Intelligence | Implemented; read-only mapping |
 | 4 | JavaScript Intelligence | Implemented; read-only analysis |
@@ -28,8 +28,8 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 | 20 | Race Conditions & Distributed Workflows | Implemented with low-volume bounds |
 | 21 | Authentication & Authorization Correlation | Updated Kali service installed; service-only `bbdispatcher-keys` group, process identity, key/data isolation, IPC, and invalid-approval rejection verified; successful approved mutation remains unverified; Windows production isolation unsupported |
 | 22 | Cross-Engine Attack-Path Correlation and Vulnerability Chaining | Candidate graph, correlation, reporting, and approval planning implemented; CLI validation is simulation-only and empirical link promotion remains open (AUD-09) |
-| 23 | Autonomous Research Planning & Coverage Intelligence | Implemented; historical Linux and hosted Windows full-suite results passed; current CI targets Linux; public-source discovery requires an available read-only research capability |
-| 24 | Final Integration & Production Readiness | In progress: code `6ddbe49` passed Kali full suite and current Ubuntu CI; installed Linux service isolation passed; successful approved local dispatch remains a Phase 24 blocker; remaining capability limits are classified separately |
+| 23 | Autonomous Research Planning & Coverage Intelligence | Implemented; Linux full-suite results passed; public-source discovery requires an available read-only research capability |
+| 24 | Final Integration & Production Readiness | In progress: working tree passed the full Kali suite; installed Linux service isolation passed; successful approved local dispatch remains a Phase 24 blocker; remaining capability limits are classified separately |
 
 ## Roadmap-wide completion requirements
 
@@ -38,6 +38,10 @@ This is the canonical status index. Detailed plans, implementation paths, safety
 - Findings must be evidence-backed, redacted, deduplicated and honestly labeled as simulated, observed or confirmed.
 - No destructive testing, uncontrolled scanning, credential attacks, automatic disclosure submission or target-data commits.
 - Final production readiness requires documented supported platforms, setup/upgrade/recovery, operational dependencies, security review and reproducible acceptance evidence.
+
+## Coverage expansion plan
+
+The numbered phases above record the existing 24-phase implementation baseline. The proposed post-Phase-24 work to expand bug bounty vulnerability coverage, improve valid-finding quality, and audit optional tool integrations is described in the [BugBounty-Agent Vulnerability Coverage Expansion Roadmap](BUG-BOUNTY-COVERAGE-ROADMAP.md). Those proposed phases are not implemented status claims and do not change the historical phase numbering.
 
 ## Phase guides
 

@@ -11,7 +11,7 @@ BugBounty-Agent is an orchestrated security research system designed to operate 
 
 ## Project handbook and phase status
 
-This project is intended to find and document vulnerabilities on **explicitly authorized bug bounty targets**. Start with the [Project Handbook](docs/PROJECT-HANDBOOK.md) for a newcomer-oriented overview and operating workflow. The [24-Phase Roadmap](docs/ROADMAP-24-PHASES.md) links to one detailed guide per phase; unresolved risks and blockers are maintained in the [Project Audit Issues](docs/PROJECT-AUDIT-ISSUES.md), candidate work is listed in [Future Improvements](docs/FUTURE-IMPROVEMENTS.md), and optional Kali-oriented tools are discussed in [Tooling Recommendations](docs/TOOLING-RECOMMENDATIONS.md). Phase 24 adds the [support matrix](docs/supported-environments.md), [threat model](docs/THREAT-MODEL.md), and [release checklist](docs/release-checklist.md).
+This project is intended to find and document vulnerabilities on **explicitly authorized bug bounty targets**. Start with the [Project Handbook](docs/PROJECT-HANDBOOK.md) for a newcomer-oriented overview and operating workflow. The [24-Phase Roadmap](docs/ROADMAP-24-PHASES.md) links to one detailed guide per phase; the proposed [Bug Bounty Coverage Expansion Roadmap](docs/BUG-BOUNTY-COVERAGE-ROADMAP.md) maps vulnerability classes, current foundations, tool gaps, proof requirements, and implementation phases. Unresolved risks and blockers are maintained in the [Project Audit Issues](docs/PROJECT-AUDIT-ISSUES.md), candidate work is listed in [Future Improvements](docs/FUTURE-IMPROVEMENTS.md), and optional Kali-oriented tools are discussed in [Tooling Recommendations](docs/TOOLING-RECOMMENDATIONS.md). Phase 24 adds the [support matrix](docs/supported-environments.md), [threat model](docs/THREAT-MODEL.md), and [release checklist](docs/release-checklist.md).
 
 **Current status:** Phase 24 closure remains in progress. Kali is the primary platform: code checkpoint `7ac24ee` passed its full suite (**1,344 passed** in 180.71 seconds) and the installed dispatcher isolation verifier. GitHub Actions uses Ubuntu Linux runners for supplementary Python 3.10/3.14 code checks; both jobs passed in [run 44891701876](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44891701876). Those CI jobs do not replace Kali acceptance. No successful approved dispatcher mutation has been verified because no test program or operator approval key is provisioned. A scope audit using CleanShot's published policy found and fixed wildcard-apex over-authorization: wildcard entries now cover descendants only, and each generated DNS wildcard probe is checked individually. Current automated tests target Linux only; prior Windows results are historical. ASN attribution remains unavailable, live OOB callback acceptance remains open, and Phase 22 chain validation remains simulation-only. The project remains beta; see the [issue register](docs/PROJECT-AUDIT-ISSUES.md) for remaining acceptance work. For CleanShot, only public policy/marketing pages were fetched; no vulnerability probes or authenticated tests were performed.
 
@@ -99,6 +99,7 @@ BugBounty-Agent/
 │   ├── bb-sync                # Synchronization alias for bb-deploy
 │   ├── bb-init                # Workspace and program initializer
 │   ├── bb-doctor              # Diagnostics utility across 26 system categories
+│   ├── bb-coverage            # Offline vulnerability-class and tool coverage inventory
 │   ├── bb-install             # Automated tool installer using declared registry tiers
 │   ├── bb-update              # Optional external security-tool version updater
 │   ├── bb-report              # Standalone disclosure report compiler
@@ -114,7 +115,7 @@ BugBounty-Agent/
 │   ├── bb-infra               # Infrastructure & configuration exposure intelligence engine
 │   ├── bb-race                # Concurrency & distributed workflows intelligence engine
 │   ├── bb-webapp              # Web application intelligence & surface mapping engine
-│   ├── bb-content             # Controlled content fuzzer wrapper (ffuf)
+│   ├── bb-content             # Bounded, scope-checked content discovery (built-in)
 │   ├── bb-js                  # JavaScript endpoint & secret analyzer
 │   ├── bb-api                 # REST/GraphQL API method and schema prober
 │   ├── bb-validate            # Controlled security validation & baseline comparison engine
@@ -127,6 +128,7 @@ BugBounty-Agent/
 │
 ├── config/                    # Authoritative tool and wordlist specifications
 │   ├── tools.yaml             # Machine-readable tool registry, installation, and tiers
+│   ├── vulnerability-coverage.yaml # Vulnerability classes, implementation status, and proof limits
 │   └── wordlists.yaml         # Wordlist specifications and path definitions
 │
 ├── templates/                 # Reusable templates
@@ -367,7 +369,7 @@ If a preferred tool is unavailable:
 BugBounty-Agent has delivered 21 cohesive security research phases, establishing a comprehensive, non-destructive intelligence and validation pipeline:
 
 ### 1. Asset Intelligence, Graph & Reconnaissance (Phases 1–3)
-* **Asset Graph (`bb-assets`)**: Builds a scoped graph from program roots and supplied seeds. `--depth 0` removes the graph's depth ceiling; it does not discover names by itself. `--subfinder` opts into a bounded passive Subfinder run per root and stores validated in-scope results with provider-source attribution. Active discovery also performs bounded TLS SAN enrichment using scope checks, public-IP pinning, SNI, and a 100-handshake discovery-wide ceiling. ASN attribution remains unavailable and is `UNKNOWN`; certificate names are metadata, not proof of endpoint identity. See [Phase 1](docs/phases/PHASE-01-asset-intelligence.md) and [AUD-06](docs/PROJECT-AUDIT-ISSUES.md).
+* **Asset Graph (`bb-assets`)**: Builds a scoped graph from program roots and supplied seeds. `--depth 0` removes the graph's depth ceiling; it does not discover names by itself. `--subfinder` opts into a bounded passive Subfinder run per root and stores validated in-scope results with provider-source attribution. Active discovery also performs bounded TLS SAN enrichment using scope checks, public-IP pinning, SNI, and a 100-handshake discovery-wide ceiling. ASN attribution remains `UNKNOWN` by default; opt-in `--asn-lookup` sends at most 25 public-IP queries to Team Cymru using `dig` (private/non-global addresses are never queried). Certificate names are metadata, not proof of endpoint identity. See [Phase 1](docs/phases/PHASE-01-asset-intelligence.md) and [AUD-06](docs/PROJECT-AUDIT-ISSUES.md).
 * **Reconnaissance Intelligence (`bb-recon`)**: Runs the project's own bounded DNS, TLS, HTTP, port, technology, and endpoint probes over its scoped asset graph. Installing `httpx`, `nmap`, or other entries in the tool catalog does not make `bb-recon` invoke them. External tools are separate capabilities unless a phase guide identifies an implemented invocation path.
 * **Web Application Mapping (`bb-webapp`)**: Converts web service observations into a structured attack surface relationship model stored atomically in `state/webapps.json`, indexing static and dynamic resources (scripts, stylesheets, fonts), form structures, input parameters, and link graphs.
 

@@ -239,6 +239,12 @@
     },
     {
       "action": "shell",
+      "resource": "*bb-coverage*",
+      "effect": "allow",
+      "description": "Permit offline inspection of the repository coverage registry"
+    },
+    {
+      "action": "shell",
       "resource": "*bb-evidence*",
       "effect": "allow",
       "description": "Permit local evidence sanitization and storage without prompt"

@@ -4,6 +4,13 @@ This register lists material unresolved problems and accepted capability boundar
 
 ## Open issues
 
+## Phase 1–24 closure pass (2026-11-22)
+
+- **Kali Linux, Python 3.14.10:** `python3 -m pytest tests/ -ra --durations=10` — **1,352 passed** in 270.37 seconds after adding the ASN provider and isolating a credential fixture from real environment variables. No Windows or WSL tests were run.
+- **Phase 1:** Added opt-in `bb-assets --asn-lookup` using Team Cymru. Default remains network-silent for ASN attribution; public-only, maximum 25 distinct queries, cached results, bounded `dig`, and returned-prefix validation are implemented and fixture-tested. No live lookup or target request was made.
+- **Phase 2:** Corrected the README's `bb-content` description. `bb-recon` still intentionally does not invoke catalog tools such as httpx/Nmap; this remains a disclosed integration limitation (AUD-07).
+- **Remaining acceptance limits:** AUD-04 needs a controlled live callback endpoint; AUD-08 needs a disposable local program/key and successful approved action through the installed service; AUD-09 needs a trusted generic per-edge receipt/evidence contract. Current fail-closed behavior remains in place pending those concrete prerequisites.
+
 ### AUD-04 — Live OOB acceptance and Burp Collaborator polling remain open (Phases 9 and 18)
 
 - **Severity:** Medium; affects confirmation of blind SSRF/XXE when no live callback provider is available.
@@ -12,13 +19,13 @@ This register lists material unresolved problems and accepted capability boundar
 - **Remediation:** Verify one end-to-end callback using a researcher-owned test endpoint and an explicitly authorized, controlled test; implement Collaborator polling only if the project needs it.
 - **Acceptance gate:** The owned test endpoint produces an attributable callback with exact correlation and fresh evidence; mock providers remain simulation-only. Do not claim live acceptance from unit tests.
 
-### AUD-06 — Phase 1 ASN attribution remains unavailable
+### AUD-06 — Phase 1 ASN provider implemented and fixture-verified (closed)
 
 - **Severity:** Medium; network ownership context remains incomplete, and asset coverage must not be overstated.
-- **Evidence:** `scripts/bb-assets --subfinder` invokes a bounded passive provider, rejects out-of-scope results, records provider-source metadata, and persists valid discoveries. TLS SAN enrichment is wired into bounded asset discovery with scope checks, public-IP pinning, SNI, and a discovery-wide handshake budget; tests use mocked sockets and certificates. ASN attribution still defaults to `UNKNOWN`. `--depth` by itself does not discover names.
+- **Evidence:** `scripts/bb-assets --asn-lookup` now opts into Team Cymru origin-ASN DNS queries through `dig`; the resolver checks global IPs, caps distinct queries at 25, bounds timeout/output, validates returned CIDR membership, and caches successes. No lookup occurs by default. Kali fixture tests cover parsing, caching, private-IP rejection, budget exhaustion, and CIDR validation. `--depth` by itself does not discover names.
 - **Impact:** Assets absent from passive sources or supplied seeds may be missed; network ownership context remains unknown. Certificate names are discovery leads, not proof of endpoint ownership or service identity.
-- **Remediation:** Add an opt-in ASN attribution provider with privacy, rate, output, and failure bounds, or continue to report ASN as unknown. Keep the TLS SAN limits visible and do not use certificate names to bypass scope validation.
-- **Acceptance gate:** A controlled ASN provider mock verifies in-scope attribution, nested graph persistence, provenance, exclusions, and fail-closed behavior. TLS SAN local fixtures cover scope, pinning, SAN filtering and budgets; no live target should be contacted for routine acceptance.
+- **Remediation:** Implemented the bounded opt-in provider. Keep the TLS SAN limits visible and do not use certificate names to bypass scope validation.
+- **Acceptance gate:** Provider parsing, cache, global-IP guard, result-network validation, and query budget are fixture-tested on Kali. A live provider lookup is optional and was not required for acceptance; no target was contacted.
 
 ### AUD-07 — Phase 2 tool catalog is not an execution integration
 
@@ -59,12 +66,12 @@ This register records repository review and current audit-run evidence, not a li
 | Issue | Current classification | Remaining acceptance action |
 |---|---|---|
 | AUD-04 | External provider dependency and separate Phase 9/18 live-acceptance gap | Use a researcher-controlled endpoint for an authorized canary callback; otherwise keep live OOB confirmation unsupported. Burp Collaborator polling is optional follow-up. |
-| AUD-06 | Separate follow-up; documented asset-coverage limitation | Keep ASN explicitly `UNKNOWN`, or implement and test an opt-in bounded provider. |
+| AUD-06 | Implemented; external attribution remains optional and provider-dependent | Use `bb-assets --asn-lookup` only when disclosure to Team Cymru is acceptable; otherwise leave ASN `UNKNOWN`. |
 | AUD-07 | Documented product boundary; optional integration follow-up | Add an explicit, tested invocation contract only for tools selected for integration. The current docs must not imply `bb-recon` launches them. |
 | AUD-08 | **Phase 24 acceptance blocker** for full installed-service dispatch; Windows production isolation is an accepted unsupported boundary | Verify a successful approved, reversible action using a dedicated local acceptance program and disposable key, plus rejection and replay checks. Do not use an unspecified bounty target. |
 | AUD-09 | Separate Phase 22 empirical-chain validation blocker | Integrate authenticated single-use receipts with disk-backed evidence bound to the plan, target, scope, and each edge; retain simulation fail-closed behavior. |
 
-AUD-04, AUD-06, AUD-07, and AUD-09 do not invalidate the passing code tests or Linux dispatcher isolation check. They remain visible limits or separate follow-ups. AUD-08 remains open because the production service has only been tested for readiness and rejection; a successful approved dispatch has not been demonstrated.
+AUD-04, AUD-07, and AUD-09 do not invalidate the passing code tests or Linux dispatcher isolation check. AUD-06's provider implementation is complete and fixture-tested, while live attribution remains opt-in and provider-dependent. AUD-08 remains open because the production service has only been tested for readiness and rejection; a successful approved dispatch has not been demonstrated.
 
 ## Scope-boundary fix at `7ac24ee` (2026-11-21)
 
