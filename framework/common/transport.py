@@ -548,11 +548,13 @@ def safe_fetch_url(
 
     port = parsed.port or (443 if scheme == "https" else 80)
 
-    # Fail closed if scope_engine is provided and target is not in scope
-    if scope_engine is not None:
-        dec = scope_engine.check(url)
-        if getattr(dec, "status", None) != "IN_SCOPE":
-            return None
+    # A public destination is not authorized by default. Require the offline
+    # scope decision before DNS resolution or any HTTP activity.
+    if scope_engine is None:
+        return None
+    dec = scope_engine.check(url)
+    if getattr(dec, "status", None) != "IN_SCOPE":
+        return None
 
     # Anti-SSRF hostname checks
     metadata_hosts = {

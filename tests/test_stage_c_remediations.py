@@ -474,6 +474,19 @@ def test_sec02_transport_blocks_private_and_metadata_ips():
     assert safe_fetch_url("http://192.168.1.1/router") is None
 
 
+def test_sec02_transport_requires_scope_before_dns_lookup():
+    """A missing or rejecting scope must stop before resolving a public hostname."""
+    from unittest.mock import patch
+
+    with patch("framework.common.transport.socket.getaddrinfo") as resolver:
+        assert safe_fetch_url("https://unauthorized.example/path") is None
+        resolver.assert_not_called()
+
+        out_of_scope = ScopeEngine({"targets": {"domains": ["other.example"]}})
+        assert safe_fetch_url("https://unauthorized.example/path", scope_engine=out_of_scope) is None
+        resolver.assert_not_called()
+
+
 def test_sec02_transport_ignores_ambient_proxy_settings(monkeypatch):
     """Pinned requests must not hand DNS resolution to an environment proxy."""
     import socket
@@ -503,7 +516,8 @@ def test_sec02_transport_ignores_ambient_proxy_settings(monkeypatch):
         return opener
 
     monkeypatch.setattr(urllib.request, "build_opener", capture_opener)
-    assert safe_fetch_url("http://authorized.example/", timeout=0.1) is None
+    scope = ScopeEngine({"targets": {"domains": ["authorized.example"]}})
+    assert safe_fetch_url("http://authorized.example/", timeout=0.1, scope_engine=scope) is None
 
     proxy_handlers = [h for h in captured_handlers if isinstance(h, urllib.request.ProxyHandler)]
     assert len(proxy_handlers) == 1

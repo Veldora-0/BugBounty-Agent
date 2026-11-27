@@ -12,7 +12,7 @@ For example, a settings page may contain an account identifier, a profile update
 
 ## What it consumes and records
 
-The phase starts from a web service already found in Phase 2 or from a host/URL supplied by the operator. Before a live crawl, the target and each followed URL must pass the program scope rules. The crawler applies same-origin and crawl-policy limits so a link to another company or an excluded host does not silently expand the target set.
+The phase starts from a web service already found in Phase 2 or from a host/URL supplied by the operator. Before a live crawl, the target and each followed URL must pass the program scope rules. The shared HTTP transport refuses missing scope and makes the local scope decision before DNS resolution. The crawler applies same-origin and crawl-policy limits so a link to another company or an excluded host does not silently expand the target set.
 
 The parser records applications, pages, endpoints, forms, parameters, cookies, resources, and links. It also inspects common discovery files such as robots.txt and sitemaps when enabled. State is stored in **webapps.json** using atomic writes. The crawler tracks visited and rejected URLs so duplicate links do not produce endless loops.
 

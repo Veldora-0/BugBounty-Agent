@@ -18,7 +18,7 @@ The current engine uses its own bounded Python-based probes for DNS, TLS, HTTP, 
 
 ## How the phase works
 
-The engine loads the existing asset graph, filters to in-scope hosts, and applies selected capabilities. The default set includes DNS, TLS, HTTP, ports, and technology fingerprints; endpoint discovery is separately selected. The default ceilings are 500 hosts and 2,000 active HTTP/TCP requests, with a separate endpoint ceiling in the engine. It records observations in structured state and writes the file atomically so an interrupted write is less likely to leave corrupt JSON.
+The engine loads the existing asset graph, filters to in-scope hosts, and applies selected capabilities. The default set includes DNS, TLS, HTTP, ports, and technology fingerprints; endpoint discovery is separately selected. The default ceilings are 500 hosts and 2,000 active HTTP/TCP requests, with a separate endpoint ceiling in the engine. The shared HTTP transport requires a configured scope and rejects an out-of-scope URL before resolving its hostname. It records observations in structured state and writes the file atomically so an interrupted write is less likely to leave corrupt JSON.
 
 DNS probing collects a limited set of record information through the available resolver path. TLS probing observes certificate data and can add in-scope certificate names to the asset graph. HTTP probing makes a small GET request to common web ports and records status, title, selected headers, and response metadata. Port probing checks only a short default list rather than sweeping every TCP port. Technology identification uses simple response-header signatures and any explicitly supplied tool output; a signature match can be wrong or incomplete.
 

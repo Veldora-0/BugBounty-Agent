@@ -12,7 +12,7 @@ The phase is an analysis assistant. A string that looks like an endpoint or key 
 
 ## Inputs and processing
 
-The engine reads JavaScript resource observations from Phase 3, or accepts a single resource URL or host filter. Active acquisition requires an in-scope URL and a configured scope engine. The default policy caps the number of files, requests, total bytes, and per-file size. The downloaded script text is hashed for deduplication and analyzed by static patterns for endpoints, routes, parameter references, interesting strings, dependencies, and source-map references.
+The engine reads JavaScript resource observations from Phase 3, or accepts a single resource URL or host filter. Active acquisition requires an in-scope URL and a configured scope engine. The shared transport checks scope before DNS resolution and pins the selected public destination address. The default policy caps the number of files, requests, total bytes, and per-file size. The downloaded script text is hashed for deduplication and analyzed by static patterns for endpoints, routes, parameter references, interesting strings, dependencies, and source-map references.
 
 The analyzer stores structured results rather than executing script code. Source-map reference extraction should be read as discovery of a reference unless the specific implementation and result say the source map itself was acquired and parsed. **--passive-only** reviews scripts already present in local state and avoids active HTTP acquisition. **--resume** skips previously processed resources or hashes where state supports it.
 
