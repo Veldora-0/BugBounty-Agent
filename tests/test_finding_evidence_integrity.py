@@ -141,6 +141,8 @@ def test_evidence_metadata_redacts_url_and_sensitive_key_values(tmp_path):
         metadata={
             "target": "https://example.test/path?access_token=url_secret",
             "credentials": {"password": "nested_secret"},
+            "session_ref": "sess_00000000000000000000000000000001",
+            "session_token": "session_token_secret",
             "labels": ["session=label_secret", "ordinary label"],
         },
     )
@@ -151,6 +153,8 @@ def test_evidence_metadata_redacts_url_and_sensitive_key_values(tmp_path):
 
     for secret in ("url_secret", "nested_secret", "label_secret"):
         assert secret not in serialized
+    assert serialized_metadata["session_ref"] == "sess_00000000000000000000000000000001"
+    assert "session_token_secret" not in serialized
     assert "ordinary label" in serialized
 
 

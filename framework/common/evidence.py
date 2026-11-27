@@ -48,7 +48,13 @@ _SENSITIVE_METADATA_KEY = re.compile(
 
 def _sanitize_metadata(value: Any, key: str = "") -> Any:
     """Redact secret-bearing metadata values before writing evidence descriptors."""
-    if key and _SENSITIVE_METADATA_KEY.search(key):
+    # ``session_ref`` is an opaque correlation ID used to bind controlled-dispatch
+    # evidence to its execution record. It is not an authentication token; keep it
+    # intact so provenance checks remain verifiable. Actual session credentials
+    # (session IDs, cookies, tokens, and other session-named fields) stay redacted.
+    normalized_key = key.casefold().replace("-", "_")
+    is_session_reference = normalized_key == "session_ref"
+    if key and _SENSITIVE_METADATA_KEY.search(key) and not is_session_reference:
         return "[REDACTED_BY_BB_AGENT]"
     if isinstance(value, str):
         return sanitize_sensitive_data(value)
