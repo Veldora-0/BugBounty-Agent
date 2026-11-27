@@ -29,6 +29,7 @@ from framework.common.transport import (
     PinnedHTTPSConnection,
     _is_loopback_ip_literal,
     parse_alternate_ip,
+    safe_fetch_url,
 )
 from framework.scope.engine import ScopeEngine
 from framework.ssrf.engine import SsrfIntelligenceEngine
@@ -58,6 +59,32 @@ def make_scope(
             "urls": out_urls or [],
         },
     })
+
+
+def test_safe_fetch_url_returns_scoped_http_403_response():
+    """Expected HTTP errors remain inspectable transport responses, not network failures."""
+    url = "https://api.example.com/session"
+    scope = make_scope(urls=[url])
+    http_error = urllib.error.HTTPError(
+        url,
+        403,
+        "Forbidden",
+        {},
+        io.BytesIO(b"session revoked"),
+    )
+    opener = MagicMock()
+    opener.open.side_effect = http_error
+    addr_info = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    with patch("socket.getaddrinfo", return_value=addr_info), patch(
+        "urllib.request.build_opener", return_value=opener
+    ):
+        response = safe_fetch_url(url, method="GET", scope_engine=scope)
+
+    assert response is not None
+    assert response["status_code"] == 403
+    assert response["body"] == "session revoked"
+    assert response["raw_bytes"] == b"session revoked"
 
 
 # ============================================================================

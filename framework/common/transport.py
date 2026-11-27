@@ -14,6 +14,7 @@ import ipaddress
 import socket
 import ssl
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+import urllib.error
 import urllib.request
 
 
@@ -671,13 +672,25 @@ def safe_fetch_url(
     opener = urllib.request.build_opener(proxy_handler, redirect_handler, http_handler, https_handler)
 
     try:
-        with opener.open(req, timeout=timeout) as resp:
+        try:
+            response = opener.open(req, timeout=timeout)
+        except urllib.error.HTTPError as http_error:
+            # HTTP 4xx/5xx responses are valid transport outcomes. Callers
+            # need the status and body to distinguish rejected sessions from
+            # network failures (for example, a 401/403 after logout).
+            response = http_error
+
+        with response as resp:
             final_url = resp.geturl()
             if scope_engine is not None:
                 dec = scope_engine.check(final_url)
                 if getattr(dec, "status", None) != "IN_SCOPE":
                     return None
-            status = resp.status
+            status = getattr(resp, "status", None)
+            if status is None:
+                status = getattr(resp, "code", None)
+            if not isinstance(status, int):
+                return None
             res_headers = dict(resp.headers)
             raw = resp.read(max_bytes) if max_bytes is not None else resp.read()
             body_text = raw.decode("utf-8", errors="ignore")
