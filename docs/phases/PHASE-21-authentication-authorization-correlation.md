@@ -1,6 +1,6 @@
 # Phase 21 — Authentication & Authorization Correlation
 
-**Status:** Partially implemented. The updated Linux systemd service is installed on Kali and its identity, service-only key group, private-key/data isolation, agent IPC, and cross-process rejection of invalid approval were verified on 2026-11-21. A successful operator-approved dispatch remains unverified because no program approval key or authorized test program is provisioned. Windows production service isolation is unsupported.
+**Status:** Partially implemented. The updated Linux systemd service is installed on Kali and its identity, service-only key group, private-key/data isolation, agent IPC, and cross-process rejection of invalid approval were verified. A read-only status check on 2026-11-27 confirmed that the running service has no configured scope or operator key and is not production-dispatch-ready. A successful operator-approved dispatch remains unverified because no disposable local acceptance program/key is provisioned, and a real bounty target is not a safe substitute for that fixture. Windows production service isolation is unsupported.
 **Implementation:** framework/auth_correlation/, skills/authentication/, skills/authorization/, scripts/bb-auth-correlate
 
 ## What this phase is for

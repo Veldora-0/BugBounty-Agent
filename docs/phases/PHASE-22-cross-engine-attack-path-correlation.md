@@ -1,6 +1,6 @@
 # Phase 22 — Cross-Engine Attack-Path Correlation and Vulnerability Chaining
 
-**Status:** Candidate graph, correlation, reporting, and approval planning are implemented. Regression tests passed on Kali and the hosted Linux/Windows matrix. The `validate` CLI is simulation-only: it cannot send a target request or empirically promote a graph link. Trusted empirical chain validation remains open as AUD-09.
+**Status:** Candidate graph, correlation, reporting, and approval planning are implemented. The current Linux-only Kali suite at `628b4d2` passed; older hosted Windows results are historical and do not define current support. The `validate` CLI is simulation-only: it cannot send a target request or empirically promote a graph link. Trusted empirical chain validation remains open as AUD-09.
 
 **Priority outcome:** Starting from a validated bug, identify whether it can be safely combined with other in-scope weaknesses to demonstrate greater real-world impact.
 **Implementation foundation:** `framework/findings/`, `framework/assets/`, `framework/auth_correlation/`, `framework/attack_path/`, and outputs from Phases 1–21.
