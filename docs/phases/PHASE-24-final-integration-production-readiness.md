@@ -86,6 +86,10 @@ The workflow grants only `contents: read` and pins its GitHub-maintained actions
 
 ## Acceptance status
 
+### Remaining AUD-08 installed-service acceptance
+
+The repeatable Kali acceptance runner is `scripts/verify-dispatcher-acceptance.sh`. It can install `cloudflared` from Cloudflare's signed apt repository after a separate typed confirmation, then starts a loopback-only fixture and a temporary public Cloudflare Quick Tunnel after another confirmation. The fixture accepts only one randomly authenticated synthetic POST and its matching verification GET; it has no real account data and makes no bounty-target request. The temporary hostname is public while the tunnel is running. The runner stops both processes before checking saved evidence and restores the dispatcher to its prior unconfigured state on successful cleanup. Follow the more detailed fixture and cleanup contract in the [AUD-08 register](../PROJECT-AUDIT-ISSUES.md#aud-08--phase-21-production-acceptance-remains-platform-limited). The acceptance is still open until the script completes successfully on Kali.
+
 | Acceptance area | Required evidence | Current state |
 |---|---|---|
 | Environment support | Full-suite evidence for every claimed environment; unsupported hosts clearly named | At `066e511`, the Kali suite passed **1,363 tests**. Hosted Ubuntu workflow records exist for earlier commits; no current run is asserted here. macOS remains unverified and Windows production dispatcher isolation is unsupported. |
@@ -93,7 +97,7 @@ The workflow grants only `contents: read` and pins its GitHub-maintained actions
 | Workspace safety | Framework update and removal must preserve program data | Deployment was exercised with isolated temporary config/bin directories, and the implementation does not target program workspace paths. Workspace backup and migration remain separate future work. |
 | Diagnostics | Required packages separated from optional tools and integrations; bounded runtime | Required dependencies are distinguished from optional tools; bounded parallel checks and current regression coverage passed as part of the full Kali suite at `066e511`. |
 | Threat and release review | Versioned threat model, release gate, commit-linked evidence | Threat model, release checklist, and pinned-action CI workflow are present. Dependency advisory scanning, SBOM generation, and signed release artifacts are not implemented; stable release tagging remains subject to the checklist. |
-| Installed dispatcher boundary | Updated systemd service identity and groups, key/data isolation, IPC, invalid approval and replay rejection; approved success path | The installed Kali verifier passed identity, key/data isolation, IPC, and invalid-approval rejection. The current service has no operator key or scope configuration, so successful approved dispatch and its receipt/evidence path remain unverified (AUD-08). |
+| Installed dispatcher boundary | Updated systemd service identity and groups, key/data isolation, IPC, invalid approval and replay rejection; approved success path | The installed Kali verifier passed identity, key/data isolation, IPC, and invalid-approval rejection. The current service has no operator key or scope configuration, so successful approved dispatch and its receipt/evidence path remain unverified (AUD-08). A temporary-fixture and tunnel runner is prepared; it has not been executed. |
 | Scope authorization correction | Wildcard apex exclusion and authorization of each generated wildcard-DNS probe | Fixed at `7ac24ee`; subsequent full Kali suite at `066e511` passed **1,363 tests**. See the scope regression record below. |
 | Scope and live boundaries | Scope tests and honest separation of fixture/service evidence from live targets | Phase-specific tests and limits remain authoritative. No bounty target was contacted for Phase 24; repository tests do not establish detection effectiveness or bounty eligibility. |
 

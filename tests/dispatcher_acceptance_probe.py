@@ -76,10 +76,22 @@ def _load_approval_key(path: Path) -> bytes:
     return key
 
 
+def _load_fixture_token(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Fixture token must be a regular, non-symlink file")
+    if path.stat().st_mode & 0o077:
+        raise ValueError("Fixture token must be private to its owner (mode 0600)")
+    token = path.read_text(encoding="ascii").strip()
+    if not re.fullmatch(r"AUD08-[a-f0-9]{32}", token):
+        raise ValueError("Fixture token has an invalid format")
+    return token
+
+
 def execute(args: argparse.Namespace) -> None:
     endpoint = args.endpoint
     _check_endpoint(endpoint)
     key = _load_approval_key(Path(args.approval_key))
+    fixture_token = _load_fixture_token(Path(args.fixture_token_file))
     scope = load_scope_engine(args.scope_file)
     if not scope.is_in_scope(endpoint):
         raise ValueError("Acceptance endpoint is not in the temporary dispatcher scope")
@@ -113,7 +125,7 @@ def execute(args: argparse.Namespace) -> None:
     session = {
         "session_ref": session_ref,
         "principal_id": principal,
-        "volatile_headers": {"Authorization": f"Bearer AUD08-{secrets.token_hex(16)}"},
+        "volatile_headers": {"Authorization": f"Bearer {fixture_token}"},
     }
     action_nonce = f"NONCE-{secrets.token_hex(16).upper()}"
     replay_nonce = f"NONCE-{secrets.token_hex(16).upper()}"
@@ -349,6 +361,7 @@ def main() -> int:
     run_parser.add_argument("--endpoint", required=True)
     run_parser.add_argument("--scope-file", required=True)
     run_parser.add_argument("--approval-key", required=True)
+    run_parser.add_argument("--fixture-token-file", required=True)
     run_parser.add_argument("--public-key", default="/etc/bugbounty/dispatcher.pub")
     run_parser.add_argument("--result-file", required=True)
     run_parser.set_defaults(func=execute)
