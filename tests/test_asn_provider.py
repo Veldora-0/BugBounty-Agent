@@ -19,6 +19,27 @@ def test_team_cymru_provider_parses_and_caches_public_ip(monkeypatch):
     assert "8.8.8.8.origin.asn.cymru.com." in calls[0][0][0][-1]
 
 
+def test_team_cymru_provider_expands_ipv6_for_nibble_reverse_query(monkeypatch):
+    class IPv6Result:
+        returncode = 0
+        stdout = '"15169 | 2001:4860:4860::/48 | US | arin | 2000-01-01"\n'
+
+    calls = []
+    monkeypatch.setattr(
+        "framework.assets.asn.subprocess.run",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or IPv6Result(),
+    )
+    resolver = TeamCymruAsnResolver(dig_path="dig")
+    address = ipaddress.ip_address("2001:4860:4860::8888")
+
+    result = resolver(str(address))
+
+    expected_reverse = ".".join(reversed(address.exploded.replace(":", "")))
+    assert result["asn"] == "AS15169"
+    assert result["cidr"] == "2001:4860:4860::/48"
+    assert calls[0][0][0][-1] == f"{expected_reverse}.origin6.asn.cymru.com."
+
+
 def test_team_cymru_provider_does_not_query_non_global_or_invalid(monkeypatch):
     calls = []
     monkeypatch.setattr("framework.assets.asn.subprocess.run", lambda *a, **k: calls.append(a))

@@ -28,7 +28,12 @@ class TeamCymruAsnResolver:
             return dict(self.cache[key])
         if not ip.is_global or not self.dig_path or self.queries >= self.max_queries:
             return {}
-        reversed_ip = ".".join(reversed(key.split("."))) if ip.version == 4 else ".".join(reversed(key.replace(":", "")))
+        if ip.version == 4:
+            reversed_ip = ".".join(reversed(key.split(".")))
+        else:
+            # Team Cymru's IPv6 reverse zone is nibble-based. Expand first:
+            # str(IPv6Address) compresses zero runs and would omit labels.
+            reversed_ip = ".".join(reversed(ip.exploded.replace(":", "")))
         zone = "origin.asn.cymru.com." if ip.version == 4 else "origin6.asn.cymru.com."
         self.queries += 1
         try:
