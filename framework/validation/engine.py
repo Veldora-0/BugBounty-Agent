@@ -243,14 +243,6 @@ class SecurityValidationEngine:
 
             return ["127.0.0.1"]
 
-        # Scope is a local decision and must precede DNS resolution so an
-        # unauthorized hostname never causes an external lookup.
-        decision = self.scope_engine.check(target_url)
-        if decision.status != ScopeStatus.IN_SCOPE:
-            raise ScopeViolationError(
-                f"Target '{target_url}' is OUT_OF_SCOPE: {decision.reason} (matched rule: {decision.matched_rule})"
-            )
-
         # Loopback target with unauthorized port fails closed immediately
         if is_loopback:
             raise ScopeViolationError(f"Target host '{host}:{port}' is not an authorized local fixture port")
@@ -266,14 +258,25 @@ class SecurityValidationEngine:
         if host in metadata_hosts or host.endswith(".metadata.google.internal"):
             raise ScopeViolationError(f"Target host '{host}' is forbidden.")
 
-        # SSRF boundary check: evaluate if host is directly an IP or alternate IP notation
-        verified_ips: List[str] = []
+        # Reject prohibited address literals without lookup. For domain names,
+        # decide scope locally before DNS so an unauthorized hostname is never
+        # resolved.
         if alt_ip is not None:
             prohibited, reason = is_ssrf_prohibited_ip(alt_ip)
             if prohibited:
                 raise ScopeViolationError(
                     f"Target host '{host}' is in prohibited address space ({reason}). Blocked by safe policy."
                 )
+
+        decision = self.scope_engine.check(target_url)
+        if decision.status != ScopeStatus.IN_SCOPE:
+            raise ScopeViolationError(
+                f"Target '{target_url}' is OUT_OF_SCOPE: {decision.reason} (matched rule: {decision.matched_rule})"
+            )
+
+        # SSRF boundary check: evaluate if host is directly an IP or alternate IP notation
+        verified_ips: List[str] = []
+        if alt_ip is not None:
             verified_ips = [str(alt_ip)]
         else:
             # host is a domain name - pre-resolve destination IP to pin connection
