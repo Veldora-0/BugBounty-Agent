@@ -13,10 +13,13 @@ import json
 import os
 import re
 import secrets
+import ssl
 import sys
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
+import urllib.error
+import urllib.request
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -29,7 +32,12 @@ from framework.auth_correlation.ipc.receipt import (
     verify_execution_receipt,
 )
 from framework.auth_correlation.revocation import sign_action_approval
-from framework.common.transport import safe_fetch_url
+from framework.common.transport import (
+    PinnedHTTPSHandler,
+    SafeRedirectHandler,
+    resolve_public_destination_ips,
+    safe_fetch_url,
+)
 
 
 SOCKET_PATH = "/run/bugbounty/dispatcher.sock"
@@ -86,6 +94,64 @@ def _load_fixture_token(path: Path) -> str:
     if not re.fullmatch(r"AUD08-[a-f0-9]{32}", token):
         raise ValueError("Fixture token has an invalid format")
     return token
+
+
+def _diagnose_fixture_transport(endpoint: str, fixture_token: str, scope: object) -> None:
+    """Report the failing safe-transport stage without exposing credentials."""
+    decision = scope.check(endpoint)
+    print(
+        f"[*] Diagnostic scope decision: {getattr(decision, 'status', 'UNKNOWN')} "
+        f"({getattr(decision, 'reason', 'no reason supplied')})",
+        file=sys.stderr,
+    )
+    if getattr(decision, "status", None) != "IN_SCOPE":
+        return
+
+    parsed = urlsplit(endpoint)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    try:
+        pinned_ips = resolve_public_destination_ips(host, port)
+    except Exception as exc:
+        print(f"[*] Diagnostic DNS/IP pinning failure: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return
+    print(f"[*] Diagnostic public pinned addresses: {', '.join(pinned_ips)}", file=sys.stderr)
+
+    def check_redirect(new_url: str) -> list[str]:
+        redirect_decision = scope.check(new_url)
+        if getattr(redirect_decision, "status", None) != "IN_SCOPE":
+            raise ValueError("fixture redirected to a URL outside the temporary exact scope")
+        redirect = urlsplit(new_url)
+        return resolve_public_destination_ips(
+            redirect.hostname or "",
+            redirect.port or (443 if redirect.scheme.lower() == "https" else 80),
+        )
+
+    ip_map = {host.lower(): pinned_ips}
+    context = ssl.create_default_context()
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        SafeRedirectHandler(check_scope_fn=check_redirect, ip_map=ip_map, original_url=endpoint),
+        PinnedHTTPSHandler(ip_map=ip_map, context=context, check_hostname=True),
+    )
+    request = urllib.request.Request(
+        endpoint,
+        headers={"X-AUD08-Health": fixture_token},
+        method="GET",
+    )
+    try:
+        with opener.open(request, timeout=5.0) as response:
+            print(
+                f"[*] Diagnostic pinned HTTPS response: HTTP {response.status}; "
+                f"fixture health body length {len(response.read(1024))} bytes",
+                file=sys.stderr,
+            )
+    except urllib.error.HTTPError as exc:
+        print(f"[*] Diagnostic pinned HTTPS returned HTTP {exc.code} {exc.reason}", file=sys.stderr)
+    except (urllib.error.URLError, OSError, ssl.SSLError, ValueError) as exc:
+        print(f"[*] Diagnostic pinned HTTPS failure: {type(exc).__name__}: {exc}", file=sys.stderr)
+    except Exception as exc:
+        print(f"[*] Diagnostic request failure: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def execute(args: argparse.Namespace) -> None:
@@ -235,6 +301,7 @@ def preflight(args: argparse.Namespace) -> None:
             time.sleep(2)
     if health is None or last_status != 204:
         status_detail = f"last HTTP status was {last_status}" if last_status is not None else "no HTTP response was received"
+        _diagnose_fixture_transport(endpoint, fixture_token, scope)
         raise ValueError(
             "Safe-transport preflight did not reach the fixture after 10 bounded attempts "
             f"({status_detail}); dispatcher approval/nonce probes were not sent. "
