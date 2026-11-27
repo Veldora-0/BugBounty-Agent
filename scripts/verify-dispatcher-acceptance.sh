@@ -82,8 +82,17 @@ ensure_cloudflared() {
 
 status_is_ready() {
     local expected="$1"
-    /usr/bin/python3 "${REPO_DIR}/scripts/bb-dispatcher" --status --socket "$SOCKET" \
-        | /usr/bin/python3 -c 'import json,sys; r=json.load(sys.stdin).get("receipt") or {}; ready=r.get("production_dispatch_ready") is True and r.get("is_lab") is False and bool(r.get("program_id")); expected=sys.argv[1] == "true"; sys.exit(0 if ready == expected else 1)' "$expected"
+    local output=""
+    for _ in $(seq 1 50); do
+        if [[ -S "$SOCKET" ]]; then
+            output="$(/usr/bin/python3 "${REPO_DIR}/scripts/bb-dispatcher" --status --socket "$SOCKET" 2>/dev/null)" || output=""
+            if [[ -n "$output" ]] && printf '%s' "$output" | /usr/bin/python3 -c 'import json,sys; r=json.load(sys.stdin).get("receipt") or {}; ready=r.get("production_dispatch_ready") is True and r.get("is_lab") is False and bool(r.get("program_id")); expected=sys.argv[1] == "true"; sys.exit(0 if ready == expected else 1)' "$expected"; then
+                return 0
+            fi
+        fi
+        sleep 0.2
+    done
+    return 1
 }
 
 restore_dispatcher_configuration() {
@@ -155,7 +164,18 @@ id -nG "$AGENT_USER" | tr ' ' '\n' | grep -Fxq bbgroup || fail "Agent user must 
 [[ "$(uname -s)" == Linux ]] || fail "This acceptance runner supports Linux only."
 
 [[ -d "$REPO_DIR/.git" ]] || fail "Run from the Git checkout, not a copied directory."
-[[ -z "$(git -C "$REPO_DIR" status --porcelain)" ]] || fail "Repository has local changes; commit or stash them before installing runtime code."
+AGENT_GROUP="$(id -gn "$AGENT_USER")"
+GIT_INDEX="${REPO_DIR}/.git/index"
+[[ ! -L "$GIT_INDEX" ]] || fail "Git index is a symlink; inspect the checkout before continuing."
+if [[ -f "$GIT_INDEX" && "$(stat -c '%U' "$GIT_INDEX")" != "$AGENT_USER" ]]; then
+    [[ "$(stat -c '%U' "$GIT_INDEX")" == root && ! -e "${GIT_INDEX}.lock" ]] \
+        || fail "Git index ownership is unexpected; repair the checkout permissions before continuing."
+    echo "[*] Restoring the repository Git index to its invoking user after the prior sudo run..."
+    chown "$AGENT_USER:$AGENT_GROUP" "$GIT_INDEX"
+fi
+REPO_CHANGES="$(runuser -u "$AGENT_USER" -- env GIT_OPTIONAL_LOCKS=0 git -C "$REPO_DIR" status --porcelain)" \
+    || fail "Could not read Git status as the repository owner."
+[[ -z "$REPO_CHANGES" ]] || fail "Repository has local changes; commit or stash them before installing runtime code."
 [[ -f "$REPO_DIR/systemd/bugbounty-dispatcher.service" ]] || fail "Repository systemd unit is missing."
 [[ -f /etc/systemd/system/bugbounty-dispatcher.service ]] || fail "Dispatcher service is not installed. Install it first."
 cmp -s "$REPO_DIR/systemd/bugbounty-dispatcher.service" /etc/systemd/system/bugbounty-dispatcher.service \
@@ -176,7 +196,6 @@ install -d -o "$AGENT_USER" -g "$(id -gn "$AGENT_USER")" -m 0700 "$AGENT_TMP"
 install -d -o _bbdispatcher -g bbgroup -m 0750 "$VERIFY_DIR"
 PROBE_COPY="${VERIFY_DIR}/dispatcher_acceptance_probe.py"
 VERIFY_RESULT="${VERIFY_DIR}/result.json"
-AGENT_GROUP="$(id -gn "$AGENT_USER")"
 KEY_SOURCE="${AGENT_TMP}/operator_approval.key"
 SCOPE_SOURCE="${AGENT_TMP}/scope.yaml"
 RESULT_FILE="${AGENT_TMP}/result.json"
@@ -301,6 +320,10 @@ chown "$AGENT_USER:$AGENT_GROUP" "$SCOPE_SOURCE"
 chmod 0600 "$SCOPE_SOURCE"
 echo "[+] Temporary fixture URL: $ENDPOINT"
 echo "[*] Provisioning the temporary exact-URL scope and disposable 32-byte operator key..."
+echo "[*] Preflighting scoped pinned HTTPS transport before changing dispatcher state..."
+runuser -u "$AGENT_USER" -- env PYTHONPATH="$REPO_DIR" /usr/bin/python3 \
+    "${REPO_DIR}/tests/dispatcher_acceptance_probe.py" preflight \
+    --endpoint "$ENDPOINT" --scope-file "$SCOPE_SOURCE" --fixture-token-file "$FIXTURE_TOKEN_FILE"
 CONFIG_MAY_HAVE_CHANGED=1
 bash "${REPO_DIR}/scripts/configure-dispatcher-program.sh" "$PROGRAM_ID" "$SCOPE_SOURCE" "$KEY_SOURCE"
 status_is_ready true || fail "Temporary dispatcher configuration did not reach production-ready status."

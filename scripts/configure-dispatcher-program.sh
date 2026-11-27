@@ -83,7 +83,40 @@ trap - EXIT
 
 systemctl restart bugbounty-dispatcher.service
 systemctl is-active --quiet bugbounty-dispatcher.service
-python3 "${SCRIPT_DIR}/bb-dispatcher" --socket /run/bugbounty/dispatcher.sock --status \
-    | python3 -c 'import json,sys; s=json.load(sys.stdin).get("receipt", {}); ok=s.get("production_dispatch_ready") is True and s.get("program_id"); print("[+] Dispatcher configuration loaded for program " + s["program_id"] if ok else "[!] Dispatcher is not production-dispatch-ready", file=sys.stdout if ok else sys.stderr); sys.exit(0 if ok else 1)'
+status_ready=false
+for _ in $(seq 1 75); do
+    if systemctl is-active --quiet bugbounty-dispatcher.service && [[ -S /run/bugbounty/dispatcher.sock ]]; then
+        status_json="$(python3 "${SCRIPT_DIR}/bb-dispatcher" --socket /run/bugbounty/dispatcher.sock --status 2>/dev/null)" || status_json=""
+        if [[ -n "$status_json" ]] && printf '%s' "$status_json" | python3 -c '
+import json
+import sys
+
+expected_program = sys.argv[1]
+try:
+    status = json.load(sys.stdin)
+    receipt = status.get("receipt") or {}
+except (json.JSONDecodeError, AttributeError):
+    raise SystemExit(1)
+if (
+    status.get("status") != "SUCCESS"
+    or receipt.get("production_dispatch_ready") is not True
+    or receipt.get("program_id") != expected_program
+):
+    raise SystemExit(1)
+print("[+] Dispatcher configuration loaded for program " + expected_program)
+' "$PROGRAM_ID"; then
+            status_ready=true
+            break
+        fi
+    fi
+    sleep 0.2
+done
+
+if [[ "$status_ready" != true ]]; then
+    echo "[!] Dispatcher did not become ready with program '$PROGRAM_ID' within 15 seconds; diagnostics follow:" >&2
+    systemctl status bugbounty-dispatcher.service --no-pager -l >&2 || true
+    journalctl -u bugbounty-dispatcher.service -n 30 --no-pager >&2 || true
+    exit 1
+fi
 
 echo "[+] Program scope and operator approval key installed with root-managed permissions."

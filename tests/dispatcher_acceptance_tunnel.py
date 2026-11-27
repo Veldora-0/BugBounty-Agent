@@ -101,6 +101,9 @@ def make_handler(token: str):
             if self.path != "/":
                 self._reply(404, b"not found")
                 return
+            if self.headers.get("X-AUD08-Health") == token:
+                self._reply(204, b"")
+                return
             identity = self._matches(verification=True)
             if identity is None:
                 self._reply(404, b"not found")

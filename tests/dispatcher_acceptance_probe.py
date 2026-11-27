@@ -29,6 +29,7 @@ from framework.auth_correlation.ipc.receipt import (
     verify_execution_receipt,
 )
 from framework.auth_correlation.revocation import sign_action_approval
+from framework.common.transport import safe_fetch_url
 
 
 SOCKET_PATH = "/run/bugbounty/dispatcher.sock"
@@ -207,6 +208,31 @@ def execute(args: argparse.Namespace) -> None:
     print("Evidence records are being checked independently by the root acceptance wrapper.")
 
 
+def preflight(args: argparse.Namespace) -> None:
+    endpoint = args.endpoint
+    _check_endpoint(endpoint)
+    fixture_token = _load_fixture_token(Path(args.fixture_token_file))
+    scope = load_scope_engine(args.scope_file)
+    if not scope.is_in_scope(endpoint):
+        raise ValueError("Acceptance endpoint is not in the temporary dispatcher scope")
+    health = safe_fetch_url(
+        endpoint,
+        method="GET",
+        headers={"X-AUD08-Health": fixture_token},
+        timeout=10.0,
+        max_bytes=1024,
+        scope_engine=scope,
+    )
+    if health is None:
+        raise ValueError(
+            "Safe-transport preflight failed before dispatcher state or approval consumption; "
+            "check Kali direct outbound TCP/443, DNS, TLS trust, and Cloudflare tunnel availability"
+        )
+    if health.get("status_code") != 204:
+        raise ValueError(f"Acceptance fixture health preflight returned HTTP {health.get('status_code')}, expected 204")
+    print("PASS: scope-checked pinned HTTPS transport reached the temporary fixture before dispatcher state changes.")
+
+
 def verify(args: argparse.Namespace) -> None:
     from framework.common.evidence import EvidenceStore
 
@@ -365,6 +391,12 @@ def main() -> int:
     run_parser.add_argument("--public-key", default="/etc/bugbounty/dispatcher.pub")
     run_parser.add_argument("--result-file", required=True)
     run_parser.set_defaults(func=execute)
+
+    preflight_parser = subparsers.add_parser("preflight")
+    preflight_parser.add_argument("--endpoint", required=True)
+    preflight_parser.add_argument("--scope-file", required=True)
+    preflight_parser.add_argument("--fixture-token-file", required=True)
+    preflight_parser.set_defaults(func=preflight)
 
     for command in ("verify", "cleanup"):
         cmd_parser = subparsers.add_parser(command)
