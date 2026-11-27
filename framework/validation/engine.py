@@ -243,6 +243,14 @@ class SecurityValidationEngine:
 
             return ["127.0.0.1"]
 
+        # Scope is a local decision and must precede DNS resolution so an
+        # unauthorized hostname never causes an external lookup.
+        decision = self.scope_engine.check(target_url)
+        if decision.status != ScopeStatus.IN_SCOPE:
+            raise ScopeViolationError(
+                f"Target '{target_url}' is OUT_OF_SCOPE: {decision.reason} (matched rule: {decision.matched_rule})"
+            )
+
         # Loopback target with unauthorized port fails closed immediately
         if is_loopback:
             raise ScopeViolationError(f"Target host '{host}:{port}' is not an authorized local fixture port")
@@ -291,14 +299,6 @@ class SecurityValidationEngine:
             except (socket.gaierror, OSError):
                 # Host may be unresolvable in offline test environments or offline scope checks
                 verified_ips = []
-
-        # Evaluate against ScopeEngine
-        if self.scope_engine:
-            decision = self.scope_engine.check(target_url)
-            if decision.status != ScopeStatus.IN_SCOPE:
-                raise ScopeViolationError(
-                    f"Target '{target_url}' is OUT_OF_SCOPE: {decision.reason} (matched rule: {decision.matched_rule})"
-                )
 
         return verified_ips
 

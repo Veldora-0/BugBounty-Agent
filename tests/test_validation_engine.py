@@ -24,6 +24,7 @@ import json
 import os
 import tempfile
 from typing import Any, Dict
+from unittest.mock import patch
 import pytest
 import yaml
 
@@ -333,6 +334,16 @@ def test_scope_and_anti_ssrf_enforcement(temp_workspace, mock_scope_engine):
 
     with pytest.raises(ScopeViolationError):
         engine.check_request_scope("http://10.0.0.5/api")
+
+
+def test_out_of_scope_target_is_rejected_before_dns_lookup(temp_workspace, mock_scope_engine):
+    engine = SecurityValidationEngine(program_dir=temp_workspace, scope_engine=mock_scope_engine)
+
+    with patch("framework.validation.engine.socket.getaddrinfo") as resolver:
+        with pytest.raises(ScopeViolationError, match="OUT_OF_SCOPE"):
+            engine.resolve_scope_ips("https://unauthorized-target.org/path")
+
+    resolver.assert_not_called()
 
 
 # ==============================================================================

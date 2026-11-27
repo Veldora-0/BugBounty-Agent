@@ -359,6 +359,22 @@ class BrowserNetworkPolicy:
         if is_bad_literal:
             raise ValueError(f"Browser navigation blocked: target '{host}' is in prohibited IP range ({literal_reason}).")
 
+        scope_check_url = url
+        if scheme in ("ws", "wss"):
+            scope_scheme = "https" if scheme == "wss" else "http"
+            scope_check_url = urlunparse(parsed._replace(scheme=scope_scheme))
+        if scope_engine is None and scope_validator is None:
+            raise ScopeViolationError("Browser navigation blocked: a valid ScopeEngine is required.")
+        if scope_engine:
+            decision = scope_engine.check(scope_check_url)
+            if decision.status != ScopeStatus.IN_SCOPE:
+                clean_url = redact_url_for_log(url)
+                raise ScopeViolationError(
+                    f"Browser navigation target '{clean_url}' is OUT_OF_SCOPE: {decision.reason} (matched rule: {decision.matched_rule})"
+                )
+        if scope_validator:
+            scope_validator(scope_check_url)
+
         # 2. Hostname DNS Resolution (Anti-SSRF & DNS Validation)
         # Determine whether host is a literal IP address
         is_literal_ip = False
@@ -389,22 +405,6 @@ class BrowserNetworkPolicy:
                         f"Browser navigation blocked: hostname '{host}' resolves to prohibited IP '{rip}' ({ip_reason})."
                     )
 
-        # 3. Scope Authorization Check
-        scope_check_url = url
-        if scheme in ("ws", "wss"):
-            scope_scheme = "https" if scheme == "wss" else "http"
-            scope_check_url = urlunparse(parsed._replace(scheme=scope_scheme))
-
-        if scope_engine:
-            decision = scope_engine.check(scope_check_url)
-            if decision.status != ScopeStatus.IN_SCOPE:
-                clean_url = redact_url_for_log(url)
-                raise ScopeViolationError(
-                    f"Browser navigation target '{clean_url}' is OUT_OF_SCOPE: {decision.reason} (matched rule: {decision.matched_rule})"
-                )
-
-        if scope_validator:
-            scope_validator(scope_check_url)
 
     def verify_url_safety(self, url: str) -> None:
         """Instance helper using policy's configured scope engine and validator."""

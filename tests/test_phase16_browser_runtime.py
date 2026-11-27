@@ -48,6 +48,19 @@ from framework.xss.engine import XssIntelligenceEngine
 from framework.xss.model import XssCandidate, XssCategory, XssConfidence
 
 
+def _in_scope_engine():
+    engine = MagicMock(spec=ScopeEngine)
+    engine.check.return_value = ScopeDecision(
+        status=ScopeStatus.IN_SCOPE,
+        reason="Fixture scope allows this browser test URL",
+        target="http://example.com/",
+        normalized_target="http://example.com/",
+        matched_rule="example.com",
+        rule_category="SPECIFIC_INCLUSION_HOST",
+    )
+    return engine
+
+
 # ==============================================================================
 # 1. Capability Detection & Doctor Reporting Tests
 # ==============================================================================
@@ -173,7 +186,7 @@ def test_verify_url_safety_rejects_private_and_metadata_ips():
 
 
 def test_verify_url_safety_resolves_hostname_dns_and_blocks_rebinding():
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
 
     with patch("socket.getaddrinfo") as mock_dns:
         mock_dns.return_value = [
@@ -195,9 +208,18 @@ def test_verify_url_safety_fails_closed_on_scope_violation():
     )
 
     assistant = BrowserXssAssistant(enabled=True, scope_engine=mock_scope)
-    with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]):
+    with patch("socket.getaddrinfo") as resolver:
         with pytest.raises(ScopeViolationError):
             assistant.verify_url_safety("http://example.com/admin")
+    resolver.assert_not_called()
+
+
+def test_verify_url_safety_requires_scope_before_dns():
+    assistant = BrowserXssAssistant(enabled=True)
+    with patch("socket.getaddrinfo") as resolver:
+        with pytest.raises(ScopeViolationError, match="ScopeEngine"):
+            assistant.verify_url_safety("http://example.com/page")
+    resolver.assert_not_called()
 
 
 # ==============================================================================
@@ -363,7 +385,7 @@ def test_browser_network_interception_redacts_credentials():
 
 def test_verify_url_safety_dns_resolution_failure_fails_closed():
     """DNS resolution errors (socket.gaierror, OSError) must fail closed."""
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
     with patch("socket.getaddrinfo", side_effect=socket.gaierror(-2, "Name or service not known")):
         with pytest.raises(ValueError, match="DNS resolution failed"):
             assistant.verify_url_safety("http://unresolvable-domain.example.com/page")
@@ -371,7 +393,7 @@ def test_verify_url_safety_dns_resolution_failure_fails_closed():
 
 def test_verify_url_safety_empty_dns_results_fails_closed():
     """Empty DNS resolution result list must fail closed."""
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
     with patch("socket.getaddrinfo", return_value=[]):
         with pytest.raises(ValueError, match="DNS resolution returned no addresses"):
             assistant.verify_url_safety("http://empty-dns.example.com/page")
@@ -379,14 +401,14 @@ def test_verify_url_safety_empty_dns_results_fails_closed():
 
 def test_verify_url_safety_public_only_dns_succeeds():
     """Host resolving exclusively to public IP addresses must be permitted."""
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
     with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]):
         assistant.verify_url_safety("http://example.com/page")
 
 
 def test_verify_url_safety_private_only_dns_fails_closed():
     """Host resolving to private IP (e.g. 10.0.0.1) must fail closed."""
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
     with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 80))]):
         with pytest.raises(ValueError, match="resolves to prohibited IP"):
             assistant.verify_url_safety("http://internal-host.example.com/page")
@@ -394,7 +416,7 @@ def test_verify_url_safety_private_only_dns_fails_closed():
 
 def test_verify_url_safety_mixed_public_and_prohibited_dns_fails_closed():
     """Host returning mixed public and private IP records must fail closed."""
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
     with patch("socket.getaddrinfo", return_value=[
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80)),
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80)),
@@ -457,7 +479,7 @@ def test_verify_url_safety_scope_cannot_override_failed_dns_or_prohibited_ip():
 
 def test_network_policy_in_scope_initial_navigation():
     """Legitimate in-scope request is allowed by policy."""
-    policy = BrowserNetworkPolicy()
+    policy = BrowserNetworkPolicy(scope_engine=_in_scope_engine())
     mock_route = MagicMock()
     mock_request = MagicMock()
     mock_request.url = "http://example.com/home"
@@ -516,7 +538,7 @@ def test_network_policy_redirect_to_prohibited_literal_ip():
 
 def test_network_policy_redirect_to_hostname_resolving_to_prohibited_ip():
     """Redirect to host resolving to 169.254.169.254 is aborted."""
-    policy = BrowserNetworkPolicy()
+    policy = BrowserNetworkPolicy(scope_engine=_in_scope_engine())
     mock_route = MagicMock()
     mock_request = MagicMock()
     mock_request.url = "http://metadata-rebinder.com/meta"
@@ -606,7 +628,7 @@ def test_network_policy_scope_and_dns_check_exceptions_fail_closed():
 def test_execution_budget_request_limit_aborts_subsequent_requests():
     """When max_requests budget is reached, subsequent requests are aborted."""
     budget = BrowserExecutionBudget(max_requests=2)
-    policy = BrowserNetworkPolicy(budget=budget)
+    policy = BrowserNetworkPolicy(budget=budget, scope_engine=_in_scope_engine())
 
     with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]):
         for i in range(2):
@@ -625,7 +647,7 @@ def test_execution_budget_request_limit_aborts_subsequent_requests():
 def test_execution_budget_redirect_limit_aborts():
     """When max_redirects budget is reached, redirect is aborted."""
     budget = BrowserExecutionBudget(max_redirects=1)
-    policy = BrowserNetworkPolicy(budget=budget)
+    policy = BrowserNetworkPolicy(budget=budget, scope_engine=_in_scope_engine())
 
     with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]):
         r1 = MagicMock()
@@ -729,7 +751,7 @@ def test_redaction_malformed_url_does_not_crash_or_leak():
 
 def test_canary_empty_token_returns_inconclusive():
     """Dialog with empty canary token cannot confirm execution; returns INCONCLUSIVE."""
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
     res = assistant.evaluate_dialog_observation(
         dialog_observed=True,
         dialog_message="1",
@@ -742,7 +764,7 @@ def test_canary_empty_token_returns_inconclusive():
 
 def test_canary_matching_token_returns_confirmed():
     """Dialog containing the exact canary token confirms execution."""
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
     res = assistant.evaluate_dialog_observation(
         dialog_observed=True,
         dialog_message="Executed: bb_canary_12345",
@@ -1037,7 +1059,7 @@ def test_confirm_candidate_aborts_navigation_when_security_policy_registration_f
     mock_sync_api.sync_playwright.return_value = mock_sync
     mock_playwright_mod.sync_api = mock_sync_api
 
-    assistant = BrowserXssAssistant(enabled=True)
+    assistant = BrowserXssAssistant(enabled=True, scope_engine=_in_scope_engine())
 
     with patch.object(assistant, "is_available", return_value=True):
         with patch("socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]):

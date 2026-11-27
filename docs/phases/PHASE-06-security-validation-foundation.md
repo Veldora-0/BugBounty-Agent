@@ -8,7 +8,7 @@
 
 A scanner warning or a suspicious response is not yet a bounty finding. It may be a false positive, a harmless reflection, expected behavior, or a problem that cannot be reproduced. Phase 6 provides shared pieces for turning an idea into a repeatable test, preserving enough safe evidence to review it, tracking the finding’s status, and preparing a report that a human can submit.
 
-Validation means testing whether the evidence supports the stated security claim. Evidence management means recording what happened in a way that another person can check later while removing secrets and unnecessary personal data. Neither step authorizes additional testing. Only use the target and test accounts allowed by the program.
+Validation means testing whether the evidence supports the stated security claim. Evidence management means recording what happened in a way that another person can check later while removing secrets and unnecessary personal data. The shared active validation transport now checks scope before DNS resolution, so an out-of-scope hostname is rejected without causing a DNS lookup. Neither step authorizes additional testing. Only use the target and test accounts allowed by the program.
 
 ## How the phase works
 

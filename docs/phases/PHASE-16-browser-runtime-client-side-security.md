@@ -12,7 +12,7 @@ The browser is an observer for the authorized application, not an unrestricted b
 
 ## How the browser layer works
 
-The browser capability detector checks whether the required automation library and browser binary are available. A policy checks the starting URL, resolves and validates destinations, limits navigation and capture budgets, and records blocked requests. The browser session can record route changes, DOM mutations, scripts, requests, console messages, page errors, storage-related observations, and WebSocket metadata. Sensitive request headers and URL values are redacted before they are written to logs.
+The browser capability detector checks whether the required automation library and browser binary are available. Before any DNS lookup, the network policy requires a configured scope engine or scope validator and checks the URL against it. It then resolves and validates destinations, limits navigation and capture budgets, and records blocked requests. The browser session can record route changes, DOM mutations, scripts, requests, console messages, page errors, storage-related observations, and WebSocket metadata. Sensitive request headers and URL values are redacted before they are written to logs.
 
 The browser layer can support Phase 7 by checking whether a candidate value actually reaches an executable browser context. If the runtime is unavailable, the outcome should be UNAVAILABLE or INCONCLUSIVE; a static signal must not be upgraded to a browser-confirmed finding.
 
@@ -39,6 +39,6 @@ Record the browser version, runtime availability, starting page, session context
 
 ## Safety and limitations
 
-Use a separate browser context with no personal browsing profile or unrelated accounts. Never disable network policy or scope checks to make the page load. Dynamic front-end behavior and browser versions change, and this layer cannot guarantee full application coverage. It does not replace server-side validation or prove an impact that was not safely observed.
+Use a separate browser context with no personal browsing profile or unrelated accounts. A missing scope configuration now blocks browser navigation before name resolution. Never disable network policy or scope checks to make the page load. Dynamic front-end behavior and browser versions change, and this layer cannot guarantee full application coverage. It does not replace server-side validation or prove an impact that was not safely observed.
 
 Tests: **tests/test_phase16_browser_runtime.py** and browser-policy coverage in **tests/test_xss_engine.py**. See [Phase 7](PHASE-07-xss-intelligence.md), the **browser skill**, and [roadmap](../ROADMAP-24-PHASES.md).
