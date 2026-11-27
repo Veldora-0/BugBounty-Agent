@@ -548,14 +548,6 @@ def safe_fetch_url(
 
     port = parsed.port or (443 if scheme == "https" else 80)
 
-    # A public destination is not authorized by default. Require the offline
-    # scope decision before DNS resolution or any HTTP activity.
-    if scope_engine is None:
-        return None
-    dec = scope_engine.check(url)
-    if getattr(dec, "status", None) != "IN_SCOPE":
-        return None
-
     # Anti-SSRF hostname checks
     metadata_hosts = {
         "localhost",
@@ -571,6 +563,16 @@ def safe_fetch_url(
         bad, _ = is_ssrf_prohibited_ip(alt_ip)
         if bad:
             return None
+
+    # A public destination is not authorized by default. Require the offline
+    # scope decision before DNS resolution or any HTTP activity.
+    if scope_engine is None:
+        return None
+    dec = scope_engine.check(url)
+    if getattr(dec, "status", None) != "IN_SCOPE":
+        return None
+
+    if alt_ip is not None:
         pinned_ips = [str(alt_ip)]
     else:
         try:
