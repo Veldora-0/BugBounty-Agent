@@ -215,21 +215,31 @@ def preflight(args: argparse.Namespace) -> None:
     scope = load_scope_engine(args.scope_file)
     if not scope.is_in_scope(endpoint):
         raise ValueError("Acceptance endpoint is not in the temporary dispatcher scope")
-    health = safe_fetch_url(
-        endpoint,
-        method="GET",
-        headers={"X-AUD08-Health": fixture_token},
-        timeout=10.0,
-        max_bytes=1024,
-        scope_engine=scope,
-    )
-    if health is None:
-        raise ValueError(
-            "Safe-transport preflight failed before dispatcher state or approval consumption; "
-            "check Kali direct outbound TCP/443, DNS, TLS trust, and Cloudflare tunnel availability"
+    health = None
+    last_status = None
+    for attempt in range(1, 11):
+        health = safe_fetch_url(
+            endpoint,
+            method="GET",
+            headers={"X-AUD08-Health": fixture_token},
+            timeout=5.0,
+            max_bytes=1024,
+            scope_engine=scope,
         )
-    if health.get("status_code") != 204:
-        raise ValueError(f"Acceptance fixture health preflight returned HTTP {health.get('status_code')}, expected 204")
+        if health is not None:
+            last_status = health.get("status_code")
+            if last_status == 204:
+                break
+        if attempt < 10:
+            print(f"[*] Fixture HTTPS health check not ready (attempt {attempt}/10); retrying in 2 seconds.", flush=True)
+            time.sleep(2)
+    if health is None or last_status != 204:
+        status_detail = f"last HTTP status was {last_status}" if last_status is not None else "no HTTP response was received"
+        raise ValueError(
+            "Safe-transport preflight did not reach the fixture after 10 bounded attempts "
+            f"({status_detail}); dispatcher approval/nonce probes were not sent. "
+            "Check Kali DNS, direct TCP/443, TLS trust, and tunnel connectivity."
+        )
     print("PASS: scope-checked pinned HTTPS transport reached the temporary fixture before dispatcher state changes.")
 
 
