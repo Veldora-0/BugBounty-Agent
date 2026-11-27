@@ -58,7 +58,7 @@ Phase 19 strictly enforces all project-wide security and architectural invariant
 7. **No Parallel Transport Bypasses**: Uses `SecurityTestPolicy` and `SecurityValidationEngine` directly; never introduces unvetted transport adapters.
 8. **No Automated Exploitation or Logins**: Discovery of an administrative portal or credential artifact never triggers automated login attempts, password spraying, or session hijacking.
 9. **No Automated Report Submission**: Findings are generated as Markdown/JSON artifacts for human researcher review; zero automatic platform disclosure.
-10. **Runtime Data Separation**: Target metadata, scan logs, and state files remain in local program workspaces (`~/BugBounty-Workspace/<program>/`) and are never committed to version control.
+10. **Runtime Data Separation**: Target metadata, scan logs, and state files remain under the OpenCode working directory's Git-ignored `programs/<program>/` path and are never committed to version control. Use a separate OpenCode directory when physical separation from source code is required.
 
 ---
 

@@ -20,7 +20,7 @@ from framework.scope.engine import ScopeEngine
 def main() -> int:
     parser = argparse.ArgumentParser(description="Recheck saved public-disclosure metadata against current local coverage; no target requests.")
     parser.add_argument("--program", required=True, help="Program name in the local workspace")
-    parser.add_argument("--workspace-root", help="Override the BugBounty-Workspace root")
+    parser.add_argument("--workspace-root", help="Explicitly override the current-directory workspace root")
     parser.add_argument("--scope", help="Explicit scope file; missing/invalid scope fails closed")
     parser.add_argument("--discoveries", help="JSON array of newly researched public report metadata")
     parser.add_argument("--checked-source", action="append", default=[],

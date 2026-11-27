@@ -15,7 +15,7 @@ The primary environment is Kali Linux. Windows may be used for editing, but it i
 
 1. Install the Python package into an isolated environment and check required packages with `bb-doctor`.
 2. Deploy the canonical global agent, 18 skills, `/Arise` command, and CLI wrappers. The deployer checks destination ownership before it replaces anything.
-3. Initialize a local program workspace. Scope, credentials, evidence, findings, and reports remain local and are not part of the framework repository.
+3. Initialize a local program workspace from the directory opened in OpenCode. Program files are stored under its Git-ignored `programs/<name>/` directory and are not committed. Use a separate OpenCode directory when physical separation from the framework checkout is required.
 4. Run diagnostics and inspect authorization and scope before any target-facing command.
 5. Upgrade the Git checkout and redeploy. If a problem appears, return to a known commit and redeploy; do not delete program state to recover the framework.
 6. Review the release checklist and environment-specific evidence before relying on a new version.
@@ -49,7 +49,7 @@ The ownership manifest is operational state, not a security boundary against a l
 
 ### 3. Program workspace and data lifecycle
 
-Each program's scope, state, evidence, and reports live outside the repository under the configured workspace root. A normal Git update or global redeploy does not migrate or delete those directories. The [installation guide](../installation.md) explains the distinction and the no-data-loss behavior of global uninstall.
+Each program's scope, state, evidence, and reports live under `programs/<name>/` in the current OpenCode working directory by default. This path is Git-ignored; a normal Git update or global redeploy does not migrate or delete it. An older `~/BugBounty-Workspace` is not read or deleted automatically. The [runtime guide](../runtime.md) explains the current-directory default and legacy data handling.
 
 This phase does not yet provide a general encrypted workspace backup utility or automatic schema migration system. Researchers must back up local workspaces according to their own storage policy. Any future migration must be versioned, validated before writing, recoverable from interruption, and tested on copies of representative state.
 

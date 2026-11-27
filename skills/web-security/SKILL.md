@@ -95,7 +95,7 @@ bb-webapp --program <program-name> --json
    - `same_origin_only`: True by default (prevents unintentional cross-domain crawls).
 3. **No Vulnerability Exploitation**: Phase 3 is strictly mapping and intelligence gathering. Forms are **never automatically submitted**, inputs are never fuzzed, and application state is never mutated.
 4. **Deterministic Normalization**: All URLs are canonicalized via `canonicalize_url()` (default ports stripped, path traversal resolved, fragments removed, query parameters sorted deterministically).
-5. **Atomic State Persistence**: Stored in `~/BugBounty-Workspace/programs/<name>/state/webapps.json` using atomic temporary file swaps (`_atomic_write_json`).
+5. **Atomic State Persistence**: Stored in `programs/<name>/state/webapps.json` under the current OpenCode directory using atomic temporary file swaps (`_atomic_write_json`).
 
 ---
 

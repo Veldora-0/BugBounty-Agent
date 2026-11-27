@@ -21,7 +21,7 @@ from framework.scope.engine import ScopeEngine
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build offline coverage and prioritized research plans; never sends target requests.")
     parser.add_argument("--program", required=True, help="Program name in the local workspace")
-    parser.add_argument("--workspace-root", help="Override the BugBounty-Workspace root")
+    parser.add_argument("--workspace-root", help="Explicitly override the current-directory workspace root")
     parser.add_argument("--scope", help="Explicit scope file; missing/invalid scope fails closed")
     parser.add_argument("--budget", type=int, default=20, help="Maximum estimated request budget (default: 20)")
     parser.add_argument("--limit", type=int, default=50, help="Maximum recommendations (default: 50)")

@@ -49,8 +49,8 @@ BugBounty-Agent is built on four core architectural tenets:
 └──────────────────────────┬─────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────┐
-│         Local Runtime Workspace (Outside Git)          │
-│   ~/BugBounty-Workspace/programs/<PROGRAM_NAME>/       │
+│       OpenCode-Local Runtime Data (Git-Ignored)         │
+│   <OpenCode CWD>/programs/<PROGRAM_NAME>/              │
 │      (targets, recon, scans, evidence, findings)       │
 └────────────────────────────────────────────────────────┘
 ```

@@ -4,7 +4,7 @@ Web Application Intelligence State Manager for BugBounty-Agent.
 Provides persistent, atomic, resumable, and deduplicated storage of web application
 observations (WebApplications, WebPages, WebEndpoints, Parameters, Forms, Cookies,
 Resources, Links, CrawlQueue, and VisitedURLs) in:
-~/BugBounty-Workspace/programs/<program>/state/webapps.json.
+./programs/<program>/state/webapps.json under the current OpenCode directory.
 """
 
 from __future__ import annotations

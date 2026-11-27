@@ -131,7 +131,7 @@ bb-api --program myprogram --resume
 2. **Safe HTTP Methods**: Active specification discovery requests are strictly restricted to safe read methods (`GET`, `HEAD`, `OPTIONS`) and safe, read-only GraphQL queries. State-changing verbs (`POST`, `PUT`, `DELETE`, `PATCH`) are never automatically executed on user endpoints.
 3. **Fail-Closed Scope Verification**: Every discovered host and specification URL must pass `ScopeEngine` checks before any network request is issued. If `ScopeEngine` is omitted, active network testing fails closed immediately.
 4. **Anti-SSRF Transport & Protocol Invariants**: Destination hosts are resolved to IPs and verified against prohibited ranges (loopback, RFC 1918 private, link-local metadata `169.254.169.254`). Pinned connections prevent DNS rebinding. Redirects re-verify scope at every hop and forbid protocol downgrades (HTTPS $\to$ HTTP).
-5. **Data Isolation**: All state is persisted in `~/BugBounty-Workspace/programs/<name>/state/api.json` outside the Git repository.
+5. **Data Isolation**: All state is persisted in the Git-ignored `programs/<name>/state/api.json` path under the current OpenCode directory.
 6. **Downstream Pipeline**: API schemas and parameters feed Phase 8 (`authorization` / BOLA), Phase 9 (`oob` / `ssrf`), Phase 10 (`injection`), and Phase 11 (`http_trust` / CORS / HPP).
 
 ---

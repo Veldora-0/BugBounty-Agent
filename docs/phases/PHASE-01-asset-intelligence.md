@@ -55,7 +55,7 @@ Replace placeholders with your own initialized program name and only use a domai
 
 ## Understanding the output
 
-The tree is a convenient view of parent and child relationships. JSON includes the graph records and relationships and is better for scripts or later review. The persistent graph is written under the program’s local state directory, outside the Git repository. Review each item’s scope status and provenance before passing it to active phases. A source may be stale, a DNS answer may be shared by a CDN, and a hostname may be explicitly excluded even when its parent is in scope.
+The tree is a convenient view of parent and child relationships. JSON includes the graph records and relationships and is better for scripts or later review. The persistent graph is written under `programs/<name>/state/` in the current OpenCode directory, which is Git-ignored. Review each item’s scope status and provenance before passing it to active phases. A source may be stale, a DNS answer may be shared by a CDN, and a hostname may be explicitly excluded even when its parent is in scope.
 
 A useful result is a reviewed, deduplicated inventory with known provenance and clear scope labels. A useful next step is Phase 2 reconnaissance for in-scope hosts, followed by web and API mapping. Do not report an asset as a bug by itself.
 

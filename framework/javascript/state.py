@@ -2,7 +2,7 @@
 JavaScript Intelligence State Management for BugBounty-Agent.
 
 Provides atomic, resumable, and deduplicated storage of JavaScript analysis observations in:
-~/BugBounty-Workspace/programs/<program>/state/javascript.json.
+./programs/<program>/state/javascript.json under the current OpenCode directory.
 """
 
 from __future__ import annotations

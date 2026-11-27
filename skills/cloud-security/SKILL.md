@@ -85,7 +85,7 @@ The `CloudFalsePositiveClassifier` rejects non-vulnerable cloud behavior:
 * **Non-Destructive Requests Only**: Permitted HTTP methods are strictly bounded to `GET`, `HEAD`, and `OPTIONS`.
 * **Zero Credential Attacks**: Never brute-force IAM passwords, test cloud credentials automatically, or exploit STS/OAuth flows.
 * **Direct Metadata Probing Prohibited**: Probing `169.254.169.254` or cloud metadata services is strictly blocked in Phase 13.
-* **Atomic State Persistence**: Cloud intelligence is atomically saved to `~/BugBounty-Workspace/programs/<program>/state/cloud.json`. Secrets are masked and sanitized before saving.
+* **Atomic State Persistence**: Cloud intelligence is atomically saved to `programs/<program>/state/cloud.json` under the current OpenCode directory. Secrets are masked and sanitized before saving.
 
 ---
 

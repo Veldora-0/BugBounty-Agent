@@ -112,7 +112,7 @@ bb-js --program myprogram --dry-run
 
 ## 4. State Management (`state/javascript.json`)
 
-The state is persisted atomically in `~/BugBounty-Workspace/<program>/state/javascript.json`:
+The state is persisted atomically in `programs/<program>/state/javascript.json` under the current OpenCode directory:
 * `resources`: Catalog of analyzed JavaScript resources with hash, byte size, minification status, and timestamps.
 * `endpoints`: Discovered API and HTTP endpoints with extraction methods and provenance.
 * `routes`: Client-side single-page application routes.

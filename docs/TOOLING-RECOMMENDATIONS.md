@@ -36,7 +36,7 @@ The **Google Hacking Database (GHDB)** is an Exploit-DB reference of search quer
 1. Confirm upstream, license, supported Kali/Linux install method, release integrity and maintenance health.
 2. Determine whether it sends traffic, follows redirects, resolves DNS itself, honors proxies, or expands targets. If the framework cannot enforce scope and budgets, keep it as a manual external tool rather than an automated engine dependency.
 3. Prefer passive or read-only use; require explicit human approval and bounded rate/host/request limits for active features.
-4. Redact credentials and target-sensitive data from output; keep raw captures local and outside Git.
+4. Redact credentials and target-sensitive data from output; keep raw captures local under the Git-ignored program workspace and never force-add them to Git.
 5. Test the exact command against a local fixture and a deliberately out-of-scope fixture, proving the latter generates zero requests.
 
 Tool choices change over time. Recheck official documentation and program rules before adoption. These are recommendations for human-led authorized work, not claims that the tools have been integrated or tested by this repository audit.

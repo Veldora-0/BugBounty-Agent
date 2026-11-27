@@ -14,7 +14,7 @@ Validation means testing whether the evidence supports the stated security claim
 
 A validator builds candidate test cases from a target, endpoint, parameter, and category. It can compare a response with a baseline, apply request, time, and byte limits, and label a result according to that validator. Passive-only mode evaluates existing state without sending requests. Dry-run mode constructs a plan without dispatching probes or persisting new test results. Resume mode avoids repeating cases already recorded.
 
-The evidence command accepts request and response files plus a note describing what they demonstrate. Evidence handling sanitizes sensitive values and stores local metadata including a digest so changes can be detected. A hash does not encrypt a file: raw captures and credentials still require private file permissions and must stay outside Git. Finding records then move through a lifecycle such as candidate, validated, reported, or closed. The report command renders a draft from reviewed finding and evidence records; it does not submit it.
+The evidence command accepts request and response files plus a note describing what they demonstrate. Evidence handling sanitizes sensitive values and stores local metadata including a digest so changes can be detected. A hash does not encrypt a file: raw captures and credentials still require private file permissions and must never be committed. They live under the Git-ignored `programs/<name>/` path in the current OpenCode directory; use a separate directory when physical separation from source code is required. Finding records then move through a lifecycle such as candidate, validated, reported, or closed. The report command renders a draft from reviewed finding and evidence records; it does not submit it.
 
 ## How to use it
 
@@ -36,7 +36,7 @@ bb-report --program <program-name> --list
 bb-report --program <program-name> --finding-id <finding-id>
 ~~~
 
-Keep captures outside the repository, inspect sanitized output, and check each CLI’s help before using options in a particular release.
+Keep captures local under the current program workspace, inspect sanitized output, and check each CLI’s help before using options in a particular release. Do not force-add them to Git.
 
 ## How to judge a result
 

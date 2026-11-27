@@ -9,7 +9,7 @@ empirical baseline comparison, and structured finding generation:
 - Strict scope enforcement before all network dispatches
 - Dual-principal authorization modeling foundation
 - Cryptographic SHA-256 evidence captures with credential masking
-- Atomic persistence in ~/BugBounty-Workspace/programs/<name>/state/security.json
+- Atomic persistence in ./programs/<name>/state/security.json under the current OpenCode directory
 """
 
 from __future__ import annotations

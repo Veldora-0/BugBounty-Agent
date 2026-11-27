@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 import yaml
 
 
+# Retained for callers that imported the old constant; it is not the default.
 DEFAULT_RUNTIME_DIR_NAME = "BugBounty-Workspace"
 
 PROGRAM_SUBDIRECTORIES = [
@@ -97,19 +98,16 @@ def write_private_text_file(path: str, content: str) -> None:
 
 def get_workspace_root() -> str:
     """
-    Resolves the base workspace directory for runtime data.
+    Resolves the base directory for program data.
+
     Precedence:
-    1. BUGBOUNTY_WORKSPACE environment variable
-    2. ~/BugBounty-Workspace/ in the user's home directory
-    3. ~/.local/share/bugbounty-agent/
+    1. An explicit BUGBOUNTY_WORKSPACE override
+    2. The current working directory (the directory OpenCode was opened in)
     """
     env_dir = os.environ.get("BUGBOUNTY_WORKSPACE")
     if env_dir:
         return os.path.abspath(env_dir)
-
-    home = os.path.expanduser("~")
-    primary = os.path.join(home, DEFAULT_RUNTIME_DIR_NAME)
-    return primary
+    return os.path.abspath(os.getcwd())
 
 
 def get_program_dir(program_name: str, workspace_root: Optional[str] = None) -> str:

@@ -116,7 +116,7 @@ bb-ssrf --program <name> --json
 ---
 
 ## 7. State Management & Findings
-State is maintained atomically outside Git in `~/BugBounty-Workspace/programs/<name>/state/ssrf.json`:
+State is maintained atomically in the local, Git-ignored `programs/<name>/state/ssrf.json` directory under the current OpenCode working directory:
 * `candidates`: Discovered SSRF parameter candidates and sink classifications.
 * `canaries`: Registered canary tokens and issuance timestamps.
 * `approved_tests`: Human approval audit records.

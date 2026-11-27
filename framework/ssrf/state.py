@@ -3,7 +3,7 @@ State Management for SSRF & Out-of-Band Interaction Intelligence (Phase 9).
 
 Provides persistent, atomic, and resumable storage for candidates, canaries,
 interactions, approvals, and verified findings in:
-~/BugBounty-Workspace/programs/<program>/state/ssrf.json
+./programs/<program>/state/ssrf.json under the current OpenCode directory
 """
 
 from __future__ import annotations

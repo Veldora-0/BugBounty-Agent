@@ -68,7 +68,7 @@ The [vulnerability coverage registry](../config/vulnerability-coverage.yaml) is 
 
 ### 15. `evidence`
 * **Purpose**: Evidence integrity and credential sanitization.
-* **Methodology**: Cryptographic SHA-256 hashing of request/response artifacts, automatic masking of authorization tokens, session cookies, and passwords. Enforces local storage outside the Git repository.
+* **Methodology**: Cryptographic SHA-256 hashing of request/response artifacts, automatic masking of authorization tokens, session cookies, and passwords. Stores artifacts locally under the OpenCode working directory's Git-ignored program path; use a separate directory when physical separation from source code is required.
 
 ### 16. `reporting`
 * **Purpose**: Standardized vulnerability disclosure generation.

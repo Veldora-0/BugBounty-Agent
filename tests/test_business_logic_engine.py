@@ -7,7 +7,7 @@ Tests:
 - Invariant engine evaluations across categories
 - Replay engine: single, sequence, and bounded concurrent race simulations
 - Approval gating & pre-test audit dossiers
-- State persistence in ~/BugBounty-Workspace/.../state/workflows.json
+- State persistence in ./programs/<name>/state/workflows.json under the current OpenCode directory
 - Security hygiene: zero shell=True, os.system, eval, or exec
 """
 

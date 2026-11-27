@@ -97,5 +97,5 @@ Confidence labels are heuristic model values, not calibrated probabilities. They
   # Output full asset graph as JSON
   bb-assets --program acme-corp --json
   ```
-* **Persistent Local State**: Asset graphs are stored in `~/BugBounty-Workspace/programs/<name>/state/assets.json` outside of Git.
+* **Persistent Local State**: Asset graphs are stored in the Git-ignored `programs/<name>/state/assets.json` path under the current OpenCode directory.
 * **Discovery boundary**: The graph supports arbitrary depth, but the default run does not perform generic recursive name generation. CLI Subfinder integration is queried once per root; deeper children can come from supplied seeds or accepted in-scope TLS SAN observations. Discovery is bounded by `--depth` and `--budget`.

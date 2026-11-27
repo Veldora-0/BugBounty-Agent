@@ -10,7 +10,7 @@ Transform validated security findings into executive-ready, technically rigorous
 
 ## Strict Prohibition: Zero Automated Submission
 * **MANDATORY**: The agent must NEVER automatically submit reports to HackerOne, Bugcrowd, Intigriti, YesWeHack, or any external bug bounty platform.
-* Reports are strictly output as local Markdown files in `~/BugBounty-Workspace/programs/<name>/reports/<finding_id>.md`.
+* Reports are strictly output as local Markdown files in `programs/<name>/reports/<finding_id>.md` under the current OpenCode directory.
 * Human review and submission authorization is strictly required.
 
 ## 1. Mandatory 17-Section Report Standard

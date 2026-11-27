@@ -25,6 +25,7 @@ from framework.auth_correlation.state import AuthCorrelationStateManager
 from framework.auth_correlation.lab import LocalAuthCorrelationLab, SecurityBoundaryViolationError
 from framework.auth_correlation.model import CorrelatedPrincipalContext, CorrelatedSessionContext, CorrelationLifecycle
 from framework.auth_correlation.revocation import ApprovalSecurityError, sign_action_approval
+from framework.common.config import get_program_dir
 from framework.validation.request import ControlledRequest, ControlledResponse
 
 
@@ -52,6 +53,7 @@ def main() -> int:
     parser.add_argument("--output", help="Write summary results to file path")
 
     args = parser.parse_args()
+    workspace_root = os.path.abspath(args.workspace) if args.workspace else get_program_dir(args.program)
 
     # Operator Action Dossier Signing Helper
     if args.sign_dossier:
@@ -90,7 +92,7 @@ def main() -> int:
             with open(args.dossier, "r", encoding="utf-8") as f:
                 action_dossier = json.load(f)
         else:
-            cand_path = os.path.join(REPO_ROOT, "state", "pending_actions", f"{args.approve_action}.json")
+            cand_path = os.path.join(workspace_root, "state", "pending_actions", f"{args.approve_action}.json")
             if os.path.exists(cand_path):
                 with open(cand_path, "r", encoding="utf-8") as f:
                     action_dossier = json.load(f)
@@ -219,8 +221,6 @@ def main() -> int:
             print(f"    Findings Discovered: {results.get('findings_count', 0)}")
             print(f"    Status: {results.get('status')}")
         return 0
-
-    workspace_root = os.path.abspath(args.workspace) if args.workspace else REPO_ROOT
 
     # Production/Standard Engine Execution
     engine = AuthCorrelationEngine(

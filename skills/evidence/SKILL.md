@@ -30,10 +30,10 @@ Password: [REDACTED_CREDENTIAL]
 ## 3. Cryptographic Provenance & Storage
 * For every evidence file, compute a SHA-256 checksum upon creation:
   $$\text{Hash} = \text{SHA-256}(\text{raw\_evidence\_content})$$
-* Store evidence in local, isolated program directories outside Git:
-  `~/BugBounty-Workspace/programs/<name>/evidence/<finding_id>/`
+* Store evidence in local, isolated program directories under the current OpenCode directory:
+  `programs/<name>/evidence/<finding_id>/` (Git-ignored; never force-add)
 * Reference the evidence by path and SHA-256 checksum in finding records.
 
 ## 4. Git Isolation Invariant
 * **MANDATORY**: Never commit raw HTTP captures, scan logs, target outputs, credentials, or screenshots to Git.
-* Verify that `.gitignore` strictly excludes `~/BugBounty-Workspace/` and all evidence artifacts.
+* Verify that the repository's `.gitignore` excludes `programs/` and all evidence artifacts.

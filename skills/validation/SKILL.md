@@ -118,7 +118,7 @@ Provides data models (`Principal`, `SessionContext`, `ResourceIdentifier`, `Expe
 ---
 
 ## 8. State Persistence & CLI
-* **State File**: `~/BugBounty-Workspace/programs/<program>/state/security.json`
+* **State File**: `programs/<program>/state/security.json` under the current OpenCode directory
 * **CLI Utility**: `bb-validate`
   ```bash
   # Visual validation tree
@@ -142,7 +142,7 @@ Specialized subsystem for comprehensive, non-destructive Cross-Site Scripting an
 * **DOM XSS Intelligence (`DomXssEngine`)**: Static source-to-sink tracking across `location.search`, `location.hash`, `document.referrer`, `window.name`, and dangerous framework sinks (`dangerouslySetInnerHTML`, `v-html`, `bypassSecurityTrustHtml`, jQuery `html()`/`append()`). Detects client sanitizers (`DOMPurify`).
 * **Stored XSS Foundation (`StoredXssEngine`)**: Correlates candidate input endpoints with retrieval endpoints; models human verification plans with zero automated form mutation.
 * **Browser-Assisted Confirmation (`BrowserXssAssistant`)**: Optional headless Playwright layer strictly disabled by default. Enforces same-origin and anti-SSRF pre-checks.
-* **State File**: `~/BugBounty-Workspace/programs/<program>/state/xss.json`
+* **State File**: `programs/<program>/state/xss.json` under the current OpenCode directory
 * **CLI Tool**: `bb-xss`
   ```bash
   bb-xss --program acme-corp --tree
@@ -161,7 +161,7 @@ Specialized subsystem for bounded HTTP metadata and header trust validation:
 * **CORS Trust Analysis**: Differentiates public wildcard APIs from high-risk reflected origins with credentials allowed.
 * **HTTP Parameter Pollution**: Characterizes query/form parser precedence (`FIRST_VALUE`, `LAST_VALUE`, `ARRAY`).
 * **Cache-Poisoning Foundation**: Models unkeyed header hypotheses without polluting shared production caches.
-* **State File**: `~/BugBounty-Workspace/programs/<program>/state/http-trust.json`
+* **State File**: `programs/<program>/state/http-trust.json` under the current OpenCode directory
 * **CLI Tool**: `bb-http`
   ```bash
   bb-http --program acme-corp --tree

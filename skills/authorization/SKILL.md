@@ -87,7 +87,7 @@ bb-authz --program <name> --json
 ---
 
 ## 5. State Management & Evidence Architecture
-State is maintained atomically outside Git in `~/BugBounty-Workspace/programs/<name>/state/authorization.json`:
+State is maintained atomically in the Git-ignored `programs/<name>/state/authorization.json` path under the current OpenCode directory:
 * `principals`: Authorized test principal profiles and privilege tiers.
 * `resources`: Discovered resource access targets and identifier types.
 * `policies`: Formal expected access decisions (`ALLOW`, `DENY`).

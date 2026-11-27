@@ -45,7 +45,7 @@ from framework.attack_path.validator import (
     ValidationAuditEvent,
     ValidationPlanStatus,
 )
-from framework.common.config import get_workspace_root, resolve_program_scope_file
+from framework.common.config import get_program_dir, resolve_program_scope_file
 from framework.common.evidence import EvidenceStore
 from framework.findings.schema import Finding
 from framework.scope.engine import ScopeEngine
@@ -70,9 +70,8 @@ def resolve_program_directory(program_arg: Optional[str], workspace_arg: Optiona
     if workspace_arg:
         ws = os.path.abspath(workspace_arg)
     else:
-        root = get_workspace_root()
         prog = program_arg or "default-program"
-        ws = os.path.join(root, prog)
+        ws = get_program_dir(prog)
 
     os.makedirs(ws, exist_ok=True)
     os.makedirs(os.path.join(ws, "state"), exist_ok=True)

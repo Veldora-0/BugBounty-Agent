@@ -32,7 +32,7 @@ def main():
     parser.add_argument(
         "--workspace-dir",
         default=None,
-        help="Optional override for root workspace directory (default: ~/BugBounty-Workspace)",
+        help="Optional override for the workspace root (default: current OpenCode working directory)",
     )
     args = parser.parse_args()
 

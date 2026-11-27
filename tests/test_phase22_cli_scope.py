@@ -34,6 +34,16 @@ def test_scope_resolution_uses_canonical_program_scope_path(cli_namespace, tmp_p
     assert scope.check("example.com").status == ScopeStatus.OUT_OF_SCOPE
 
 
+def test_default_chain_program_directory_is_under_current_directory(cli_namespace, monkeypatch, tmp_path):
+    monkeypatch.delenv("BUGBOUNTY_WORKSPACE", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    program_dir = cli_namespace["resolve_program_directory"]("Example Program", None)
+
+    assert Path(program_dir) == tmp_path / "programs" / "exampleprogram"
+    assert (Path(program_dir) / "state").is_dir()
+
+
 def test_missing_or_invalid_scope_fails_closed(cli_namespace, tmp_path):
     assert cli_namespace["resolve_scope_engine"](str(tmp_path)) is None
 

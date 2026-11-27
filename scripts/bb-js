@@ -5,7 +5,7 @@ bb-js — JavaScript Intelligence CLI for BugBounty-Agent.
 Consumes Phase 3 JavaScript ResourceObservations, performs bounded static analysis
 (endpoints, routes, parameters, interesting strings, dependencies, and source maps)
 without executing target code or launching intrusive attacks.
-Maintains persistent, atomic state in ~/BugBounty-Workspace/programs/<name>/state/javascript.json.
+Maintains persistent, atomic state in ./programs/<name>/state/javascript.json under the current OpenCode directory.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ Examples:
     )
     parser.add_argument(
         "-p", "--program",
-        help="Program name in local workspace (resolves ~/BugBounty-Workspace/programs/<name>)",
+        help="Program name in the current OpenCode directory (stores data under ./programs/<name>)",
     )
     parser.add_argument(
         "-s", "--scope",

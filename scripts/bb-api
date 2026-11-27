@@ -8,7 +8,7 @@ Discovers, normalizes, correlates, and catalogs API attack surfaces:
 - GraphQL endpoint identification and safe metadata observation
 - REST path parameter inference and parameter semantic role classification
 - Bounded request/response payload schemas
-- Atomic state persistence in ~/BugBounty-Workspace/programs/<name>/state/api.json
+- Atomic state persistence in ./programs/<name>/state/api.json under the current OpenCode directory
 """
 
 from __future__ import annotations

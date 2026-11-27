@@ -12,7 +12,7 @@ Ensure that security research produces high-signal, consolidated findings rather
 Before executing any active security probe or tool command against a target endpoint:
 1. Compute a deterministic SHA-256 fingerprint from the test tuple:
    $$\text{Fingerprint} = \text{SHA-256}(\text{target\_url} + \text{method} + \text{parameter} + \text{test\_category})$$
-2. Check `~/BugBounty-Workspace/programs/<name>/state/tests.json` to verify if this exact probe was already executed.
+2. Check `programs/<name>/state/tests.json` under the current OpenCode directory to verify if this exact probe was already executed.
 3. If already executed within the active session, skip the probe to save bandwidth and prevent WAF rate-limiting.
 
 ## 2. Finding Correlation Vectors

@@ -3,7 +3,7 @@ State Persistence for Business Logic & Workflow Subsystem (Phase 12).
 
 Provides atomic, thread-safe, and resumable state tracking for workflows,
 steps, transitions, hypotheses, test cases, evidence, and findings in:
-~/BugBounty-Workspace/programs/<program>/state/workflows.json
+./programs/<program>/state/workflows.json under the current OpenCode directory
 """
 
 from __future__ import annotations

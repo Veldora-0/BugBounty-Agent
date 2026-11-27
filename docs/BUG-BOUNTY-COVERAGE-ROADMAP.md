@@ -239,7 +239,7 @@ The registry currently includes tools such as Subfinder, httpx, Naabu, Katana, f
 - Use only researcher-controlled accounts and synthetic records for authorization and workflow tests. Stop when a test could expose another person's data.
 - Findings require demonstrated impact and reproducibility. Severity reflects proven impact and program context, not theoretical chain possibilities.
 - An OOB callback proves only that a callback occurred. It does not alone prove SSRF impact, XXE data access, or RCE.
-- Keep target data, secrets, raw evidence, and reports outside Git. Redact credentials and personal data before display or export.
+- Keep target data, secrets, raw evidence, and reports local under the Git-ignored program path; never force-add them to Git. Redact credentials and personal data before display or export.
 - Linux/Kali is the supported automated test platform. New automated workflows and acceptance criteria must be Linux-based; do not add Windows-only tests or CI.
 
 ## 7. Coverage states and reporting

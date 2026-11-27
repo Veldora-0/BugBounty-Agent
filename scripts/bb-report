@@ -90,7 +90,7 @@ Examples:
     parser.add_argument(
         "-p", "--program",
         required=True,
-        help="Program name in local workspace (resolves ~/BugBounty-Workspace/programs/<name>)",
+        help="Program name in the current OpenCode directory (stores data under ./programs/<name>)",
     )
     parser.add_argument(
         "-i", "--finding-id",

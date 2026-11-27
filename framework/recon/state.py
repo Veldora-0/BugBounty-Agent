@@ -3,7 +3,7 @@ Reconnaissance State Management for BugBounty-Agent.
 
 Provides persistent, atomic, resumable, and deduplicated storage of reconnaissance
 observations (HTTP services, ports/services, DNS records, TLS details, technologies,
-and endpoints) in ~/BugBounty-Workspace/programs/<program>/state/recon.json.
+and endpoints) in ./programs/<program>/state/recon.json under the current OpenCode directory.
 """
 
 from __future__ import annotations

@@ -11,7 +11,7 @@ Persists:
 - rejected hypotheses
 - audit records
 
-Stored at: ~/BugBounty-Workspace/programs/<program>/state/cloud.json
+Stored at: ./programs/<program>/state/cloud.json under the current OpenCode directory
 Strictly excludes unmasked secrets, session cookies, and authentication keys.
 """
 

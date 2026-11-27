@@ -89,7 +89,7 @@ sequenceDiagram
 4. **Cryptographic Evidence Preservation**:
    - Calculates SHA-256 hashes for all HTTP interactions.
    - Automatically sanitizes session cookies, passwords, and API authorization tokens.
-   - Stores runtime data locally in `~/BugBounty-Workspace/` outside the Git repository.
+   - Stores runtime data locally in `<OpenCode working directory>/programs/<program>/`, which is Git-ignored. Use a separate OpenCode directory when physical separation from the source checkout is required.
 
 5. **Adversarial Quality Control**:
    - Challenges candidate findings against a 6-gate verification checklist.

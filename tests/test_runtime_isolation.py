@@ -9,6 +9,7 @@ import pytest
 from framework.common.config import (
     PROGRAM_SUBDIRECTORIES,
     get_program_dir,
+    get_workspace_root,
     init_program_workspace,
     list_local_programs,
 )
@@ -35,6 +36,31 @@ def test_program_workspace_isolation():
         progs = list_local_programs(workspace_root=tmp_root)
         assert "program-alpha" in progs
         assert "program-beta" in progs
+
+
+def test_default_workspace_uses_current_open_code_directory(monkeypatch, tmp_path):
+    monkeypatch.delenv("BUGBOUNTY_WORKSPACE", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    assert get_workspace_root() == str(tmp_path)
+    assert get_program_dir("Program Alpha") == os.path.join(
+        str(tmp_path), "programs", "programalpha"
+    )
+
+    paths = init_program_workspace("Program Alpha")
+    assert paths["program_root"] == get_program_dir("Program Alpha")
+    assert os.path.isdir(paths["scope"])
+
+
+def test_explicit_workspace_environment_override_is_preserved(monkeypatch, tmp_path):
+    override = tmp_path / "chosen-workspace"
+    monkeypatch.setenv("BUGBOUNTY_WORKSPACE", str(override))
+    monkeypatch.chdir(tmp_path)
+
+    assert get_workspace_root() == str(override)
+    assert get_program_dir("example") == os.path.join(
+        str(override), "programs", "example"
+    )
 
 
 def test_sensitive_data_sanitization():

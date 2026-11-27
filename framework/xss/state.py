@@ -3,7 +3,7 @@ XSS State Manager for BugBounty-Agent.
 
 Provides atomic, thread-safe persistence and retrieval of XSS candidates,
 context analyses, and validation states in:
-~/BugBounty-Workspace/programs/<program>/state/xss.json
+./programs/<program>/state/xss.json under the current OpenCode directory
 """
 
 from __future__ import annotations

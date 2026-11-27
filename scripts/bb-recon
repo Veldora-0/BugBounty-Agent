@@ -4,7 +4,7 @@ bb-recon — Reconnaissance Intelligence CLI for BugBounty-Agent.
 
 Executes capability-driven attack surface enrichment (DNS, TLS, HTTP, Ports,
 Technologies, Endpoints) on in-scope assets. Maintains persistent, atomic,
-and resumable reconnaissance state in ~/BugBounty-Workspace/programs/<name>/state/recon.json.
+and resumable reconnaissance state in ./programs/<name>/state/recon.json under the current OpenCode directory.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ Examples:
     )
     parser.add_argument(
         "-p", "--program",
-        help="Program name in local workspace (resolves ~/BugBounty-Workspace/programs/<name>)",
+        help="Program name in the current OpenCode directory (stores data under ./programs/<name>)",
     )
     parser.add_argument(
         "-s", "--scope",

@@ -3,7 +3,7 @@ State Management for HTTP / Header Trust Subsystem (Phase 11).
 
 Provides atomic, persistent, and resumable state tracking for header trust candidates,
 differential test evidence, CORS/HPP observations, and deduplicated findings in:
-~/BugBounty-Workspace/programs/<program>/state/http-trust.json
+./programs/<program>/state/http-trust.json under the current OpenCode directory
 """
 
 from __future__ import annotations

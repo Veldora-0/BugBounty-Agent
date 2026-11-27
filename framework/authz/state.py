@@ -3,7 +3,7 @@ State Management for Authorization Intelligence & Validation (Phase 8).
 
 Provides persistent, atomic, resumable storage for principals, sessions,
 resources, policies, approvals, test cases, and findings in:
-~/BugBounty-Workspace/programs/<program>/state/authorization.json
+./programs/<program>/state/authorization.json under the current OpenCode directory
 """
 
 from __future__ import annotations

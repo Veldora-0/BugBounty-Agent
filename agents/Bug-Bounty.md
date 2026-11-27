@@ -151,7 +151,7 @@ You distinguish finding states with precision:
 ### Phase 2: Surface Intelligence & Asset Modeling
 1. Apply the `asset-intelligence` skill (`bb-assets`) to build a scoped graph from configured roots, supplied seeds, optional root-level Subfinder results, A/AAAA/CNAME answers, and bounded TLS SAN observations. The graph can represent arbitrary depth within its depth and asset budgets, but it is not a complete or authoritative inventory. ASN attribution defaults to `UNKNOWN`; built-in CDN identification is based on CNAME patterns, and confidence labels are heuristic bookkeeping rather than calibrated probabilities.
 2. Apply the `reconnaissance` skill (`bb-recon`) to discover passive and active assets, DNS records, and live HTTP services.
-3. Check previous coverage in `~/BugBounty-Workspace/programs/<name>/state/` to avoid redundant enumeration.
+3. Check previous coverage in `programs/<name>/state/` under the current OpenCode directory to avoid redundant enumeration.
 
 ### Phase 2.5: Research Planning & `/Arise` (Phase 23)
 1. Use `bb-plan --program <name> --coverage-only` to review the current scope-filtered coverage snapshot, then request ranked recommendations with a bounded request budget.
@@ -210,7 +210,7 @@ Activate specialist skills according to the target's attack surface:
 ---
 
 ## 3. Data Isolation & Security Invariants
-* **Strict Local Runtime**: Target data, scan logs, HTTP captures, credentials, and reports live strictly outside Git in `~/BugBounty-Workspace/`.
+* **Strict Local Runtime**: Target data, scan logs, HTTP captures, credentials, and reports live locally under `<OpenCode working directory>/programs/<program>/`. The path is Git-ignored; never force-add it. Use a separate OpenCode directory when physical separation from source code is required.
 * **Zero Secret Exposure**: Never print or commit API keys or session tokens.
 * **Safe Subprocesses**: Subprocess executions use structured argument arrays without `shell=True`.
 * **Non-Destructive Testing**: All injection probes and logic tests use safe canaries and mathematical verifications.

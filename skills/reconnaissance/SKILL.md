@@ -78,7 +78,7 @@ bb-recon --program <program-name> --json
 
 * **Deterministic Normalization**: All URLs, endpoints, hostnames, and ports are normalized to canonical keys.
 * **Observation Provenance**: Every observation attaches an `ObservationProvenance` record documenting originating tool/source, method, timestamp, and confidence rating.
-* **Persistent Local State**: Observations are stored in `~/BugBounty-Workspace/programs/<name>/state/recon.json` using atomic replace writes (`_atomic_write_json`) to guarantee zero file corruption.
+* **Persistent Local State**: Observations are stored in `programs/<name>/state/recon.json` under the current OpenCode directory using atomic replace writes (`_atomic_write_json`) to guarantee zero file corruption.
 * **Resumability**: Assets flagged in `probed_assets` are skipped on subsequent runs with `--resume`.
 
 ---

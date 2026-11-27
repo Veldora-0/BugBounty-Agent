@@ -3,7 +3,7 @@ State Management for Injection Intelligence & Controlled Validation (Phase 10).
 
 Provides atomic, persistent, and resumable state tracking for injection candidates,
 prioritization records, differential test evidence, and deduplicated findings in:
-~/BugBounty-Workspace/programs/<program>/state/injection.json
+./programs/<program>/state/injection.json under the current OpenCode directory
 """
 
 from __future__ import annotations

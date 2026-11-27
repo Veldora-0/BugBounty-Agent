@@ -4,7 +4,7 @@ bb-webapp — Web Application Intelligence CLI for BugBounty-Agent.
 
 Maps external web application attack surface (pages, forms, routes, parameters,
 cookies, resources, links) starting from Phase 1/2 assets without vulnerability exploitation.
-Maintains persistent, atomic state in ~/BugBounty-Workspace/programs/<name>/state/webapps.json.
+Maintains persistent, atomic state in ./programs/<name>/state/webapps.json under the current OpenCode directory.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ Examples:
     )
     parser.add_argument(
         "-p", "--program",
-        help="Program name in local workspace (resolves ~/BugBounty-Workspace/programs/<name>)",
+        help="Program name in the current OpenCode directory (stores data under ./programs/<name>)",
     )
     parser.add_argument(
         "-s", "--scope",

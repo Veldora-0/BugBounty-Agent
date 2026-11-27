@@ -8,7 +8,7 @@ BugBounty-Agent is a security research framework for finding and documenting vul
 2. Install and deploy using [installation](installation.md) and [runtime](runtime.md).
 3. Initialize a local program workspace and put the program's current in-scope and excluded assets in its scope configuration. Verify scope offline before any network operation.
 4. Work from passive inventory toward a specific hypothesis. Use the engine/skill appropriate to that hypothesis and its built-in safety budgets.
-5. Keep credentials, targets, raw captures, state and reports outside the Git repository. Save only sanitized, minimal evidence.
+5. Keep credentials, targets, raw captures, state and reports local under the OpenCode working directory's ignored `programs/<name>/` path. Do not force-add them to Git; open a separate directory when physical separation from source code is required. Save only sanitized, minimal evidence.
 6. Validate and deduplicate candidate findings. A human reviews and submits any disclosure.
 
 ## What the repository contains

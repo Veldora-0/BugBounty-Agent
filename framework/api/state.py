@@ -2,7 +2,7 @@
 API Intelligence State Management for BugBounty-Agent.
 
 Provides atomic, resumable, and deduplicated storage of API observations in:
-~/BugBounty-Workspace/programs/<program>/state/api.json.
+./programs/<program>/state/api.json under the current OpenCode directory.
 """
 
 from __future__ import annotations

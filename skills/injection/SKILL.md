@@ -142,7 +142,7 @@ bb-inject --lab -e "http://lab.local/api/items?id=1" --param id --approve
 
 ## 6. State Persistence & Evidence
 
-* Persistent state: `~/BugBounty-Workspace/programs/<program>/state/injection.json`
+* Persistent state: `programs/<program>/state/injection.json` under the current OpenCode directory
 * Evidence captures: cryptographically signed with SHA-256 evidence hash.
 * Sensitive data hygiene: headers and tokens (`Authorization`, `Cookie`, `X-CSRF-Token`) are redacted automatically before persistence.
 * Deduplication: identical host/endpoint/param/family/root-cause findings are clustered via `FindingDeduplicator`.

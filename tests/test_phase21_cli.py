@@ -76,9 +76,13 @@ def test_cli_dry_run():
 
 def test_cli_uninitialized_production_fails_closed(tmp_path):
     """Verifies that running in production without target/scope/principals fails closed."""
-    res = subprocess.run([sys.executable, CLI_PATH, "--program", "empty_prog"], capture_output=True, text=True)
+    res = subprocess.run(
+        [sys.executable, CLI_PATH, "--program", "empty_prog"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
     assert res.returncode == 1
     assert "Production correlation requires an active target" in res.stderr
+    assert (tmp_path / "programs" / "empty_prog").is_dir()
 
 
 def test_cli_corrupted_state_file_fails_closed(tmp_path):
@@ -136,7 +140,7 @@ targets:
     assert "is outside configured program scope" in res.stderr
 
 
-def test_cli_missing_dossier_fails_closed():
+def test_cli_missing_dossier_fails_closed(tmp_path):
     """Verifies that --approve-action without valid dossier fails closed with exit code 2."""
     res = subprocess.run(
         [
@@ -147,7 +151,7 @@ def test_cli_missing_dossier_fails_closed():
             "--approve-action",
             "ACT-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         ],
-        capture_output=True,
+        cwd=tmp_path, capture_output=True,
         text=True,
     )
     assert res.returncode == 2

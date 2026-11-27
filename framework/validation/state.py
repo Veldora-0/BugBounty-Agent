@@ -3,7 +3,7 @@ Security State Manager for BugBounty-Agent Validation.
 
 Provides persistent, atomic, resumable, and deduplicated storage of security test cases,
 baselines, validation results, and findings in:
-~/BugBounty-Workspace/programs/<program>/state/security.json
+./programs/<program>/state/security.json under the current OpenCode directory
 """
 
 from __future__ import annotations

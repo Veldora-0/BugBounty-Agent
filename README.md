@@ -13,7 +13,7 @@ BugBounty-Agent is an orchestrated security research system designed to operate 
 
 This project is intended to find and document vulnerabilities on **explicitly authorized bug bounty targets**. Start with the [Project Handbook](docs/PROJECT-HANDBOOK.md) for a newcomer-oriented overview and operating workflow. The [24-Phase Roadmap](docs/ROADMAP-24-PHASES.md) links to one detailed guide per phase; the proposed [Bug Bounty Coverage Expansion Roadmap](docs/BUG-BOUNTY-COVERAGE-ROADMAP.md) maps vulnerability classes, current foundations, tool gaps, proof requirements, and implementation phases. Unresolved risks and blockers are maintained in the [Project Audit Issues](docs/PROJECT-AUDIT-ISSUES.md), candidate work is listed in [Future Improvements](docs/FUTURE-IMPROVEMENTS.md), and optional Kali-oriented tools are discussed in [Tooling Recommendations](docs/TOOLING-RECOMMENDATIONS.md). Phase 24 adds the [support matrix](docs/supported-environments.md), [threat model](docs/THREAT-MODEL.md), and [release checklist](docs/release-checklist.md).
 
-**Current status:** Phase 24 closure remains in progress. Kali is the primary platform: code checkpoint `7ac24ee` passed its full suite (**1,344 passed** in 180.71 seconds) and the installed dispatcher isolation verifier. GitHub Actions uses Ubuntu Linux runners for supplementary Python 3.10/3.14 code checks; both jobs passed in [run 44891701876](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44891701876). Those CI jobs do not replace Kali acceptance. No successful approved dispatcher mutation has been verified because no test program or operator approval key is provisioned. A scope audit using CleanShot's published policy found and fixed wildcard-apex over-authorization: wildcard entries now cover descendants only, and each generated DNS wildcard probe is checked individually. Current automated tests target Linux only; prior Windows results are historical. ASN attribution remains unavailable, live OOB callback acceptance remains open, and Phase 22 chain validation remains simulation-only. The project remains beta; see the [issue register](docs/PROJECT-AUDIT-ISSUES.md) for remaining acceptance work. For CleanShot, only public policy/marketing pages were fetched; no vulnerability probes or authenticated tests were performed.
+**Current status:** Phase 24 closure remains in progress. Kali is the primary platform: code checkpoint `7ac24ee` passed its full suite (**1,344 passed** in 180.71 seconds) and the installed dispatcher isolation verifier. GitHub Actions uses Ubuntu Linux runners for supplementary Python 3.10/3.14 code checks; both jobs passed in [run 44891701876](https://github.com/Veldora-0/BugBounty-Agent/actions/runs/44891701876). Those CI jobs do not replace Kali acceptance. No successful approved dispatcher mutation has been verified because no test program or operator approval key is provisioned. A scope audit using CleanShot's published policy found and fixed wildcard-apex over-authorization: wildcard entries now cover descendants only, and each generated DNS wildcard probe is checked individually. Current automated tests target Linux only; prior Windows results are historical. ASN attribution is `UNKNOWN` by default, with bounded opt-in Team Cymru lookup available; live OOB callback acceptance remains open, and Phase 22 chain validation remains simulation-only. Program data is stored under `programs/<name>/` within the directory opened in OpenCode. The project remains beta; see the [issue register](docs/PROJECT-AUDIT-ISSUES.md) for remaining acceptance work. For CleanShot, only public policy/marketing pages were fetched; no vulnerability probes or authenticated tests were performed.
 
 Run `scripts/bb-deploy` to install the single global `Bug-Bounty` agent, its 18 skills, CLI tools, and the `/Arise` command. OpenCode discovers project slash commands from `.opencode/commands/` and global commands from `~/.config/opencode/commands/` ([command documentation](https://opencode.ai/docs/commands)).
 
@@ -22,7 +22,7 @@ Run `scripts/bb-deploy` to install the single global `Bug-Bounty` agent, its 18 
 ## Key Principles & Architectural Invariants
 
 * **One Reusable Framework Repository**: Contains only the agent specifications, methodology skills, controlled CLI tools, tests, and documentation.
-* **Complete Runtime Data Separation**: Real targets, recon logs, HTTP captures, credentials, and vulnerability reports remain **strictly local** on your machine (e.g. `~/BugBounty-Workspace/`) and are never committed to Git.
+* **Local Runtime Data**: Program scope, state, evidence, credentials, and reports are stored under `programs/<name>/` in the directory opened in OpenCode. That directory is Git-ignored; do not force-add runtime data. Use a separate OpenCode directory when physical separation from the source checkout is required.
 * **Never Silently Assume Authorization**: Every domain, IP, CIDR, and URL must pass through the Scope Engine before any network interaction.
 * **Hypothesis-Driven Research**:
   $$\text{Observation} \longrightarrow \text{Hypothesis} \longrightarrow \text{Targeted Test} \longrightarrow \text{Evidence} \longrightarrow \text{Validation} \longrightarrow \text{Report}$$
@@ -526,14 +526,14 @@ The framework's `opencode.jsonc` implements OpenCode V2's ordered rule evaluatio
 ## Research Workflow in 4 Steps
 
 ### Step 1: Initialize a Local Program
-Initialize an isolated local workspace directory outside Git:
+Initialize program data under the directory currently opened in OpenCode:
 ```bash
 ./scripts/bb-init my-target-program
 ```
-This creates `~/BugBounty-Workspace/programs/my-target-program/` containing `scope/`, `recon/`, `state/`, `evidence/`, `findings/`, and `reports/`.
+This creates `./programs/my-target-program/` under the current directory, containing `scope/`, `recon/`, `state/`, `evidence/`, `findings/`, and `reports/`.
 
 ### Step 2: Configure Authorized Scope
-Edit `~/BugBounty-Workspace/programs/my-target-program/scope/scope.yaml`:
+Edit `./programs/my-target-program/scope/scope.yaml`:
 ```yaml
 program:
   name: "my-target-program"
@@ -550,19 +550,19 @@ out_of_scope:
 
 Verify scope logic:
 ```bash
-./scripts/bb-scope-check --scope ~/BugBounty-Workspace/programs/my-target-program/scope/scope.yaml dev.api.target.com
+./scripts/bb-scope-check --scope ./programs/my-target-program/scope/scope.yaml dev.api.target.com
 ```
 
 ### Step 3: Run OpenCode
-Start OpenCode in the repository:
+Start OpenCode in the directory where you want the program workspace stored:
 ```bash
 opencode .
 ```
-`Bug-Bounty` automatically orchestrates reconnaissance, hypothesis formulation, on-demand tool verification, targeted testing, and deduplication.
+Program state remains under `./programs/my-target-program/` for this OpenCode session. `Bug-Bounty` automatically orchestrates reconnaissance, hypothesis formulation, on-demand tool verification, targeted testing, and deduplication.
 
 ### Step 4: Review Markdown Reports
 Validated findings are stored in:
-`~/BugBounty-Workspace/programs/my-target-program/reports/`
+`./programs/my-target-program/reports/`
 
 Each report includes all 17 standard bug bounty disclosure sections:
 1. Title
