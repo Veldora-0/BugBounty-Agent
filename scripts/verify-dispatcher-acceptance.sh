@@ -105,7 +105,7 @@ stop_tunnel() {
     if kill -0 "$TUNNEL_PID" 2>/dev/null; then
         echo "[*] Stopping the local fixture and temporary Cloudflare tunnel..."
         kill -TERM "$TUNNEL_PID" 2>/dev/null || true
-        for _ in $(seq 1 30); do
+        for _ in $(seq 1 80); do
             kill -0 "$TUNNEL_PID" 2>/dev/null || break
             sleep 0.1
         done
